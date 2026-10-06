@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # check-types + lint (AD-15 dependency direction) + esbuild bundle
+      - run: npm run compile
+
+      # unit + integration tests in a downloaded VS Code (needs a display)
+      - run: xvfb-run -a npm test
+
+      - run: npx vsce package --no-dependencies
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpcn-pipeline-designer-vsix
+          path: '*.vsix'
+          if-no-files-found: error

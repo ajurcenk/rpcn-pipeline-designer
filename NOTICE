@@ -1,0 +1,12 @@
+Pipeline Designer for Redpanda Connect
+Copyright 2026 ajurcenk
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+Bundled third-party components
+------------------------------
+
+The packaged extension (.vsix) currently bundles no third-party code.
+When a third-party component is bundled into the extension, its name,
+version, license and required notice text are added to this section.

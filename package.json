@@ -1,0 +1,154 @@
+{
+  "name": "rpcn-pipeline-designer",
+  "displayName": "Pipeline Designer for Redpanda Connect",
+  "description": "Pipeline graph, Redpanda Connect-aware YAML editing and local runs for Redpanda Connect configs.",
+  "version": "0.0.1",
+  "publisher": "ajurcenk",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ajurcenk/rpcn-pipeline-designer"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization"
+  ],
+  "keywords": [
+    "redpanda",
+    "redpanda connect",
+    "benthos",
+    "yaml",
+    "pipeline"
+  ],
+  "extensionDependencies": [
+    "redhat.vscode-yaml"
+  ],
+  "activationEvents": [
+    "onLanguage:yaml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Redpanda Connect",
+      "properties": {
+        "redpandaConnect.binaryPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `redpanda-connect` binary. When empty, `redpanda-connect` is looked up on `PATH`."
+        },
+        "redpandaConnect.autoOpenGraph": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Open the pipeline graph beside a detected Redpanda Connect config when it is first opened."
+        },
+        "redpandaConnect.filePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Glob patterns of files that are always treated as Redpanda Connect configs."
+        },
+        "redpandaConnect.resourceFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Resource files passed to lint and run with `-r`."
+        },
+        "redpandaConnect.envFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Environment file passed to lint and run with `-e`."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "redpandaConnect.showGraph",
+        "title": "Show Graph",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.hideGraph",
+        "title": "Hide Graph",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.run",
+        "title": "Run",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.stop",
+        "title": "Stop",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.refreshSchema",
+        "title": "Refresh Schema",
+        "category": "Redpanda Connect"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "redpandaConnect.showGraph",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.hideGraph",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.run",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.stop",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.refreshSchema",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.100.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "eslint": "^10.5.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
