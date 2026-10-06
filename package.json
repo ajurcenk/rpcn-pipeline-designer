@@ -112,10 +112,6 @@
         {
           "command": "redpandaConnect.stop",
           "when": "false"
-        },
-        {
-          "command": "redpandaConnect.refreshSchema",
-          "when": "false"
         }
       ]
     }

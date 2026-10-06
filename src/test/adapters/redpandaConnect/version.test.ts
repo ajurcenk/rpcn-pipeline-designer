@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { findOnPath, readVersion } from '../../../adapters/redpandaConnect/version';
+import { findOnPath, readVersion, runList } from '../../../adapters/redpandaConnect/version';
 import { makeTempDir, rpkScript, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 
 suite('adapters/redpandaConnect findOnPath', () => {
@@ -89,5 +89,31 @@ suite('adapters/redpandaConnect readVersion', () => {
 
 	test('an empty invocation is a spawn error', async () => {
 		assert.strictEqual((await readVersion([])).kind, 'spawnError');
+	});
+});
+
+suite('adapters/redpandaConnect runList', () => {
+	let dir: string;
+	setup(() => { dir = makeTempDir(); });
+	teardown(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	test('runs <invocation…> list --format <format> with NO_COLOR=1 and returns stdout', async () => {
+		const bin = writeFakeBinary(dir, 'rpk', '[ "$NO_COLOR" = "1" ] || exit 3\nprintf "%s|" "$@"');
+		assert.deepStrictEqual(await runList([bin, 'connect'], 'jsonschema'), {
+			kind: 'exited', exitCode: 0, stdout: 'connect|list|--format|jsonschema|', stderr: '',
+		});
+		const full = await runList([bin], 'json-full');
+		assert.strictEqual(full.kind === 'exited' && full.stdout, 'list|--format|json-full|');
+	});
+
+	test('large stdout is returned whole', async () => {
+		const bin = writeFakeBinary(dir, 'rc', 'head -c 3000000 /dev/zero | tr "\\\\0" a');
+		const result = await runList([bin], 'json-full');
+		assert.strictEqual(result.kind === 'exited' && result.stdout.length, 3_000_000);
+	});
+
+	test('a hanging list times out', async () => {
+		const bin = writeFakeBinary(dir, 'rc', 'exec sleep 30');
+		assert.deepStrictEqual(await runList([bin], 'jsonschema', 200), { kind: 'timeout', timeoutMs: 200, stderr: '' });
 	});
 });

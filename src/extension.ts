@@ -4,8 +4,10 @@
 import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
+import { SchemaStore } from './adapters/redpandaConnect/schema';
 
 export const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
+export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
 
 /** Returned from `activate`; used by integration tests. */
 export interface ExtensionApi {
@@ -13,6 +15,8 @@ export interface ExtensionApi {
 	readonly redpandaConnect: RedpandaConnect;
 	/** Resolves with the state after the activation-time resolution. */
 	readonly activationResolved: Promise<BinaryState>;
+	/** The single owner of the generated schema (AD-10). */
+	readonly schemaStore: SchemaStore;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -72,9 +76,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const redpandaConnect = new RedpandaConnect({ log, notifier: createVsCodeNotifier(log) });
 	context.subscriptions.push(redpandaConnect);
 
+	// Subscribed before the first resolution, so activation's `unresolved` → `ok` generates (or reads the cache).
+	const schemaStore = new SchemaStore({ binary: redpandaConnect, storageUri: context.globalStorageUri, log });
+	context.subscriptions.push(
+		schemaStore,
+		vscode.commands.registerCommand(REFRESH_SCHEMA_COMMAND, () => schemaStore.refresh()),
+	);
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
+		schemaStore,
 		outputLines: () => [...lines],
 	};
 }

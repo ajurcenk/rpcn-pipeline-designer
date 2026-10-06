@@ -5,9 +5,14 @@ import * as vscode from 'vscode';
 import { BinaryState, RedpandaConnect } from '../adapters/redpandaConnect/binary';
 import { BinaryNotifier, MISSING_MESSAGE, NOTIFICATION_ACTIONS } from '../adapters/redpandaConnect/notify';
 import { createVsCodeNotifier, type ExtensionApi } from '../extension';
-import { makeTempDir, VERSION_4_112_SCRIPT, versionScript, writeFakeBinary } from './helpers/fakeBinary';
+import { SchemaSnapshot, SchemaStore } from '../adapters/redpandaConnect/schema';
+import { schemaFileName } from '../core/schema';
+import { connectScript, makeTempDir, readCounter, versionScript, writeFakeBinary } from './helpers/fakeBinary';
 
 const EXTENSION_ID = 'ajurcenk.rpcn-pipeline-designer';
+
+/** Output lines without the schema store's (`Schema…`), which interleave with binary resolution. */
+const binaryLines = (api: ExtensionApi) => api.outputLines().filter((l) => !l.startsWith('Schema'));
 
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
@@ -24,6 +29,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boo
 suite('Extension tracer path (integration)', () => {
 	let dir: string;
 	let fakeBinary: string;
+	let counter: string;
 	const originalPath = process.env.PATH;
 
 	suiteSetup(async () => {
@@ -33,7 +39,8 @@ suite('Extension tracer path (integration)', () => {
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
 		dir = makeTempDir('rpcn-integration-');
-		fakeBinary = writeFakeBinary(dir, 'redpanda-connect', VERSION_4_112_SCRIPT);
+		counter = path.join(dir, 'count');
+		fakeBinary = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', counterFile: counter }));
 		await vscode.workspace.getConfiguration('redpandaConnect')
 			.update('binaryPath', fakeBinary, vscode.ConfigurationTarget.Global);
 	});
@@ -74,7 +81,7 @@ suite('Extension tracer path (integration)', () => {
 		assert.deepStrictEqual(api.redpandaConnect.state, {
 			kind: 'ok', path: fakeBinary, version: '4.112.0', invocation: [fakeBinary],
 		});
-		assert.deepStrictEqual(api.outputLines(), [`Redpanda Connect 4.112.0 (${fakeBinary})`]);
+		assert.deepStrictEqual(binaryLines(api), [`Redpanda Connect 4.112.0 (${fakeBinary})`]);
 	});
 
 	test('SETTING_CHANGED: flipping binaryPath between ok, missing and invalid updates binaryState without a reload', async () => {
@@ -84,7 +91,7 @@ suite('Extension tracer path (integration)', () => {
 		const old = writeFakeBinary(dir, 'redpanda-connect-old', versionScript('4.63.0'));
 		const events: BinaryState[] = [];
 		const sub = rc.onDidChange((s) => events.push(s));
-		const linesBefore = api.outputLines().length;
+		const linesBefore = binaryLines(api).length;
 
 		const setBinaryPath = async (value: string, expected: BinaryState['kind']) => {
 			const changed = new Promise<BinaryState>((resolve) => {
@@ -111,13 +118,54 @@ suite('Extension tracer path (integration)', () => {
 		}
 
 		assert.deepStrictEqual(events.map((e) => e.kind), ['missing', 'invalid', 'ok']);
-		assert.deepStrictEqual(api.outputLines().slice(linesBefore), [
+		assert.deepStrictEqual(binaryLines(api).slice(linesBefore), [
 			'No Redpanda Connect binary found: neither "rpk" nor "redpanda-connect" is on PATH, '
 				+ `and no binary was found at redpandaConnect.binaryPath "${missing}".`,
 			`Redpanda Connect 4.63.0 (${old}) is older than the minimum supported version 4.100.0.`,
 			`Redpanda Connect 4.112.0 (${fakeBinary})`,
 		]);
 	});
+	test('SCHEMA_ACCEPTANCE: the schema is cached in globalStorage; a second activation spawns no list; Refresh schema regenerates', async () => {
+		const api = vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
+		const store = api.schemaStore;
+		await api.redpandaConnect.refresh();
+		const current = await store.settled();
+		assert.ok(current, 'no schema after activation');
+		assert.strictEqual(current.path, fakeBinary);
+		assert.strictEqual(path.basename(current.uri.fsPath), schemaFileName(fakeBinary, '4.112.0'));
+		assert.ok(fs.existsSync(current.uri.fsPath));
+		const storageDir = path.dirname(current.uri.fsPath);
+
+		// A second activation: a new store over the same globalStorage and binary state.
+		const listRuns = () => readCounter(counter).filter((l) => l !== 'version').length;
+		const before = listRuns();
+		const lines: string[] = [];
+		const second = new SchemaStore({ binary: api.redpandaConnect, storageUri: vscode.Uri.file(storageDir), log: (l) => lines.push(l) });
+		try {
+			const cached = await second.settled();
+			assert.ok(cached);
+			assert.deepStrictEqual(cached.json, current.json);
+			assert.strictEqual(listRuns(), before, 'a list process was spawned on a cache hit');
+			assert.deepStrictEqual(lines, [`Schema: using the cached schema for Redpanda Connect 4.112.0 (${current.uri.fsPath}).`]);
+		} finally {
+			second.dispose();
+		}
+
+		// Refresh schema: visible in the Command Palette, regenerates even on a cache hit.
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: { menus: { commandPalette: { command: string }[] } };
+		};
+		assert.ok(!pkg.contributes.menus.commandPalette.some((m) => m.command === 'redpandaConnect.refreshSchema'));
+		const changed = new Promise<SchemaSnapshot | undefined>((resolve) => {
+			const once = store.onDidChange((s) => { once.dispose(); resolve(s); });
+		});
+		await vscode.commands.executeCommand('redpandaConnect.refreshSchema');
+		const refreshed = await changed;
+		assert.ok(refreshed && refreshed !== current);
+		assert.strictEqual(store.current, refreshed);
+		assert.ok(listRuns() > before, 'Refresh schema did not run list');
+	});
+
 	test('NOTIFY_MISSING: a missing resolution goes through the real VS Code notifier without throwing', async () => {
 		const lines: string[] = [];
 		const real = createVsCodeNotifier((line) => lines.push(line));

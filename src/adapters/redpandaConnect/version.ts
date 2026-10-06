@@ -7,9 +7,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export const DEFAULT_VERSION_TIMEOUT_MS = 10_000;
+/** Per `list --format …` run; json-full is ~2.6 MB and takes a few seconds on a cold start. */
+export const DEFAULT_LIST_TIMEOUT_MS = 60_000;
 
-/** Raw outcome of running `<invocation…> --version`. */
-export type VersionProbe =
+/** Raw outcome of running `<invocation…> <args…>`. */
+export type ProcessOutcome =
 	/** The process exited (or was killed by a signal, `exitCode: null`) before the timeout. */
 	| { kind: 'exited'; exitCode: number | null; stdout: string; stderr: string }
 	/** The process did not exit within the timeout and was killed. */
@@ -51,6 +53,9 @@ function isExecutableFile(candidate: string): boolean {
 	}
 }
 
+/** Raw outcome of running `<invocation…> --version`. */
+export type VersionProbe = ProcessOutcome;
+
 /**
  * Spawns `<invocation[0]> <invocation[1..]> --version` (for example `[rpk, 'connect']`)
  * with `NO_COLOR=1`, no shell and a timeout. Never rejects.
@@ -59,8 +64,32 @@ export function readVersion(
 	invocation: readonly string[],
 	timeoutMs = DEFAULT_VERSION_TIMEOUT_MS,
 ): Promise<VersionProbe> {
+	return runProcess(invocation, ['--version'], timeoutMs);
+}
+
+/** Output formats of `list --format <format>` the extension reads (AD-10). */
+export type ListFormat = 'jsonschema' | 'json-full';
+
+/** Spawns `<invocation…> list --format <format>` like `readVersion`. Never rejects. */
+export function runList(
+	invocation: readonly string[],
+	format: ListFormat,
+	timeoutMs = DEFAULT_LIST_TIMEOUT_MS,
+): Promise<ProcessOutcome> {
+	return runProcess(invocation, ['list', '--format', format], timeoutMs);
+}
+
+/**
+ * The single spawn site (AD-9): `<invocation[0]> <invocation[1..]> <args…>` with
+ * `NO_COLOR=1`, no shell, stdin ignored and a timeout (SIGKILL). Never rejects.
+ */
+function runProcess(
+	invocation: readonly string[],
+	args: readonly string[],
+	timeoutMs: number,
+): Promise<ProcessOutcome> {
 	const [command, ...prefixArgs] = invocation;
-	return new Promise<VersionProbe>((resolve) => {
+	return new Promise<ProcessOutcome>((resolve) => {
 		if (!command) {
 			resolve({ kind: 'spawnError', message: 'empty invocation' });
 			return;
@@ -71,7 +100,7 @@ export function readVersion(
 		let settled = false;
 		let timer: NodeJS.Timeout | undefined;
 
-		const finish = (result: VersionProbe) => {
+		const finish = (result: ProcessOutcome) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
@@ -81,7 +110,7 @@ export function readVersion(
 
 		let child: ReturnType<typeof spawn>;
 		try {
-			child = spawn(command, [...prefixArgs, '--version'], {
+			child = spawn(command, [...prefixArgs, ...args], {
 				env: { ...process.env, NO_COLOR: '1' },
 				shell: false,
 				windowsHide: true,
@@ -106,7 +135,7 @@ export function readVersion(
 	});
 }
 
-function spawnFailure(command: string, err: unknown): VersionProbe {
+function spawnFailure(command: string, err: unknown): ProcessOutcome {
 	const code = (err as NodeJS.ErrnoException | undefined)?.code;
 	// ENOENT also covers an existing script whose `#!` interpreter is missing.
 	if (code === 'ENOENT' && !fs.existsSync(command)) {

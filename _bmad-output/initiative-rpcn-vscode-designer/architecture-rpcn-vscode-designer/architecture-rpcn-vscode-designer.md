@@ -110,8 +110,8 @@ companions: []
 - **Rule:**
   - The schema comes from `list --format jsonschema`, cached in `globalStorage` keyed by binary path + version.
   - The version is re-read on activation, on settings change and on a `Refresh schema` command. Generation is single-flight.
-  - The schema URI embeds `hash(path + version)`, so Red Hat refetches when it changes.
-  - Before caching, one versioned transform runs: add `$schema` draft-07, allow `${...}` interpolation patterns on non-string fields, fold examples into `markdownDescription`, add `defaultSnippets`. Hover examples come only from this transform; no own `HoverProvider`.
+  - The schema URI embeds `hash(path + version + transform version)`, so Red Hat refetches when the binary or the transform changes.
+  - Before caching, one versioned transform runs: add `$schema` draft-07, allow `${...}` interpolation patterns on non-string fields, and merge docs from `list --format json-full` (field `description` + `examples` → `markdownDescription`, `default`, component `summary`). Hover docs come only from this transform; no own `HoverProvider`. Snippets are not part of the schema (CAP-5, epic 2).
 
 ### AD-11 — Red Hat YAML is a hard dependency; we supply schema via registerContributor and run no YAML LSP of our own [ADOPTED]
 
