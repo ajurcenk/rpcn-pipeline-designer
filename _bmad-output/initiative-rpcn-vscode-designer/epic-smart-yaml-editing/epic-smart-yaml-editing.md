@@ -50,7 +50,7 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 - Open question: templates (top-level `name` + `type` + `mapping`) fail `lint`; detection (AD-18) should exclude them (_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings/findings.md, Q2).
 - Open question: Stop sends SIGINT (exit 0 in the spike); add a SIGKILL escalation after a grace period, since a hanging shutdown was not tested (_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings/findings.md, Q6).
 - Open question: the 1.5 builder returns `env` (inherited + `NO_COLOR=1`), but the spawn site (`process.ts`) builds its own env and takes none; wire the builder's env through for lint and Run.
-- Open question: check how Red Hat YAML renders the 1.6 merged docs (`markdownDescription`) next to the `anyOf` interpolation rewrite and next to `$ref` on top-level `input`/`output`.
+- Resolved (manual check, user 2026-10-06): with the 1.6 cached schema wired in by hand (`yaml.schemas`, redhat.vscode-yaml 1.24.0, VS Code 1.103.2), completion and hover with the merged docs work next to the `anyOf` rewrite and `$ref`.
 - Note: the Run and Stop commands are contributed but hidden with no handler since 1.2; this epic enables them.
 - Note: Run already passes `--set http.enabled=false` (1.5) to avoid port 4195 collisions between per-file runs.
 - Source: out-of-scope list in _bmad-output/initiative-rpcn-vscode-designer/epic-foundation/story-refactor-sweep-plan.md, Implementation Notes (user decision 2026-10-06).
