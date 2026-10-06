@@ -117,19 +117,19 @@ companions: []
 
 - **Binds:** `package.json` `extensionDependencies`, `src/adapters/redhatYaml`
 - **Prevents:** duplicate completion and diagnostics from two YAML language servers
-- **Rule:** `redhat.vscode-yaml` is listed in `extensionDependencies`. Our extension supplies the generated schema through its `registerContributor` API; `requestSchema` answers only for files the DetectionRegistry (AD-18) accepts. We never start our own YAML language server and never register our own YAML completion or schema validation.
+- **Rule:** `redhat.vscode-yaml` is listed in `extensionDependencies`. Our extension supplies the generated schema through its `registerContributor` API as content: `requestSchema` answers only for files the DetectionRegistry (AD-18) accepts, with a URI in our own scheme embedding the schema hash (AD-10), and `requestSchemaContent` serves the JSON from the in-memory schema store, never from the cache file. We never start our own YAML language server and never register our own YAML completion or schema validation.
 
 ### AD-12 — Diagnostics ownership and dedupe [ADOPTED]
 
 - **Binds:** `src/adapters/vscode` (diagnostics, Quick Fixes, snippets), `src/core` lint parser
 - **Prevents:** duplicate or conflicting squiggles; inconsistent lint parsing
-- **Rule:** Red Hat schema validation is the primary diagnostic source and runs while typing. `rpk connect lint` runs on save only, through the AD-9 argument builder. The `src/core` parser reads its stderr lines in the form `<path>(<line>,<col>) <message>` (exit 1 means lints were found). A lint diagnostic on the same line as a schema diagnostic is suppressed. Our own providers add only lint diagnostics, Quick Fixes (AD-19) and snippets; hover examples come from the schema (AD-10).
+- **Rule:** `rpk connect lint` on save is the authoritative Redpanda Connect validation; it runs on save only, through the AD-9 argument builder. Red Hat YAML provides completion, hover and YAML syntax errors while typing; the binary's schema does not constrain component-level fields (E1 manual check), so schema validation is not relied on for Redpanda Connect errors. The `src/core` parser reads its stderr lines in the form `<path>(<line>,<col>) <message>` (exit 1 means lints were found). A lint diagnostic on the same line as a schema diagnostic is suppressed. Our own providers add only lint diagnostics, Quick Fixes (AD-19) and snippets; hover examples come from the schema (AD-10).
 
 ### AD-13 — Run: one Pseudoterminal per file over an adapter-spawned child; Stop signals that child [ADOPTED]
 
 - **Binds:** run commands, `src/adapters/redpandaConnect`, status bar
 - **Prevents:** terminal sprawl; running stale on-disk content; Stop with no mechanism or acting on the wrong process; a shell spawning outside AD-9
-- **Rule:** Run is disabled for untitled documents. If the file is dirty, Run saves it without prompting, then runs the saved file. Each file has one terminal named `Redpanda Connect: <file name>`, tracked by URI (AD-1) and reused on re-run. The terminal is a `Pseudoterminal` whose child process the RedpandaConnect adapter spawns with the AD-9 arguments; nothing is typed into a shell. Stop (status bar or command) calls `child.kill('SIGINT')` on that file's child, and the exit status goes to the status bar.
+- **Rule:** Run is disabled for untitled documents. If the file is dirty, Run saves it without prompting, then runs the saved file. Each file has one terminal named `Redpanda Connect: <file name>`, tracked by URI (AD-1) and reused on re-run. The terminal is a `Pseudoterminal` whose child process the RedpandaConnect adapter spawns with the AD-9 arguments; nothing is typed into a shell. Stop (status bar or command) calls `child.kill('SIGINT')` on that file's child and escalates to `SIGKILL` if it has not exited after a grace period; the exit status goes to the status bar. The child is a long-lived, streaming handle from the spawn site (AD-9), not the buffered, timeout-killed one-shot runner.
 
 ### AD-14 — Bloblang support is TextMate injection only [ADOPTED]
 

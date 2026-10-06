@@ -1,0 +1,148 @@
+# tickets.toml — epic-smart-yaml-editing (E2). Table order is build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Detected config gets completion and hover from the binary's schema"
+description = "Adds a minimal DetectionRegistry (content predicate: top-level input/pipeline/output/buffer or resource keys) and a Red Hat YAML contributor that answers requestSchema for detected files with a URI in our own scheme embedding the schema hash and serves requestSchemaContent from the in-memory SchemaStore, following its onDidChange (AD-10, AD-11)."
+verify = "In the Extension Development Host a detected corpus config shows component completion and the merged hover docs, a non-pipeline YAML file shows none, and after Set path to another version completion follows without reopening the file."
+covers = ["E2 (R1)", "E2 (R2)"]
+after = ["epic-foundation"]
+hitl = false
+risk = "medium"
+unknown = "Whether Red Hat YAML re-requests schema content when only the content behind a URI changes; the hash in the URI is meant to force it."
+
+[[entry]]
+id = 2
+type = "story"
+title = "Complete file detection"
+description = "Completes the DetectionRegistry: redpandaConnect.filePatterns, templates (top-level name + type + mapping) excluded, resource files detected and exposed as detected resources for lint and run, recomputation on open/change/setting change, onDidChangeDetection, and the session-mark hook epic 3's Show graph calls (AD-18)."
+verify = "Unit tests cover the predicate (patterns, keys, templates, resource files), and an integration test shows a file becoming detected after typing `input:` without reopening."
+covers = ["E2 (R2)"]
+after = [1]
+hitl = false
+risk = "low"
+unknown = "None."
+
+[[entry]]
+id = 3
+type = "story"
+title = "Spawn site: caller environment and a streaming child handle"
+description = "Extends the single spawn site (process.ts) so a caller passes the builder's {command, args, env} with NO_COLOR=1 still forced, and adds a long-lived streaming child handle (stdout/stderr events, exit, kill) beside the buffered one-shot runner; existing callers keep their behavior (AD-9, AD-13)."
+verify = "Unit tests show a caller env reaching the child with NO_COLOR=1 forced, a streaming child delivering output before exit and being killable, and the existing suite passing unchanged."
+covers = ["E2 (R3)", "E2 (R8)"]
+after = []
+hitl = false
+risk = "medium"
+unknown = "None."
+
+[[entry]]
+id = 4
+type = "story"
+title = "Lint on save shows diagnostics"
+description = "On save of a detected file, runs lint through buildLintCommand (with detected resources) and the spawn site, parses stderr in src/core, publishes findings on whole lines (Error; `field … is deprecated` as Warning), suppresses a lint diagnostic on a line Red Hat already flags, clears the file's lint diagnostics on its first edit after save, and exposes to epic 3 a deduped per-URI diagnostics accessor with a change event (AD-12, AD-17)."
+verify = "Saving a config with an unknown field shows an Error on that line from Redpanda Connect lint, a deprecated field shows a Warning, the first edit clears them, and unit tests cover the parser on the spike captures."
+covers = ["E2 (R3)", "E2 (R4)"]
+after = [2, 3]
+hitl = false
+risk = "medium"
+unknown = "Red Hat diagnostics can arrive after lint, so dedupe re-runs on onDidChangeDiagnostics keyed on source `yaml`; whether file-level findings at (1,1) (YAML syntax, env vars) should be suppressed against Red Hat's syntax errors."
+
+[[entry]]
+id = 5
+type = "story"
+title = "Quick Fix for unknown fields"
+description = "For a lint diagnostic `field X not recognised`, offers the closest valid field names at that position from the schema store, applied as a minimal-range WorkspaceEdit (AD-19)."
+verify = "On `nope:` under a mapping processor the Quick Fix menu lists valid field names, applying one replaces only the key, and comments and formatting elsewhere are unchanged."
+covers = ["E2 (R5)"]
+after = [4]
+hitl = false
+risk = "medium"
+unknown = "How to locate the schema node for a YAML position (document path to the definitions/<cat>/anyOf branch)."
+
+[[entry]]
+id = 6
+type = "story"
+title = "Diagnostics parity in the corpus harness"
+description = "The vitest corpus harness also runs the core lint parser on each recorded stderr and asserts the parsed diagnostics (line, severity, message) equal the recorded lint output for every corpus config; lint not checking resource references is expected and gets no run-time check."
+verify = "CI fails when the parser drops or mis-maps a recorded lint line, and passes on the current corpus."
+covers = ["E2 (R10)"]
+after = [4]
+hitl = false
+risk = "low"
+unknown = "None."
+
+[[entry]]
+id = 7
+type = "story"
+title = "Run and Stop in a per-file terminal"
+description = "Enables Run (editor-title action on detected files and command) and Stop (status-bar item and command): Run auto-saves a detected, saved file and runs buildRunCommand (with detected resources) on the streaming child in a Pseudoterminal per URI, reused on re-run; Stop sends SIGINT and SIGKILL after a grace period; the exit status replaces the Stop item; untitled files cannot Run and show \"Save the file to run it.\" (AD-13, EXPERIENCE Run control)."
+verify = "Running a generate-to-stdout corpus config streams its output, Stop ends it, a second Run reuses the terminal, and Run is unavailable for an untitled file with the tooltip shown."
+covers = ["E2 (R8)"]
+after = [2, 3, 4, 10]
+hitl = false
+risk = "medium"
+unknown = "The grace period before SIGKILL."
+notes = ["Waits on 4 and 10 for shared files (extension.ts composition root, package.json contributions), not their behavior."]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Feedback when the schema or binary changes"
+description = "Refresh Schema with no usable binary logs a line and shows the binary warning again; completion and lint follow Set path / Retry / Refresh Schema in already open files without reopening."
+verify = "With no binary, Refresh Schema logs a line and the warning reappears; after Set path, completion and lint on save work in the already open file."
+covers = ["E2 (R9)"]
+after = [4, 7]
+hitl = false
+risk = "low"
+unknown = "None."
+notes = ["Waits on 7 for the shared composition root, not its behavior."]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Bloblang highlighting"
+description = "A TextMate grammar injected into YAML (source.yaml and its versioned scopes) highlights Bloblang in mapping and check values and inside ${! } interpolations (AD-14)."
+verify = "A grammar tokenization test shows Bloblang scopes in mapping/check blocks and ${! } of a corpus config, and plain YAML strings unchanged."
+covers = ["E2 (R6)"]
+after = []
+hitl = false
+risk = "low"
+unknown = "None."
+
+[[entry]]
+id = 10
+type = "story"
+title = "Pipeline snippets"
+description = "Snippets for input/pipeline/output skeletons and common components (generate, kafka_franz, mapping, switch, branch, stdout) offered in detected files."
+verify = "Typing each snippet prefix in a detected file inserts a body that lints clean, and a non-pipeline YAML file does not offer them."
+covers = ["E2 (R7)"]
+after = [9]
+hitl = false
+risk = "low"
+unknown = "Snippets contributed in package.json apply to every YAML file; limiting them to detected files needs a completion provider."
+notes = ["Waits on 9 for package.json contributions, not its behavior."]
+
+[[entry]]
+id = 11
+type = "story"
+title = "CI runs the suite against VS Code 1.100"
+description = "Adds a CI job or matrix entry running the @vscode/test-cli suite against VS Code 1.100 (the engines floor) in addition to the default download."
+verify = "CI shows the suite passing on both VS Code versions."
+covers = ["E2 (R11)"]
+after = []
+hitl = false
+risk = "low"
+unknown = "None."
+
+[[entry]]
+id = 12
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
+verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
+covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = false
+risk = "low"
+unknown = "Scope is set when it starts."

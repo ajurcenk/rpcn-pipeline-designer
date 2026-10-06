@@ -20,11 +20,21 @@ A developer edits a detected config in the native editor with schema help that m
 
 ## Requirements
 
-Completed at inception.
+- E2 (R1) → CAP-2: Supply the schema store's schema to Red Hat YAML for detected files only, as content under our own URI scheme (AD-10, AD-11); completion and hover follow schema changes (new binary, Refresh Schema) without reopening.
+- E2 (R2) → CAP-6 (part): One DetectionRegistry decides which files are Redpanda Connect configs: `redpandaConnect.filePatterns`, or top-level `input`/`pipeline`/`output`/`buffer`/resource keys, excluding templates; recomputed on open, change and setting change; `onDidChangeDetection`; a session-mark hook for epic 3's Show graph (AD-18).
+- E2 (R3) → CAP-3: On save, lint the saved detected file through the AD-9 builder and spawn site; parse `<path>(<line>,<col>) <message>`; show each finding on its whole line (lint reports column 1); `field … is deprecated` as Warning, everything else as Error; clear the file's lint diagnostics on its first edit after save (AD-12, AD-17 rule).
+- E2 (R4) → CAP-3: Suppress a lint diagnostic on a line that already has a Red Hat diagnostic (AD-12).
+- E2 (R5) → CAP-3: One Quick Fix type: for "field X not recognised", offer the closest valid field names from the schema at that position, applied as a minimal-range edit (AD-19).
+- E2 (R6) → CAP-4: Bloblang highlighting in `mapping`, `check` and `${! }` via a TextMate grammar injected into YAML (AD-14).
+- E2 (R7) → CAP-5: Snippets that scaffold pipeline sections and common components.
+- E2 (R8) → CAP-11: Run auto-saves, then runs the file through the builder in a per-file Pseudoterminal (logs streamed); Stop sends SIGINT and escalates to SIGKILL after a grace period; untitled files cannot Run; the Run and Stop commands become visible (AD-13).
+- E2 (R9) → CAP-1 (part): After Set path / Retry / Refresh Schema, editor features update without reopening; Refresh Schema with no usable binary logs a line and shows the binary warning again.
+- E2 (R10) → CAP-14 (part): The corpus harness asserts the extension's parsed lint diagnostics equal `rpk connect lint` for every corpus config (diagnostics parity).
+- E2 (R11) → spec Constraints (`engines.vscode ^1.100.0`): CI also runs the VS Code test suite against VS Code 1.100.
 
 ## Done when
 
-1. In a detected config (no naming convention) the native editor offers completion, hover and validation from the user's binary via Red Hat YAML; after Set path these appear without reopening the file.
+1. In a detected config (no naming convention) the native editor offers completion and hover from the user's binary's schema via Red Hat YAML; after Set path these appear without reopening the file.
 2. Saving shows lint findings inline, deduplicated against schema diagnostics (AD-12), with Quick Fixes applied as minimal-range edits (AD-19).
 3. Bloblang in `mapping`, `check` and `${! }` is highlighted, and snippets scaffold pipeline sections.
 4. Run auto-saves, streams logs to a per-file Pseudoterminal and Stop interrupts it; untitled files cannot Run.
@@ -55,3 +65,13 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 - Note: Run already passes `--set http.enabled=false` (1.5) to avoid port 4195 collisions between per-file runs.
 - Source: out-of-scope list in _bmad-output/initiative-rpcn-vscode-designer/epic-foundation/story-refactor-sweep-plan.md, Implementation Notes (user decision 2026-10-06).
 - Open question (found in manual check of E1, 2026-10-06): the binary's `list --format jsonschema` barely validates at component level. Component choice (`input`, `processor`, …) is an `anyOf` whose branches are `{properties: {<name>: …}, type: object}` with no `required` and no `additionalProperties: false`, so every object matches a branch and the 978 deeper `additionalProperties: false` never apply. Checked with ajv against the 1.6 transformed schema for 4.112.0: an unknown field (`nope` in a `mapping` processor), a top-level typo (`inptu`) and a wrong type (`count: 'x'` in `generate`) all validate. Completion and hover still draw on the schema. This contradicts AD-12's assumption that Red Hat schema validation is the primary live diagnostic source. Decide at inception: (a) extend the 1.6 transform (e.g. `required: [<name>]` per component branch) so component-level checks apply, verified against the corpus for no false positives; or (b) accept lint-on-save as the real validation and amend AD-12.
+- Decision: lint on save is the authoritative Redpanda Connect validation; Red Hat provides completion, hover and YAML syntax errors; AD-12 amended (user, 2026-10-06).
+- Decision: the schema reaches Red Hat as content via `registerContributor` under our own URI scheme, served from the in-memory store; this removes the 30-day-cleanup risk (retro F4); AD-11 amended (user, 2026-10-06).
+- Decision: one Quick Fix type in E2 — "field X not recognised" → closest valid field names (user, 2026-10-06).
+- Decision: Refresh Schema with no usable binary logs a line and shows the binary warning again (user, 2026-10-06; retro A1).
+- Decision: a CI job runs the VS Code test suite against VS Code 1.100 in this epic (user, 2026-10-06; retro A4).
+- Decision: tracer bullet is 2.1 — detection + schema-as-content to Red Hat, completion and hover in a detected file (2026-10-06).
+- Decision: 2.3 defines the spawn-site contract (caller env + streaming child) early so lint (2.4) and Run (2.7) build on it (2026-10-06).
+- Decision: lint not checking resource references is expected; diagnostics parity measures lint output only, no run-time check (user, 2026-10-06).
+- Decision: no separate spike for locating schema nodes; 2.5 settles it as its own uncertainty (user, 2026-10-06).
+- Collision: 2.4, 2.7 and 2.8 all edit the composition root (src/extension.ts); 2.7, 2.9 and 2.10 edit package.json contributions — ordered through `after`.
