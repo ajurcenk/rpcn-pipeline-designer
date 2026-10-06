@@ -2,7 +2,7 @@
 title: "EXPERIENCE — Redpanda Connect Designer for VS Code"
 status: final
 created: 2026-10-05
-updated: 2026-10-05
+updated: 2026-10-06
 sources:
   - ../brief-rpcn-vscode-designer/brief-rpcn-vscode-designer.md
   - ../brief-rpcn-vscode-designer/addendum.md
@@ -47,8 +47,9 @@ The tone is terse, developer to developer, and VS Code-native. Use sentence case
 | Context | String |
 |---|---|
 | Invalid-YAML banner | "YAML has errors — showing last valid graph." |
-| Binary-missing notification | "Redpanda Connect binary not found. Schema, validation, graph and Run need `rpk connect` or `redpanda-connect`." Actions: **Install guide** · **Set path** |
-| Graph empty state (no binary) | "No Redpanda Connect binary. The graph needs it to read the schema." Actions: **Install guide** · **Set path** |
+| Binary-missing notification | "Redpanda Connect binary not found. Schema, validation, graph and Run need `rpk connect` or `redpanda-connect`." Actions: **Install guide** · **Set path** · **Retry** |
+| Binary-invalid notification | "Redpanda Connect at `{path}` can't be used: {reason}." Same three actions. `{reason}` is one of: "version {version} is older than the required v{min}", "it did not report a version", "it reported a version that can't be read", "its version check exited with an error", "it timed out", "it could not be started", "a relative path needs an open workspace folder" |
+| Graph empty state (no binary) | "No Redpanda Connect binary. The graph needs it to read the schema." Actions: **Install guide** · **Set path**; plus **Retry** `[ASSUMPTION]` |
 | Graph empty state (no pipeline keys) | "Nothing to draw yet. Add an `input`, `pipeline` or `output` section." `[ASSUMPTION]` |
 | Node error / warning hover | The diagnostic message verbatim, e.g. "Missing property \"topic\"." or a `lint --deprecated` message |
 | Quick Fix title | "Change to `topic`" `[ASSUMPTION]` |
@@ -100,7 +101,7 @@ Behavioral only. Visual specs are in `DESIGN.md.Components`.
 | Unparseable on first open (no prior valid render) | Graph panel | Banner over an empty canvas `[ASSUMPTION]` |
 | No pipeline keys yet | Graph panel | Empty state: "Nothing to draw yet…" |
 | Graph hidden | YAML editor | Only the YAML editor is open. The editor-title action reads "Show graph". Diagnostics and Run work as usual. |
-| Binary missing or invalid | Global + Graph panel | Notification with **Install guide** / **Set path**. YAML keeps basic highlighting but has no schema diagnostics, completion or lint. The graph panel shows the binary-missing empty state with the same actions and draws **no** pipeline (AD-20). Mock: [mockups/key-binary-missing.html](mockups/key-binary-missing.html) |
+| Binary missing or invalid | Global + Graph panel | One warning notification per transition into missing or invalid, including the first check at activation. A refresh or **Retry** that leaves the state unchanged shows nothing; dismissing does nothing. Actions: **Install guide** opens https://docs.redpanda.com/connect/install/; **Set path** picks a file, saves it as `redpandaConnect.binaryPath` (user scope) and re-checks; **Retry** re-checks. If the state is still unusable after Set path, the warning shows again and the output log records what the picked path resolved to. YAML keeps basic highlighting but has no schema diagnostics, completion or lint. The graph panel shows the binary-missing empty state with **Install guide** / **Set path** (plus **Retry** `[ASSUMPTION]`) and draws **no** pipeline (AD-20). Mock: [mockups/key-binary-missing.html](mockups/key-binary-missing.html) |
 | Binary set after missing | Graph + YAML | Schema loads, the graph renders and diagnostics appear without reopening the file `[ASSUMPTION]` |
 | Schema loading | Graph panel | VS Code progress indicator in the editor-title area. No skeletons `[ASSUMPTION]` |
 | Running | Terminal + status bar | Logs stream in the file's terminal. The status-bar Stop item is visible. Mock: [mockups/key-run.html](mockups/key-run.html) |
@@ -155,14 +156,14 @@ Failure: the YAML stays unparseable → the graph keeps the last valid render wi
 
 Mock: [mockups/key-binary-missing.html](mockups/key-binary-missing.html), [mockups/key-run.html](mockups/key-run.html).
 
-1. Anna opens the same repo on a new laptop that has no `rpk`. The notification reads "Redpanda Connect binary not found…" with **Install guide** · **Set path**.
-2. The graph panel beside the YAML shows the binary-missing empty state with the same two actions and no graph. The YAML still has basic highlighting.
-3. She installs `rpk`, then chooses **Set path** and points it at the binary.
+1. Anna opens the same repo on a new laptop that has no `rpk`. The notification reads "Redpanda Connect binary not found…" with **Install guide** · **Set path** · **Retry**.
+2. The graph panel beside the YAML shows the binary-missing empty state with **Install guide** · **Set path** and no graph. The YAML still has basic highlighting.
+3. She installs `rpk` on her PATH, then chooses **Retry**. (If the binary isn't on PATH, she chooses **Set path** and points it at the file.)
 4. **Climax:** without reopening anything, the schema loads, the graph draws the full pipeline and diagnostics appear in the YAML.
 5. She clicks Run. A terminal named "Redpanda Connect: orders-pipeline.yaml" opens and streams the logs. A status-bar Stop item appears.
 6. She stops the pipeline from the status bar; the process gets an interrupt and shuts down. The terminal stays open with the final output and the status bar shows the exit status.
 
-Failure: the binary at the chosen path isn't a valid Redpanda Connect binary → the notification appears again with the same actions, and the graph panel keeps the empty state.
+Failure: Set path points at a file that can't be used → the warning appears again with the same three actions, the output log says what the picked path resolved to, and the graph panel keeps the empty state. Failure: Retry with nothing changed → no new warning; the graph panel keeps the empty state.
 
 ### Flow 3 — From an empty file to a first running pipeline (Tomás, newcomer)
 
