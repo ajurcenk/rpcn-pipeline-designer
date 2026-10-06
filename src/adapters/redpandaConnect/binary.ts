@@ -287,14 +287,19 @@ export interface RedpandaConnectOptions {
 	readonly notifier?: BinaryNotifier;
 }
 
-function defaultEnvironment(): ResolveEnvironment {
+/** File-system path of the first `file:` workspace folder, if any (relative setting paths resolve against it). */
+export function firstWorkspaceFolderPath(): string | undefined {
 	const folder = vscode.workspace.workspaceFolders?.find((f) => f.uri.scheme === 'file')
 		?? vscode.workspace.workspaceFolders?.[0];
+	return folder?.uri.scheme === 'file' ? folder.uri.fsPath : undefined;
+}
+
+function defaultEnvironment(): ResolveEnvironment {
 	return {
 		binaryPathSetting: vscode.workspace.getConfiguration('redpandaConnect').get<string>('binaryPath', '') ?? '',
 		envPath: process.env.PATH,
 		homeDir: os.homedir(),
-		workspaceFolder: folder?.uri.scheme === 'file' ? folder.uri.fsPath : undefined,
+		workspaceFolder: firstWorkspaceFolderPath(),
 	};
 }
 

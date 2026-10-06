@@ -59,12 +59,12 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Resource files passed to lint and run with `-r`."
+          "markdownDescription": "Resource files passed to lint and run with `--resources` (each entry may be a glob pattern). `~` expands to the home directory; a relative path resolves against the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
         },
         "redpandaConnect.envFile": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Environment file passed to lint and run with `-e`."
+          "markdownDescription": "Environment file passed to lint and run with `--env-file`. `~` expands to the home directory; a relative path resolves against the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
         }
       }
     },
