@@ -21,7 +21,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 ## Capabilities
 
 - **CAP-1 — Binary detection & onboarding**
-  - **intent:** The extension finds the developer's `rpk connect` or `redpanda-connect` binary (or an overriding path setting) and guides them to install or point to one when it is missing, invalid or older than v4.100.0.
+  - **intent:** The extension finds the developer's `rpk connect` or `redpanda-connect` binary on PATH (or, as a fallback, a configured path) and guides them to install or point to one when it is missing, invalid or older than v4.100.0.
   - **success:** Resolution follows AD-9 order; with no valid binary a notification and the graph empty state both offer Install guide / Set path (EXPERIENCE Voice and Tone strings); after Set path, schema, graph and diagnostics appear without reopening the file (EXPERIENCE Flow 2).
 
 - **CAP-2 — Schema-aware YAML editing**

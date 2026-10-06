@@ -8,13 +8,13 @@ A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-co
 
 - VS Code 1.100 or newer.
 - [YAML by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml) (`redhat.vscode-yaml`). VS Code installs it automatically with this extension.
-- A local `redpanda-connect` binary on `PATH`, or its location in `redpandaConnect.binaryPath`.
+- Redpanda Connect v4.100.0 or newer: `rpk` on `PATH` with `rpk connect install` run, or a `redpanda-connect` binary on `PATH`; otherwise its location in `redpandaConnect.binaryPath`.
 
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `redpandaConnect.binaryPath` | `""` | Path to the `redpanda-connect` binary. When empty, `redpanda-connect` is looked up on `PATH`. |
+| `redpandaConnect.binaryPath` | `""` | Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory, a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`. |
 | `redpandaConnect.autoOpenGraph` | `true` | Open the graph beside a detected config (not used yet). |
 | `redpandaConnect.filePatterns` | `[]` | Globs always treated as Redpanda Connect configs (not used yet). |
 | `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (not used yet). |

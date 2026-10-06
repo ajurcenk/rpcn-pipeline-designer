@@ -1,40 +1,29 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { describeVersionResult, readVersion, resolveBinary } from '../../../adapters/redpandaConnect/version';
-import { makeTempDir, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
+import { findOnPath, readVersion } from '../../../adapters/redpandaConnect/version';
+import { makeTempDir, rpkScript, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 
-suite('adapters/redpandaConnect resolveBinary', () => {
+suite('adapters/redpandaConnect findOnPath', () => {
 	let dir: string;
 	setup(() => { dir = makeTempDir(); });
 	teardown(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-	test('uses the setting as-is when it is a path', () => {
-		assert.deepStrictEqual(resolveBinary('/opt/rpcn/redpanda-connect', ''), {
-			kind: 'resolved', path: '/opt/rpcn/redpanda-connect', source: 'setting',
-		});
-	});
-
-	test('finds redpanda-connect on PATH when the setting is empty', () => {
+	test('finds an executable on PATH, skipping missing dirs', () => {
 		const bin = writeFakeBinary(dir, 'redpanda-connect', VERSION_4_112_SCRIPT);
-		const envPath = ['/nonexistent-dir', dir].join(path.delimiter);
-		assert.deepStrictEqual(resolveBinary('', envPath), { kind: 'resolved', path: bin, source: 'path' });
-		assert.deepStrictEqual(resolveBinary(undefined, envPath), { kind: 'resolved', path: bin, source: 'path' });
+		assert.strictEqual(findOnPath('redpanda-connect', ['/nonexistent-dir', '', dir].join(path.delimiter)), bin);
 	});
 
-	test('skips non-executable files on PATH', () => {
+	test('skips non-executable files and directories', () => {
 		fs.writeFileSync(path.join(dir, 'redpanda-connect'), 'not executable', { mode: 0o644 });
-		assert.deepStrictEqual(resolveBinary('', dir), { kind: 'notFound', requested: 'redpanda-connect', source: 'path' });
+		fs.mkdirSync(path.join(dir, 'rpk'));
+		assert.strictEqual(findOnPath('redpanda-connect', dir), undefined);
+		assert.strictEqual(findOnPath('rpk', dir), undefined);
 	});
 
-	test('reports notFound when nothing is on PATH', () => {
-		assert.deepStrictEqual(resolveBinary('', dir), { kind: 'notFound', requested: 'redpanda-connect', source: 'path' });
-	});
-
-	test('looks up a bare command name from the setting on PATH', () => {
-		const bin = writeFakeBinary(dir, 'my-connect', VERSION_4_112_SCRIPT);
-		assert.deepStrictEqual(resolveBinary('my-connect', dir), { kind: 'resolved', path: bin, source: 'setting' });
-		assert.deepStrictEqual(resolveBinary('other', dir), { kind: 'notFound', requested: 'other', source: 'setting' });
+	test('returns undefined for an empty or unset PATH', () => {
+		assert.strictEqual(findOnPath('redpanda-connect', ''), undefined);
+		assert.strictEqual(findOnPath('redpanda-connect', undefined), undefined);
 	});
 });
 
@@ -43,69 +32,62 @@ suite('adapters/redpandaConnect readVersion', () => {
 	setup(() => { dir = makeTempDir(); });
 	teardown(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-	test('HAPPY_PATH: parses the version (and passes NO_COLOR=1)', async () => {
+	test('runs <binary> --version with NO_COLOR=1', async () => {
 		const bin = writeFakeBinary(dir, 'redpanda-connect', VERSION_4_112_SCRIPT);
-		const result = await readVersion(bin, 'path');
-		assert.deepStrictEqual(result, { kind: 'ok', path: bin, version: '4.112.0', source: 'path' });
-		assert.strictEqual(describeVersionResult(result), `Redpanda Connect 4.112.0 (${bin})`);
-	});
-
-	test('NO_BINARY: a missing configured path is notFound', async () => {
-		const missing = path.join(dir, 'does-not-exist');
-		const result = await readVersion(missing, 'setting');
-		assert.deepStrictEqual(result, { kind: 'notFound', requested: missing, source: 'setting' });
-		assert.match(describeVersionResult(result), /^No Redpanda Connect binary found/);
-	});
-
-	test('BAD_OUTPUT: non-zero exit reports exit code and first stderr line', async () => {
-		const bin = writeFakeBinary(dir, 'rc', 'echo "" >&2; echo "boom: bad flag" >&2; echo "second" >&2; exit 4');
-		const result = await readVersion(bin, 'setting');
-		assert.deepStrictEqual(result, {
-			kind: 'failed', path: bin, source: 'setting', exitCode: 4, stderrFirstLine: 'boom: bad flag', reason: 'nonZeroExit',
+		assert.deepStrictEqual(await readVersion([bin]), {
+			kind: 'exited', exitCode: 0, stdout: 'Version: 4.112.0\nDate: 2026-10-02T08:48:17Z\n', stderr: '',
 		});
-		const line = describeVersionResult(result);
-		assert.match(line, /exit code 4/);
-		assert.match(line, /boom: bad flag/);
 	});
 
-	test('BAD_OUTPUT: exit 0 without a Version line', async () => {
-		const bin = writeFakeBinary(dir, 'rc', 'echo "hello"; echo "warn" >&2; exit 0');
-		const result = await readVersion(bin, 'setting');
-		assert.deepStrictEqual(result, {
-			kind: 'failed', path: bin, source: 'setting', exitCode: 0, stderrFirstLine: 'warn', reason: 'noVersionLine',
-		});
-		assert.match(describeVersionResult(result), /exit code 0: warn$/);
+	test('runs an argv prefix without a shell: rpk connect --version', async () => {
+		const rpk = writeFakeBinary(dir, 'rpk', rpkScript('4.112.0'));
+		const result = await readVersion([rpk, 'connect']);
+		assert.strictEqual(result.kind === 'exited' && result.stdout.split('\n')[0], 'Version: 4.112.0');
+	});
+
+	test('shell metacharacters in an argument are passed literally', async () => {
+		const bin = writeFakeBinary(dir, 'echo-args', 'printf "%s|" "$@"');
+		const result = await readVersion([bin, '$(echo pwned); x']);
+		assert.strictEqual(result.kind === 'exited' && result.stdout, '$(echo pwned); x|--version|');
+	});
+
+	test('a non-zero exit is reported with stdout and stderr', async () => {
+		const bin = writeFakeBinary(dir, 'rc', 'echo out; echo "boom" >&2; exit 4');
+		assert.deepStrictEqual(await readVersion([bin]), { kind: 'exited', exitCode: 4, stdout: 'out\n', stderr: 'boom\n' });
+	});
+
+	test('a missing path is notFound', async () => {
+		assert.deepStrictEqual(await readVersion([path.join(dir, 'does-not-exist')]), { kind: 'notFound' });
 	});
 
 	test('a hanging binary times out', async () => {
 		const bin = writeFakeBinary(dir, 'rc', 'exec sleep 30');
-		const result = await readVersion(bin, 'setting', 200);
-		assert.strictEqual(result.kind, 'failed');
-		assert.strictEqual(result.kind === 'failed' && result.reason, 'timeout');
+		const result = await readVersion([bin], 200);
+		assert.deepStrictEqual(result, { kind: 'timeout', timeoutMs: 200, stderr: '' });
 	});
 
 	test('a non-exec wrapper whose child holds the pipes still times out on time', async () => {
 		const bin = writeFakeBinary(dir, 'rc', 'sleep 3');
 		const started = Date.now();
-		const result = await readVersion(bin, 'setting', 200);
+		const result = await readVersion([bin], 200);
 		const elapsed = Date.now() - started;
-		assert.strictEqual(result.kind === 'failed' && result.reason, 'timeout');
+		assert.strictEqual(result.kind, 'timeout');
 		assert.ok(elapsed < 1500, `resolved after ${elapsed} ms`);
 	});
 
 	test('an existing script with a missing interpreter is a spawn error, not notFound', async () => {
 		const file = path.join(dir, 'rc');
 		fs.writeFileSync(file, '#!/nonexistent/interpreter\n', { mode: 0o755 });
-		const result = await readVersion(file, 'setting');
-		assert.strictEqual(result.kind, 'failed');
-		assert.strictEqual(result.kind === 'failed' && result.reason, 'spawnError');
+		assert.strictEqual((await readVersion([file])).kind, 'spawnError');
 	});
 
 	test('a non-executable path is a spawn error, not a throw', async () => {
 		const file = path.join(dir, 'plain');
 		fs.writeFileSync(file, 'x', { mode: 0o644 });
-		const result = await readVersion(file, 'setting');
-		assert.strictEqual(result.kind, 'failed');
-		assert.strictEqual(result.kind === 'failed' && result.reason, 'spawnError');
+		assert.strictEqual((await readVersion([file])).kind, 'spawnError');
+	});
+
+	test('an empty invocation is a spawn error', async () => {
+		assert.strictEqual((await readVersion([])).kind, 'spawnError');
 	});
 });

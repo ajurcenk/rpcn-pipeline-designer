@@ -99,7 +99,7 @@ companions: []
 - **Binds:** `src/adapters/redpandaConnect`, schema, lint and run features, status surfaces
 - **Prevents:** divergent binary lookup, version and error handling; lint passing while run fails; duplicate notifications
 - **Rule:**
-  - Only `src/adapters/redpandaConnect` spawns processes or resolves the binary. Resolution order: the binary path setting, then `rpk` on PATH (`rpk connect …`), then `redpanda-connect` on PATH.
+  - Only `src/adapters/redpandaConnect` spawns processes or resolves the binary. Resolution order: `rpk` on PATH (`rpk connect …`), then `redpanda-connect` on PATH, then the binary path setting as a fallback used only when PATH yields no usable binary; a setting naming `rpk` runs as `rpk connect`.
   - It exposes an observable `binaryState`: `unresolved | ok{path, version} | missing | invalid`, with `onDidChange`. A binary older than Redpanda Connect v4.100.0 is `invalid`. A notification fires once per transition into `missing` or `invalid`. The graph gets it as `hostStatus`.
   - One shared argument builder serves lint and run: `-r` from `redpandaConnect.resourceFiles` plus detected resource files (AD-18), `-e` from `redpandaConnect.envFile`. Lint adds `--skip-env-var-check`. `[ASSUMPTION]` Every child gets env `NO_COLOR=1`.
 

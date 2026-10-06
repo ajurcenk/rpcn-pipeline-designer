@@ -2,14 +2,16 @@
 // and wires the adapters. Activated on `onLanguage:yaml`.
 
 import * as vscode from 'vscode';
-import { checkConfiguredBinaryVersion } from './adapters/redpandaConnect/version';
+import { BinaryState, RedpandaConnect } from './adapters/redpandaConnect/binary';
 
 export const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 
 /** Returned from `activate`; used by integration tests. */
 export interface ExtensionApi {
-	/** Resolves once the activation-time version check has been logged. */
-	readonly versionChecked: Promise<void>;
+	/** The single owner of `binaryState` (AD-9). */
+	readonly redpandaConnect: RedpandaConnect;
+	/** Resolves with the state after the activation-time resolution. */
+	readonly activationResolved: Promise<BinaryState>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -24,12 +26,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		channel.appendLine(line);
 	};
 
-	const versionChecked = checkConfiguredBinaryVersion(log)
-		.then(() => undefined)
-		.catch((err: unknown) => log(`Redpanda Connect version check failed: ${err instanceof Error ? err.message : String(err)}`));
+	const redpandaConnect = new RedpandaConnect({ log });
+	context.subscriptions.push(redpandaConnect);
 
 	return {
-		versionChecked,
+		redpandaConnect,
+		activationResolved: redpandaConnect.refresh(),
 		outputLines: () => [...lines],
 	};
 }

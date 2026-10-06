@@ -20,7 +20,7 @@ A developer installs the CI-built `.vsix` and the extension resolves their binar
 
 ## Requirements
 
-- E1 (R1) → CAP-1 (part): Resolve the binary in AD-9 order (`redpandaConnect.binaryPath` > `rpk` on PATH as `rpk connect` > `redpanda-connect` on PATH), read its version, treat < v4.100.0 as invalid, and expose an observable `binaryState` (`unresolved | ok{path, version} | missing | invalid`) with `onDidChange`; re-resolve on activation, setting change and `refresh()`. (spec CAP-1; AD-9)
+- E1 (R1) → CAP-1 (part): Resolve the binary in AD-9 order (`rpk` on PATH as `rpk connect` > `redpanda-connect` on PATH > `redpandaConnect.binaryPath` as a fallback when PATH yields no usable binary), read its version, treat < v4.100.0 as invalid, and expose an observable `binaryState` (`unresolved | ok{path, version} | missing | invalid`) with `onDidChange`; re-resolve on activation, setting change and `refresh()`. (spec CAP-1; AD-9)
 - E1 (R2) → CAP-1 (part): Notify once per transition into `missing` or `invalid` with Install guide and Set path; Set path stores `binaryPath` and re-resolves without a reload. (spec CAP-1; EXPERIENCE Flow 2, Voice and Tone)
 - E1 (R3) → architecture: Generate the schema with `list --format jsonschema`, apply the one versioned transform, cache it in globalStorage under a URI keyed by hash(path + version), generate single-flight, and offer Refresh schema. (AD-10; input to AD-20)
 - E1 (R4) → architecture: One RedpandaConnect adapter owns all process spawning with `NO_COLOR=1`, plus the shared lint/run argument builder (`-r`, `-e`, lint `--skip-env-var-check`). (AD-9)

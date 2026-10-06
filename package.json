@@ -38,7 +38,7 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Path to the `redpanda-connect` binary. When empty, `redpanda-connect` is looked up on `PATH`."
+          "markdownDescription": "Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory, a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`."
         },
         "redpandaConnect.autoOpenGraph": {
           "type": "boolean",
