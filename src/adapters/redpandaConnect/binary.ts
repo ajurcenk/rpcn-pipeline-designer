@@ -1,7 +1,7 @@
 // RedpandaConnect adapter: the single owner of binary resolution and `binaryState` (AD-9).
 // Resolution order: `rpk` on PATH run as `rpk connect`, then `redpanda-connect` on PATH,
 // then `redpandaConnect.binaryPath` as a fallback when PATH yields no `ok` binary.
-// Processes are spawned only through `./version` (the only `child_process` import).
+// Processes are spawned only through `./process` (the only `child_process` import).
 
 import * as os from 'os';
 import * as path from 'path';
@@ -10,10 +10,11 @@ import {
 	formatVersion, isRpkConnectNotInstalled, meetsMinimum, MIN_VERSION, parseVersion, parseVersionOutput,
 } from '../../core/version';
 import { attachBinaryNotifications, BinaryNotifier } from './notify';
-import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, readVersion, VersionProbe } from './version';
+import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, ProcessOutcome, readVersion } from './process';
+import { errorText, firstNonEmptyLine } from './text';
 
-export const RPK_BINARY = 'rpk';
-export const STANDALONE_BINARY = 'redpanda-connect';
+const RPK_BINARY = 'rpk';
+const STANDALONE_BINARY = 'redpanda-connect';
 
 export type InvalidReason =
 	| 'belowMinimum'
@@ -96,7 +97,7 @@ type Candidate =
 	| { kind: 'rpkNotInstalled' };
 
 /** Interprets one `--version` probe of `invocation` (whose binary is `binaryPath`). */
-function classify(probe: VersionProbe, binaryPath: string, invocation: readonly string[], isRpk: boolean): Candidate {
+function classify(probe: ProcessOutcome, binaryPath: string, invocation: readonly string[], isRpk: boolean): Candidate {
 	const invalid = (reason: InvalidReason, detail?: string, version?: string): Candidate => ({
 		kind: 'invalid',
 		state: {
@@ -260,7 +261,7 @@ export function describeState(state: BinaryState): string {
 }
 
 /** Equality of state values; `invalid.detail` is ignored. */
-export function statesEqual(a: BinaryState, b: BinaryState): boolean {
+function statesEqual(a: BinaryState, b: BinaryState): boolean {
 	switch (a.kind) {
 		case 'unresolved':
 		case 'missing':
@@ -289,9 +290,7 @@ export interface RedpandaConnectOptions {
 
 /** File-system path of the first `file:` workspace folder, if any (relative setting paths resolve against it). */
 export function firstWorkspaceFolderPath(): string | undefined {
-	const folder = vscode.workspace.workspaceFolders?.find((f) => f.uri.scheme === 'file')
-		?? vscode.workspace.workspaceFolders?.[0];
-	return folder?.uri.scheme === 'file' ? folder.uri.fsPath : undefined;
+	return vscode.workspace.workspaceFolders?.find((f) => f.uri.scheme === 'file')?.uri.fsPath;
 }
 
 function defaultEnvironment(): ResolveEnvironment {
@@ -390,7 +389,7 @@ export class RedpandaConnect implements vscode.Disposable {
 			resolution = await resolveBinaryState(env, this.options.timeoutMs);
 		} catch (err) {
 			// Not expected (resolution never rejects); keep the previous state.
-			this.options.log(`Redpanda Connect binary resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.options.log(`Redpanda Connect binary resolution failed: ${errorText(err)}`);
 			return;
 		}
 		if (this.disposed) {
@@ -409,8 +408,4 @@ export class RedpandaConnect implements vscode.Disposable {
 		this.current = resolution.state;
 		this.emitter.fire(resolution.state);
 	}
-}
-
-function firstNonEmptyLine(text: string): string {
-	return text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
 }

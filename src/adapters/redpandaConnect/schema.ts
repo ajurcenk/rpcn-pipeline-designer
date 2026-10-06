@@ -8,7 +8,7 @@
 // reused without spawning when it parses. Windows share globalStorage and may resolve
 // different binaries, so every use (cache hit or write) refreshes the file's mtime, and
 // after a successful write only `schema-<16 hex>.json` files unused for more than 30 days
-// are removed. Processes are spawned only through `./version` (AD-9).
+// are removed. Processes are spawned only through `./process` (AD-9).
 
 import * as fs from 'fs';
 import * as vscode from 'vscode';
@@ -17,7 +17,8 @@ import {
 	transformSchema,
 } from '../../core/schema';
 import type { BinaryState, LogLine } from './binary';
-import { DEFAULT_LIST_TIMEOUT_MS, ListFormat, ProcessOutcome, runList } from './version';
+import { DEFAULT_LIST_TIMEOUT_MS, ListFormat, ProcessOutcome, runList } from './process';
+import { errorText, firstNonEmptyLine } from './text';
 
 export interface SchemaSnapshot {
 	/** The cache file holding `json`; its name changes with binary path, version and transform version. */
@@ -338,7 +339,7 @@ function describeRun(format: ListFormat, outcome: ProcessOutcome): string {
 	switch (outcome.kind) {
 		case 'exited': {
 			const exit = outcome.exitCode === null ? 'was killed' : `exited with code ${outcome.exitCode}`;
-			const stderr = outcome.stderr.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0);
+			const stderr = firstNonEmptyLine(outcome.stderr);
 			return stderr ? `${command} ${exit}: ${stderr}` : `${command} ${exit}`;
 		}
 		case 'timeout':
@@ -348,8 +349,4 @@ function describeRun(format: ListFormat, outcome: ProcessOutcome): string {
 		case 'spawnError':
 			return `${command} could not start: ${outcome.message}`;
 	}
-}
-
-function errorText(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }

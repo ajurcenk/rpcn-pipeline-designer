@@ -42,7 +42,7 @@ suite('core/args', () => {
 	});
 
 	test('an empty invocation is not built', () => {
-		assert.deepStrictEqual(buildLintArgs({ invocation: [], targets: ['/a'], resourceFiles: [] }), { kind: 'noInvocation' });
+		assert.deepStrictEqual(buildLintArgs({ invocation: [], targets: ['/a'], resourceFiles: [] }), { kind: 'emptyInvocation' });
 	});
 
 	test('no forbidden argument appears', () => {

@@ -86,7 +86,7 @@ export function describeArgsFailure(failure: ArgsFailure): string {
 }
 
 /** Reads the two settings, home dir, workspace folder and `process.env`. */
-export function defaultArgsEnvironment(): ArgsEnvironment {
+function defaultArgsEnvironment(): ArgsEnvironment {
 	const config = vscode.workspace.getConfiguration('redpandaConnect');
 	return {
 		resourceFilesSetting: config.get<unknown>('resourceFiles', []),
@@ -103,7 +103,7 @@ type FileSetting = { readonly kind: 'path'; readonly path: string } | { readonly
  * The `binaryPath` path rules for a file setting: `~` expands, a relative path (including a bare
  * name such as `.env`, which for files is never a PATH lookup) resolves against the workspace folder.
  */
-export function resolveFileSettingPath(setting: string, homeDir: string, workspaceFolder: string | undefined): FileSetting {
+function resolveFileSettingPath(setting: string, homeDir: string, workspaceFolder: string | undefined): FileSetting {
 	const resolved = resolveSettingPath(setting, homeDir, workspaceFolder);
 	if (resolved.kind !== 'command') {
 		return resolved;
@@ -158,9 +158,8 @@ function buildCommand(
 	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile });
 	switch (result.kind) {
 		case 'targetCount':
+		case 'emptyInvocation':
 			return result;
-		case 'noInvocation':
-			return { kind: 'emptyInvocation' };
 		case 'ok': {
 			const [command, ...args] = result.argv;
 			return { kind: 'ok', command, args, env: { ...env.processEnv, NO_COLOR: '1' } };

@@ -15,44 +15,64 @@ export function writeFakeBinary(dir: string, name: string, body: string): string
 	return file;
 }
 
-/** A fake `redpanda-connect` that prints 4.112.0 `--version` output, but only when NO_COLOR=1. */
-export const VERSION_4_112_SCRIPT = [
-	'if [ "$1" != "--version" ]; then echo "unexpected args: $*" >&2; exit 2; fi',
-	'if [ "$NO_COLOR" != "1" ]; then echo "NO_COLOR not set" >&2; exit 3; fi',
-	'echo "Version: 4.112.0"',
-	'echo "Date: 2026-10-02T08:48:17Z"',
-].join('\n');
+/** Exits 3 unless the child got `NO_COLOR=1` (AD-9). */
+const NO_COLOR_CHECK = 'if [ "$NO_COLOR" != "1" ]; then echo "NO_COLOR not set" >&2; exit 3; fi';
 
-/** A fake `redpanda-connect` printing `Version: <printed>`; with `counterFile`, appends a line per run. */
-export function versionScript(printed: string, options: { counterFile?: string; sleepSeconds?: number } = {}): string {
+/** The `--version` output of Redpanda Connect, printing `Version: <printed>`. */
+function versionOutput(printed: string): string[] {
+	return [`echo "Version: ${printed}"`, 'echo "Date: 2026-10-02T08:48:17Z"'];
+}
+
+/** How a fake checks it was run as `--version`: `redpanda-connect --version` or `rpk connect --version`. */
+const STANDALONE_VERSION_ARGS = { test: '$1', expected: '--version' } as const;
+const RPK_VERSION_ARGS = { test: '$1 $2', expected: 'connect --version' } as const;
+
+interface VersionProbeOptions {
+	/** Appends `run` to this file per run. */
+	readonly counterFile?: string;
+	readonly sleepSeconds?: number;
+	/** Exit 3 unless NO_COLOR=1. Default: true. */
+	readonly requireNoColor?: boolean;
+}
+
+/**
+ * The one builder of `--version` fakes: optional counter and sleep, the argv check (exit 2),
+ * the NO_COLOR check, then `output`.
+ */
+function versionProbeScript(
+	args: { readonly test: string; readonly expected: string },
+	output: readonly string[],
+	options: VersionProbeOptions = {},
+): string {
 	return [
 		options.counterFile ? `echo run >> '${options.counterFile}'` : '',
 		options.sleepSeconds ? `sleep ${options.sleepSeconds}` : '',
-		'if [ "$1" != "--version" ]; then echo "unexpected args: $*" >&2; exit 2; fi',
-		'if [ "$NO_COLOR" != "1" ]; then echo "NO_COLOR not set" >&2; exit 3; fi',
-		`echo "Version: ${printed}"`,
-		'echo "Date: 2026-10-02T08:48:17Z"',
+		`if [ "${args.test}" != "${args.expected}" ]; then echo "unexpected args: $*" >&2; exit 2; fi`,
+		options.requireNoColor === false ? '' : NO_COLOR_CHECK,
+		...output,
 	].filter(Boolean).join('\n');
 }
 
+/** A fake `redpanda-connect` printing `Version: <printed>`; with `counterFile`, appends a line per run. */
+export function versionScript(printed: string, options: { counterFile?: string; sleepSeconds?: number } = {}): string {
+	return versionProbeScript(STANDALONE_VERSION_ARGS, versionOutput(printed), options);
+}
+
+/** A fake `redpanda-connect` that prints 4.112.0 `--version` output, but only when NO_COLOR=1. */
+export const VERSION_4_112_SCRIPT = versionScript('4.112.0');
+
 /** A fake `rpk` whose `rpk connect --version` prints `Version: <printed>`. */
 export function rpkScript(printed: string): string {
-	return [
-		'if [ "$1 $2" != "connect --version" ]; then echo "unexpected args: $*" >&2; exit 2; fi',
-		'if [ "$NO_COLOR" != "1" ]; then echo "NO_COLOR not set" >&2; exit 3; fi',
-		`echo "Version: ${printed}"`,
-		'echo "Date: 2026-10-02T08:48:17Z"',
-	].join('\n');
+	return versionProbeScript(RPK_VERSION_ARGS, versionOutput(printed));
 }
 
 /** A fake `rpk` without the managed Redpanda Connect plugin (spike, 2026-10-06): exit 0, hint plus help on stdout. */
-export const RPK_NO_PLUGIN_SCRIPT = [
-	'if [ "$1 $2" != "connect --version" ]; then echo "unexpected args: $*" >&2; exit 2; fi',
+export const RPK_NO_PLUGIN_SCRIPT = versionProbeScript(RPK_VERSION_ARGS, [
 	'echo "cannot get connect version: rpk connect is not installed; run \'rpk connect install\'"',
 	'echo ""',
 	'echo "Usage:"',
 	'echo "  rpk connect [command]"',
-].join('\n');
+], { requireNoColor: false });
 
 /** Repository root (tests run from `out/test/…`). */
 export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -76,12 +96,11 @@ export function connectScript(options: ConnectScriptOptions): string {
 	const count = (what: string) => (options.counterFile ? `echo ${what} >> '${options.counterFile}'` : ':');
 	const sleep = options.listSleepSeconds ? `sleep ${options.listSleepSeconds}` : ':';
 	return [
-		'if [ "$NO_COLOR" != "1" ]; then echo "NO_COLOR not set" >&2; exit 3; fi',
+		NO_COLOR_CHECK,
 		'case "$*" in',
 		'"--version")',
 		count('version'),
-		`echo "Version: ${options.version}"`,
-		'echo "Date: 2026-10-02T08:48:17Z"',
+		...versionOutput(options.version),
 		';;',
 		'"list --format jsonschema")',
 		count('jsonschema'),

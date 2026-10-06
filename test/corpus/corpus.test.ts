@@ -1,6 +1,6 @@
 // Corpus harness (ticket 1.7): lints every test/corpus/*.yaml with each pinned standalone Redpanda Connect
 // binary, using the extension's own argv builder (src/core/args.ts) and spawn site
-// (src/adapters/redpandaConnect/version.ts), and compares the result with test/corpus/<name>.lint/<ver>.txt.
+// (src/adapters/redpandaConnect/process.ts), and compares the result with test/corpus/<name>.lint/<ver>.txt.
 //
 //   npm run test:corpus          compare (default); never writes
 //   npm run test:corpus:record   rewrite every record and delete orphaned ones
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLintArgs } from '../../src/core/args';
 import { parseVersionOutput } from '../../src/core/version';
-import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/version';
+import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/process';
 
 /** Pinned versions; must equal VERSIONS in scripts/spike/fetch-binaries.sh (checked below). */
 const VERSIONS = ['4.100.0', '4.112.0'] as const;

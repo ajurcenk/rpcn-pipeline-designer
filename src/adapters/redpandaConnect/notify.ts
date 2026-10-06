@@ -4,6 +4,7 @@
 
 import { formatVersion, MIN_VERSION } from '../../core/version';
 import type { BinaryState, LogLine } from './binary';
+import { errorText } from './text';
 
 export const INSTALL_GUIDE_URL = 'https://docs.redpanda.com/connect/install/';
 
@@ -98,7 +99,7 @@ export function attachBinaryNotifications(
 		Promise.resolve(notifier.showWarning(message, NOTIFICATION_ACTIONS))
 			.then(runAction)
 			.catch((err: unknown) => {
-				log(`Redpanda Connect notification action failed: ${err instanceof Error ? err.message : String(err)}`);
+				log(`Redpanda Connect notification action failed: ${errorText(err)}`);
 			});
 	};
 

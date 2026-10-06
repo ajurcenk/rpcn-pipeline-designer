@@ -6,7 +6,7 @@ import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnec
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
 import { SchemaStore } from './adapters/redpandaConnect/schema';
 
-export const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
+const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
 
 /** Returned from `activate`; used by integration tests. */

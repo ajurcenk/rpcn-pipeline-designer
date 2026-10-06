@@ -30,7 +30,7 @@ export type ArgvResult =
 	/** `lint` was given no target, or `run` was not given exactly one. */
 	| { readonly kind: 'targetCount'; readonly expected: 'atLeastOne' | 'exactlyOne'; readonly actual: number }
 	/** The invocation is empty. */
-	| { readonly kind: 'noInvocation' };
+	| { readonly kind: 'emptyInvocation' };
 
 /** `[...invocation, 'lint', --deprecated, --skip-env-var-check, …resources/env…, ...targets]`. */
 export function buildLintArgs(input: ArgvInput): ArgvResult {
@@ -62,7 +62,7 @@ export function fileFlags(resourceFiles: readonly string[], envFile: string | un
 
 function build(subcommand: string, subcommandFlags: readonly string[], input: ArgvInput): ArgvResult {
 	if (input.invocation.length === 0) {
-		return { kind: 'noInvocation' };
+		return { kind: 'emptyInvocation' };
 	}
 	return {
 		kind: 'ok',

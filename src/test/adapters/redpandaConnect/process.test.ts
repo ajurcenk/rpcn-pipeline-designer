@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { findOnPath, readVersion, runList } from '../../../adapters/redpandaConnect/version';
+import { findOnPath, readVersion, runList } from '../../../adapters/redpandaConnect/process';
 import { makeTempDir, rpkScript, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 
 suite('adapters/redpandaConnect findOnPath', () => {

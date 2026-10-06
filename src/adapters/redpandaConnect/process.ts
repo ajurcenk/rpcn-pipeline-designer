@@ -5,6 +5,7 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { errorText } from './text';
 
 export const DEFAULT_VERSION_TIMEOUT_MS = 10_000;
 /** Per `list --format …` run; json-full is ~2.6 MB and takes a few seconds on a cold start. */
@@ -53,9 +54,6 @@ function isExecutableFile(candidate: string): boolean {
 	}
 }
 
-/** Raw outcome of running `<invocation…> --version`. */
-export type VersionProbe = ProcessOutcome;
-
 /**
  * Spawns `<invocation[0]> <invocation[1..]> --version` (for example `[rpk, 'connect']`)
  * with `NO_COLOR=1`, no shell and a timeout. Never rejects.
@@ -63,7 +61,7 @@ export type VersionProbe = ProcessOutcome;
 export function readVersion(
 	invocation: readonly string[],
 	timeoutMs = DEFAULT_VERSION_TIMEOUT_MS,
-): Promise<VersionProbe> {
+): Promise<ProcessOutcome> {
 	return runProcess(invocation, ['--version'], timeoutMs);
 }
 
@@ -142,5 +140,5 @@ function spawnFailure(command: string, err: unknown): ProcessOutcome {
 	if (code === 'ENOENT' && !fs.existsSync(command)) {
 		return { kind: 'notFound' };
 	}
-	return { kind: 'spawnError', message: err instanceof Error ? err.message : String(err) };
+	return { kind: 'spawnError', message: errorText(err) };
 }
