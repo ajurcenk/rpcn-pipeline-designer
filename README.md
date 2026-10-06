@@ -2,7 +2,29 @@
 
 A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-connect/) configs: a read-only pipeline graph beside the YAML editor, Redpanda Connect-aware YAML editing, and local runs.
 
-> **Status: early proof of concept (0.0.1).** This build only checks that a Redpanda Connect binary is available: opening a YAML file writes the binary's version to the **Redpanda Connect** output channel. The graph, lint, schema and run features arrive in later releases.
+> **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary, warns when none is usable, and generates and caches the config schema from it; details go to the **Redpanda Connect** output channel. The graph, lint, schema-backed editing and run features arrive in later releases.
+
+## Finding the binary
+
+When the extension activates (the first time a YAML file opens), it looks for Redpanda Connect in this order:
+
+1. `rpk` on `PATH`, run as `rpk connect` (needs `rpk connect install`).
+2. `redpanda-connect` on `PATH`.
+3. `redpandaConnect.binaryPath`, used only when `PATH` gives no usable binary. A value naming `rpk` runs as `rpk connect`.
+
+A binary older than v4.100.0, or one whose version check fails, is not used. The binary is looked up again when `redpandaConnect.binaryPath` changes and on **Redpanda Connect: Refresh Schema**.
+
+If no usable binary is found, a warning appears once (and again only after the state changes) with three actions:
+
+- **Install guide** opens the [Redpanda Connect install docs](https://docs.redpanda.com/connect/install/).
+- **Set path** picks a binary and saves it to the user setting `redpandaConnect.binaryPath`.
+- **Retry** looks for the binary again.
+
+## Schema
+
+For the resolved binary, the extension runs `list --format jsonschema` and merges in the field descriptions, examples and defaults from `list --format json-full`. The result is cached in the extension's global storage as `schema-<hash>.json`, whose name changes with the binary path, its version and the transform version. Later activations still run `--version` to find the binary, but on a cache hit they skip both `list` runs. After a successful write (never on a cache hit), other `schema-<16 hex>.json` files unused for more than 30 days are removed.
+
+**Redpanda Connect: Refresh Schema** looks for the binary again and regenerates the schema, even when a cached copy exists. The schema is not yet supplied to the YAML editor.
 
 ## Requirements
 
@@ -26,6 +48,8 @@ A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-co
 npm ci
 npm run compile          # type-check, lint, bundle to dist/
 npm test                 # unit + integration tests in a downloaded VS Code
+scripts/spike/fetch-binaries.sh   # pinned Redpanda Connect 4.100.0 and 4.112.0 into .cache/ (needs an authenticated gh)
+npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and compare with the recorded output
 npx vsce package --no-dependencies
 ```
 
