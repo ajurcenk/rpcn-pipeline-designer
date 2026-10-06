@@ -1,0 +1,17 @@
+# Dependencies & build output
+node_modules/
+out/
+dist/
+*.vsix
+.vscode-test/
+coverage/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Local Claude Code settings (personal)
+.claude/settings.local.json
+
+# BMad personal config (also covered by _bmad/custom/.gitignore)
+_bmad/custom/*.user.toml

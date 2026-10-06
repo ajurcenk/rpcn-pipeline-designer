@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binary Missing Mock</title>
+<style>
+/* key-binary-missing.html — first open on a machine without rpk / redpanda-connect
+   Governing spine sections:
+   - EXPERIENCE.md  Information Architecture: "Binary-missing onboarding"
+   - EXPERIENCE.md  Voice and Tone: "Binary-missing notification", "Graph empty state (no binary)"
+   - EXPERIENCE.md  Foundation (no graph without the binary; AD-1 two-group layout)
+   - EXPERIENCE.md  Component Patterns: Graph empty state (real, keyboard-reachable buttons), Show / Hide graph action
+   - EXPERIENCE.md  State Patterns: "Binary missing or invalid" (notification + graph-panel empty state, no pipeline drawn (AD-20);
+                    YAML keeps basic highlighting)
+   - EXPERIENCE.md  Key Flows: Flow 2 steps 1-2
+   - DESIGN.md      components graph-empty-state (on-surface-muted text, link-coloured actions)
+   Left group: native YAML editor, basic TextMate YAML only (no Bloblang highlighting, no diagnostics) because no schema is loaded.
+   Notification is native VS Code chrome (showWarningMessage with two actions). */
+
+/* ---------- VS Code theme variables (Dark Modern-like) ----------------------
+   Defined locally so the mock renders offline. In the product these are
+   injected by VS Code into the webview; the extension ships no hex values.
+   The --tm-* vars stand in for TextMate token colours of the YAML editor,
+   which is native VS Code chrome, not the extension's UI. */
+:root{
+  --vscode-font-family: system-ui, "Ubuntu", "Segoe WPC", "Segoe UI", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-font-weight: normal;
+  --vscode-editor-font-family: "Droid Sans Mono", "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --vscode-editor-font-size: 13px;
+
+  --vscode-foreground: #CCCCCC;
+  --vscode-descriptionForeground: #9D9D9D;
+  --vscode-editor-background: #1F1F1F;
+  --vscode-editor-foreground: #CCCCCC;
+  --vscode-editorLineNumber-foreground: #6E7681;
+  --vscode-editorLineNumber-activeForeground: #CCCCCC;
+  --vscode-editor-selectionBackground: #264F78;
+  --vscode-editor-lineHighlightBorder: #282828;
+  --vscode-editorWidget-background: #252526;
+  --vscode-editorWidget-border: #454545;
+  --vscode-editorHoverWidget-background: #202020;
+  --vscode-editorHoverWidget-border: #454545;
+  --vscode-editorHoverWidget-statusBarBackground: #2A2A2A;
+  --vscode-editorError-foreground: #F14C4C;
+  --vscode-editorWarning-foreground: #CCA700;
+  --vscode-editorOverviewRuler-errorForeground: rgba(255,18,18,.7);
+  --vscode-errorForeground: #F85149;
+  --vscode-inputValidation-errorBorder: #BE1100;
+  --vscode-inputValidation-warningBackground: #352A05;
+  --vscode-inputValidation-warningBorder: #B89500;
+  --vscode-focusBorder: #0078D4;
+  --vscode-contrastBorder: transparent;
+  --vscode-list-activeSelectionBackground: #04395E;
+  --vscode-list-activeSelectionForeground: #FFFFFF;
+  --vscode-list-hoverBackground: #2A2D2E;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-button-background: #0078D4;
+  --vscode-button-foreground: #FFFFFF;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryForeground: #CCCCCC;
+  --vscode-panel-background: #181818;
+  --vscode-panel-border: #2B2B2B;
+  --vscode-panelTitle-activeForeground: #E7E7E7;
+  --vscode-panelTitle-activeBorder: #0078D4;
+  --vscode-panelTitle-inactiveForeground: #9D9D9D;
+  --vscode-terminal-foreground: #CCCCCC;
+  --vscode-terminalCursor-foreground: #CCCCCC;
+  --vscode-titleBar-activeBackground: #181818;
+  --vscode-titleBar-activeForeground: #CCCCCC;
+  --vscode-commandCenter-background: #222222;
+  --vscode-commandCenter-border: #3C3C3C;
+  --vscode-activityBar-background: #181818;
+  --vscode-activityBar-foreground: #D7D7D7;
+  --vscode-activityBar-inactiveForeground: #868686;
+  --vscode-activityBar-activeBorder: #0078D4;
+  --vscode-activityBarBadge-background: #0078D4;
+  --vscode-sideBar-background: #181818;
+  --vscode-sideBarSectionHeader-border: #2B2B2B;
+  --vscode-editorGroupHeader-tabsBackground: #181818;
+  --vscode-tab-activeBackground: #1F1F1F;
+  --vscode-tab-activeForeground: #FFFFFF;
+  --vscode-tab-activeBorderTop: #0078D4;
+  --vscode-tab-inactiveBackground: #181818;
+  --vscode-tab-inactiveForeground: #9D9D9D;
+  --vscode-tab-border: #2B2B2B;
+  --vscode-tab-unfocusedActiveForeground: rgba(255,255,255,.5);
+  --vscode-editorGroup-border: #444444;
+  --vscode-breadcrumb-foreground: #A9A9A9;
+  --vscode-toolbar-activeBackground: rgba(99,102,103,.31);
+  --vscode-statusBar-background: #181818;
+  --vscode-statusBar-foreground: #CCCCCC;
+  --vscode-statusBar-border: #2B2B2B;
+  --vscode-notifications-background: #1F1F1F;
+  --vscode-notifications-border: #2B2B2B;
+  --vscode-notificationsWarningIcon-foreground: #CCA700;
+  --vscode-widget-shadow: rgba(0,0,0,.36);
+  --vscode-scrollbarSlider-background: rgba(121,121,121,.4);
+
+  --tm-key: #569CD6;        /* entity.name.tag.yaml */
+  --tm-string: #CE9178;     /* string */
+  --tm-number: #B5CEA8;     /* constant.numeric */
+  --tm-comment: #6A9955;    /* comment */
+  --tm-keyword: #569CD6;    /* Bloblang: root / this / meta */
+  --tm-function: #DCDCAA;   /* Bloblang: method / function */
+  --tm-interp: #C586C0;     /* ${! } and ${ENV} delimiters */
+  --tm-punct: #CCCCCC;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:#0e0e0e;color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);padding:28px 24px 48px}
+.caption{max-width:1480px;margin:0 auto 10px;color:#a0a0a0;font-size:13px;line-height:1.5}
+.caption b{color:#e0e0e0;font-weight:600}
+.caption code{font-family:var(--vscode-editor-font-family);font-size:12px;color:#d0d0d0}
+.ci{display:inline-block;vertical-align:middle;flex:none}
+code,.mono{font-family:var(--vscode-editor-font-family)}
+
+/* ---------- VS Code window frame ---------- */
+.win{width:1480px;height:900px;margin:0 auto 40px;display:grid;grid-template-rows:35px minmax(0,1fr) 22px;grid-template-columns:minmax(0,1fr);border:1px solid #3a3a3a;border-radius:8px;overflow:hidden;background:var(--vscode-editor-background);box-shadow:0 20px 60px rgba(0,0,0,.55);position:relative}
+.titlebar{background:var(--vscode-titleBar-activeBackground);color:var(--vscode-titleBar-activeForeground);display:flex;align-items:center;border-bottom:1px solid var(--vscode-panel-border);padding:0 0 0 10px;font-size:13px}
+.titlebar .menu{display:flex;gap:2px;margin-left:6px}
+.titlebar .menu span{padding:3px 7px;border-radius:4px;color:var(--vscode-titleBar-activeForeground)}
+.titlebar .logo{width:16px;height:16px;border-radius:3px;background:linear-gradient(135deg,#2a8bd8,#1663b0);flex:none}
+.cmdcenter{margin:0 auto;width:420px;height:24px;border:1px solid var(--vscode-commandCenter-border);background:var(--vscode-commandCenter-background);border-radius:6px;display:flex;align-items:center;justify-content:center;gap:6px;color:var(--vscode-descriptionForeground);font-size:12px}
+.titlebar .right{display:flex;align-items:center;gap:4px;color:var(--vscode-titleBar-activeForeground)}
+.titlebar .right .ci{opacity:.85;margin:0 4px}
+.wctl{display:flex;margin-left:10px}
+.wctl span{width:46px;height:35px;display:flex;align-items:center;justify-content:center;color:#ccc}
+.body{display:flex;min-height:0}
+.activity{width:48px;flex:none;background:var(--vscode-activityBar-background);border-right:1px solid var(--vscode-panel-border);display:flex;flex-direction:column;align-items:center;padding-top:4px}
+.activity .ai{width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:var(--vscode-activityBar-inactiveForeground);position:relative}
+.activity .ai.on{color:var(--vscode-activityBar-foreground)}
+.activity .ai.on::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--vscode-activityBar-activeBorder)}
+.activity .badge{position:absolute;right:8px;bottom:9px;min-width:16px;height:16px;border-radius:8px;background:var(--vscode-activityBarBadge-background);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+.activity .spacer{flex:1}
+
+.sidebar{width:240px;flex:none;background:var(--vscode-sideBar-background);border-right:1px solid var(--vscode-panel-border);display:flex;flex-direction:column}
+.sidebar .sh{height:35px;display:flex;align-items:center;padding:0 8px 0 20px;font-size:11px;letter-spacing:.04em;color:var(--vscode-foreground);justify-content:space-between}
+.sidebar .sec{height:22px;display:flex;align-items:center;gap:2px;font-size:11px;font-weight:700;letter-spacing:.02em;padding-left:2px}
+.tree .row{height:22px;display:flex;align-items:center;gap:4px;white-space:nowrap;color:var(--vscode-foreground)}
+.tree .row.sel{background:var(--vscode-list-activeSelectionBackground);outline:1px solid var(--vscode-focusBorder);outline-offset:-1px;color:var(--vscode-list-activeSelectionForeground)}
+.tree .ficon{width:16px;text-align:center;font-size:10px;font-weight:700;font-family:var(--vscode-editor-font-family)}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.editor{flex:1;display:flex;flex-direction:column;min-height:0}
+.tabs{height:35px;flex:none;background:var(--vscode-editorGroupHeader-tabsBackground);display:flex;align-items:stretch;border-bottom:1px solid var(--vscode-tab-border)}
+.tab{display:flex;align-items:center;gap:6px;padding:0 10px 0 12px;border-right:1px solid var(--vscode-tab-border);color:var(--vscode-tab-inactiveForeground);background:var(--vscode-tab-inactiveBackground);font-size:13px}
+.tab.on{background:var(--vscode-tab-activeBackground);color:var(--vscode-tab-activeForeground);box-shadow:inset 0 1px 0 var(--vscode-tab-activeBorderTop);margin-bottom:-1px}
+.tab .ficon{color:#cbcb41;display:flex}
+.tab .x{opacity:.8;display:flex;margin-left:6px}
+.tab .err{color:var(--vscode-errorForeground);font-size:12px;margin-left:2px}
+.tabs .fill{flex:1}
+.etitle{display:flex;align-items:center;gap:2px;padding:0 8px}
+.etitle .act{width:24px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--vscode-foreground)}
+.etitle .act.checked{background:var(--vscode-toolbar-activeBackground);outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
+.etitle .sep{width:1px;height:16px;background:var(--vscode-panel-border);margin:0 4px}
+
+.panes{flex:1;display:flex;min-height:0}
+.gpane{position:relative;background:var(--vscode-editor-background);overflow:hidden}
+.sash{width:1px;background:var(--vscode-panel-border);flex:none}
+.ypane{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--vscode-editor-background);position:relative}
+.crumbs{height:22px;flex:none;display:flex;align-items:center;gap:4px;padding-left:16px;color:var(--vscode-breadcrumb-foreground);font-size:12.5px}
+.crumbs .ci{opacity:.7}
+
+/* ---------- YAML editor (native) ---------- */
+.code{flex:1;position:relative;font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:19px;overflow:hidden}
+.ln{display:flex;height:19px;white-space:pre}
+.ln .g{width:68px;flex:none;text-align:right;padding-right:20px;color:var(--vscode-editorLineNumber-foreground);position:relative}
+.ln.cur .g{color:var(--vscode-editorLineNumber-activeForeground)}
+.ln.cur{box-shadow:inset 0 1px 0 var(--vscode-editor-lineHighlightBorder),inset 0 -1px 0 var(--vscode-editor-lineHighlightBorder)}
+.ln .g .bulb{position:absolute;left:2px;top:1px;color:var(--vscode-editorWarning-foreground)}
+.ln .t{color:var(--tm-punct)}
+.sel{background:var(--vscode-editor-selectionBackground)}
+.t-key{color:var(--tm-key)}
+.t-str{color:var(--tm-string)}
+.t-num{color:var(--tm-number)}
+.t-com{color:var(--tm-comment)}
+.t-kw{color:var(--tm-keyword)}
+.t-fn{color:var(--tm-function)}
+.t-ip{color:var(--tm-interp)}
+.sq-err{text-decoration:underline wavy var(--vscode-editorError-foreground);text-decoration-skip-ink:none;text-underline-offset:3px;text-decoration-thickness:1px}
+.ruler{position:absolute;right:0;top:0;bottom:0;width:14px;border-left:1px solid var(--vscode-panel-border)}
+.ruler .slider{position:absolute;left:1px;right:0;background:var(--vscode-scrollbarSlider-background)}
+.ruler .mk{position:absolute;right:2px;width:6px;height:3px;background:var(--vscode-editorOverviewRuler-errorForeground)}
+
+.hover{position:absolute;background:var(--vscode-editorHoverWidget-background);border:1px solid var(--vscode-editorHoverWidget-border);border-radius:3px;box-shadow:0 2px 8px var(--vscode-widget-shadow);font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-editor-foreground);z-index:5;max-width:520px;line-height:1.45}
+.hover .hb{padding:6px 10px;white-space:normal}
+.hover .hb code{font-family:var(--vscode-editor-font-family);font-size:12.5px}
+.hover .src{color:var(--vscode-descriptionForeground);margin-left:6px}
+.hover .hs{background:var(--vscode-editorHoverWidget-statusBarBackground);border-top:1px solid var(--vscode-editorHoverWidget-border);padding:3px 10px;display:flex;gap:18px;font-size:12.5px}
+.hover .hs a{color:var(--vscode-textLink-foreground);text-decoration:none}
+.hover .hs .kb{color:var(--vscode-descriptionForeground)}
+.hover .hr{border-top:1px solid var(--vscode-editorHoverWidget-border)}
+
+/* ---------- Pipeline graph (the extension's own UI: DESIGN.md tokens only) ---------- */
+.canvas{position:absolute;inset:0}
+.canvas svg.edges{position:absolute;left:0;top:0;overflow:visible}
+.edge{stroke:var(--vscode-editorLineNumber-foreground);stroke-width:1;fill:none}
+.arrow{fill:var(--vscode-editorLineNumber-foreground)}
+.node{position:absolute;height:48px;background:var(--vscode-editorWidget-background);color:var(--vscode-editor-foreground);border:1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));outline:1px solid var(--vscode-contrastBorder, transparent);border-radius:4px;padding:6px 8px;display:grid;grid-template-columns:16px 1fr;column-gap:6px;align-content:center;font:inherit;text-align:left}
+.node .ci{grid-row:1 / span 2;align-self:center;color:var(--vscode-descriptionForeground)}
+.node .nt{font-family:var(--vscode-font-family);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:17px}
+.node .ns{font-family:var(--vscode-editor-font-family);font-size:12px;color:var(--vscode-descriptionForeground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:16px}
+.node.selected{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}
+.node.selected .ns,.node.selected .ci{color:var(--vscode-list-activeSelectionForeground);opacity:.85}
+.node.focused{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.node.error{border:2px solid var(--vscode-inputValidation-errorBorder);padding:5px 7px}
+.node .eicon{position:absolute;top:3px;right:4px;color:var(--vscode-errorForeground);display:flex;opacity:1}
+.node.selected .eicon .ci{opacity:1;color:var(--vscode-errorForeground)}
+.group{position:absolute;background:transparent;border:1px solid var(--vscode-panel-border);outline:1px solid var(--vscode-contrastBorder, transparent);border-radius:4px}
+.group .gh{position:absolute;left:0;right:0;top:0;height:28px;display:flex;align-items:center;gap:4px;padding:0 8px 0 6px;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family)}
+.group .gh .gl{font-family:var(--vscode-editor-font-family);font-size:12px;margin-left:4px}
+.elabel{position:absolute;font-family:var(--vscode-editor-font-family);font-size:12px;color:var(--vscode-descriptionForeground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:16px}
+.reshead{position:absolute;font-family:var(--vscode-font-family);color:var(--vscode-descriptionForeground)}
+.resline{position:absolute;height:1px;background:var(--vscode-panel-border)}
+
+.banner{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;padding:8px;background:var(--vscode-inputValidation-warningBackground);border:1px solid var(--vscode-inputValidation-warningBorder);outline:1px solid var(--vscode-contrastBorder, transparent);border-radius:2px;color:var(--vscode-editor-foreground);font-family:var(--vscode-font-family);z-index:3;margin:8px}
+.banner .ci{color:var(--vscode-editorWarning-foreground)}
+
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family);text-align:center;padding:24px}
+.empty .acts{display:flex;gap:16px}
+.empty button{background:none;border:0;padding:2px 4px;font:inherit;color:var(--vscode-textLink-foreground);cursor:pointer;border-radius:2px}
+.empty button.focused{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+
+/* ---------- status bar ---------- */
+.status{background:var(--vscode-statusBar-background);color:var(--vscode-statusBar-foreground);border-top:1px solid var(--vscode-statusBar-border);display:flex;align-items:center;font-size:12px;padding:0 6px}
+.status .it{display:flex;align-items:center;gap:4px;padding:0 6px;height:22px}
+.status .it .ci{width:14px;height:14px}
+.status .it.remote{background:var(--vscode-button-background);color:#fff;margin-left:-6px;padding:0 9px}
+.status .fill{flex:1}
+
+/* ---------- panel / terminal ---------- */
+.panel{height:290px;flex:none;background:var(--vscode-panel-background);border-top:1px solid var(--vscode-panel-border);display:flex;flex-direction:column}
+.ptabs{height:35px;display:flex;align-items:center;padding:0 8px 0 12px;gap:4px;font-size:11px;letter-spacing:.03em}
+.ptabs .pt{padding:8px 8px 6px;color:var(--vscode-panelTitle-inactiveForeground)}
+.ptabs .pt.on{color:var(--vscode-panelTitle-activeForeground);box-shadow:inset 0 -1px 0 var(--vscode-panelTitle-activeBorder)}
+.ptabs .fill{flex:1}
+.ptabs .tname{display:flex;align-items:center;gap:6px;font-size:12.5px;letter-spacing:0;color:var(--vscode-foreground);padding:2px 6px;border-radius:4px}
+.ptabs .pa{width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--vscode-foreground)}
+.term{flex:1;padding:4px 20px;font-family:var(--vscode-editor-font-family);font-size:12.5px;line-height:18px;color:var(--vscode-terminal-foreground);white-space:pre-wrap;overflow-wrap:anywhere;overflow:hidden}
+.term .pr{color:#23d18b}.term .pp{color:#3b8eea}
+.term .dim{color:#8b8b8b}
+.term .cur{display:inline-block;width:8px;height:15px;background:var(--vscode-terminalCursor-foreground);vertical-align:-3px}
+
+/* ---------- notification toast (native VS Code) ---------- */
+.toast{position:absolute;right:12px;bottom:34px;width:470px;background:var(--vscode-notifications-background);border:1px solid var(--vscode-notifications-border);border-radius:4px;box-shadow:0 0 8px 2px var(--vscode-widget-shadow);z-index:10;font-size:13px}
+.toast .tb{display:flex;gap:8px;padding:10px 8px 6px 10px;line-height:1.45}
+.toast .tb .ci{color:var(--vscode-notificationsWarningIcon-foreground);margin-top:1px}
+.toast .tb code{font-family:var(--vscode-editor-font-family);font-size:12px;background:rgba(255,255,255,.06);padding:0 3px;border-radius:3px}
+.toast .tctl{display:flex;gap:2px;margin-left:auto;align-self:flex-start;color:var(--vscode-foreground)}
+.toast .tf{display:flex;align-items:center;padding:4px 10px 10px 34px;gap:8px}
+.toast .tsrc{color:var(--vscode-descriptionForeground);font-size:12px;flex:1}
+.btn{border:0;border-radius:2px;padding:4px 12px;font:inherit;background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.btn.sec{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
+
+
+/* ---------- two editor groups (AD-1): YAML editor left, graph WebviewPanel right ---------- */
+.editor.groups{flex-direction:row}
+.egroup{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.egroup .ypane{min-height:0;overflow:hidden}
+.egroup.left{flex:1}
+.egroup.right{flex:none}
+.gsash{width:1px;flex:none;background:var(--vscode-editorGroup-border)}
+.egroup .gpane{flex:1;min-height:0}
+.tab.on.unf{box-shadow:none;color:var(--vscode-tab-unfocusedActiveForeground)}
+.tab .gicon{display:flex;color:var(--vscode-descriptionForeground)}
+</style></head>
+<body>
+<p class="caption"><b>2 · First open, no binary.</b> Anna opens <code>orders-pipeline.yaml</code> on a new laptop with no <code>rpk</code>. VS Code shows the warning notification with <b>Install guide</b> · <b>Set path</b>; the graph panel beside it (right, locked group) shows the binary-missing empty state with the same two actions and draws no pipeline; the YAML keeps basic highlighting only (no Bloblang colouring, no diagnostics).</p><div class="win"><div class="titlebar"><div class="logo"></div><div class="menu"><span>File</span><span>Edit</span><span>Selection</span><span>View</span><span>Go</span><span>Run</span><span>Terminal</span><span>Help</span></div><div class="cmdcenter"><svg class="ci" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" ><circle cx="13.5" cy="9.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 13.5l-6 6" stroke="currentColor" stroke-width="1.6"/></svg><span>orders-routing</span></div><div class="right"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 2.8v10.4" stroke="currentColor" stroke-width="1.1"/></svg><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2.8v10.4" stroke="currentColor" stroke-width="1.2"/></svg><div class="wctl"><span>&#8211;</span><span>&#9633;</span><span>&#10005;</span></div></div></div><div class="body"><div class="activity"><div class="ai on"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path d="M8.5 4.5h-5v15h11v-10z M8.5 4.5v5h6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 1.5h5.5l4 4v11" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle cx="13.5" cy="9.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 13.5l-6 6" stroke="currentColor" stroke-width="1.6"/></svg></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle cx="7" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="7" cy="19" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="17" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 7v10M17 9c0 5-10 3-10 8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span class="badge">3</span></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path d="M7 4.5v15L19 12z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="17.5" cy="17.5" r="3" fill="var(--vscode-activityBar-background)" stroke="currentColor" stroke-width="1.3"/></svg></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><rect x="3.5" y="9.5" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="9.5" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="3.5" y="15" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="15" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="15" y="3.5" width="5.5" height="5.5" fill="none" stroke="currentColor" stroke-width="1.4" transform="rotate(10 17.7 6.2)"/></svg></div><div class="spacer"></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle cx="12" cy="8.5" r="3.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div><div class="ai"><svg class="ci" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke="currentColor" stroke-width="1.4"/></svg></div></div><div class="sidebar"><div class="sh"><span>EXPLORER</span><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg></div><div class="tree"><div class="sec"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M3.5 6l4.5 4.5L12.5 6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>ORDERS-ROUTING</div><div class="row" style="padding-left:16px"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg><span>.github</span></div><div class="row" style="padding-left:16px"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M3.5 6l4.5 4.5L12.5 6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg><span>pipelines</span></div><div class="row sel" style="padding-left:24px"><span style="width:16px;display:inline-block"></span><span class="ficon" style="color:#cbcb41"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M2 3l3 4.5V12M8 3L5 7.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 12V4l2 4 2-4v8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></span><span>orders-pipeline.yaml</span></div><div class="row" style="padding-left:24px"><span style="width:16px;display:inline-block"></span><span class="ficon" style="color:#cbcb41"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M2 3l3 4.5V12M8 3L5 7.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 12V4l2 4 2-4v8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></span><span>payments-pipeline.yaml</span></div><div class="row" style="padding-left:16px"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg><span>resources</span></div><div class="row" style="padding-left:16px"><span style="width:16px;display:inline-block"></span><span class="ficon" style="color:#8b8b8b">&#9881;</span><span>.env.example</span></div><div class="row" style="padding-left:16px"><span style="width:16px;display:inline-block"></span><span class="ficon" style="color:#519aba">M&#8595;</span><span>README.md</span></div><div class="row" style="padding-left:16px"><span style="width:16px;display:inline-block"></span><span class="ficon" style="color:#cbcb41"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M2 3l3 4.5V12M8 3L5 7.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 12V4l2 4 2-4v8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></span><span>Taskfile.yml</span></div></div></div><div class="main"><div class="editor groups"><div class="egroup left" aria-label="Editor group 1: YAML editor"><div class="tabs"><div class="tab on"><span class="ficon"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M2 3l3 4.5V12M8 3L5 7.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 12V4l2 4 2-4v8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></span>orders-pipeline.yaml<span class="x"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.2"/></svg></span></div><div class="fill"></div><div class="etitle"><div class="act checked" title="Hide graph" role="button" aria-pressed="true"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="1.5" y="6" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="10.5" y="2" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="10.5" y="10" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 8h2.5V4h2.5M8 8v4h2.5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></div><div class="act" title="Run pipeline" role="button"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M4.5 2.8v10.4L13 8z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></div><div class="act" title="Split Editor Right" role="button"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2.8v10.4" stroke="currentColor" stroke-width="1.2"/></svg></div><div class="act" title="More Actions..." role="button"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg></div></div></div><div class="ypane"><div class="crumbs">pipelines <svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg> orders-pipeline.yaml</div><div class="code"><div class="ln cur"><span class="g">1</span><span class="t"><span class="t-com"># orders-pipeline.yaml</span></span></div>
+<div class="ln"><span class="g">2</span><span class="t"><span class="t-com"># Routes order events from orders-raw to per-type topics.</span></span></div>
+<div class="ln"><span class="g">3</span><span class="t"><span class="t-com"># Owner: platform-data (previously m.keller)</span></span></div>
+<div class="ln"><span class="g">4</span><span class="t"></span></div>
+<div class="ln"><span class="g">5</span><span class="t"><span class="t-key">http</span>:</span></div>
+<div class="ln"><span class="g">6</span><span class="t">  <span class="t-key">address</span>: <span class="t-str">0.0.0.0:4195</span></span></div>
+<div class="ln"><span class="g">7</span><span class="t"></span></div>
+<div class="ln"><span class="g">8</span><span class="t"><span class="t-key">input</span>:</span></div>
+<div class="ln"><span class="g">9</span><span class="t">  <span class="t-key">label</span>: <span class="t-str">orders_in</span></span></div>
+<div class="ln"><span class="g">10</span><span class="t">  <span class="t-key">kafka_franz</span>:</span></div>
+<div class="ln"><span class="g">11</span><span class="t">    <span class="t-key">seed_brokers</span>: [ <span class="t-str">"${KAFKA_BROKERS}"</span> ]</span></div>
+<div class="ln"><span class="g">12</span><span class="t">    <span class="t-key">topics</span>: [ <span class="t-str">orders-raw</span> ]</span></div>
+<div class="ln"><span class="g">13</span><span class="t">    <span class="t-key">consumer_group</span>: <span class="t-str">orders-router</span></span></div>
+<div class="ln"><span class="g">14</span><span class="t">    <span class="t-key">start_from_oldest</span>: <span class="t-num">false</span></span></div>
+<div class="ln"><span class="g">15</span><span class="t">    <span class="t-key">tls</span>:</span></div>
+<div class="ln"><span class="g">16</span><span class="t">      <span class="t-key">enabled</span>: <span class="t-num">true</span></span></div>
+<div class="ln"><span class="g">17</span><span class="t">    <span class="t-key">sasl</span>:</span></div>
+<div class="ln"><span class="g">18</span><span class="t">      - <span class="t-key">mechanism</span>: <span class="t-str">SCRAM-SHA-256</span></span></div>
+<div class="ln"><span class="g">19</span><span class="t">        <span class="t-key">username</span>: <span class="t-str">"${KAFKA_USER}"</span></span></div>
+<div class="ln"><span class="g">20</span><span class="t">        <span class="t-key">password</span>: <span class="t-str">"${KAFKA_PASSWORD}"</span></span></div>
+<div class="ln"><span class="g">21</span><span class="t">    <span class="t-key">batching</span>:</span></div>
+<div class="ln"><span class="g">22</span><span class="t">      <span class="t-key">count</span>: <span class="t-num">100</span></span></div>
+<div class="ln"><span class="g">23</span><span class="t">      <span class="t-key">period</span>: <span class="t-str">1s</span></span></div>
+<div class="ln"><span class="g">24</span><span class="t"></span></div>
+<div class="ln"><span class="g">25</span><span class="t"><span class="t-key">pipeline</span>:</span></div>
+<div class="ln"><span class="g">26</span><span class="t">  <span class="t-key">threads</span>: <span class="t-num">4</span></span></div>
+<div class="ln"><span class="g">27</span><span class="t">  <span class="t-key">processors</span>:</span></div>
+<div class="ln"><span class="g">28</span><span class="t">    - <span class="t-key">label</span>: <span class="t-str">normalize</span></span></div>
+<div class="ln"><span class="g">29</span><span class="t">      <span class="t-key">mapping</span>: |</span></div>
+<div class="ln"><span class="g">30</span><span class="t">        <span class="t-str">root = this</span></span></div>
+<div class="ln"><span class="g">31</span><span class="t">        <span class="t-str">root.type = this.event_type.lowercase()</span></span></div>
+<div class="ln"><span class="g">32</span><span class="t">        <span class="t-str">root.region = this.meta.region.or("unknown")</span></span></div>
+<div class="ln"><span class="g">33</span><span class="t">        <span class="t-str">root.received_at = now()</span></span></div>
+<div class="ln"><span class="g">34</span><span class="t"><span class="t-str"></span></span></div>
+<div class="ln"><span class="g">35</span><span class="t">    - <span class="t-key">label</span>: <span class="t-str">enrich_region</span></span></div>
+<div class="ln"><span class="g">36</span><span class="t">      <span class="t-key">switch</span>:</span></div>
+<div class="ln"><span class="g">37</span><span class="t">        - <span class="t-key">check</span>: <span class="t-str">this.region == "eu"</span></span></div>
+<div class="ln"><span class="g">38</span><span class="t">          <span class="t-key">processors</span>:</span></div>
+<div class="ln"><span class="g">39</span><span class="t">            - <span class="t-key">label</span>: <span class="t-str">eu_vat</span></span></div>
+<div class="ln"><span class="g">40</span><span class="t">              <span class="t-key">mapping</span>: |</span></div>
+<div class="ln"><span class="g">41</span><span class="t">                <span class="t-str">root = this</span></span></div>
+<div class="ln"><span class="g">42</span><span class="t">                <span class="t-str">root.vat_rate = 0.21</span></span></div><div class="ruler"><div class="slider" style="top:0%;height:14%"></div></div></div></div></div><div class="gsash"></div><div class="egroup right" style="width:600px" aria-label="Editor group 2 (locked): graph panel"><div class="tabs"><div class="tab on unf"><span class="gicon"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="1.5" y="6" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="10.5" y="2" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="10.5" y="10" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 8h2.5V4h2.5M8 8v4h2.5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></span>Graph: orders-pipeline.yaml<span class="x"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.2"/></svg></span></div><div class="fill"></div><div class="etitle"><div class="act" title="Fit to view" role="button"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></div><div class="act checked" title="Unlock Group" role="button" aria-pressed="true"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><rect x="3.5" y="7" width="9" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></div><div class="act" title="More Actions..." role="button"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg></div></div></div><div class="gpane"><div class="empty" role="region" aria-label="Pipeline graph, read-only"><div>No Redpanda Connect binary. The graph needs it to read the schema.</div><div class="acts"><button type="button">Install guide</button><button type="button">Set path</button></div></div></div></div></div></div></div><div class="status"><div class="it remote">&gt;&lt;</div><div class="it"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="4.5" cy="3.5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="4.5" cy="12.5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="11.5" cy="5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 5v6M11.5 6.5c0 3-7 2-7 4.5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>main*</div><div class="it"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="currentColor" stroke-width="1.3"/></svg>0&nbsp;<svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M8 1.8l6.6 12H1.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v4" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="11.9" r=".8" fill="currentColor"/></svg>0</div><div class="fill"></div><div class="it">Ln 1, Col 1</div><div class="it">Spaces: 2</div><div class="it">UTF-8</div><div class="it">LF</div><div class="it">YAML</div><div class="it"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M4 11V7a4 4 0 018 0v4l1.2 1.3H2.8z" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M6.6 13.6a1.5 1.5 0 002.8 0" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></div></div><div class="toast" role="alert"><div class="tb"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M8 1.8l6.6 12H1.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v4" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="11.9" r=".8" fill="currentColor"/></svg><div>Redpanda Connect binary not found. Schema, validation, graph and Run need <code>rpk connect</code> or <code>redpanda-connect</code>.</div><div class="tctl"><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.1"/></svg><svg class="ci" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" ><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.2"/></svg></div></div><div class="tf"><span class="tsrc">Source: Redpanda Connect Designer</span><button class="btn">Install guide</button><button class="btn sec">Set path</button></div></div></div>
+</body></html>
