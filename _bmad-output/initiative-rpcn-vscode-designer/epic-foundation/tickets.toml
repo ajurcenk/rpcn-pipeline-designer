@@ -1,0 +1,99 @@
+# tickets.toml — epic-foundation (E1). Table order is build order.
+
+[[entry]]
+id = 1
+type = "spike"
+title = "Verify Redpanda Connect CLI facts and seed the corpus"
+description = "Runs lint (with --deprecated, -r and -e), list --format jsonschema, --version and run against v4.100.0 and v4.112.0 through both rpk connect and standalone redpanda-connect, records the findings in the epic folder, and seeds test/corpus/ with Redpanda Connect cookbook configs and their recorded lint output."
+verify = "A findings file in the epic folder answers each spec open question with captured command output, and test/corpus/ holds at least 10 cookbook configs covering switch, branch, workflow, try/catch, brokers and resources, each with source, license and recorded lint output per version."
+covers = ["E1 (R7)", "E1 (R5)"]
+after = []
+hitl = false
+risk = "medium"
+unknown = "Whether the standalone binary differs from rpk connect in subcommands, flags or output."
+
+[[entry]]
+id = 2
+type = "story"
+title = "Scaffold the extension and wire the tracer path"
+description = "Scaffolds with generator-code (TypeScript, esbuild two bundles) with pinned @types/vscode 1.100.0, engines ^1.100.0, typescript ~6.0.3, @types/node 20.19.43, esbuild 0.28.2 and Node 24; owns the package.json identity (ajurcenk.rpcn-pipeline-designer, display name, extensionDependencies redhat.vscode-yaml, Apache-2.0 LICENSE/NOTICE) and every redpandaConnect.* setting and command contribution; creates src/core, src/adapters, src/shared, the 'Redpanda Connect' OutputChannel and an AD-15 dependency-direction check; activates on YAML and logs the binary's --version through a minimal adapter; CI builds, tests and packages a .vsix on push."
+verify = "CI on a push is green, and its .vsix installed in VS Code pulls in redhat.vscode-yaml and logs the local binary's version to the 'Redpanda Connect' output channel when a YAML file opens."
+covers = ["E1 (R4)", "E1 (R6)"]
+after = [1]
+hitl = false
+risk = "low"
+unknown = "None beyond the spike's version-output format."
+references = ["_bmad-output/initiative-rpcn-vscode-designer/architecture-rpcn-vscode-designer/architecture-rpcn-vscode-designer.md#stack"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Resolve the binary and expose binaryState"
+description = "Implements the RedpandaConnect adapter's AD-9 resolution order, version parsing in the format the spike recorded, the v4.100.0 floor, the observable binaryState with onDidChange and a refresh() method, re-resolution on activation and on binaryPath change, and makes the adapter the only module that spawns processes."
+verify = "Unit tests cover each resolution branch and the version floor, and in the Extension Development Host changing redpandaConnect.binaryPath flips binaryState between ok, missing and invalid without a reload."
+covers = ["E1 (R1)", "E1 (R4)"]
+after = [1, 2]
+hitl = false
+risk = "medium"
+unknown = "Whether rpk connect reports its version differently from the standalone binary."
+
+[[entry]]
+id = 4
+type = "story"
+title = "Binary-missing onboarding notification"
+description = "Adds to the adapter the once-per-transition notification into missing or invalid, shown through a thin VS Code call with the EXPERIENCE strings, where Install guide opens the Redpanda Connect install docs and Set path opens a file picker that writes redpandaConnect.binaryPath and triggers refresh()."
+verify = "With no binary on PATH the notification appears once, Set path to a valid binary clears it and binaryState becomes ok, and a binary older than v4.100.0 shows the invalid variant."
+covers = ["E1 (R2)"]
+after = [3]
+hitl = false
+risk = "low"
+unknown = "The exact Install guide URL (assumed: the Redpanda Connect install page in the Redpanda docs)."
+references = ["_bmad-output/initiative-rpcn-vscode-designer/ux-rpcn-vscode-designer/mockups/key-binary-missing.html"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Shared lint/run argument builder"
+description = "Adds the adapter's single argument builder: -r from redpandaConnect.resourceFiles plus caller-supplied detected resource files, -e from redpandaConnect.envFile, --skip-env-var-check for lint, and NO_COLOR=1 on every child; epic-smart-yaml-editing's lint and Run call it."
+verify = "Unit tests assert the exact argv and env for lint and run with and without resource and env files, matching the flags the spike verified."
+covers = ["E1 (R4)"]
+after = [1, 3]
+hitl = false
+risk = "low"
+unknown = "None."
+
+[[entry]]
+id = 6
+type = "story"
+title = "Generate, transform and cache the schema"
+description = "Runs list --format jsonschema through the adapter, applies the versioned transform (add $schema draft-07, allow ${...} interpolation on non-string fields, fold examples into markdownDescription, add defaultSnippets), caches it in globalStorage under a URI embedding hash(path + version), generates single-flight and again on every binaryState change to ok, and registers redpandaConnect.refreshSchema calling refresh(); exposes the cached schema for the Red Hat contributor (E2) and the ComponentCatalog (E3)."
+verify = "Unit tests run the transform on the spike's captured schemas for both versions, and in the Extension Development Host a second activation reuses the cache, Refresh schema regenerates it, and Set path to a new binary produces its schema without reopening any file."
+covers = ["E1 (R3)"]
+after = [1, 3]
+hitl = false
+risk = "medium"
+unknown = "Whether the interpolation pattern covers every non-string field type the schema uses."
+
+[[entry]]
+id = 7
+type = "story"
+title = "Corpus harness in CI against both binaries"
+description = "Makes CI install standalone redpanda-connect v4.100.0 and v4.112.0 and run a vitest harness that loads every test/corpus config and lints it through the adapter and argument builder with each binary, asserting the output still matches the recorded output; E2 later asserts editor diagnostics against the same output and E3 graph accuracy."
+verify = "CI runs the harness on both versions and fails when a corpus config's lint output stops matching its recorded output."
+covers = ["E1 (R5)"]
+after = [1, 3, 5]
+hitl = false
+risk = "medium"
+unknown = "How the release archives are named and checksummed per version (assumed: standalone archives from GitHub releases)."
+
+[[entry]]
+id = 8
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
+verify = "The suite and CI are green and every deferred finding is either fixed or moved to a new ticket."
+covers = ["E1 (R1)", "E1 (R2)", "E1 (R3)", "E1 (R4)", "E1 (R5)", "E1 (R6)"]
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = false
+risk = "low"
+unknown = "Scope is set when it starts."

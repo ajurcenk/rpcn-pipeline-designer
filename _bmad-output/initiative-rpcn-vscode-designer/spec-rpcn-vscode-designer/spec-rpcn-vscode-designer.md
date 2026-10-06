@@ -69,8 +69,8 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
   - **success:** An editor-title toggle and Command Palette commands Show graph / Hide graph work for detected files with no default keybinding; an explicit Hide persists per file across window reloads and suppresses auto-open until Show graph; closing the YAML tab closes its graph (AD-1).
 
 - **CAP-13 — Packaging and distribution**
-  - **intent:** Developers can install the extension from both major VS Code registries.
-  - **success:** A tagged release publishes the same build to the VS Code Marketplace and Open VSX under Apache-2.0, under publisher `ajurcenk` (same ID on both registries), installing `redhat.vscode-yaml` as a dependency (architecture Operational envelope).
+  - **intent:** Developers can install a packaged build of the extension in VS Code.
+  - **success:** CI on every push builds one `.vsix` (`ajurcenk.rpcn-pipeline-designer`, Apache-2.0) that installs in VS Code and pulls in `redhat.vscode-yaml` as a dependency (architecture Operational envelope).
 
 - **CAP-14 — Reference corpus and parity verification**
   - **intent:** Graph accuracy and diagnostics parity are measured, not asserted, against real configs.
@@ -86,7 +86,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - `engines.vscode ^1.100.0`, stable APIs only.
 - Open source under Apache-2.0, published as `ajurcenk.rpcn-pipeline-designer` with display name "Pipeline Designer for Redpanda Connect"; name and publisher must not imply official Redpanda branding.
 - Minimum supported Redpanda Connect version is v4.100.0.
-- Published to both VS Code Marketplace and Open VSX.
+- Delivered as a CI-built `.vsix` installed by hand; nothing is published to a registry in the POC.
 - Scope unit is single-file configs plus resource files.
 - POC stakes: sized for typical configs, SemVer 0.x.
 
@@ -101,6 +101,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Lint while typing.
 - Bloblang LSP, completion or diagnostics.
 - A default keybinding for Show / Hide graph.
+- Publishing to the VS Code Marketplace or Open VSX (publisher accounts, tokens, release workflow) — parked for the POC.
 - Restoring the graph panel after a window reload.
 - Telemetry and i18n.
 
@@ -116,7 +117,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Lint always passes `--skip-env-var-check`; env vars resolve only at run.
 - Resource references from processors are not drawn as edges.
 - Graph keyboard model follows EXPERIENCE Interaction Primitives.
-- SemVer 0.x on the Marketplace pre-release channel; `redpandaConnect.*` IDs are provisional until a name is chosen.
+- SemVer 0.x in `package.json`; `redpandaConnect.*` IDs are provisional until a name is chosen.
 - Extension name `rpcn-pipeline-designer` (ID `ajurcenk.rpcn-pipeline-designer`) is provisional; display name is decided.
 
 ## Open Questions

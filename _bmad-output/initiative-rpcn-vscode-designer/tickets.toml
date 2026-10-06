@@ -1,0 +1,21 @@
+# tickets.toml — the initiative's epics in build order.
+
+[[epic]]
+id = 1
+slug = "epic-foundation"
+title = "Foundation: binary, schema and release pipeline"
+covers = ["CAP-1", "CAP-13", "CAP-14"]   # CAP-13: .vsix packaging only; registry publishing parked
+
+[[epic]]
+id = 2
+slug = "epic-smart-yaml-editing"
+title = "Smart YAML editing and local run"
+covers = ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-11", "CAP-14"]
+after = [{ epic = 1, needs = "RedpandaConnect adapter (binaryState, arg builder, spawn), cached transformed schema, CI + corpus harness, spike-verified lint and schema output" }]
+
+[[epic]]
+id = 3
+slug = "epic-pipeline-graph"
+title = "Read-only pipeline graph"
+covers = ["CAP-1", "CAP-6", "CAP-7", "CAP-8", "CAP-9", "CAP-10", "CAP-12", "CAP-14"]
+after = [{ epic = 1, needs = "cached transformed schema for the ComponentCatalog, binaryState / hostStatus" }, { epic = 2, needs = "DetectionRegistry (onDidChangeDetection, session mark hook) and the deduped per-URI diagnostics accessor" }]

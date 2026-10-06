@@ -81,7 +81,7 @@ The first release is judged on developer experience, not adoption numbers:
 - Single-file configs plus resource files.
 - Recognizing Redpanda Connect files by their content (top-level `input`, `pipeline`, `output` or resource keys), plus a workspace setting for file patterns and an "Open in Designer" command. Detected files open in the Designer by default, with a setting to turn that off. There's no required file-naming convention.
 - Local run: auto-save, then run with logs in the integrated Terminal and a stop control.
-- Published on the VS Code Marketplace and Open VSX under the Apache 2.0 license.
+- Packaged by CI as an installable `.vsix` under the Apache 2.0 license; publishing to the VS Code Marketplace and Open VSX is parked for the POC.
 
 **Explicitly out of the first release:**
 - BYOC or Cloud deployment.

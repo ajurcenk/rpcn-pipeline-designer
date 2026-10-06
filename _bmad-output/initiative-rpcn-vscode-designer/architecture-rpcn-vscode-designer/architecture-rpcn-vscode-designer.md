@@ -284,12 +284,12 @@ Operational envelope:
 
 | Concern | Decision |
 | --- | --- |
-| Distribution | VS Code Marketplace (`vsce`) + Open VSX (`ovsx`), published by GitHub Actions when a tag is pushed. |
-| Versioning | SemVer 0.x for the POC, released on the Marketplace pre-release channel. `[ASSUMPTION]` |
+| Distribution | POC: GitHub Actions packages a `.vsix` with `vsce package` on every push, installed by hand. Publishing to the VS Code Marketplace (`vsce publish`) and Open VSX (`ovsx`) is parked. |
+| Versioning | SemVer 0.x for the POC. `[ASSUMPTION]` |
 | Publisher | `ajurcenk` on both VS Code Marketplace and Open VSX; display name "Pipeline Designer for Redpanda Connect"; extension name `rpcn-pipeline-designer` `[ASSUMPTION]`. |
 | Environments | Local dev through the Extension Development Host (F5). CI on GitHub Actions, Node 24.21.0: vitest + `@vscode/test-cli`. No server-side infrastructure. |
 | CI binary | CI runs parity and corpus tests against Redpanda Connect v4.100.0 (minimum supported) and pinned v4.112.0. |
-| Secrets | `VSCE_PAT`, `OVSX_PAT` (GitHub Actions secrets). |
+| Secrets | None for the POC; `VSCE_PAT` and `OVSX_PAT` only once publishing is unparked. |
 | Runtime dependencies | The user's local `rpk` or `redpanda-connect` binary (AD-9), plus `redhat.vscode-yaml` (AD-11). Minimum supported Redpanda Connect version is v4.100.0. |
 | Compatibility | `engines.vscode ^1.100.0`. Only stable APIs, so no proposed `editorInsets`. |
 | Licensing | Extension: Apache-2.0. elkjs (EPL-2.0) bundled unmodified, with its license notice. |
