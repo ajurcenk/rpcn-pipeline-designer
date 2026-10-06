@@ -2,7 +2,8 @@
 // and wires the adapters. Activated on `onLanguage:yaml`.
 
 import * as vscode from 'vscode';
-import { BinaryState, RedpandaConnect } from './adapters/redpandaConnect/binary';
+import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
+import { BinaryNotifier } from './adapters/redpandaConnect/notify';
 
 export const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 
@@ -16,6 +17,48 @@ export interface ExtensionApi {
 	outputLines(): readonly string[];
 }
 
+/** The VS Code side of the binary-missing notification: non-modal warning, browser, picker, user setting. */
+export function createVsCodeNotifier(log: LogLine): BinaryNotifier {
+	return {
+		showWarning: (message, actions) => vscode.window.showWarningMessage(message, ...actions),
+		openExternal: (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
+		pickBinary: async () => {
+			const picked = await vscode.window.showOpenDialog({
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				openLabel: 'Set path',
+				title: 'Redpanda Connect binary (rpk or redpanda-connect)',
+			});
+			const uri = picked?.[0];
+			if (!uri) {
+				return undefined;
+			}
+			if (uri.scheme !== 'file') {
+				log(`Set path: only local files are supported; ignoring ${uri.toString()}.`);
+				return undefined;
+			}
+			return uri.fsPath;
+		},
+		setBinaryPath: async (binaryPath) => {
+			await vscode.workspace.getConfiguration('redpandaConnect')
+				.update('binaryPath', binaryPath, vscode.ConfigurationTarget.Global);
+			// `machine-overridable`: a workspace or folder value silently wins over the user value.
+			const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+			const inspected = vscode.workspace.getConfiguration('redpandaConnect', folder).inspect<string>('binaryPath');
+			const override = inspected?.workspaceFolderValue !== undefined
+				? { scope: 'folder', value: inspected.workspaceFolderValue }
+				: inspected?.workspaceValue !== undefined
+					? { scope: 'workspace', value: inspected.workspaceValue }
+					: undefined;
+			if (override) {
+				log(`Set path: saved "${binaryPath}" to the user setting redpandaConnect.binaryPath, but the `
+					+ `${override.scope} value "${override.value}" overrides it.`);
+			}
+		},
+	};
+}
+
 export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	context.subscriptions.push(channel);
@@ -26,7 +69,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		channel.appendLine(line);
 	};
 
-	const redpandaConnect = new RedpandaConnect({ log });
+	const redpandaConnect = new RedpandaConnect({ log, notifier: createVsCodeNotifier(log) });
 	context.subscriptions.push(redpandaConnect);
 
 	return {

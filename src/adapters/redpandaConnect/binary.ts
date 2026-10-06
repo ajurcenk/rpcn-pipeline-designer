@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import {
 	formatVersion, isRpkConnectNotInstalled, meetsMinimum, MIN_VERSION, parseVersion, parseVersionOutput,
 } from '../../core/version';
+import { attachBinaryNotifications, BinaryNotifier } from './notify';
 import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, readVersion, VersionProbe } from './version';
 
 export const RPK_BINARY = 'rpk';
@@ -279,6 +280,11 @@ export interface RedpandaConnectOptions {
 	readonly timeoutMs?: number;
 	/** Reads the inputs for one resolution run; defaults to VS Code settings, PATH, home and workspace. */
 	readonly environment?: () => ResolveEnvironment;
+	/**
+	 * Shows the binary-missing / invalid warning, once per transition into `missing` or
+	 * `invalid` (AD-9). Omitted: no notifications.
+	 */
+	readonly notifier?: BinaryNotifier;
 }
 
 function defaultEnvironment(): ResolveEnvironment {
@@ -317,6 +323,10 @@ export class RedpandaConnect implements vscode.Disposable {
 				}
 			}),
 		);
+		if (options.notifier) {
+			// Subscribed before the first resolution, so activation's `unresolved` → `missing` notifies.
+			this.subscriptions.push(attachBinaryNotifications(this, options.notifier, options.log));
+		}
 	}
 
 	get state(): BinaryState {

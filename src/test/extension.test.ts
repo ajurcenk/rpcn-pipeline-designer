@@ -2,8 +2,9 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BinaryState } from '../adapters/redpandaConnect/binary';
-import type { ExtensionApi } from '../extension';
+import { BinaryState, RedpandaConnect } from '../adapters/redpandaConnect/binary';
+import { BinaryNotifier, MISSING_MESSAGE, NOTIFICATION_ACTIONS } from '../adapters/redpandaConnect/notify';
+import { createVsCodeNotifier, type ExtensionApi } from '../extension';
 import { makeTempDir, VERSION_4_112_SCRIPT, versionScript, writeFakeBinary } from './helpers/fakeBinary';
 
 const EXTENSION_ID = 'ajurcenk.rpcn-pipeline-designer';
@@ -116,5 +117,56 @@ suite('Extension tracer path (integration)', () => {
 			`Redpanda Connect 4.63.0 (${old}) is older than the minimum supported version 4.100.0.`,
 			`Redpanda Connect 4.112.0 (${fakeBinary})`,
 		]);
+	});
+	test('NOTIFY_MISSING: a missing resolution goes through the real VS Code notifier without throwing', async () => {
+		const lines: string[] = [];
+		const real = createVsCodeNotifier((line) => lines.push(line));
+		const shown: { message: string; actions: readonly string[] }[] = [];
+		const notifier: BinaryNotifier = {
+			...real,
+			showWarning: (message, actions) => {
+				shown.push({ message, actions });
+				return real.showWarning(message, actions); // stays open: never clicked here
+			},
+		};
+		const rc = new RedpandaConnect({
+			log: (line) => lines.push(line),
+			notifier,
+			environment: () => ({ binaryPathSetting: '', envPath: '', homeDir: dir, workspaceFolder: undefined }),
+		});
+		try {
+			assert.strictEqual((await rc.refresh()).kind, 'missing');
+			assert.deepStrictEqual(shown, [{ message: MISSING_MESSAGE, actions: NOTIFICATION_ACTIONS }]);
+			assert.ok(!lines.some((l) => l.includes('notification action failed')), lines.join('\n'));
+		} finally {
+			rc.dispose();
+		}
+	});
+
+	test('SET_PATH_ACCEPTANCE: Set path writes the absolute path at Global scope and binaryState becomes ok without a reload', async () => {
+		const config = () => vscode.workspace.getConfiguration('redpandaConnect');
+		await config().update('binaryPath', path.join(dir, 'not-there'), vscode.ConfigurationTarget.Global);
+		const lines: string[] = [];
+		const real = createVsCodeNotifier((line) => lines.push(line));
+		const shown: string[] = [];
+		const notifier: BinaryNotifier = {
+			...real,
+			showWarning: async (message) => { shown.push(message); return 'Set path'; },
+			pickBinary: async () => fakeBinary, // the picker itself needs a human
+		};
+		// Default environment: the real setting and the (filtered) PATH of the extension host.
+		const rc = new RedpandaConnect({ log: () => undefined, notifier });
+		try {
+			assert.strictEqual((await rc.refresh()).kind, 'missing');
+			assert.ok(await waitFor(() => rc.state.kind === 'ok', 10_000), `state stayed ${rc.state.kind}`);
+			assert.deepStrictEqual(rc.state, { kind: 'ok', path: fakeBinary, version: '4.112.0', invocation: [fakeBinary] });
+			assert.strictEqual(config().inspect<string>('binaryPath')?.globalValue, fakeBinary);
+			assert.ok(path.isAbsolute(fakeBinary));
+			await rc.refresh();
+			assert.deepStrictEqual(shown, [MISSING_MESSAGE]);
+			assert.deepStrictEqual(lines, [], 'no workspace override expected');
+		} finally {
+			rc.dispose();
+		}
 	});
 });
