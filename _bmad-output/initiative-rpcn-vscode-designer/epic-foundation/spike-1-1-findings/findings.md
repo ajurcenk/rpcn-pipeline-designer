@@ -101,4 +101,4 @@ Items marked *by hand* were checked manually and are not in `captures/`.
 | No stdin lint | architecture Deferred (stdin item can be closed) |
 | Stop: SIGINT exits 0; still escalate to SIGKILL | AD-13, E2 Run |
 | Port 4195 collision between runs → `-s http.enabled=false` | AD-13, E2 Run |
-| Repo has no LICENSE file yet (needed for Apache-2.0 redistribution) | ticket 1.2 |
+| ~~Repo has no LICENSE file yet (needed for Apache-2.0 redistribution)~~ Done: `LICENSE` (Apache-2.0) and `NOTICE` added | ticket 1.2 |

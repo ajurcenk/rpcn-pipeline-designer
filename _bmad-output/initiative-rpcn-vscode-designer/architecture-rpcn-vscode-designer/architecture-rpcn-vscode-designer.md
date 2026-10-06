@@ -299,7 +299,7 @@ Operational envelope:
 | Item | Why it can wait |
 | --- | --- |
 | Lint while typing (temp file) | Live schema validation covers typing. Revisit if save-only lint feels slow. |
-| Lint via stdin | Unverified whether `rpk connect lint` supports it. Not needed while lint runs on save. |
+| ~~Lint via stdin~~ Closed | Spike 1.1: `lint` does not read stdin (`-` is opened as a file and fails), so lint always gets a file path. |
 | Panel restore after reload (`WebviewPanelSerializer`) | POC reopens via auto-open or Show graph (AD-1). |
 | ELK in a web worker | Main-thread `elk.bundled.js` is enough for POC-sized configs (AD-4). |
 | Bloblang LSP (teyfix/bloblang-lsp) | Young project. Highlighting is enough for the first release. |
