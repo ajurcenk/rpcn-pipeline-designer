@@ -1,0 +1,15 @@
+{
+    // Type-check only (noEmit) for the vitest corpus harness and its config; not part of the
+    // mocha `compile-tests` build (root tsconfig.json includes only `src`).
+    "compilerOptions": {
+        "module": "ESNext",
+        "moduleResolution": "Bundler",
+        "target": "ES2022",
+        "lib": ["ES2022"],
+        "types": ["node"],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true
+    },
+    "include": ["*.test.ts", "../../vitest.config.mts"]
+}

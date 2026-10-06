@@ -82,8 +82,9 @@ export function runList(
 /**
  * The single spawn site (AD-9): `<invocation[0]> <invocation[1..]> <args…>` with
  * `NO_COLOR=1`, no shell, stdin ignored and a timeout (SIGKILL). Never rejects.
+ * Exported for argv built by `src/core/args.ts` (lint, run) and for the corpus harness.
  */
-function runProcess(
+export function runProcess(
 	invocation: readonly string[],
 	args: readonly string[],
 	timeoutMs: number,

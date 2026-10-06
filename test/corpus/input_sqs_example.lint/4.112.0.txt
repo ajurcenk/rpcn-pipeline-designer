@@ -1,8 +1,9 @@
-# redpanda-connect 4.112.0: lint --skip-env-var-check input_sqs_example.yaml (cwd test/corpus, NO_COLOR=1)
+# redpanda-connect 4.112.0 (NO_COLOR=1)
+# argv: redpanda-connect lint --deprecated --skip-env-var-check <CORPUS>/input_sqs_example.yaml
 # exit: 1
-input_sqs_example.yaml(1,1) field name not recognised
-input_sqs_example.yaml(2,1) field type not recognised
-input_sqs_example.yaml(4,1) field fields not recognised
-input_sqs_example.yaml(12,1) field mapping not recognised
-input_sqs_example.yaml(22,1) field config not recognised
-input_sqs_example.yaml(26,1) field expected not recognised
+<CORPUS>/input_sqs_example.yaml(1,1) field name not recognised
+<CORPUS>/input_sqs_example.yaml(12,1) field mapping not recognised
+<CORPUS>/input_sqs_example.yaml(2,1) field type not recognised
+<CORPUS>/input_sqs_example.yaml(22,1) field config not recognised
+<CORPUS>/input_sqs_example.yaml(26,1) field expected not recognised
+<CORPUS>/input_sqs_example.yaml(4,1) field fields not recognised

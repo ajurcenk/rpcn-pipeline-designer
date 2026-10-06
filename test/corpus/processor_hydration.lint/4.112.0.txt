@@ -1,13 +1,14 @@
-# redpanda-connect 4.112.0: lint --skip-env-var-check processor_hydration.yaml (cwd test/corpus, NO_COLOR=1)
+# redpanda-connect 4.112.0 (NO_COLOR=1)
+# argv: redpanda-connect lint --deprecated --skip-env-var-check <CORPUS>/processor_hydration.yaml
 # exit: 1
-processor_hydration.yaml(1,1) field name not recognised
-processor_hydration.yaml(2,1) field type not recognised
-processor_hydration.yaml(3,1) field status not recognised
-processor_hydration.yaml(4,1) field categories not recognised
-processor_hydration.yaml(5,1) field summary not recognised
-processor_hydration.yaml(6,1) field description not recognised
-processor_hydration.yaml(8,1) field fields not recognised
-processor_hydration.yaml(19,1) field mapping not recognised
-processor_hydration.yaml(75,1) field config not recognised
-processor_hydration.yaml(80,1) field expected not recognised
-processor_hydration.yaml(112,1) field config not recognised
+<CORPUS>/processor_hydration.yaml(1,1) field name not recognised
+<CORPUS>/processor_hydration.yaml(112,1) field config not recognised
+<CORPUS>/processor_hydration.yaml(19,1) field mapping not recognised
+<CORPUS>/processor_hydration.yaml(2,1) field type not recognised
+<CORPUS>/processor_hydration.yaml(3,1) field status not recognised
+<CORPUS>/processor_hydration.yaml(4,1) field categories not recognised
+<CORPUS>/processor_hydration.yaml(5,1) field summary not recognised
+<CORPUS>/processor_hydration.yaml(6,1) field description not recognised
+<CORPUS>/processor_hydration.yaml(75,1) field config not recognised
+<CORPUS>/processor_hydration.yaml(8,1) field fields not recognised
+<CORPUS>/processor_hydration.yaml(80,1) field expected not recognised

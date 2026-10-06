@@ -45,7 +45,7 @@ const sharedBlocks = Array.from({ length: MAX_SHARED_DEPTH }, (_, depth) => ({
 }));
 
 export default [{
-    files: ["**/*.ts"],
+    files: ["**/*.ts", "**/*.mts"],
 }, {
     plugins: {
         "@typescript-eslint": typescriptEslint.plugin,

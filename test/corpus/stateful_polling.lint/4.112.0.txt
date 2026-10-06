@@ -1,2 +1,3 @@
-# redpanda-connect 4.112.0: lint --skip-env-var-check stateful_polling.yaml (cwd test/corpus, NO_COLOR=1)
+# redpanda-connect 4.112.0 (NO_COLOR=1)
+# argv: redpanda-connect lint --deprecated --skip-env-var-check <CORPUS>/stateful_polling.yaml
 # exit: 0

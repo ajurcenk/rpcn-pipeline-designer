@@ -11,7 +11,8 @@
 #   <findings>/captures/<flavor>/<scenario>.{stdout,stderr,exit}
 #   <findings>/captures/diff-*.txt, schema-*.txt, rpk-binary-identity.txt
 #   test/fixtures/schema/jsonschema-<ver>.json      (standalone flavors)
-#   test/corpus/<name>.lint/<ver>.txt               (standalone flavors)
+# The corpus records test/corpus/<name>.lint/<ver>.txt are owned by the corpus harness
+# (test/corpus/corpus.test.ts, `npm run test:corpus:record`), not by this script.
 #
 # Normalisation applied to captured text so reruns are byte-identical:
 #   - the repo root path is replaced with <ROOT>
@@ -28,7 +29,6 @@ CACHE="$ROOT/.cache/redpanda-connect"
 FINDINGS="$ROOT/_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings"
 CAPS="$FINDINGS/captures"
 FIX="$ROOT/test/corpus/fixtures"
-CORPUS="$ROOT/test/corpus"
 SCHEMA_OUT="$ROOT/test/fixtures/schema"
 VERSIONS=(4.100.0 4.112.0)
 RPK_VERSION=4.112.0
@@ -224,22 +224,6 @@ for v in "${VERSIONS[@]}"; do
   run_flavor "standalone-$v" "$CACHE/$v/redpanda-connect"
   mv "$SCHEMA_TMP" "$SCHEMA_OUT/jsonschema-$v.json" || die "mv schema $v failed"
   chmod 644 "$SCHEMA_OUT/jsonschema-$v.json" || die "chmod schema $v failed"
-
-  echo "[standalone-$v] linting corpus"
-  for f in "$CORPUS"/*.yaml; do
-    name="$(basename "$f" .yaml)"
-    mkdir -p "$CORPUS/$name.lint" || die "mkdir $name.lint failed"
-    o="$CORPUS/$name.lint/$v.txt"
-    err="$(cd "$CORPUS" && timeout "$TIMEOUT" "$CACHE/$v/redpanda-connect" lint --skip-env-var-check "$name.yaml" 2>&1 >/dev/null)"
-    ec=$?
-    (( ec <= 1 )) || die "[standalone-$v] lint of corpus $name.yaml failed unexpectedly (exit $ec)"
-    {
-      echo "# redpanda-connect $v: lint --skip-env-var-check $name.yaml (cwd test/corpus, NO_COLOR=1)"
-      echo "# exit: $ec"
-      if [[ -n "$err" ]]; then printf '%s\n' "$err"; fi
-    } >"$o" || die "write $o failed"
-    normalize "$o"
-  done
 done
 
 # --- rpk flavor (read-only) ---

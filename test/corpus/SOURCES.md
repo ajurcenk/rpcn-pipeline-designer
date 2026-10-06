@@ -14,9 +14,27 @@ are not used.
 The `Blob` column is the git blob SHA-1. `git hash-object <file>` on the local copy reproduces it, which
 proves the copy is byte-identical to upstream.
 
-`<name>.lint/<ver>.txt` holds the recorded output of `redpanda-connect lint --skip-env-var-check <name>.yaml`
-for each pinned version (cwd `test/corpus`, `NO_COLOR=1`): a command line, the exit code, then stderr.
-`scripts/spike/run-matrix.sh` regenerates these files.
+`<name>.lint/<ver>.txt` holds the recorded lint output of `<name>.yaml` for each pinned standalone version.
+The corpus harness (`corpus.test.ts`, vitest, plain Node) owns these files. It builds the argv with the
+extension's own builder (`buildLintArgs` in `src/core/args.ts`: `lint --deprecated --skip-env-var-check`,
+absolute paths) and spawns it through the adapter's spawn site with `NO_COLOR=1`. Format:
+
+```
+# redpanda-connect <ver> (NO_COLOR=1)
+# argv: redpanda-connect lint --deprecated --skip-env-var-check <CORPUS>/<name>.yaml
+# exit: <code>
+<stderr lines, corpus dir written as <CORPUS>/, sorted>
+```
+
+Lint checks files concurrently, so stderr lines are compared as a sorted set. Resource files are passed
+with `--resources` only where this file marks a dependency: `set_grab_cache.yaml` is linted with
+`--resources <CORPUS>/resources.yaml` (the harness's `RESOURCE_DEPS` map).
+
+- `scripts/spike/fetch-binaries.sh` downloads and verifies the binaries into `.cache/redpanda-connect/<ver>/`.
+- `npm run test:corpus` compares only. It fails on a differing record (naming file, version and lines), a
+  `.yaml` without a record, or a record without its `.yaml` (or for an unpinned version). A missing binary
+  skips that version locally and fails it in CI (`CI=true`).
+- `npm run test:corpus:record` rewrites every record and deletes orphaned ones; it needs both binaries.
 
 | File | Upstream path (permalink) | Kind | Constructs | Blob | Lint 4.100.0 / 4.112.0 |
 |---|---|---|---|---|---|

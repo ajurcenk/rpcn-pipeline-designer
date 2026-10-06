@@ -21,3 +21,4 @@ skills-lock.json
 **/*.map
 **/*.ts
 **/.vscode-test.*
+**/vitest.config.*
