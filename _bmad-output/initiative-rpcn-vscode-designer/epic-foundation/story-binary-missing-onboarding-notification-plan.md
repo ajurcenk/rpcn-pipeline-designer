@@ -3,7 +3,7 @@ title: 'Binary-missing onboarding notification'
 type: 'feature'
 ticket: '4'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'f27df112a7999236f4dde068ef01dbd6d3c4c7d9'
 route: 'full'
 route_source: 'auto'

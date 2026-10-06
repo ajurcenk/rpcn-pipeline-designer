@@ -3,7 +3,7 @@ title: 'Verify Redpanda Connect CLI facts and seed the corpus'
 type: 'chore'
 ticket: '1'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: 'cb3d128fc8b5479224ffd2eb9005e780e7897b9a'
 route: 'full'
 route_source: 'auto'

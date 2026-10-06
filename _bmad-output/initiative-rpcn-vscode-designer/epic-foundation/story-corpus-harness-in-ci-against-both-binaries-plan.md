@@ -3,7 +3,7 @@ title: 'Corpus harness in CI against both binaries'
 type: 'feature'
 ticket: '7'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '16815556809904a70429128c1ef9917936b14605'
 route: 'full'
 route_source: 'auto'

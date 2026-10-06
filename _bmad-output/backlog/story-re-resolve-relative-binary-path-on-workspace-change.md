@@ -45,4 +45,4 @@ A relative `redpandaConnect.binaryPath` resolves against the first workspace fol
 ## Notes
 
 - Open question: VS Code restarts the extension host when the first workspace folder changes, which re-activates and re-resolves; criteria 1–2 may already hold (validator finding, 2026-10-06).
-- Decision: dropped (user, 2026-10-06) — VS Code restarts the extension host when the first workspace folder changes, so activation already re-resolves the binary; criteria 1–2 hold without this ticket.
+- Dropped: (user, 2026-10-06) — VS Code restarts the extension host when the first workspace folder changes, so activation already re-resolves the binary; criteria 1–2 hold without this ticket.

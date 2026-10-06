@@ -3,7 +3,7 @@ title: 'Shared lint/run argument builder'
 type: 'feature'
 ticket: '5'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '8c15f906cd23c1e2e207af4eecbe7f7879458495'
 route: 'full'
 route_source: 'auto'

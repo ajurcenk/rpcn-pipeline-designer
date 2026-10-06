@@ -3,7 +3,7 @@ title: 'Generate, transform and cache the schema'
 type: 'feature'
 ticket: '6'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'b5f7ec8f15caddf0249a4c40e9301b237e62df8d'
 route: 'full'
 route_source: 'auto'

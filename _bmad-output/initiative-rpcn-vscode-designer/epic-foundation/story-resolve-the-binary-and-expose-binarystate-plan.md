@@ -3,7 +3,7 @@ title: 'Resolve the binary and expose binaryState'
 type: 'feature'
 ticket: '3'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '545176eea09d786738c6cf6178109bdffed2fbb0'
 route: 'full'
 route_source: 'auto'

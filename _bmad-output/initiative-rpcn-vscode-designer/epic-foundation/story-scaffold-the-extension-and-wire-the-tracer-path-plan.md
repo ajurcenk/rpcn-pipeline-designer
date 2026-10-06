@@ -3,7 +3,7 @@ title: 'Scaffold the extension and wire the tracer path'
 type: 'feature'
 ticket: '2'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '11af6bb6e75ca17a611c50c4d50564f2a89a3614'
 route: 'full'
 route_source: 'auto'

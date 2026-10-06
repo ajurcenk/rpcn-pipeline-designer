@@ -6,6 +6,7 @@ covers: [CAP-1, CAP-13, CAP-14]
 after: []
 assignee: ""
 risk: medium
+status: done
 ---
 
 # Foundation: binary, schema and release pipeline
@@ -58,3 +59,4 @@ Owns the scaffold (generator-code, esbuild two bundles, `src/extension.ts`, Outp
 - Assumption: Install guide opens the Redpanda Connect installation page in the Redpanda docs; ticket 4 confirms the exact URL.
 - Assumption: CI installs the standalone `redpanda-connect` release archives from GitHub pinned to v4.100.0 and v4.112.0; `rpk connect` is checked once in the spike and manually after that.
 - Collision: tickets 4, 5 and 6 run in parallel after 3 and all touch `src/adapters/redpandaConnect`; each works in its own file and only ticket 2's index and manifest are shared.
+- Decision: epic closed as done (user, 2026-10-06). Closure check: Done when 1 — CI builds the .vsix with LICENSE/NOTICE and installing it into an empty profile pulled in redhat.vscode-yaml 1.24.0; 2 — binary resolution, schema cache and the once-per-transition warning checked by tests and by hand (Set path missing → ok 4.100.0, no reload); 3 — CI runs @vscode/test-cli and the vitest corpus harness on Node 24 against 4.100.0 and 4.112.0; 4 — spike findings recorded, spec open questions answered. Follow-ups placed in epic-2/epic-3 Notes and backlog tickets.
