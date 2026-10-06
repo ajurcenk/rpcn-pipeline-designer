@@ -5,6 +5,8 @@ import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
 import { SchemaStore } from './adapters/redpandaConnect/schema';
+import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
+import { DetectionRegistry } from './adapters/vscode/detection';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -17,6 +19,12 @@ export interface ExtensionApi {
 	readonly activationResolved: Promise<BinaryState>;
 	/** The single owner of the generated schema (AD-10). */
 	readonly schemaStore: SchemaStore;
+	/** Which open YAML documents are Redpanda Connect configs (AD-18). */
+	readonly detection: DetectionRegistry;
+	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
+	readonly schemaContributor: SchemaContributor;
+	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
+	readonly contributorRegistered: Promise<boolean>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -83,10 +91,18 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		vscode.commands.registerCommand(REFRESH_SCHEMA_COMMAND, () => schemaStore.refresh()),
 	);
 
+	const detection = new DetectionRegistry();
+	context.subscriptions.push(detection);
+	const schemaContributor = new SchemaContributor(schemaStore, detection);
+	const contributorRegistered = registerSchemaContributor({ contributor: schemaContributor, log });
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
 		schemaStore,
+		detection,
+		schemaContributor,
+		contributorRegistered,
 		outputLines: () => [...lines],
 	};
 }

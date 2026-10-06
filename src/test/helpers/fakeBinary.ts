@@ -117,11 +117,26 @@ export function connectScript(options: ConnectScriptOptions): string {
 	].join('\n');
 }
 
-/** Shell bodies printing the recorded spike fixtures for `version` (4.100.0 or 4.112.0). */
+/**
+ * The absolute path of `tool` on the current `PATH` (bare `tool` when not found). Fakes call
+ * tools by absolute path, so they keep working when a test hides PATH directories that hold a
+ * real `rpk` or `redpanda-connect` (often `/usr/bin`, where `cat` and `gzip` live too).
+ */
+export function toolPath(tool: string): string {
+	for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+		const candidate = dir && path.join(dir, tool);
+		if (candidate && fs.existsSync(candidate)) {
+			return candidate;
+		}
+	}
+	return tool;
+}
+
+/** Shell bodies printing the recorded spike fixtures for `version` (4.100.0 or 4.112.0). Call before hiding PATH entries. */
 export function fixtureBodies(version: string): { jsonschema: string; jsonFull: string } {
 	return {
-		jsonschema: `cat '${path.join(SCHEMA_FIXTURES, `jsonschema-${version}.json`)}'`,
-		jsonFull: `gzip -dc '${path.join(SCHEMA_FIXTURES, `json-full-${version}.json.gz`)}'`,
+		jsonschema: `'${toolPath('cat')}' '${path.join(SCHEMA_FIXTURES, `jsonschema-${version}.json`)}'`,
+		jsonFull: `'${toolPath('gzip')}' -dc '${path.join(SCHEMA_FIXTURES, `json-full-${version}.json.gz`)}'`,
 	};
 }
 
