@@ -45,3 +45,12 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 
 - Handoff: provides to epic-pipeline-graph the deduped per-URI diagnostics accessor, `onDidChangeDetection`, and a hook for Show graph to mark a URI detected for the session.
 - Waits on epic-foundation because: it needs the RedpandaConnect adapter, the cached schema, CI with the corpus harness, and the spike-verified lint output.
+- Open question: lint findings always report column 1 (spike Q2), so diagnostics must map to the whole line; decide the range rule at inception (_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings/findings.md, Q2).
+- Open question: lint does not check resource references; a missing resource fails only at `run` (spike Q2). Decide whether diagnostics parity treats this as expected or adds a run-time check.
+- Open question: templates (top-level `name` + `type` + `mapping`) fail `lint`; detection (AD-18) should exclude them (_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings/findings.md, Q2).
+- Open question: Stop sends SIGINT (exit 0 in the spike); add a SIGKILL escalation after a grace period, since a hanging shutdown was not tested (_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings/findings.md, Q6).
+- Open question: the 1.5 builder returns `env` (inherited + `NO_COLOR=1`), but the spawn site (`process.ts`) builds its own env and takes none; wire the builder's env through for lint and Run.
+- Open question: check how Red Hat YAML renders the 1.6 merged docs (`markdownDescription`) next to the `anyOf` interpolation rewrite and next to `$ref` on top-level `input`/`output`.
+- Note: the Run and Stop commands are contributed but hidden with no handler since 1.2; this epic enables them.
+- Note: Run already passes `--set http.enabled=false` (1.5) to avoid port 4195 collisions between per-file runs.
+- Source: out-of-scope list in _bmad-output/initiative-rpcn-vscode-designer/epic-foundation/story-refactor-sweep-plan.md, Implementation Notes (user decision 2026-10-06).

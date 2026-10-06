@@ -45,3 +45,6 @@ Owns `src/core` YAML → PipelineModel, ComponentCatalog and `nodeAt` (AD-2, AD-
 
 - Waits on epic-foundation because: the ComponentCatalog is built from the cached schema and the empty state needs binaryState.
 - Waits on epic-smart-yaml-editing because: auto-open uses the DetectionRegistry and node status reads its deduped diagnostics.
+- Note: the Show graph and Hide graph commands are contributed but hidden with no handler since 1.2; this epic enables them.
+- Open question: no test exercises a real second `activate()` (needs a second extension host); decide at inception whether the graph's activation path gets an end-to-end test or stays a manual check (reviews of 1.4 and 1.6).
+- Source: out-of-scope list in _bmad-output/initiative-rpcn-vscode-designer/epic-foundation/story-refactor-sweep-plan.md, Implementation Notes (user decision 2026-10-06).
