@@ -1,0 +1,41 @@
+diff -r standalone-4.100.0/resources-run-no-flag.stderr standalone-4.112.0/resources-run-no-flag.stderr
+3c3
+< time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=uses_resource.yaml
+---
+> time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.112.0 path=uses_resource.yaml
+diff -r standalone-4.100.0/resources-run-with-flag.stderr standalone-4.112.0/resources-run-with-flag.stderr
+6c6
+< time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=uses_resource.yaml
+---
+> time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.112.0 path=uses_resource.yaml
+diff -r standalone-4.100.0/run-lint-error.stderr standalone-4.112.0/run-lint-error.stderr
+4c4
+< time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=invalid_field.yaml
+---
+> time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.112.0 path=invalid_field.yaml
+diff -r standalone-4.100.0/run-stop.stderr standalone-4.112.0/run-stop.stderr
+6c6
+< time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=run_generate.yaml
+---
+> time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.112.0 path=run_generate.yaml
+diff -r standalone-4.100.0/schema-cue.stdout standalone-4.112.0/schema-cue.stdout
+1,2c1,2
+< bytes=897161
+< comment_lines=6995
+---
+> bytes=955179
+> comment_lines=7332
+diff -r standalone-4.100.0/schema.stdout standalone-4.112.0/schema.stdout
+1,2c1,2
+< bytes=795174
+< sha256=e2cc9eace95714105bdcdf38b74ef699f15cea6955337a197b880e02d9910256
+---
+> bytes=808268
+> sha256=7885c97732dbacf777a25cec7b075d0838846783c8999ef857a25b0a081f55c2
+diff -r standalone-4.100.0/version.stdout standalone-4.112.0/version.stdout
+1,2c1,2
+< Version: 4.100.0
+< Date: 2026-07-09T16:56:36Z
+---
+> Version: 4.112.0
+> Date: 2026-10-02T08:48:17Z

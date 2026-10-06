@@ -1,0 +1,8 @@
+# Spike 1.1 fixture: unknown field deep inside switch -> processors (column base check).
+pipeline:
+  processors:
+    - switch:
+        - check: 'this.a == 1'
+          processors:
+            - mapping: 'root = this'
+              bogus: 1

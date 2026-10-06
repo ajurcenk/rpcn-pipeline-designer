@@ -1,0 +1,28 @@
+NAME:
+   redpanda-connect list - List all Redpanda Connect component types
+
+USAGE:
+   redpanda-connect list [command options]
+
+DESCRIPTION:
+   If any component types are explicitly listed then only types of those
+   components will be shown.
+
+     redpanda-connect list
+     redpanda-connect list --format json inputs output
+     redpanda-connect list rate-limits buffers
+
+   When using --format jsonschema with bloblang-functions or bloblang-methods,
+   you can optionally specify function or method names to retrieve metadata for
+   only those specific items:
+
+     redpanda-connect list --format jsonschema bloblang-functions
+     redpanda-connect list --format jsonschema bloblang-functions uuid_v4
+     redpanda-connect list --format jsonschema bloblang-functions uuid_v4 nanoid
+     redpanda-connect list --format jsonschema bloblang-methods uppercase catch
+
+OPTIONS:
+   --format value                                               Print the component list in a specific format. Options are text, json, jsonschema, or cue. (default: "text")
+   --status value                                               Filter the component list to only those matching the given status. Options are stable, beta or experimental.
+   --templates value, -t value [ --templates value, -t value ]  EXPERIMENTAL: import Redpanda Connect templates, supports glob patterns (requires quotes)
+   --help, -h                                                   show help

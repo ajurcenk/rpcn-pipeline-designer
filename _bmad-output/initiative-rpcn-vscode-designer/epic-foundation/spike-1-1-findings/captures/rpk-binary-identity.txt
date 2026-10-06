@@ -1,0 +1,6 @@
+rpk_version=rpk version: v26.2.2
+managed_binary=$HOME/.local/bin/.rpk.managed-connect
+managed_sha256=54414da2828820f2657ff34d49684e3bc794c4f1f651f6ac1d553a5174d79a10
+standalone_4.112.0_sha256=54414da2828820f2657ff34d49684e3bc794c4f1f651f6ac1d553a5174d79a10
+identical=yes
+schema_identical=yes

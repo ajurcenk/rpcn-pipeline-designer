@@ -1,0 +1,157 @@
+# Components per category: lines starting '<' only in 4.100.0, '>' only in 4.112.0
+
+# Component counts per category (4.100.0 | 4.112.0)
+buffer	4	4
+cache	17	17
+input	81	81
+metrics	8	8
+output	86	86
+processor	96	96
+rate_limit	2	2
+scanner	12	12
+tracer	5	5
+
+# Field paths: '<' only in 4.100.0, '>' only in 4.112.0
+117a118,129
+> cache.mongodb.aws
+> cache.mongodb.aws.enabled
+> cache.mongodb.aws.id
+> cache.mongodb.aws.region
+> cache.mongodb.aws.role
+> cache.mongodb.aws.role_external_id
+> cache.mongodb.aws.roles
+> cache.mongodb.aws.roles.role
+> cache.mongodb.aws.roles.role_external_id
+> cache.mongodb.aws.secret
+> cache.mongodb.aws.session_duration
+> cache.mongodb.aws.token
+355a368
+> input.aws_dynamodb_cdc.auto_replay_nacks
+357a371
+> input.aws_dynamodb_cdc.checkpoint_namespace
+433a448,452
+> input.aws_kinesis.enhanced_fan_out
+> input.aws_kinesis.enhanced_fan_out.consumer_activation_timeout
+> input.aws_kinesis.enhanced_fan_out.consumer_name
+> input.aws_kinesis.enhanced_fan_out.enabled
+> input.aws_kinesis.enhanced_fan_out.max_resubscribe_interval
+434a454
+> input.aws_kinesis.poll_period
+474a495
+> input.aws_s3.sqs.zero_key_warn_interval
+635a657
+> input.dynamic.bind_http
+696a719
+> input.gcp_spanner_cdc.checkpoint_limit
+1045a1069,1080
+> input.mongodb.aws
+> input.mongodb.aws.enabled
+> input.mongodb.aws.id
+> input.mongodb.aws.region
+> input.mongodb.aws.role
+> input.mongodb.aws.role_external_id
+> input.mongodb.aws.roles
+> input.mongodb.aws.roles.role
+> input.mongodb.aws.roles.role_external_id
+> input.mongodb.aws.secret
+> input.mongodb.aws.session_duration
+> input.mongodb.aws.token
+1059a1095,1106
+> input.mongodb_cdc.aws
+> input.mongodb_cdc.aws.enabled
+> input.mongodb_cdc.aws.id
+> input.mongodb_cdc.aws.region
+> input.mongodb_cdc.aws.role
+> input.mongodb_cdc.aws.role_external_id
+> input.mongodb_cdc.aws.roles
+> input.mongodb_cdc.aws.roles.role
+> input.mongodb_cdc.aws.roles.role_external_id
+> input.mongodb_cdc.aws.secret
+> input.mongodb_cdc.aws.session_duration
+> input.mongodb_cdc.aws.token
+1063a1111
+> input.mongodb_cdc.checkpoint_write_timeout
+1067a1116
+> input.mongodb_cdc.on_unresumable_position
+1376a1426
+> input.oracledb_cdc.logminer.max_session_age
+1379a1430,1431
+> input.oracledb_cdc.logminer.redo_volume_growth_max
+> input.oracledb_cdc.logminer.redo_volume_min
+1383a1436
+> input.oracledb_cdc.logminer.window_strategy
+1385a1439,1440
+> input.oracledb_cdc.prefetch_rows
+> input.oracledb_cdc.snapshot_filters
+1530a1586,1592
+> input.pg_stream.incremental_snapshot
+> input.pg_stream.incremental_snapshot.checkpoint_cache
+> input.pg_stream.incremental_snapshot.checkpoint_cache_key
+> input.pg_stream.incremental_snapshot.chunk_size
+> input.pg_stream.incremental_snapshot.enabled
+> input.pg_stream.incremental_snapshot.heartbeat_interval
+> input.pg_stream.incremental_snapshot.retry_cooldown
+1534a1597
+> input.pg_stream.signal_table_name
+1577a1641,1647
+> input.postgres_cdc.incremental_snapshot
+> input.postgres_cdc.incremental_snapshot.checkpoint_cache
+> input.postgres_cdc.incremental_snapshot.checkpoint_cache_key
+> input.postgres_cdc.incremental_snapshot.chunk_size
+> input.postgres_cdc.incremental_snapshot.enabled
+> input.postgres_cdc.incremental_snapshot.heartbeat_interval
+> input.postgres_cdc.incremental_snapshot.retry_cooldown
+1581a1652
+> input.postgres_cdc.signal_table_name
+2348a2420
+> input.websocket.max_message_size
+2455a2528
+> metrics.prometheus.histogram_timing_seconds_suffix
+3071a3145
+> output.dynamic.bind_http
+3381a3456
+> output.iceberg.commit.cleanup_on_failure
+3386a3462
+> output.iceberg.merge_strategy
+3388a3465
+> output.iceberg.parquet.compression
+3560a3638,3649
+> output.mongodb.aws
+> output.mongodb.aws.enabled
+> output.mongodb.aws.id
+> output.mongodb.aws.region
+> output.mongodb.aws.role
+> output.mongodb.aws.role_external_id
+> output.mongodb.aws.roles
+> output.mongodb.aws.roles.role
+> output.mongodb.aws.roles.role_external_id
+> output.mongodb.aws.secret
+> output.mongodb.aws.session_duration
+> output.mongodb.aws.token
+3845a3935
+> output.opensearch.compress_request_body
+4254a4345
+> output.redpanda_migrator.headers
+4814a4906
+> processor.aws_dynamodb_partiql.use_batch
+5200a5293,5304
+> processor.mongodb.aws
+> processor.mongodb.aws.enabled
+> processor.mongodb.aws.id
+> processor.mongodb.aws.region
+> processor.mongodb.aws.role
+> processor.mongodb.aws.role_external_id
+> processor.mongodb.aws.roles
+> processor.mongodb.aws.roles.role
+> processor.mongodb.aws.roles.role_external_id
+> processor.mongodb.aws.secret
+> processor.mongodb.aws.session_duration
+> processor.mongodb.aws.token
+5627a5732
+> processor.schema_registry_encode.avro.input_encoding
+5892a5998
+> scanner.avro.max_decompressed_block_bytes
+
+# Top-level properties diff
+
+# Deprecated field paths (count): 4.100.0=77 4.112.0=77

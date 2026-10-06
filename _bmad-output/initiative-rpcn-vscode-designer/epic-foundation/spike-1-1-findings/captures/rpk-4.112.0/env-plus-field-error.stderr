@@ -1,0 +1,2 @@
+env_plus_field_error.yaml(1,1) required environment variables were not set: [SPIKE_GREETING]
+env_plus_field_error.yaml(6,1) field nope not recognised

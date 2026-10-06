@@ -1,0 +1,6 @@
+# Spike 1.1 fixture: unterminated flow sequence on the last line.
+input:
+  generate:
+    mapping: 'root = "x"'
+    count: 1
+output: [

@@ -1,0 +1,1 @@
+env_no_default.yaml(1,1) required environment variables were not set: [SPIKE_GREETING]

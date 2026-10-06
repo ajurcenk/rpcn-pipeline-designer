@@ -1,0 +1,2 @@
+clean.yaml: OK
+invalid_field.yaml: FAILED

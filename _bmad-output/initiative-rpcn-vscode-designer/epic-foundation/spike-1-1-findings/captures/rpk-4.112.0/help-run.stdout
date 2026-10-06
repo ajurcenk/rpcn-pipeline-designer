@@ -1,0 +1,28 @@
+NAME:
+   redpanda-connect run - Run Redpanda Connect in normal mode against a specified config file
+
+USAGE:
+   redpanda-connect run [command options]
+
+DESCRIPTION:
+   Run a Redpanda Connect config.
+
+     redpanda-connect run ./foo.yaml
+
+OPTIONS:
+   --log.level value                                            override the configured log level, options are: off, error, warn, info, debug, trace
+   --set value, -s value [ --set value, -s value ]              set a field (identified by a dot path) in the main configuration file, e.g. "metrics.type=prometheus"
+   --resources value, -r value [ --resources value, -r value ]  pull in extra resources from a file, which can be referenced the same as resources defined in the main config, supports glob patterns (requires quotes)
+   --chilled                                                    continue to execute a config containing linter errors (default: false)
+   --watcher, -w                                                EXPERIMENTAL: watch config files for changes and automatically apply them (default: false)
+   --secrets env: [ --secrets env: ]                            Attempt to load secrets from a provided URN. If more than one entry is specified they will be attempted in order until a value is found. Environment variable lookups are specified with the URN env:, which by default is the only entry. In order to disable all secret lookups specify a single entry of `none:`. (default: "env:")
+   --redpanda-license /etc/redpanda/redpanda.license            Provide an explicit Redpanda License, which enables enterprise functionality. By default licenses found at the path /etc/redpanda/redpanda.license are applied.
+   --chroot value                                               Chroot into the provided directory after parsing configuration. Common /etc/ files are copied to the chroot directory, and the directory is made read-only. This flag is only supported on Linux.
+   --chroot-passthrough value [ --chroot-passthrough value ]    Specify additional files to be copied into the chroot directory. This flag can be used multiple times. It is only supported when --chroot is used.
+   --disable-telemetry                                          Disable anonymous telemetry from being emitted by this Connect instance. (default: false)
+   --telemetry-deployment-type value                            Tags telemetry payloads with the deployment type. Expected values: self-hosted, byoc, serverless. When unset the field is omitted from the payload.
+   --telemetry-tenant-id value                                  Tags telemetry payloads with an opaque tenant identifier (typically the Redpanda Cloud organization ID for cloud-managed deployments). When unset the field is omitted from the payload.
+   --rpc-plugins value [ --rpc-plugins value ]                  Plugins to load over the RPC interface. This flag should point to manifest files containing the plugin definitions. Globs are also supported.
+   --env-file value, -e value [ --env-file value, -e value ]    import environment variables from a dotenv file
+   --templates value, -t value [ --templates value, -t value ]  EXPERIMENTAL: import Redpanda Connect templates, supports glob patterns (requires quotes)
+   --help, -h                                                   show help

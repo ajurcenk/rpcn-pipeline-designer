@@ -1,0 +1,7 @@
+time="<TS>" level=info msg="Input type generate is now active" @service=redpanda-connect label="" path=root.input
+time="<TS>" level=info msg="Launching a Redpanda Connect instance, use CTRL+C to close" @service=redpanda-connect
+time="<TS>" level=info msg="Listening for HTTP requests at: http://0.0.0.0:4195" @service=redpanda-connect
+time="<TS>" level=info msg="Output type stdout is now active" @service=redpanda-connect label="" path=root.output
+time="<TS>" level=info msg="Pipeline has terminated. Shutting down the service" @service=redpanda-connect
+time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.112.0 path=uses_resource.yaml
+time="<TS>" level=info msg="Successfully loaded Redpanda license" @service=redpanda-connect expires_at="<REDACTED>" license_org=<REDACTED> license_type=enterprise

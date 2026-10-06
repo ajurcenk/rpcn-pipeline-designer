@@ -15,3 +15,9 @@ coverage/
 
 # BMad personal config (also covered by _bmad/custom/.gitignore)
 _bmad/custom/*.user.toml
+
+# BMad rendered skill cache (regenerated on each run)
+_bmad/render/
+
+# Spike binary cache (never committed)
+.cache/

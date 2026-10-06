@@ -1,0 +1,3 @@
+# redpanda-connect 4.112.0: lint --skip-env-var-check eval.yaml (cwd test/corpus, NO_COLOR=1)
+# exit: 1
+eval.yaml(108,1) field location is required

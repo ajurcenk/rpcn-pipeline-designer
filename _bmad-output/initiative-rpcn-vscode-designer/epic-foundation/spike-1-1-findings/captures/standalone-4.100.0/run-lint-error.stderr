@@ -1,0 +1,4 @@
+time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="invalid_field.yaml(6,1) field nope not recognised"
+time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="invalid_field.yaml(9,1) field codex not recognised"
+time="<TS>" level=error msg="shutting down due to linter errors, to prevent shutdown run Redpanda Connect with --chilled" @service=redpanda-connect
+time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=invalid_field.yaml

@@ -1,0 +1,7 @@
+# Spike 1.1 fixture: env interpolation with a default.
+input:
+  generate:
+    mapping: 'root = "${SPIKE_GREETING:hi}"'
+    count: 1
+output:
+  stdout: {}

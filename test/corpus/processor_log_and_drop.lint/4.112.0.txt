@@ -1,0 +1,12 @@
+# redpanda-connect 4.112.0: lint --skip-env-var-check processor_log_and_drop.yaml (cwd test/corpus, NO_COLOR=1)
+# exit: 1
+processor_log_and_drop.yaml(1,1) field name not recognised
+processor_log_and_drop.yaml(2,1) field type not recognised
+processor_log_and_drop.yaml(3,1) field categories not recognised
+processor_log_and_drop.yaml(4,1) field summary not recognised
+processor_log_and_drop.yaml(5,1) field description not recognised
+processor_log_and_drop.yaml(7,1) field fields not recognised
+processor_log_and_drop.yaml(9,1) field mapping not recognised
+processor_log_and_drop.yaml(25,1) field metrics_mapping not recognised
+processor_log_and_drop.yaml(32,1) field config not recognised
+processor_log_and_drop.yaml(33,1) field expected not recognised

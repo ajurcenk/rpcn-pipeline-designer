@@ -1,0 +1,7 @@
+# Spike 1.1 fixture: file input `codec` is deprecated (is_deprecated in both 4.100.0 and 4.112.0).
+input:
+  file:
+    paths: [ ./input.txt ]
+    codec: lines
+output:
+  stdout: {}

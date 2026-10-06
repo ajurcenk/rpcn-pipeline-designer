@@ -1,0 +1,6 @@
+# Spike 1.1 fixture: generate without its required mapping field.
+input:
+  generate:
+    interval: 1s
+output:
+  stdout: {}

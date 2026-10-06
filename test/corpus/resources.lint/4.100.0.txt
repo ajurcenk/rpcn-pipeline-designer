@@ -1,0 +1,2 @@
+# redpanda-connect 4.100.0: lint --skip-env-var-check resources.yaml (cwd test/corpus, NO_COLOR=1)
+# exit: 0

@@ -1,0 +1,4 @@
+# Spike 1.1 fixture: resource file for uses_resource.yaml (pass with -r).
+cache_resources:
+  - label: spike_cache
+    memory: {}

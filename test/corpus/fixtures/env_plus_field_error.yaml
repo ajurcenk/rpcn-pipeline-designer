@@ -1,0 +1,8 @@
+# Spike 1.1 fixture: env interpolation with no default plus an unknown field (both errors in one lint).
+input:
+  generate:
+    mapping: 'root = "${SPIKE_GREETING}"'
+    count: 1
+    nope: true
+output:
+  stdout: {}

@@ -1,0 +1,41 @@
+NAME:
+   redpanda-connect - A stream processor for mundane tasks - https://docs.redpanda.com/redpanda-connect
+
+USAGE:
+   redpanda-connect [global options] command [command options]
+
+DESCRIPTION:
+   Either run Redpanda Connect as a stream processor or choose a command:
+
+     redpanda-connect list inputs
+     redpanda-connect create kafka//file > ./config.yaml
+     redpanda-connect run ./config.yaml
+     redpanda-connect run -r "./production/*.yaml" ./config.yaml
+
+COMMANDS:
+   dry-run     Parse Redpanda Connect configs and test the connections of each plugin
+   agent       Redpanda Connect commands.
+   mcp-server  Execute an MCP server against a suite of Redpanda Connect resources.
+   plugin      Plugin management commands
+   echo        Parse a config file and echo back a normalised version
+   lint        Parse Redpanda Connect configs and report any linting errors
+   run         Run Redpanda Connect in normal mode against a specified config file
+   streams     Run Redpanda Connect in streams mode
+   list        List all Redpanda Connect component types
+   create      Create a new Redpanda Connect config
+   test        Execute Redpanda Connect unit tests
+   template    Interact and generate Redpanda Connect templates
+   blobl       Execute a Redpanda Connect mapping on documents consumed via stdin or file
+   help, h     Shows a list of commands or help for one command
+
+GLOBAL OPTIONS:
+   --version, -v                                              display version info, then exit (default: false)
+   --secrets env: [ --secrets env: ]                          Attempt to load secrets from a provided URN. If more than one entry is specified they will be attempted in order until a value is found. Environment variable lookups are specified with the URN env:, which by default is the only entry. In order to disable all secret lookups specify a single entry of `none:`. (default: "env:")
+   --redpanda-license /etc/redpanda/redpanda.license          Provide an explicit Redpanda License, which enables enterprise functionality. By default licenses found at the path /etc/redpanda/redpanda.license are applied.
+   --chroot value                                             Chroot into the provided directory after parsing configuration. Common /etc/ files are copied to the chroot directory, and the directory is made read-only. This flag is only supported on Linux.
+   --chroot-passthrough value [ --chroot-passthrough value ]  Specify additional files to be copied into the chroot directory. This flag can be used multiple times. It is only supported when --chroot is used.
+   --disable-telemetry                                        Disable anonymous telemetry from being emitted by this Connect instance. (default: false)
+   --telemetry-deployment-type value                          Tags telemetry payloads with the deployment type. Expected values: self-hosted, byoc, serverless. When unset the field is omitted from the payload.
+   --telemetry-tenant-id value                                Tags telemetry payloads with an opaque tenant identifier (typically the Redpanda Cloud organization ID for cloud-managed deployments). When unset the field is omitted from the payload.
+   --rpc-plugins value [ --rpc-plugins value ]                Plugins to load over the RPC interface. This flag should point to manifest files containing the plugin definitions. Globs are also supported.
+   --help, -h                                                 show help

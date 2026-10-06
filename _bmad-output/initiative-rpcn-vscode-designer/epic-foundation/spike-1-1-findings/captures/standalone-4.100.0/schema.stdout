@@ -1,0 +1,7 @@
+bytes=795174
+sha256=e2cc9eace95714105bdcdf38b74ef699f15cea6955337a197b880e02d9910256
+top_level_keys=["definitions","properties"]
+has_$schema=false
+definitions=["buffer","cache","input","metrics","output","processor","rate_limit","scanner","tracer"]
+properties=["buffer","cache_resources","error_handling","http","input","input_resources","logger","metrics","output","output_resources","parallel","pipeline","processor_resources","rate_limit_resources","redpanda","shutdown_delay","shutdown_timeout","tests","tracer"]
+custom_is_keys=["is_advanced","is_deprecated","is_optional","is_secret"]

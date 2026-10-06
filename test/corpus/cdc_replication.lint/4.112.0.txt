@@ -1,0 +1,2 @@
+# redpanda-connect 4.112.0: lint --skip-env-var-check cdc_replication.yaml (cwd test/corpus, NO_COLOR=1)
+# exit: 0

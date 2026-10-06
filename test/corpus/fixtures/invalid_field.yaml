@@ -1,0 +1,9 @@
+# Spike 1.1 fixture: two unknown fields at different indentation.
+input:
+  generate:
+    mapping: 'root = "hello"'
+    count: 1
+    nope: true
+output:
+  stdout:
+    codex: lines

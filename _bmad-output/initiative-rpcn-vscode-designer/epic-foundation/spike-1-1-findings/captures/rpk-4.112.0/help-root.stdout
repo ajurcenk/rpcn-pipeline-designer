@@ -1,0 +1,43 @@
+A stream processor for mundane tasks - https://docs.redpanda.com/redpanda-connect
+
+Usage:
+  rpk connect [flags]
+  rpk connect [command]
+
+Available Commands:
+  agent       Redpanda Connect commands.
+  blobl       Execute a Redpanda Connect mapping on documents consumed via stdin or file
+  create      Create a new Redpanda Connect config
+  dry-run     Parse Redpanda Connect configs and test the connections of each plugin
+  echo        Parse a config file and echo back a normalised version
+  help        Shows a list of commands or help for one command
+  install     Install Redpanda Connect
+  lint        Parse Redpanda Connect configs and report any linting errors
+  list        List all Redpanda Connect component types
+  mcp-server  Execute an MCP server against a suite of Redpanda Connect resources.
+  plugin      Plugin management commands
+  run         Run Redpanda Connect in normal mode against a specified config file
+  streams     Run Redpanda Connect in streams mode
+  template    Interact and generate Redpanda Connect templates
+  test        Execute Redpanda Connect unit tests
+  uninstall   Uninstall the Redpanda Connect plugin
+  upgrade     Upgrade to the latest Redpanda Connect version
+
+Flags:
+  -h, --help   Help for connect
+
+Global Flags:
+      --config string            Redpanda or rpk config file; default
+                                 search paths are
+                                 "~/.config/rpk/rpk.yaml",
+                                 $PWD/redpanda.yaml, and
+                                 /etc/redpanda/redpanda.yaml
+  -X, --config-opt stringArray   Override rpk configuration settings; '-X
+                                 help' for detail or '-X list' for terser
+                                 detail
+      --ignore-profile           Ignore rpk.yaml and redpanda.yaml; use
+                                 default settings
+      --profile string           rpk profile to use
+  -v, --verbose                  Enable verbose logging
+
+Use "rpk connect [command] --help" for more information about a command.

@@ -1,0 +1,7 @@
+# Spike 1.1 fixture: emits one message immediately, then idles until stopped (SIGINT).
+input:
+  generate:
+    mapping: 'root = "tick"'
+    interval: 1h
+output:
+  stdout: {}

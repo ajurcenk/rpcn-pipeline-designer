@@ -1,0 +1,4 @@
+time="<TS>" level=error msg="service closing due to: failed to init processor <no label> path root.pipeline.processors.0: cache resource 'spike_cache' was not found" @service=redpanda-connect
+time="<TS>" level=info msg="Listening for HTTP requests at: http://0.0.0.0:4195" @service=redpanda-connect
+time="<TS>" level=info msg="Running main config from specified file" @service=redpanda-connect benthos_version=4.100.0 path=uses_resource.yaml
+time="<TS>" level=info msg="Successfully loaded Redpanda license" @service=redpanda-connect expires_at="<REDACTED>" license_org=<REDACTED> license_type=enterprise

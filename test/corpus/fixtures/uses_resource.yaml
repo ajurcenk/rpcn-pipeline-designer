@@ -1,0 +1,14 @@
+# Spike 1.1 fixture: references cache resource spike_cache defined only in spike_resources.yaml.
+input:
+  generate:
+    mapping: 'root = "hello"'
+    count: 1
+pipeline:
+  processors:
+    - cache:
+        resource: spike_cache
+        operator: set
+        key: k
+        value: v
+output:
+  stdout: {}
