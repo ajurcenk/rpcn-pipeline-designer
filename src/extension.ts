@@ -9,6 +9,7 @@ import { registerSchemaContributor, SchemaContributor } from './adapters/redhatY
 import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
 import { UnknownFieldQuickFix } from './adapters/vscode/quickFix';
+import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -26,6 +27,8 @@ export interface ExtensionApi {
 	readonly detection: DetectionRegistry;
 	/** Lint on save (2.4); epic 3 reads `diagnosticsFor` / `onDidChangeDiagnostics`. */
 	readonly lintDiagnostics: Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
+	/** Run and Stop (2.7). */
+	readonly run: RunController;
 	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
@@ -113,12 +116,16 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		{ providedCodeActionKinds: UnknownFieldQuickFix.providedCodeActionKinds },
 	));
 
+	const run = new RunController({ binary: redpandaConnect, detection, log });
+	context.subscriptions.push(run, ...run.registerCommands());
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
 		schemaStore,
 		detection,
 		lintDiagnostics,
+		run,
 		schemaContributor,
 		contributorRegistered,
 		outputLines: () => [...lines],

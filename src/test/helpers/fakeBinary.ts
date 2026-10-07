@@ -91,6 +91,8 @@ export interface ConnectScriptOptions {
 	readonly listSleepSeconds?: number;
 	/** Shell body run for `lint …` (the target is the last argument, `$last`). Default: exit 0. */
 	readonly lint?: string;
+	/** Shell body run for `run …` (the target is `$last`). Default: exit 0. */
+	readonly run?: string;
 }
 
 /** A fake `redpanda-connect` answering `--version` and `list --format jsonschema|json-full`, only with NO_COLOR=1. */
@@ -118,6 +120,11 @@ export function connectScript(options: ConnectScriptOptions): string {
 		count('lint'),
 		'for last in "$@"; do :; done',
 		options.lint ?? 'exit 0',
+		';;',
+		'"run "*)',
+		count('run'),
+		'for last in "$@"; do :; done',
+		options.run ?? 'exit 0',
 		';;',
 		'*) echo "unexpected args: $*" >&2; exit 2 ;;',
 		'esac',

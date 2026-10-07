@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import {
 	formatVersion, isRpkConnectNotInstalled, meetsMinimum, MIN_VERSION, parseVersion, parseVersionOutput,
 } from '../../core/version';
-import { attachBinaryNotifications, BinaryNotifier } from './notify';
+import { attachBinaryNotifications, BinaryNotifications, BinaryNotifier } from './notify';
 import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, ProcessOutcome, readVersion } from './process';
 import { errorText, firstNonEmptyLine } from './text';
 
@@ -315,6 +315,7 @@ export class RedpandaConnect implements vscode.Disposable {
 	private inFlight: Promise<BinaryState> | undefined;
 	private rerunRequested = false;
 	private disposed = false;
+	private readonly notifications: BinaryNotifications | undefined;
 
 	readonly onDidChange: vscode.Event<BinaryState> = this.emitter.event;
 
@@ -329,8 +330,18 @@ export class RedpandaConnect implements vscode.Disposable {
 		);
 		if (options.notifier) {
 			// Subscribed before the first resolution, so activation's `unresolved` → `missing` notifies.
-			this.subscriptions.push(attachBinaryNotifications(this, options.notifier, options.log));
+			this.notifications = attachBinaryNotifications(this, options.notifier, options.log);
+			this.subscriptions.push(this.notifications);
 		}
+	}
+
+	/**
+	 * Shows the binary warning for the current state again (a user-triggered command needs a
+	 * binary). Returns whether a warning was shown; `false` when the state is usable or there is
+	 * no notifier.
+	 */
+	showBinaryWarning(): boolean {
+		return this.notifications?.showAgain(this.current) ?? false;
 	}
 
 	get state(): BinaryState {

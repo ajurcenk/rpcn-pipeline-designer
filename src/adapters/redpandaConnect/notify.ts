@@ -29,6 +29,17 @@ export interface BinaryNotifier {
 	setBinaryPath(binaryPath: string): PromiseLike<void>;
 }
 
+/** The subscription `attachBinaryNotifications` returns. */
+export interface BinaryNotifications {
+	dispose(): void;
+	/**
+	 * Shows the warning for `state` again, with the same copy and actions, outside a transition:
+	 * for user-triggered commands that need a binary (Run, Refresh Schema). Returns whether a
+	 * warning was shown (`false` for `ok` / `unresolved`).
+	 */
+	showAgain(state: BinaryState): boolean;
+}
+
 /** What the notification needs from the state owner. */
 export interface BinaryStateSource {
 	onDidChange(listener: (state: BinaryState) => void): { dispose(): void };
@@ -89,7 +100,7 @@ export function attachBinaryNotifications(
 	source: BinaryStateSource,
 	notifier: BinaryNotifier,
 	log: LogLine,
-): { dispose(): void } {
+): BinaryNotifications {
 	let disposed = false;
 	/** Counts warnings shown, so Set path can tell whether its own refresh notified. */
 	let shownCount = 0;
@@ -157,6 +168,14 @@ export function attachBinaryNotifications(
 		dispose() {
 			disposed = true;
 			subscription.dispose();
+		},
+		showAgain(state) {
+			const message = notificationMessage(state);
+			if (disposed || message === undefined) {
+				return false;
+			}
+			show(message);
+			return true;
 		},
 	};
 }

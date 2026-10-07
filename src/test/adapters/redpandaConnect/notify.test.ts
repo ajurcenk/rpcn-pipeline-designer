@@ -102,6 +102,32 @@ suite('adapters/redpandaConnect binary notification (matrix)', () => {
 		await rc.refresh(); // shares the in-flight run started by the action
 	};
 
+	test('showBinaryWarning (showAgain): the same warning again for missing; nothing for ok; nothing after dispose', async () => {
+		await rc.refresh();
+		assert.strictEqual(notifier.warnings.length, 1);
+		assert.strictEqual(rc.showBinaryWarning(), true);
+		assert.strictEqual(notifier.warnings.length, 2);
+		assert.deepStrictEqual([notifier.warnings[1].message, notifier.warnings[1].actions],
+			[MISSING_MESSAGE, [...NOTIFICATION_ACTIONS]]);
+		// Its actions work like the transition warning's: Set path writes the setting and re-resolves.
+		notifier.nextPick = okBin;
+		await clickAndRefresh('Set path');
+		assert.strictEqual(rc.state.kind, 'ok');
+		assert.strictEqual(rc.showBinaryWarning(), false, 'ok: nothing to show');
+		assert.strictEqual(notifier.warnings.length, 2);
+		rc.dispose();
+		assert.strictEqual(rc.showBinaryWarning(), false, 'disposed');
+	});
+
+	test('showBinaryWarning without a notifier is false', () => {
+		const silent = new RedpandaConnect({ log: () => undefined });
+		try {
+			assert.strictEqual(silent.showBinaryWarning(), false);
+		} finally {
+			silent.dispose();
+		}
+	});
+
 	test('MISSING_AT_ACTIVATION: one warning with the missing copy and all three actions', async () => {
 		assert.strictEqual((await rc.refresh()).kind, 'missing');
 		assert.strictEqual(notifier.warnings.length, 1);

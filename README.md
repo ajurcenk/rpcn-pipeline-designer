@@ -34,6 +34,12 @@ An open YAML file is treated as a Redpanda Connect config when one of its YAML d
 
 Saving a detected config runs `lint --deprecated --skip-env-var-check` with the `redpandaConnect.resourceFiles` and `redpandaConnect.envFile` settings, and shows each finding as a diagnostic on its whole line (source "Redpanda Connect"): `field … is deprecated` as a Warning, everything else as an Error. A finding on a line YAML by Red Hat already flags is hidden, and lint's YAML syntax errors are hidden while YAML by Red Hat reports a syntax error (it places them more precisely). File paths containing `*`, `?` or `[` are linted as written, not as patterns. The first edit after a save clears the findings until the next save. For `field X not recognised`, the light bulb offers **Change to `<name>`** for up to three of the closest field names that are valid at that spot in the schema; applying one replaces only the key. Lint does not run while you type, and problems running it (for example a relative `resourceFiles` entry with no workspace folder open) are written to the "Redpanda Connect" output channel.
 
+## Run and Stop
+
+**Run** (the play button in the editor title of a detected config, or **Redpanda Connect: Run**) saves unsaved changes and runs the file with `run --set http.enabled=false`, plus the `redpandaConnect.resourceFiles` and `redpandaConnect.envFile` settings. The output goes to a terminal named "Redpanda Connect: <file>", one per file, which is reused when you run the file again. The process is started directly, not through a shell. Its working directory is the file's workspace folder, or the file's directory when it is in none.
+
+**Stop** (the status-bar item, Ctrl+C in that terminal, or **Redpanda Connect: Stop**) sends an interrupt and, if the pipeline is still running after 10 s, kills it; pressing Stop again kills at once. When the run ends, the status bar shows how it ended ("Pipeline stopped" for a run you stopped, otherwise "Pipeline exited (code N)"), and the terminal keeps the output. Closing the terminal ends its run; a Stop or close while a re-run is waiting for the old run to end cancels the restart. Untitled files cannot be run: save the file first. Known limit: in a multi-root workspace, relative `resourceFiles` / `envFile` settings resolve against the first folder, while the run's working directory is the file's own folder.
+
 ## Requirements
 
 - VS Code 1.100 or newer.

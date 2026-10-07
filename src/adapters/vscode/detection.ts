@@ -110,6 +110,17 @@ export class DetectionRegistry implements vscode.Disposable {
 		return this.marked.has(key) || this.entries.get(key) === true;
 	}
 
+	/** Every detected URI (`toString()`): open detected documents plus session marks. */
+	detectedUris(): string[] {
+		const uris = new Set(this.marked);
+		for (const [key, detected] of this.entries) {
+			if (detected) {
+				uris.add(key);
+			}
+		}
+		return [...uris];
+	}
+
 	/** Whether the registry holds an entry (detected or not) for this open URI. */
 	has(uri: string | vscode.Uri): boolean {
 		return this.entries.has(keyOf(uri));

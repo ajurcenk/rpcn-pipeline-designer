@@ -82,12 +82,21 @@
       {
         "command": "redpandaConnect.run",
         "title": "Run",
-        "category": "Redpanda Connect"
+        "category": "Redpanda Connect",
+        "icon": "$(play)"
       },
       {
         "command": "redpandaConnect.stop",
         "title": "Stop",
-        "category": "Redpanda Connect"
+        "category": "Redpanda Connect",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "redpandaConnect.runUntitled",
+        "title": "Save the file to run it.",
+        "category": "Redpanda Connect",
+        "icon": "$(play)",
+        "enablement": "false"
       },
       {
         "command": "redpandaConnect.refreshSchema",
@@ -107,11 +116,27 @@
         },
         {
           "command": "redpandaConnect.run",
-          "when": "false"
+          "when": "redpandaConnect.activeEditorDetected"
         },
         {
           "command": "redpandaConnect.stop",
+          "when": "redpandaConnect.activeEditorRunning"
+        },
+        {
+          "command": "redpandaConnect.runUntitled",
           "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "redpandaConnect.run",
+          "when": "resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths",
+          "group": "navigation"
+        },
+        {
+          "command": "redpandaConnect.runUntitled",
+          "when": "resourceScheme == untitled && resourcePath in redpandaConnect.detectedPaths",
+          "group": "navigation"
         }
       ]
     }
