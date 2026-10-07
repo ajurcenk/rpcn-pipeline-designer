@@ -101,7 +101,7 @@ companions: []
 - **Rule:**
   - Only `src/adapters/redpandaConnect` spawns processes or resolves the binary. Resolution order: `rpk` on PATH (`rpk connect …`), then `redpanda-connect` on PATH, then the binary path setting as a fallback used only when PATH yields no usable binary; a setting naming `rpk` runs as `rpk connect`.
   - It exposes an observable `binaryState`: `unresolved | ok{path, version} | missing | invalid`, with `onDidChange`. A binary older than Redpanda Connect v4.100.0 is `invalid`. A notification fires once per transition into `missing` or `invalid`. The graph gets it as `hostStatus`.
-  - One shared argument builder serves lint and run: `-r` from `redpandaConnect.resourceFiles` plus detected resource files (AD-18), `-e` from `redpandaConnect.envFile`. Lint adds `--skip-env-var-check`. `[ASSUMPTION]` Every child gets env `NO_COLOR=1`.
+  - One shared argument builder serves lint and run: `--resources` from the `redpandaConnect.resourceFiles` setting only (no automatic resource-file detection), `-e` from `redpandaConnect.envFile`. Lint adds `--skip-env-var-check`. `[ASSUMPTION]` Every child gets env `NO_COLOR=1`.
 
 ### AD-10 — Schema: generated per binary, transformed once, cache-busted by version [ADOPTED]
 
@@ -177,7 +177,7 @@ graph LR
 
 - **Binds:** `src/adapters/vscode` (DetectionRegistry), `src/core` predicate, auto-open (AD-1), schema `requestSchema` (AD-11), lint (AD-12), Run (AD-13)
 - **Prevents:** features disagreeing on which files are Redpanda Connect configs
-- **Rule:** One per-URI `DetectionRegistry` is the only answer to "is this a Redpanda Connect file". Predicate: matches `redpandaConnect.filePatterns`, OR the content has top-level `input` / `pipeline` / `output` / `buffer` or resource keys, OR the user ran Show graph for the URI this session. It recomputes on open, change and setting change, and fires `onDidChangeDetection`. Auto-open happens only on the first open per session. Resource files are detected and passed to lint and run (AD-9).
+- **Rule:** One per-URI `DetectionRegistry` is the only answer to "is this a Redpanda Connect file". Predicate: matches `redpandaConnect.filePatterns`, OR the content has top-level `input` / `pipeline` / `output` / `buffer` or resource keys, OR the user ran Show graph for the URI this session. It recomputes on open, change and setting change, and fires `onDidChangeDetection`. Auto-open happens only on the first open per session. Resource files are not detected automatically: lint and run get exactly the `redpandaConnect.resourceFiles` setting (AD-9).
 
 ### AD-19 — Quick Fix and all extension edits are minimal-range [ADOPTED]
 
