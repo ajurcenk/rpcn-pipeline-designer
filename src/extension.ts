@@ -7,6 +7,8 @@ import { BinaryNotifier } from './adapters/redpandaConnect/notify';
 import { SchemaStore } from './adapters/redpandaConnect/schema';
 import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
 import { DetectionRegistry } from './adapters/vscode/detection';
+import { LintDiagnostics } from './adapters/vscode/diagnostics';
+import { lintFile } from './adapters/redpandaConnect/lint';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -21,6 +23,8 @@ export interface ExtensionApi {
 	readonly schemaStore: SchemaStore;
 	/** Which open YAML documents are Redpanda Connect configs (AD-18). */
 	readonly detection: DetectionRegistry;
+	/** Lint on save (2.4); epic 3 reads `diagnosticsFor` / `onDidChangeDiagnostics`. */
+	readonly lintDiagnostics: Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
 	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
@@ -96,11 +100,19 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const schemaContributor = new SchemaContributor(schemaStore, detection);
 	const contributorRegistered = registerSchemaContributor({ contributor: schemaContributor, log });
 
+	const lintDiagnostics = new LintDiagnostics({
+		detection,
+		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
+		log,
+	});
+	context.subscriptions.push(lintDiagnostics);
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
 		schemaStore,
 		detection,
+		lintDiagnostics,
 		schemaContributor,
 		contributorRegistered,
 		outputLines: () => [...lines],

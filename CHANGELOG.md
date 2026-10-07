@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - Binary resolution: `rpk connect` on `PATH`, then `redpanda-connect` on `PATH`, then `redpandaConnect.binaryPath` as a fallback; binaries older than v4.100.0 are rejected. The binary is resolved again when the setting changes.
 - A warning with **Install guide**, **Set path** and **Retry** appears when no usable binary is found, once per change of state.
 - Shared argument builder for lint and run (`--resources` from `redpandaConnect.resourceFiles` only, `--env-file` from `redpandaConnect.envFile`, `NO_COLOR=1`); not used by any command yet.
+- Lint on save: findings from `lint --deprecated` appear as whole-line diagnostics (deprecated fields as warnings), hidden on lines YAML by Red Hat already flags (and lint's YAML syntax errors while Red Hat reports one), and cleared by the first edit.
 - Process runner: caller environment and working directory for one-shot runs, and a streaming runner with Stop (SIGINT, then SIGKILL after a grace period) for Run; not used by any command yet.
 - The config schema is generated from the binary (`list --format jsonschema`, with docs from `list --format json-full`), cached per binary path and version, and regenerated with **Redpanda Connect: Refresh Schema**.
 - Detected Redpanda Connect configs get completion and hover from the binary's schema through YAML by Red Hat.

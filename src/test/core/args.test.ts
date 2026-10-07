@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { buildLintArgs, buildRunArgs, FORBIDDEN_ARGS } from '../../core/args';
+import { buildLintArgs, buildRunArgs, escapeGlob, FORBIDDEN_ARGS } from '../../core/args';
 
 const BIN = '/opt/rc/redpanda-connect';
 
@@ -55,5 +55,24 @@ suite('core/args', () => {
 				}
 			}
 		}
+	});
+});
+
+suite('core/args lint target escaping (2.4 review)', () => {
+	test('lint targets are glob-escaped on POSIX; run targets and resources are not', () => {
+		const input = { invocation: ['/b'], targets: ['/w/[client]/a*?.yaml'], resourceFiles: ['/w/res/*.yaml'] };
+		const lint = buildLintArgs(input);
+		assert.ok(lint.kind === 'ok');
+		assert.deepStrictEqual(lint.argv.slice(-3), ['--resources', '/w/res/*.yaml', '/w/\\[client]/a\\*\\?.yaml']);
+		const run = buildRunArgs(input);
+		assert.ok(run.kind === 'ok');
+		assert.strictEqual(run.argv[run.argv.length - 1], '/w/[client]/a*?.yaml');
+	});
+
+	test('a backslash in a POSIX file name is escaped too; win32 targets are left alone', () => {
+		assert.strictEqual(escapeGlob('/w/a\\b.yaml'), '/w/a\\\\b.yaml');
+		const win = buildLintArgs({ invocation: ['C:\\b.exe'], targets: ['C:\\w\\[x].yaml'], resourceFiles: [], platform: 'win32' });
+		assert.ok(win.kind === 'ok');
+		assert.strictEqual(win.argv[win.argv.length - 1], 'C:\\w\\[x].yaml');
 	});
 });

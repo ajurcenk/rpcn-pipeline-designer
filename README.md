@@ -30,6 +30,10 @@ For the resolved binary, the extension runs `list --format jsonschema` and merge
 
 An open YAML file is treated as a Redpanda Connect config when one of its YAML documents has a top-level `input`, `pipeline`, `output`, `buffer` or `*_resources` key (`cache_resources`, `rate_limit_resources`, `processor_resources`, `input_resources`, `output_resources`). Templates (a document with top-level `name`, `type` and `mapping`) are not. A file matching a `redpandaConnect.filePatterns` glob is always treated as a config, templates included. Detection follows edits and setting changes; there is no need to reopen the file. Resource files are not found automatically: lint and run pass exactly the files in `redpandaConnect.resourceFiles`.
 
+## Lint on save
+
+Saving a detected config runs `lint --deprecated --skip-env-var-check` with the `redpandaConnect.resourceFiles` and `redpandaConnect.envFile` settings, and shows each finding as a diagnostic on its whole line (source "Redpanda Connect"): `field … is deprecated` as a Warning, everything else as an Error. A finding on a line YAML by Red Hat already flags is hidden, and lint's YAML syntax errors are hidden while YAML by Red Hat reports a syntax error (it places them more precisely). File paths containing `*`, `?` or `[` are linted as written, not as patterns. The first edit after a save clears the findings until the next save. Lint does not run while you type, and problems running it (for example a relative `resourceFiles` entry with no workspace folder open) are written to the "Redpanda Connect" output channel.
+
 ## Requirements
 
 - VS Code 1.100 or newer.

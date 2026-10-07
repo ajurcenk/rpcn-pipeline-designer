@@ -147,7 +147,7 @@ function buildCommand(
 		envFile = resolved.path;
 	}
 
-	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile });
+	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile, platform: process.platform });
 	switch (result.kind) {
 		case 'targetCount':
 		case 'emptyInvocation':

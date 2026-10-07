@@ -23,6 +23,8 @@ export interface ArgvInput {
 	readonly resourceFiles: readonly string[];
 	/** Absolute env file path, if any. */
 	readonly envFile?: string;
+	/** `process.platform`; on anything but `win32`, lint targets are glob-escaped. Default: POSIX. */
+	readonly platform?: string;
 }
 
 export type ArgvResult =
@@ -32,12 +34,22 @@ export type ArgvResult =
 	/** The invocation is empty. */
 	| { readonly kind: 'emptyInvocation' };
 
-/** `[...invocation, 'lint', --deprecated, --skip-env-var-check, …resources/env…, ...targets]`. */
+/**
+ * `[...invocation, 'lint', --deprecated, --skip-env-var-check, …resources/env…, ...targets]`.
+ * Lint expands each target as a glob (`run` does not; 2.4 review): on POSIX the targets are
+ * escaped, so `[client]/a.yaml` names that file. Lint still prints the unescaped path.
+ */
 export function buildLintArgs(input: ArgvInput): ArgvResult {
 	if (input.targets.length < 1) {
 		return { kind: 'targetCount', expected: 'atLeastOne', actual: input.targets.length };
 	}
-	return build('lint', LINT_FLAGS, input);
+	const targets = input.platform === 'win32' ? input.targets : input.targets.map(escapeGlob);
+	return build('lint', LINT_FLAGS, { ...input, targets });
+}
+
+/** Escapes Go `filepath.Match` metacharacters (`\`, `*`, `?`, `[`) with a backslash (POSIX only). */
+export function escapeGlob(value: string): string {
+	return value.replace(/[\\*?[]/g, (c) => `\\${c}`);
 }
 
 /** `[...invocation, 'run', --set, http.enabled=false, …resources/env…, target]`. */
