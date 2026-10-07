@@ -370,6 +370,47 @@ suite('Schema contributor (integration)', function () {
 		await completionOffers(doc, new vscode.Position(2, 6), ['mapping', 'bloblang']);
 	});
 
+	test('BECOMES_DETECTED (2.2): typing input: fires one onDidChangeDetection without reopening', async () => {
+		const doc = await openYaml('typed.yaml', '');
+		const events: { uri: string; detected: boolean }[] = [];
+		const sub = api().detection.onDidChangeDetection((e) => events.push(e));
+		try {
+			for (const text of ['in', 'put:', '\n  stdin: {}\n']) {
+				const edit = new vscode.WorkspaceEdit();
+				edit.insert(doc.uri, doc.positionAt(doc.getText().length), text);
+				assert.ok(await vscode.workspace.applyEdit(edit));
+			}
+			assert.strictEqual(api().detection.isDetected(doc.uri), true);
+			assert.deepStrictEqual(events, [{ uri: doc.uri.toString(), detected: true }]);
+		} finally {
+			sub.dispose();
+		}
+	});
+
+	test('PATTERN (2.2): filePatterns detects a template and a key-less file; clearing it recomputes', async () => {
+		const template = await openYaml('t.rpcn.yaml', 'name: t\ntype: input\nmapping: |\n  root = {}\ninput:\n  stdin: {}\n');
+		const plain = await openYaml('p.rpcn.yaml', 'foo: 1\n');
+		const detection = api().detection;
+		assert.strictEqual(detection.isDetected(template.uri), false);
+		assert.strictEqual(detection.isDetected(plain.uri), false);
+		const config = vscode.workspace.getConfiguration('redpandaConnect');
+		const events: { uri: string; detected: boolean }[] = [];
+		const sub = detection.onDidChangeDetection((e) => events.push(e));
+		const flips = (detected: boolean) => events.filter((e) => e.detected === detected).map((e) => e.uri).sort();
+		const both = [template.uri.toString(), plain.uri.toString()].sort();
+		try {
+			await config.update('filePatterns', ['**/*.rpcn.yaml'], vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => detection.isDetected(template.uri) && detection.isDetected(plain.uri), 5_000));
+			assert.deepStrictEqual(flips(true), both);
+		} finally {
+			await config.update('filePatterns', undefined, vscode.ConfigurationTarget.Global);
+		}
+		assert.ok(await waitFor(() => !detection.isDetected(template.uri) && !detection.isDetected(plain.uri), 5_000));
+		sub.dispose();
+		assert.deepStrictEqual(flips(true), both, 'one detected: true per file');
+		assert.deepStrictEqual(flips(false), both, 'one detected: false per file');
+	});
+
 	test('SCHEMA_CHANGES: a snapshot for another binary version is used by the open file without reopening', async () => {
 		const doc = await openYaml('changes.yaml', 'input:\n  \n');
 		const before = await schemaFrom(fakeBinary, '4.112.0');

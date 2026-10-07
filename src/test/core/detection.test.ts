@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DETECTION_KEYS, isRedpandaConnectConfig } from '../../core/detection';
+import { DETECTION_KEYS, detect, isRedpandaConnectConfig, topLevelKeysByDocument } from '../../core/detection';
 import { REPO_ROOT } from '../helpers/fakeBinary';
 
 const CORPUS = path.join(REPO_ROOT, 'test', 'corpus');
@@ -96,5 +96,33 @@ suite('core/detection isRedpandaConnectConfig', () => {
 			const text = fs.readFileSync(path.join(CORPUS, file), 'utf8');
 			assert.strictEqual(isRedpandaConnectConfig(text), kind !== 'template', `${file} (${kind})`);
 		}
+	});
+
+	test('TEMPLATE: a document with name, type and mapping is not a config, even with input:', () => {
+		const template = 'name: t\ntype: input\nmapping: |\n  root = {}\ninput:\n  stdin: {}\n';
+		assert.strictEqual(isRedpandaConnectConfig(template), false);
+		assert.strictEqual(isRedpandaConnectConfig('name: t\ntype: input\ninput:\n  stdin: {}\n'), true, 'no mapping');
+	});
+
+	test('MULTI_DOC: a template document next to a config document is detected', () => {
+		const text = 'name: t\ntype: input\nmapping: x\ninput: {}\n---\ninput:\n  stdin: {}\n';
+		assert.strictEqual(isRedpandaConnectConfig(text), true);
+	});
+
+	test('the template keys count per document, not across documents', () => {
+		assert.strictEqual(isRedpandaConnectConfig('name: t\ntype: input\n---\nmapping: x\ninput: {}\n'), true);
+	});
+
+	test('topLevelKeysByDocument splits on --- and ... and skips empty documents', () => {
+		const docs = topLevelKeysByDocument('---\na: 1\n...\n--- # c\nb: 1\nc:\n  d: 1\n---\n');
+		assert.deepStrictEqual(docs.map((d) => [...d]), [['a'], ['b', 'c']]);
+		assert.deepStrictEqual(topLevelKeysByDocument('---x: 1\n').map((d) => [...d]), [], 'not a marker');
+	});
+
+	test('detect: a pattern match always detects; otherwise the text decides', () => {
+		assert.strictEqual(detect('foo: 1\n', true), true);
+		assert.strictEqual(detect('name: t\ntype: input\nmapping: x\n', true), true);
+		assert.strictEqual(detect('foo: 1\n', false), false);
+		assert.strictEqual(detect('input: {}\n', false), true);
 	});
 });

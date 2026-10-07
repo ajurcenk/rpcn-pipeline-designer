@@ -24,7 +24,11 @@ If no usable binary is found, a warning appears once (and again only after the s
 
 For the resolved binary, the extension runs `list --format jsonschema` and merges in the field descriptions, examples and defaults from `list --format json-full`. The result is cached in the extension's global storage as `schema-<hash>.json`, whose name changes with the binary path, its version and the transform version. Later activations still run `--version` to find the binary, but on a cache hit they skip both `list` runs. After a successful write (never on a cache hit), other `schema-<16 hex>.json` files unused for more than 30 days are removed.
 
-**Redpanda Connect: Refresh Schema** looks for the binary again and regenerates the schema, even when a cached copy exists. The schema is not yet supplied to the YAML editor.
+**Redpanda Connect: Refresh Schema** looks for the binary again and regenerates the schema, even when a cached copy exists. The schema is served to YAML by Red Hat for detected configs only (completion and hover).
+
+## Which files are Redpanda Connect configs
+
+An open YAML file is treated as a Redpanda Connect config when one of its YAML documents has a top-level `input`, `pipeline`, `output`, `buffer` or `*_resources` key (`cache_resources`, `rate_limit_resources`, `processor_resources`, `input_resources`, `output_resources`). Templates (a document with top-level `name`, `type` and `mapping`) are not. A file matching a `redpandaConnect.filePatterns` glob is always treated as a config, templates included. Detection follows edits and setting changes; there is no need to reopen the file. Resource files are not found automatically: lint and run pass exactly the files in `redpandaConnect.resourceFiles`.
 
 ## Requirements
 
@@ -38,7 +42,7 @@ For the resolved binary, the extension runs `list --format jsonschema` and merge
 | --- | --- | --- |
 | `redpandaConnect.binaryPath` | `""` | Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory, a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`. |
 | `redpandaConnect.autoOpenGraph` | `true` | Open the graph beside a detected config (not used yet). |
-| `redpandaConnect.filePatterns` | `[]` | Globs always treated as Redpanda Connect configs (not used yet). |
+| `redpandaConnect.filePatterns` | `[]` | Globs always treated as Redpanda Connect configs, matched relative to the file's workspace folder or against its absolute path: `*.rpcn.yaml` matches only at a folder root, `**/*.rpcn.yaml` anywhere. |
 | `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (not used yet). |
 | `redpandaConnect.envFile` | `""` | Environment file passed to lint and run (not used yet). |
 

@@ -51,7 +51,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Glob patterns of files that are always treated as Redpanda Connect configs."
+          "markdownDescription": "Glob patterns of files that are always treated as Redpanda Connect configs, templates included. A pattern matches relative to the workspace folder that contains the file, or against the file's absolute path: `*.rpcn.yaml` matches only at a workspace-folder root, `**/*.rpcn.yaml` anywhere."
         },
         "redpandaConnect.resourceFiles": {
           "type": "array",

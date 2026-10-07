@@ -75,3 +75,5 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 - Decision: lint not checking resource references is expected; diagnostics parity measures lint output only, no run-time check (user, 2026-10-06).
 - Decision: no separate spike for locating schema nodes; 2.5 settles it as its own uncertainty (user, 2026-10-06).
 - Collision: 2.4, 2.7 and 2.8 all edit the composition root (src/extension.ts); 2.7, 2.9 and 2.10 edit package.json contributions — ordered through `after`.
+- Decision: no automatic resource-file detection; lint and Run pass exactly the `redpandaConnect.resourceFiles` setting (globs allowed), so results never depend on which files exist nearby or are open; AD-9 and AD-18 amended (user, 2026-10-07, ticket 2.2).
+- Note (2.2 review, 2026-10-07): the 1.5 argument builder still takes `detectedResourceFiles` (`src/adapters/redpandaConnect/args.ts:57`, `src/core/args.ts:22` "then detected ones"); after the resource-file decision nothing supplies it. Drop the input and its tests in the first ticket that calls the builder (2.3 or 2.4).
