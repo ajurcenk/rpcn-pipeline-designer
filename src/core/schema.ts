@@ -18,7 +18,8 @@
 //      field `options` / `annotated_options` → value suggestions on a string node (or the
 //      string items of an array field):
 //      `anyOf: [{type: string, enum, markdownEnumDescriptions}, {type: string}]` (any string
-//      stays valid, e.g. `delim:foobar`; ticket 2.13).
+//      stays valid, e.g. `delim:foobar`; ticket 2.13), and an `Options: …` line in the field's
+//      `markdownDescription` (hover; ticket 2.15).
 // A field or component missing on either side is skipped, never an error.
 //
 // Bump TRANSFORM_VERSION whenever the output for the same input changes: it is part of the
@@ -26,7 +27,7 @@
 
 import { createHash } from 'crypto';
 
-export const TRANSFORM_VERSION = 2;
+export const TRANSFORM_VERSION = 3;
 
 export const DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 
@@ -254,6 +255,14 @@ function applyField(node: JsonObject, field: JsonObject): void {
 	applyChildrenByKind(node, field);
 }
 
+/** `value` as Markdown inline code; a value containing backticks gets a longer fence. */
+function inlineCode(value: string): string {
+	const longest = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
+	const fence = '`'.repeat(longest + 1);
+	const pad = longest > 0 ? ' ' : '';
+	return `${fence}${pad}${value}${pad}${fence}`;
+}
+
 interface FieldOption {
 	readonly value: string;
 	readonly description?: string;
@@ -349,11 +358,18 @@ function applyChildren(parent: JsonObject, children: JsonValue[]): void {
 	}
 }
 
-/** `description`, then the `examples` as a fenced YAML list. `undefined` when both are empty. */
+/**
+ * `description`, then `Options: \`a\`, \`b\`` (2.15), then the `examples` as a fenced YAML list.
+ * `undefined` when all are empty.
+ */
 export function fieldMarkdown(field: JsonObject): string | undefined {
 	const parts: string[] = [];
 	if (typeof field.description === 'string' && field.description.trim()) {
 		parts.push(field.description.trim());
+	}
+	const options = optionsOf(field);
+	if (options.length > 0) {
+		parts.push(`Options: ${options.map((o) => inlineCode(o.value)).join(', ')}`);
 	}
 	if (Array.isArray(field.examples) && field.examples.length > 0) {
 		parts.push(`Examples:\n\n\`\`\`yaml\n${toYamlList(field.examples)}\n\`\`\``);

@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - A warning with **Install guide**, **Set path** and **Retry** appears when no usable binary is found, once per change of state.
 - Shared argument builder for lint and run (`--resources` from `redpandaConnect.resourceFiles` only, `--env-file` from `redpandaConnect.envFile`, `NO_COLOR=1`); not used by any command yet.
 - Lint on save: findings from `lint --deprecated` appear as whole-line diagnostics (deprecated fields as warnings), hidden on lines YAML by Red Hat already flags (and lint's YAML syntax errors while Red Hat reports one), and cleared by the first edit.
+- Hover on a field with documented options lists them (`Options: …`).
 - Quick Fix for `value X is not a valid option for this field`: **Change to `<option>`** with the closest options of that field, replacing only the value.
 - Completion: fields of a component are offered while a required field is still missing, and documented options (such as `file.codec` or `logger.level`) are suggested as values with their descriptions.
 - Run and Stop: run a detected config in a per-file terminal (auto-saves first), stop it with an interrupt (killed after 10 s, or at once on a second Stop), and see the exit status in the status bar.

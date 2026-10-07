@@ -394,6 +394,16 @@ suite('Schema contributor (integration)', function () {
 		assert.deepStrictEqual(schemaDiagnostics().filter((d) => d.range.start.line === 3).map((d) => d.message), []);
 	});
 
+	test('HOVER_NETWORK (2.15): hovering a field with options lists them', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('hover-options.yaml', 'input:\n  socket_server:\n    network: tcp\n    address: x\n');
+		let text = '';
+		assert.ok(await waitForAsync(async () => {
+			text = await hoverText(doc, new vscode.Position(2, 6));
+			return text.includes('Options: `unix`, `tcp`, `udp`, `tls`, `unixgram`');
+		}, 30_000), text);
+	});
+
 	test('BECOMES_DETECTED: typing pipeline: into a new YAML file brings completion without reopening', async () => {
 		const doc = await openYaml('becomes.yaml', '');
 		assert.strictEqual(api().detection.isDetected(doc.uri), false);

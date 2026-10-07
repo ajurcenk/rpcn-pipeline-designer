@@ -282,8 +282,8 @@ suite('core/schema transformSchema completion fixes (ticket 2.13)', () => {
 		return (branch.properties as JsonObject).file as JsonObject;
 	};
 
-	test('VERSION: the transform version is 2', () => {
-		assert.strictEqual(TRANSFORM_VERSION, 2);
+	test('VERSION: the transform version is 3 (2.15)', () => {
+		assert.strictEqual(TRANSFORM_VERSION, 3);
 	});
 
 	for (const v of VERSIONS) {
@@ -352,8 +352,38 @@ suite('core/schema transformSchema completion fixes (ticket 2.13)', () => {
 		const num = tiny({ type: 'number' }, { kind: 'scalar', type: 'int', options: ['1', '2'] }).f as JsonObject;
 		assert.deepStrictEqual((num.anyOf as JsonObject[]).map((m) => m.type), ['number', 'string'], 'only the ${VAR} interpolation');
 		const withEnum = tiny({ type: 'string', enum: ['q'] }, { kind: 'scalar', type: 'string', options: ['a'] }).f as JsonObject;
-		assert.deepStrictEqual(withEnum, { type: 'string', enum: ['q'] });
+		assert.deepStrictEqual(withEnum, { type: 'string', enum: ['q'], markdownDescription: 'Options: `a`' }, 'enum untouched; hover line from the docs (2.15)');
 		const map = tiny({ type: 'object', properties: {} }, { kind: 'map', type: 'string', options: ['a'] }).f as JsonObject;
 		assert.strictEqual(map.anyOf, undefined);
 	});
 });
+
+suite('core/schema hover lists options (ticket 2.15)', () => {
+	test('ANNOTATED: file.codec shows its options between description and examples', () => {
+		const out = transformSchema(loadRaw('4.112.0'), loadDocs('4.112.0'));
+		const output = (out.definitions as JsonObject).output as JsonObject;
+		const branch = ((output.allOf as JsonObject[])[0].anyOf as JsonObject[]).find((b) => isJsonObject(b.properties) && 'file' in b.properties)!;
+		const codec = (((branch.properties as JsonObject).file as JsonObject).properties as JsonObject).codec as JsonObject;
+		const md = codec.markdownDescription as string;
+		const options = md.indexOf('Options: `all-bytes`, `append`, `delim:x`, `lines`');
+		assert.ok(options > 0, md);
+		assert.ok(md.indexOf('Examples:') > options, 'examples come after the options');
+	});
+
+	test('HOVER_NETWORK data: socket_server.network lists its five options', () => {
+		const out = transformSchema(loadRaw('4.112.0'), loadDocs('4.112.0'));
+		const input = (out.definitions as JsonObject).input as JsonObject;
+		const branch = ((input.allOf as JsonObject[])[0].anyOf as JsonObject[]).find((b) => isJsonObject(b.properties) && 'socket_server' in b.properties)!;
+		const network = (((branch.properties as JsonObject).socket_server as JsonObject).properties as JsonObject).network as JsonObject;
+		assert.ok((network.markdownDescription as string).includes('Options: `unix`, `tcp`, `udp`, `tls`, `unixgram`'));
+	});
+
+	test('NO_OPTIONS / ONLY_OPTIONS / BACKTICK', () => {
+		assert.strictEqual(fieldMarkdown({ description: 'D' }), 'D');
+		assert.strictEqual(fieldMarkdown({ options: ['a', 'b'] }), 'Options: `a`, `b`');
+		assert.strictEqual(fieldMarkdown({ annotated_options: [['x', 'X!']], description: 'D', examples: ['x'] }),
+			'D\n\nOptions: `x`\n\nExamples:\n\n```yaml\n- x\n```');
+		assert.strictEqual(fieldMarkdown({ options: ['a`b'] }), 'Options: `` a`b ``');
+	});
+});
+
