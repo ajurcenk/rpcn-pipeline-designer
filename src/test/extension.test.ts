@@ -474,6 +474,7 @@ suite('Lint on save (integration)', function () {
 			'found=0',
 			`for n in $('${grep}' -n 'nope:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field nope not recognised" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'codec:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field codec is deprecated" >&2; found=1; done`,
+			`for n in $('${grep}' -n 'topci:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field topci not recognised" >&2; found=1; done`,
 			'exit $found',
 		].join('\n');
 		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter }));
@@ -554,5 +555,21 @@ suite('Lint on save (integration)', function () {
 		} finally {
 			await config().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
 		}
+	});
+
+	test('QUICK_FIX (2.5): a lint "not recognised" finding offers "Change to `topic`"; applying changes only the key', async () => {
+		const text = '# keep me\ninput:\n  stdin: {}\noutput:\n  kafka_franz:\n    seed_brokers: [ "${B}" ]  # brokers\n    topci: t\n';
+		const doc = await openSaved('fix.yaml', text);
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000));
+		await editAndSave(doc); // appends '\n'
+		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
+		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
+		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const ours = list.filter((a) => a.title.startsWith('Change to'));
+		assert.strictEqual(ours[0]?.title, 'Change to `topic`', JSON.stringify(list.map((a) => a.title)));
+		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
+		assert.strictEqual(doc.getText(), `${text.replace('topci:', 'topic:')}\n`);
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
 	});
 });

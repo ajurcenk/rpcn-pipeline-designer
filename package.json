@@ -152,5 +152,8 @@
     "vitest": {
       "@types/node": "$@types/node"
     }
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

@@ -8,6 +8,7 @@ import { SchemaStore } from './adapters/redpandaConnect/schema';
 import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
 import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
+import { UnknownFieldQuickFix } from './adapters/vscode/quickFix';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -106,6 +107,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		log,
 	});
 	context.subscriptions.push(lintDiagnostics);
+	context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
+		{ language: 'yaml' },
+		new UnknownFieldQuickFix(() => schemaStore.current?.json),
+		{ providedCodeActionKinds: UnknownFieldQuickFix.providedCodeActionKinds },
+	));
 
 	return {
 		redpandaConnect,
