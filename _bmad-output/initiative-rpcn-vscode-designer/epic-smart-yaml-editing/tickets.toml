@@ -99,6 +99,19 @@ unknown = "Empty component blocks (`generate:` with nothing under it) still get 
 notes = ["Found in the user's manual check of 2.7 (2026-10-07): Ctrl+Space under an incomplete `file:` showed only word suggestions."]
 
 [[entry]]
+id = 14
+type = "story"
+title = "Quick Fix for invalid option values"
+description = "For a lint diagnostic `value X is not a valid option for this field`, offers the closest valid options for that field from the schema's option suggestions (ticket 13), applied as a minimal-range edit of the value (AD-19), reusing the ticket 5 key lookup, schema walk and ranking."
+verify = "On `network: tpc` under socket_server, the Quick Fix offers \"Change to `tcp`\"; applying it replaces only the value; comments and formatting elsewhere are unchanged."
+covers = ["E2 (R5)"]
+after = [5, 13]
+hitl = false
+risk = "low"
+unknown = "None."
+notes = ["Asked for by the user on 2026-10-07 after checking how lint enforces closed option lists (198 of 216 fields in 4.112.0)."]
+
+[[entry]]
 id = 8
 type = "story"
 title = "Feedback when the schema or binary changes"
@@ -155,7 +168,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

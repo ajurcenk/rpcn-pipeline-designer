@@ -509,6 +509,7 @@ suite('Lint on save (integration)', function () {
 			`for n in $('${grep}' -n 'nope:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field nope not recognised" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'codec:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field codec is deprecated" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'topci:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field topci not recognised" >&2; found=1; done`,
+			`for n in $('${grep}' -n 'network: tpc' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) value tpc is not a valid option for this field" >&2; found=1; done`,
 			'exit $found',
 		].join('\n');
 		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter }));
@@ -604,6 +605,22 @@ suite('Lint on save (integration)', function () {
 		assert.strictEqual(ours[0]?.title, 'Change to `topic`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('topci:', 'topic:')}\n`);
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+	});
+
+	test('OPTION_FIX (2.14): an invalid option offers "Change to `tcp`"; applying changes only the value', async () => {
+		const text = 'input:\n  socket_server:\n    network: tpc  # keep\n    address: 0.0.0.0:6000\noutput:\n  stdout: {}\n';
+		const doc = await openSaved('option.yaml', text);
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000));
+		await editAndSave(doc);
+		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
+		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
+		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const ours = list.filter((a) => a.title.startsWith('Change to'));
+		assert.strictEqual(ours[0]?.title, 'Change to `tcp`', JSON.stringify(list.map((a) => a.title)));
+		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
+		assert.strictEqual(doc.getText(), `${text.replace('network: tpc', 'network: tcp')}\n`);
 		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
 	});
 });
@@ -742,4 +759,3 @@ suite('Run and Stop (integration)', function () {
 		]);
 	});
 });
-

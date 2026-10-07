@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { JsonObject } from '../../../core/schema';
 import { LINT_SOURCE } from '../../../adapters/vscode/diagnostics';
-import { UnknownFieldQuickFix } from '../../../adapters/vscode/quickFix';
+import { LintQuickFix } from '../../../adapters/vscode/quickFix';
 import { SCHEMA_FIXTURES } from '../../helpers/fakeBinary';
 
 const SCHEMA = JSON.parse(fs.readFileSync(path.join(SCHEMA_FIXTURES, 'jsonschema-4.112.0.json'), 'utf8')) as JsonObject;
@@ -18,7 +18,7 @@ function lintDiagnostic(doc: vscode.TextDocument, line: number, message: string,
 async function actions(text: string, diagnostics: (doc: vscode.TextDocument) => vscode.Diagnostic[], schema: () => JsonObject | undefined = () => SCHEMA) {
 	const doc = await vscode.workspace.openTextDocument({ language: 'yaml', content: text });
 	const context = { diagnostics: diagnostics(doc), only: undefined, triggerKind: vscode.CodeActionTriggerKind.Invoke };
-	return { doc, actions: new UnknownFieldQuickFix(schema).provideCodeActions(doc, new vscode.Range(0, 0, 0, 0), context) };
+	return { doc, actions: new LintQuickFix(schema).provideCodeActions(doc, new vscode.Range(0, 0, 0, 0), context) };
 }
 
 /** The document text after applying `action`'s edit to `text` (no editor needed). */
@@ -30,7 +30,7 @@ function applied(doc: vscode.TextDocument, action: vscode.CodeAction): string {
 	return text.slice(0, doc.offsetAt(range.start)) + newText + text.slice(doc.offsetAt(range.end));
 }
 
-suite('adapters/vscode UnknownFieldQuickFix', () => {
+suite('adapters/vscode LintQuickFix', () => {
 	test('OUTPUT_FIELD: "Change to `topic`" first and preferred, carrying the diagnostic', async () => {
 		const { doc, actions: list } = await actions('output:\n  kafka_franz:\n    seed_brokers: [x]\n    topci: t\n',
 			(d) => [lintDiagnostic(d, 4, 'field topci not recognised')]);
@@ -70,7 +70,7 @@ suite('adapters/vscode UnknownFieldQuickFix', () => {
 
 	test('a schema that throws gives no actions, never a throw', async () => {
 		const doc = await vscode.workspace.openTextDocument({ language: 'yaml', content: 'inptu: {}\n' });
-		const provider = new UnknownFieldQuickFix(() => { throw new Error('boom'); });
+		const provider = new LintQuickFix(() => { throw new Error('boom'); });
 		const context = { diagnostics: [lintDiagnostic(doc, 1, 'field inptu not recognised')], only: undefined,
 			triggerKind: vscode.CodeActionTriggerKind.Invoke };
 		assert.deepStrictEqual(provider.provideCodeActions(doc, new vscode.Range(0, 0, 0, 0), context), []);

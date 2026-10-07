@@ -4,7 +4,7 @@
 // source range and its sibling keys. Block and flow mappings both count (user, 2026-10-07). Used
 // by the unknown-field Quick Fix (2.5).
 
-import { Document, isMap, isScalar, isSeq, LineCounter, parseAllDocuments } from 'yaml';
+import { Document, isMap, isPair, isScalar, isSeq, LineCounter, parseAllDocuments, parse as parseYamlValue } from 'yaml';
 
 /** A mapping key (string) or a sequence index (number). */
 export type PathStep = string | number;
@@ -61,6 +61,87 @@ export function findKeyOnLine(parsed: ParsedYaml | undefined, line: number, key:
 	} catch {
 		return undefined;
 	}
+}
+
+export interface ValueLocation {
+	/** Steps from the document root to the mapping that holds the pair. */
+	readonly path: readonly PathStep[];
+	/** The pair's key. */
+	readonly key: string;
+	/** UTF-16 offsets of the value token, quotes included: `[start, end)`. */
+	readonly start: number;
+	readonly end: number;
+}
+
+/**
+ * Locates the scalar value `value` of a mapping pair whose value token starts on 1-based
+ * `line` (ticket 2.14). Same rules as `findKeyOnLine`: none, ambiguous or after a parse error
+ * at or before it → `undefined`. Never throws.
+ */
+export function findValueOnLine(parsed: ParsedYaml | undefined, line: number, value: string): ValueLocation | undefined {
+	try {
+		const lineStart = parsed?.lineCounter.lineStarts[line - 1];
+		if (!parsed || lineStart === undefined) {
+			return undefined;
+		}
+		const lineEnd = parsed.lineCounter.lineStarts[line] ?? parsed.length + 1;
+		const found: { location: ValueLocation; doc: Document.Parsed }[] = [];
+		for (const doc of parsed.docs) {
+			collectValues(doc.contents, [], value, lineStart, lineEnd, (location) => found.push({ location, doc }));
+		}
+		if (found.length !== 1) {
+			return undefined;
+		}
+		const { location, doc } = found[0];
+		return doc.errors.some((e) => e.pos[0] <= location.start) ? undefined : location;
+	} catch {
+		return undefined;
+	}
+}
+
+function collectValues(
+	node: unknown, path: PathStep[], value: string, lineStart: number, lineEnd: number, report: (l: ValueLocation) => void,
+): void {
+	if (isMap(node)) {
+		for (const pair of node.items) {
+			if (!isPair(pair) || !isScalar(pair.key)) {
+				continue;
+			}
+			const key = String(pair.key.value);
+			const v = pair.value;
+			// An anchored value is skipped: lint reports aliases at the anchor, and editing it changes every alias.
+			if (isScalar(v) && v.range && !v.anchor && keyNames(v).includes(value) && v.range[0] >= lineStart && v.range[0] < lineEnd) {
+				report({ path, key, start: v.range[0], end: v.range[1] });
+			}
+			collectValues(v, [...path, key], value, lineStart, lineEnd, report);
+		}
+	} else if (isSeq(node)) {
+		for (const [i, item] of node.items.entries()) {
+			collectValues(item, [...path, i], value, lineStart, lineEnd, report);
+		}
+	}
+}
+
+/**
+ * `value` as YAML source for a plain string: as is when YAML reads it back as that exact string,
+ * otherwise double-quoted (`OFF`, `no`, `1`, `a: b` …). Redpanda Connect reads YAML 1.2 (yaml.v3), but
+ * the YAML 1.1 words are quoted too, so neither reading turns the option into a boolean.
+ */
+export function yamlString(value: string): string {
+	const yaml11 = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF|true|True|TRUE|false|False|FALSE|~|null|Null|NULL)$/;
+	// Flow indicators (`,[]{}`) would break a flow mapping; a leading indicator (`%@` …) is not plain.
+	if (yaml11.test(value) || value !== value.trim() || /[,[\]{}]/.test(value) || /^[%@`!&*|>'"#?:-]/.test(value)
+		|| value.includes(': ') || value.includes(' #')) {
+		return JSON.stringify(value);
+	}
+	try {
+		if (parseYamlValue(value) === value) {
+			return value;
+		}
+	} catch {
+		// Not valid as a plain scalar: quote it.
+	}
+	return JSON.stringify(value);
 }
 
 /** Text of a scalar key as written (`0x1`) and as its value (`1`). */

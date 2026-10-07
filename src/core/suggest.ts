@@ -16,13 +16,19 @@ export function maxDistance(length: number): number {
 	return Math.min(3, Math.max(1, Math.floor(length / 3)));
 }
 
-/** Up to 3 `candidates` closest to `word` within `maxDistance`, skipping `exclude` and `word` itself. */
-export function rankNames(word: string, candidates: readonly string[], exclude: readonly string[] = []): Suggestion[] {
+/**
+ * Up to 3 `candidates` closest to `word` within `maxDistance`, skipping `exclude` and `word`
+ * itself. `ignoreCase` compares lower-cased (lint's option rule is case-insensitive).
+ */
+export function rankNames(
+	word: string, candidates: readonly string[], exclude: readonly string[] = [], ignoreCase = false,
+): Suggestion[] {
 	const skip = new Set([...exclude, word]);
 	const limit = maxDistance(word.length);
+	const fold = (s: string) => (ignoreCase ? s.toLowerCase() : s);
 	return [...new Set(candidates)]
 		.filter((name) => !skip.has(name))
-		.map((name) => ({ name, distance: editDistance(word, name) }))
+		.map((name) => ({ name, distance: editDistance(fold(word), fold(name)) }))
 		.filter(({ distance }) => distance <= limit)
 		.sort((a, b) => a.distance - b.distance || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 		.slice(0, MAX_SUGGESTIONS);

@@ -8,7 +8,7 @@ import { SchemaStore } from './adapters/redpandaConnect/schema';
 import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
 import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
-import { UnknownFieldQuickFix } from './adapters/vscode/quickFix';
+import { LintQuickFix } from './adapters/vscode/quickFix';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
@@ -112,8 +112,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(lintDiagnostics);
 	context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
 		{ language: 'yaml' },
-		new UnknownFieldQuickFix(() => schemaStore.current?.json),
-		{ providedCodeActionKinds: UnknownFieldQuickFix.providedCodeActionKinds },
+		new LintQuickFix(() => schemaStore.current?.json),
+		{ providedCodeActionKinds: LintQuickFix.providedCodeActionKinds },
 	));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });

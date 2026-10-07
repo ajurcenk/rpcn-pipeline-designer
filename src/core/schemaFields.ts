@@ -72,6 +72,34 @@ export function candidateFields(schema: JsonObject, path: readonly PathStep[], s
 	return siblings.some((s) => components.has(s)) ? fields.all.filter((f) => !components.has(f)) : [...fields.all];
 }
 
+/**
+ * The option values of field `key` in the mapping at `path`: the string `enum`s the 2.13
+ * transform adds as value suggestions. `[]` when the field has none.
+ */
+export function optionsAt(schema: JsonObject, path: readonly PathStep[], key: string): string[] {
+	let nodes: JsonObject[] = [schema];
+	for (const step of [...path, key]) {
+		nodes = nodes.flatMap((n) => expand(schema, n, false, 0)).flatMap(({ node }) => {
+			const next = typeof step === 'number' ? node.items : isJsonObject(node.properties) ? node.properties[step] : undefined;
+			return isJsonObject(next) ? [next] : [];
+		});
+		if (nodes.length === 0) {
+			return [];
+		}
+	}
+	const options = new Set<string>();
+	for (const { node } of nodes.flatMap((n) => expand(schema, n, false, 0))) {
+		if (Array.isArray(node.enum)) {
+			node.enum.forEach((v) => {
+				if (typeof v === 'string') {
+					options.add(v);
+				}
+			});
+		}
+	}
+	return [...options];
+}
+
 /** The node itself plus everything its `$ref`, `allOf` and `anyOf` lead to. */
 function expand(schema: JsonObject, node: JsonObject, branch: boolean, depth: number): Expanded[] {
 	if (depth > MAX_EXPAND_DEPTH) {
