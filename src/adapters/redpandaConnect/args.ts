@@ -1,7 +1,9 @@
 // RedpandaConnect adapter: the shared lint/run argument builder (AD-9). Lint (AD-12) and Run
 // (AD-13) both get their `{ command, args, env }` here, so they pass identical `--resources` and
-// `--env-file` arguments. The flags themselves live in `src/core/args`. This module spawns nothing
-// and never checks whether resource or env files exist (lint and run report missing files).
+// `--env-file` arguments. Resource files come from the `redpandaConnect.resourceFiles` setting
+// only; nothing detects them (AD-9, AD-18). The flags themselves live in `src/core/args`. This
+// module spawns nothing and never checks whether resource or env files exist (lint and run
+// report missing files). Run a result as `runProcess([command], args, …, { env })`.
 
 import * as os from 'os';
 import * as path from 'path';
@@ -45,16 +47,14 @@ export type ArgsFailure =
 		readonly value: string;
 		readonly reason: 'relativePathWithoutWorkspace';
 	}
-	/** A caller-supplied target or detected resource path is not absolute (a programming error upstream). */
-	| { readonly kind: 'relativePath'; readonly role: 'target' | 'detectedResource'; readonly path: string };
+	/** A caller-supplied target path is not absolute (a programming error upstream). */
+	| { readonly kind: 'relativePath'; readonly role: 'target'; readonly path: string };
 
 export type ArgsResult = ({ readonly kind: 'ok' } & CommandLine) | ArgsFailure;
 
 export interface ArgsRequest {
 	/** Absolute target config paths. Lint: at least one. Run: exactly one. */
 	readonly targets: readonly string[];
-	/** Absolute resource files found by detection (AD-18); appended after the setting's entries. */
-	readonly detectedResourceFiles?: readonly string[];
 }
 
 /** Builds the `lint` command line. Never throws. */
@@ -81,7 +81,7 @@ export function describeArgsFailure(failure: ArgsFailure): string {
 		case 'unusableSetting':
 			return `${failure.setting} "${failure.value}" is a relative path, but no workspace folder is open.`;
 		case 'relativePath':
-			return `Internal error: ${failure.role === 'target' ? 'target' : 'detected resource'} path "${failure.path}" is not absolute.`;
+			return `Internal error: target path "${failure.path}" is not absolute.`;
 	}
 }
 
@@ -128,13 +128,6 @@ function buildCommand(
 			return { kind: 'relativePath', role: 'target', path: target };
 		}
 	}
-	const detected = request.detectedResourceFiles ?? [];
-	for (const resource of detected) {
-		if (!path.isAbsolute(resource)) {
-			return { kind: 'relativePath', role: 'detectedResource', path: resource };
-		}
-	}
-
 	const resourceFiles: string[] = [];
 	for (const raw of stringList(env.resourceFilesSetting)) {
 		const resolved = resolveFileSettingPath(raw, env.homeDir, env.workspaceFolder);
@@ -143,7 +136,6 @@ function buildCommand(
 		}
 		resourceFiles.push(path.normalize(resolved.path));
 	}
-	resourceFiles.push(...detected.map((p) => path.normalize(p)));
 
 	let envFile: string | undefined;
 	const envSetting = typeof env.envFileSetting === 'string' ? env.envFileSetting.trim() : '';

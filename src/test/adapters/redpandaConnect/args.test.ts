@@ -74,9 +74,9 @@ suite('adapters/redpandaConnect args', () => {
 		assert.deepStrictEqual([result.command, ...result.args], [RPK, 'connect', 'run', '--set', 'http.enabled=false', A]);
 	});
 
-	test('RESOURCES: setting first, then detected, deduped, identical for lint and run', () => {
-		const env = environment({ resourceFilesSetting: ['r1.yaml'] });
-		const request = { targets: [A], detectedResourceFiles: [path.join(WS, 'r2.yaml'), path.join(WS, 'r1.yaml')] };
+	test('RESOURCES: setting entries in order, deduped, identical for lint and run', () => {
+		const env = environment({ resourceFilesSetting: ['r1.yaml', 'r2.yaml', `${WS}/r1.yaml`] });
+		const request = { targets: [A] };
 		const expected = ['--resources', path.join(WS, 'r1.yaml'), '--resources', path.join(WS, 'r2.yaml')];
 		const lint = ok(buildLintCommand(standalone, request, env));
 		const run = ok(buildRunCommand(standalone, request, env));
@@ -107,9 +107,9 @@ suite('adapters/redpandaConnect args', () => {
 			'--resources', path.join(HOME, 'r.yaml'), '--env-file', path.join(HOME, 'rc.env'), A]);
 	});
 
-	test('RESOURCES: an unnormalized absolute setting entry dedupes with the detected file', () => {
-		const result = ok(buildLintCommand(standalone, { targets: [A], detectedResourceFiles: [path.join(WS, 'r1.yaml')] },
-			environment({ resourceFilesSetting: [`${WS}/./r1.yaml`] })));
+	test('RESOURCES: an unnormalized absolute setting entry dedupes with a relative one', () => {
+		const result = ok(buildLintCommand(standalone, { targets: [A] },
+			environment({ resourceFilesSetting: ['r1.yaml', `${WS}/./r1.yaml`] })));
 		assert.deepStrictEqual(result.args, ['lint', '--deprecated', '--skip-env-var-check', '--resources', path.join(WS, 'r1.yaml'), A]);
 	});
 
@@ -185,16 +185,16 @@ suite('adapters/redpandaConnect args', () => {
 		});
 	});
 
-	test('relative target or detected resource paths are reported, not passed', () => {
+	test('relative target paths are reported, not passed', () => {
 		assert.deepStrictEqual(buildLintCommand(standalone, { targets: ['a.yaml'] }, environment()),
 			{ kind: 'relativePath', role: 'target', path: 'a.yaml' });
-		assert.deepStrictEqual(buildRunCommand(standalone, { targets: [A], detectedResourceFiles: ['r.yaml'] }, environment()),
-			{ kind: 'relativePath', role: 'detectedResource', path: 'r.yaml' });
+		assert.deepStrictEqual(buildRunCommand(standalone, { targets: ['a.yaml'] }, environment()),
+			{ kind: 'relativePath', role: 'target', path: 'a.yaml' });
 	});
 
 	test('acceptance: lint and run for the same file carry identical --resources and --env-file', () => {
-		const env = environment({ resourceFilesSetting: ['r1.yaml', '~/shared.yaml'], envFileSetting: '~/rc.env' });
-		const request = { targets: [A], detectedResourceFiles: [path.join(WS, 'r3.yaml')] };
+		const env = environment({ resourceFilesSetting: ['r1.yaml', '~/shared.yaml', 'r3.yaml'], envFileSetting: '~/rc.env' });
+		const request = { targets: [A] };
 		const fileFlags = (args: readonly string[]) => args.filter((_, i) =>
 			['--resources', '--env-file'].includes(args[i]) || ['--resources', '--env-file'].includes(args[i - 1]));
 		const lint = ok(buildLintCommand(standalone, request, env));
@@ -207,7 +207,7 @@ suite('adapters/redpandaConnect args', () => {
 		const env = environment({ resourceFilesSetting: ['r1.yaml'], envFileSetting: '.env' });
 		for (const state of [standalone, rpk]) {
 			for (const build of [buildLintCommand, buildRunCommand]) {
-				const result = ok(build(state, { targets: [A], detectedResourceFiles: [path.join(WS, 'r2.yaml')] }, env));
+				const result = ok(build(state, { targets: [A] }, env));
 				for (const forbidden of FORBIDDEN_ARGS) {
 					assert.ok(![result.command, ...result.args].includes(forbidden), forbidden);
 				}

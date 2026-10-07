@@ -19,7 +19,7 @@ export interface ArgvInput {
 	readonly invocation: readonly string[];
 	/** Absolute target config paths, in order. */
 	readonly targets: readonly string[];
-	/** Absolute resource file paths, setting entries first, then detected ones; duplicates are removed here. */
+	/** Absolute resource file paths from the `redpandaConnect.resourceFiles` setting, in order; duplicates are removed here. */
 	readonly resourceFiles: readonly string[];
 	/** Absolute env file path, if any. */
 	readonly envFile?: string;
