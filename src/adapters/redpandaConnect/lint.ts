@@ -3,7 +3,7 @@
 // `src/core/lint`. Returns plain results; diagnostics are `src/adapters/vscode/diagnostics.ts`.
 
 import * as path from 'path';
-import { LintFinding, parseLintOutput } from '../../core/lint';
+import { findingsForTarget, LintFinding } from '../../core/lint';
 import { ArgsEnvironment, buildLintCommand, describeArgsFailure } from './args';
 import { BinaryState } from './binary';
 import { ProcessOutcome, runProcess, SpawnOptions } from './process';
@@ -65,13 +65,10 @@ function interpret(name: string, fsPath: string, exitCode: number | null, stderr
 		const how = exitCode === null ? 'was stopped by a signal' : `exited with code ${exitCode}`;
 		return { kind: 'failed', logLine: `Lint ${name}: Redpanda Connect ${how}${detail ? `: ${detail}` : '.'}` };
 	}
-	const parsed = parseLintOutput(stderr, [fsPath]);
-	const target = path.resolve(fsPath);
-	const findings = parsed.findings.filter((f) => path.resolve(f.path) === target);
+	const { findings, otherFiles, unparsed } = findingsForTarget(stderr, fsPath);
 	const allLogLines = [
-		...parsed.unparsed.map((l) => `Lint ${name}: unrecognised output: ${l}`),
-		...parsed.findings.filter((f) => path.resolve(f.path) !== target)
-			.map((f) => `Lint ${name}: finding for another file: ${f.path}(${f.line}) ${f.message}`),
+		...unparsed.map((l) => `Lint ${name}: unrecognised output: ${l}`),
+		...otherFiles.map((f) => `Lint ${name}: finding for another file: ${f.path}(${f.line}) ${f.message}`),
 	];
 	const logLines = allLogLines.length > MAX_LINT_LOG_LINES
 		? [...allLogLines.slice(0, MAX_LINT_LOG_LINES), `Lint ${name}: … ${allLogLines.length - MAX_LINT_LOG_LINES} more lines not shown.`]

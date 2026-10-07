@@ -57,7 +57,8 @@ npm ci
 npm run compile          # type-check, lint, bundle to dist/
 npm test                 # unit + integration tests in a downloaded VS Code
 scripts/spike/fetch-binaries.sh   # pinned Redpanda Connect 4.100.0 and 4.112.0 into .cache/ (needs an authenticated gh)
-npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and compare with the recorded output
+npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and compare with the recorded output;
+                         # also checks the extension's diagnostics match every record (diagnostics parity)
 npx vsce package --no-dependencies
 ```
 

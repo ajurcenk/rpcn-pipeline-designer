@@ -7,6 +7,8 @@
 // such a finding (`syntax: true`) is hidden while Red Hat reports any, and otherwise shown on
 // line N (user decision 2026-10-07, 2.4 review).
 
+import * as path from 'path';
+
 export type LintSeverity = 'error' | 'warning';
 
 export interface LintFinding {
@@ -71,6 +73,31 @@ function splitFinding(text: string, knownPaths: readonly string[]): { path: stri
 	}
 	const match = FINDING.exec(text);
 	return match ? { path: match[1], line: Number(match[2]), message: match[4] } : undefined;
+}
+
+export interface TargetFindings {
+	/** Findings whose path is the target (compared after `path.resolve`). */
+	readonly findings: readonly LintFinding[];
+	/** Findings for any other path (for example a resource file). */
+	readonly otherFiles: readonly LintFinding[];
+	readonly unparsed: readonly string[];
+}
+
+/** Parses lint's stderr for one linted file and splits off what is not about it. */
+export function findingsForTarget(stderr: string, target: string): TargetFindings {
+	const parsed = parseLintOutput(stderr, [target]);
+	const resolved = path.resolve(target);
+	const isTarget = (f: LintFinding) => path.resolve(f.path) === resolved;
+	return {
+		findings: parsed.findings.filter(isTarget),
+		otherFiles: parsed.findings.filter((f) => !isTarget(f)),
+		unparsed: parsed.unparsed,
+	};
+}
+
+/** The 0-based document line for a 1-based finding line, clamped to the document. */
+export function documentLine(line: number, lineCount: number): number {
+	return Math.min(Math.max(line - 1, 0), Math.max(lineCount - 1, 0));
 }
 
 /**

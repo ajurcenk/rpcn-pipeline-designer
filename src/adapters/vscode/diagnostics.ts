@@ -10,7 +10,7 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { LintFinding, suppressFlaggedLines } from '../../core/lint';
+import { documentLine, LintFinding, suppressFlaggedLines } from '../../core/lint';
 import type { LintResult } from '../redpandaConnect/lint';
 
 export const LINT_SOURCE = 'Redpanda Connect';
@@ -229,7 +229,7 @@ export class LintDiagnostics implements vscode.Disposable {
 
 /** A finding as a whole-line diagnostic; a line past the end is clamped to the last line. */
 function toDiagnostic(doc: vscode.TextDocument, finding: LintFinding): vscode.Diagnostic {
-	const line = Math.min(Math.max(finding.line - 1, 0), Math.max(doc.lineCount - 1, 0));
+	const line = documentLine(finding.line, doc.lineCount);
 	const severity = finding.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error;
 	const diagnostic = new vscode.Diagnostic(doc.lineAt(line).range, finding.message, severity);
 	diagnostic.source = LINT_SOURCE;

@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - The config schema is generated from the binary (`list --format jsonschema`, with docs from `list --format json-full`), cached per binary path and version, and regenerated with **Redpanda Connect: Refresh Schema**.
 - Detected Redpanda Connect configs get completion and hover from the binary's schema through YAML by Red Hat.
 - Detection: top-level Redpanda Connect keys per YAML document, templates excluded, `redpandaConnect.filePatterns` always wins; follows edits and setting changes.
+- Diagnostics parity: the corpus harness checks that the extension's lint diagnostics match every recorded lint line (line, message, severity), with or without the binaries installed.
 - Corpus harness (`npm run test:corpus`): lints the `test/corpus` configs with Redpanda Connect 4.100.0 and 4.112.0 in CI and compares the output with recorded results.
 
 ## [0.0.1]

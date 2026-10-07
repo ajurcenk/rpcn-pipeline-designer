@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { LintFinding, parseLintOutput, suppressFlaggedLines } from '../../core/lint';
+import { documentLine, findingsForTarget, LintFinding, parseLintOutput, suppressFlaggedLines } from '../../core/lint';
 import { REPO_ROOT } from '../helpers/fakeBinary';
 
 const CAPTURES = path.join(REPO_ROOT, '_bmad-output', 'initiative-rpcn-vscode-designer', 'epic-foundation',
@@ -103,5 +103,18 @@ suite('core/lint suppressFlaggedLines', () => {
 		assert.deepStrictEqual(parsed.findings.map((f) => f.syntax), [true, false]);
 		assert.deepStrictEqual(suppressFlaggedLines(parsed.findings, new Set([4]), true).map((f) => f.line), [6]);
 		assert.deepStrictEqual(suppressFlaggedLines(parsed.findings, new Set(), false).map((f) => f.line), [1, 6]);
+	});
+});
+
+suite('core/lint findingsForTarget and documentLine', () => {
+	test('splits the target\'s findings from other files\' and unparsed lines; paths compare resolved', () => {
+		const result = findingsForTarget('/w/./a.yaml(2,1) x\n/w/r.yaml(3,1) y\nboom\n', '/w/a.yaml');
+		assert.deepStrictEqual(result.findings.map((f) => f.line), [2]);
+		assert.deepStrictEqual(result.otherFiles.map((f) => f.path), ['/w/r.yaml']);
+		assert.deepStrictEqual(result.unparsed, ['boom']);
+	});
+
+	test('documentLine: 1-based to 0-based, clamped to the document', () => {
+		assert.deepStrictEqual([documentLine(1, 5), documentLine(5, 5), documentLine(9, 5), documentLine(0, 5), documentLine(3, 0)], [0, 4, 4, 0, 0]);
 	});
 });

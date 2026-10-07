@@ -35,6 +35,7 @@ with `--resources` only where this file marks a dependency: `set_grab_cache.yaml
   `.yaml` without a record, or a record without its `.yaml` (or for an unpinned version). A missing binary
   skips that version locally and fails it in CI (`CI=true`).
 - `npm run test:corpus:record` rewrites every record and deletes orphaned ones; it needs both binaries.
+- Diagnostics parity (no binary needed): every record's lines are also run through the extension's own lint pipeline (`src/core/lint.ts`). Each recorded line must become exactly one diagnostic with the same line, message and severity (`field <name> is deprecated` is a Warning, everything else an Error; a `(1,1) yaml: line N: …` syntax error belongs on line N). Lint not checking resource references is expected (no run-time check).
 
 | File | Upstream path (permalink) | Kind | Constructs | Blob | Lint 4.100.0 / 4.112.0 |
 |---|---|---|---|---|---|

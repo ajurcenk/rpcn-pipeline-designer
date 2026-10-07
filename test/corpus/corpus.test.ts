@@ -15,12 +15,18 @@
 //   # exit: <code>
 //   <stderr lines, corpus dir replaced by <CORPUS>/, sorted>
 // Lint runs files concurrently, so stderr lines are compared as a sorted set.
+//
+// Diagnostics parity (ticket 2.6, CAP-14): every record's stderr is also fed through the
+// extension's own pure pipeline (src/core/lint.ts: parse, keep the target's findings, map to a
+// document line, severity) and must give exactly one diagnostic per recorded line, with the same
+// line, message and severity. Needs no binary, so it also runs where the binaries are missing.
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLintArgs } from '../../src/core/args';
+import { documentLine, findingsForTarget, TargetFindings } from '../../src/core/lint';
 import { parseVersionOutput } from '../../src/core/version';
 import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/process';
 
@@ -165,6 +171,128 @@ function orphanedRecords(): string[] {
 	}
 	return orphans.sort();
 }
+
+/** `L<line> <severity> <message>` for one diagnostic (1-based line), the unit parity compares. */
+const row = (line: number, severity: string, message: string) => `L${line} ${severity} ${message}`;
+
+/**
+ * What a record line for `config` must become, read with logic of its own (not the extension's
+ * parser), following the rules settled in 2.4: Warning only for `field <name> is deprecated`, and
+ * a YAML syntax error reported at (1,1) as `yaml: line N: …` lands on line N. `undefined` when
+ * the line is not a finding for `config`.
+ */
+function expectedRow(recordLine: string, config: string): string | undefined {
+	const prefix = `${PLACEHOLDER}/${config}(`;
+	if (!recordLine.startsWith(prefix)) {
+		return undefined;
+	}
+	const match = /^(\d+),(\d+)\) (.*)$/.exec(recordLine.slice(prefix.length));
+	if (!match) {
+		return undefined;
+	}
+	const message = match[3];
+	const syntax = match[1] === '1' ? /^yaml: line ([1-9]\d*):/.exec(message) : null;
+	const line = syntax ? Number(syntax[1]) : Number(match[1]);
+	return row(line, /^field \S+ is deprecated$/.test(message) ? 'warning' : 'error', message);
+}
+
+/**
+ * Parity problems between a record's lines and what the extension makes of them; empty when
+ * they agree. `parse` is the extension's pipeline (injectable for the checker's self-test).
+ */
+function parityProblems(
+	recordLines: readonly string[],
+	target: string,
+	lineCount: number,
+	parse: (stderr: string, target: string) => TargetFindings = findingsForTarget,
+): string[] {
+	const stderr = recordLines.map((l) => l.split(`${PLACEHOLDER}/`).join(CORPUS + path.sep)).join('\n');
+	const result = parse(stderr, target);
+	const problems: string[] = [];
+	const expected: string[] = [];
+	const config = path.relative(CORPUS, target);
+	for (const line of recordLines) {
+		const r = expectedRow(line, config);
+		if (r) {
+			expected.push(r);
+		} else {
+			problems.push(`  ? ${line}   (record line is not a finding for ${config})`);
+		}
+	}
+	const actual = result.findings.map((f) => row(documentLine(f.line, lineCount) + 1, f.severity, f.message));
+	for (const r of minus(expected, actual)) {
+		problems.push(`  - ${r}   (recorded, no matching diagnostic)`);
+	}
+	for (const r of minus(actual, expected)) {
+		problems.push(`  + ${r}   (diagnostic, not recorded)`);
+	}
+	for (const l of result.unparsed) {
+		problems.push(`  ! ${l}   (unparsed)`);
+	}
+	for (const f of result.otherFiles) {
+		problems.push(`  ! ${f.path}(${f.line}) ${f.message}   (set aside as another file's)`);
+	}
+	return problems;
+}
+
+/** Lines in a config as VS Code counts them (a trailing newline starts one more, empty, line). */
+const lineCountOf = (config: string) => fs.readFileSync(path.join(CORPUS, config), 'utf8').split(/\r\n|\r|\n/).length;
+
+describe('diagnostics parity (recorded lint output → extension diagnostics)', () => {
+	for (const ver of VERSIONS) {
+		for (const config of configs) {
+			it(`${config} @ ${ver}`, () => {
+				const recordFile = recordOf(config, ver);
+				if (!fs.existsSync(recordFile)) {
+					return; // reported by 'every config has a record for each pinned version'
+				}
+				const record = parse(fs.readFileSync(recordFile, 'utf8'));
+				const problems = parityProblems(record.lines, path.join(CORPUS, config), lineCountOf(config));
+				expect(problems, [`${config} with redpanda-connect ${ver}: the extension's diagnostics differ from ` +
+					`${rel(recordFile)}:`, ...problems].join('\n')).toEqual([]);
+			});
+		}
+	}
+
+	it('the checker reports dropped, mis-lined, re-worded and out-of-file findings', () => {
+		const target = path.join(CORPUS, 'x.yaml');
+		const lines = [`${PLACEHOLDER}/x.yaml(3,1) field a not recognised`, `${PLACEHOLDER}/x.yaml(5,1) field b is deprecated`];
+		expect(parityProblems(lines, target, 10)).toEqual([]);
+		const tweak = (change: (r: TargetFindings) => TargetFindings) => (stderr: string, t: string) => change(findingsForTarget(stderr, t));
+		const dropped = parityProblems(lines, target, 10, tweak((r) => ({ ...r, findings: r.findings.slice(1) })));
+		expect(dropped).toEqual(['  - L3 error field a not recognised   (recorded, no matching diagnostic)']);
+		const misLined = parityProblems(lines, target, 10, tweak((r) => ({ ...r, findings: r.findings.map((f) => ({ ...f, line: f.line + 1 })) })));
+		expect(misLined).toEqual([
+			'  - L3 error field a not recognised   (recorded, no matching diagnostic)',
+			'  - L5 warning field b is deprecated   (recorded, no matching diagnostic)',
+			'  + L4 error field a not recognised   (diagnostic, not recorded)',
+			'  + L6 warning field b is deprecated   (diagnostic, not recorded)',
+		]);
+		const reworded = parityProblems(lines, target, 10, tweak((r) => ({ ...r, findings: [{ ...r.findings[0], message: 'x' }, r.findings[1]] })));
+		expect(reworded).toEqual([
+			'  - L3 error field a not recognised   (recorded, no matching diagnostic)',
+			'  + L3 error x   (diagnostic, not recorded)',
+		]);
+		const severity = parityProblems(lines, target, 10, tweak((r) => ({ ...r, findings: r.findings.map((f) => ({ ...f, severity: 'error' as const })) })));
+		expect(severity).toContain('  + L5 error field b is deprecated   (diagnostic, not recorded)');
+		expect(parityProblems(lines, target, 4)).toContain('  - L5 warning field b is deprecated   (recorded, no matching diagnostic)');
+		const aside = parityProblems([`${PLACEHOLDER}/other.yaml(1,1) field a not recognised`, 'panic: x'], target, 10);
+		expect(aside.filter((p) => p.startsWith('  !')).length).toBe(2);
+		// A filter that wrongly keeps another file's finding is caught on the expected side.
+		const keepAll = (stderr: string, t: string) => {
+			const r = findingsForTarget(stderr, t);
+			return { ...r, findings: [...r.findings, ...r.otherFiles], otherFiles: [] };
+		};
+		expect(parityProblems([`${PLACEHOLDER}/other.yaml(2,1) field a not recognised`], target, 10, keepAll)).toEqual([
+			`  ? ${PLACEHOLDER}/other.yaml(2,1) field a not recognised   (record line is not a finding for x.yaml)`,
+			'  + L2 error field a not recognised   (diagnostic, not recorded)',
+		]);
+		// Settled 2.4 rules: syntax errors move to line N; only `field <name> is deprecated` warns;
+		// a `(n,m) ` inside the message does not split it.
+		expect(parityProblems([`${PLACEHOLDER}/x.yaml(1,1) yaml: line 7: did not find expected key`,
+			`${PLACEHOLDER}/x.yaml(2,1) component foo is deprecated`, `${PLACEHOLDER}/x.yaml(3,1) bad (4,2) thing`], target, 10)).toEqual([]);
+	});
+});
 
 describe('corpus layout', () => {
 	it('pins the same versions as scripts/spike/fetch-binaries.sh', () => {
