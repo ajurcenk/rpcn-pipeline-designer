@@ -360,6 +360,40 @@ suite('Schema contributor (integration)', function () {
 		assert.strictEqual(await hoverText(doc, new vscode.Position(1, 1)), '');
 	});
 
+	test('INCOMPLETE_COMPONENT (2.13): a component missing a required field still offers its fields', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('incomplete.yaml', 'output:\n  file:\n    codec: lines\n    \n');
+		await completionOffers(doc, new vscode.Position(3, 4), ['path']);
+	});
+
+	test('VALUE_OPTIONS (2.13): typing a value after codec: offers the documented options', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		// One character typed (as VS Code's quick suggestions do); an empty value inside a component
+		// gets nothing from Red Hat 1.24.0 (open question in the E2 notes).
+		const doc = await openYaml('options.yaml', 'output:\n  file:\n    path: x\n    codec: l\n');
+		await completionOffers(doc, new vscode.Position(3, 12), ['all-bytes', 'append', 'delim:x', 'lines']);
+		// The option descriptions reach the completion items.
+		const list = await vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', doc.uri, new vscode.Position(3, 12));
+		const allBytes = list.items.find((i) => (typeof i.label === 'string' ? i.label : i.label.label) === 'all-bytes');
+		const docText = (d: vscode.CompletionItem['documentation']) => (typeof d === 'string' ? d : d?.value ?? '');
+		assert.ok(docText(allBytes?.documentation).startsWith('Only applicable to file based outputs.'), docText(allBytes?.documentation));
+	});
+
+	test('VALUE_OPTIONS outside a component: an empty logger.level offers its options', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('level.yaml', 'input:\n  stdin: {}\nlogger:\n  level: \n');
+		await completionOffers(doc, new vscode.Position(3, 9), ['ERROR', 'WARN', 'INFO', 'DEBUG']);
+	});
+
+	test('FREE_STRING (2.13): a value outside the options gets no schema diagnostic', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('free.yaml', 'output:\n  file:\n    path: x\n    codec: delim:foobar\nlogger:\n  level: [1]\n');
+		// Positive control: Red Hat validates this file (the wrong type for logger.level is flagged).
+		const schemaDiagnostics = () => vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source?.startsWith('yaml-schema'));
+		assert.ok(await waitFor(() => schemaDiagnostics().length > 0, 30_000), 'Red Hat did not validate the file');
+		assert.deepStrictEqual(schemaDiagnostics().filter((d) => d.range.start.line === 3).map((d) => d.message), []);
+	});
+
 	test('BECOMES_DETECTED: typing pipeline: into a new YAML file brings completion without reopening', async () => {
 		const doc = await openYaml('becomes.yaml', '');
 		assert.strictEqual(api().detection.isDetected(doc.uri), false);

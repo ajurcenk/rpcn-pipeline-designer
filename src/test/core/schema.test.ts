@@ -274,3 +274,86 @@ suite('core/schema helpers', () => {
 		assert.strictEqual(toYamlList([{ mapping: 'root = this\nroot.y = 2' }]), '- mapping: |-\n    root = this\n    root.y = 2');
 	});
 });
+
+suite('core/schema transformSchema completion fixes (ticket 2.13)', () => {
+	const fileOutput = (schema: JsonObject) => {
+		const output = (schema.definitions as JsonObject).output as JsonObject;
+		const branch = ((output.allOf as JsonObject[])[0].anyOf as JsonObject[]).find((b) => isJsonObject(b.properties) && 'file' in b.properties)!;
+		return (branch.properties as JsonObject).file as JsonObject;
+	};
+
+	test('VERSION: the transform version is 2', () => {
+		assert.strictEqual(TRANSFORM_VERSION, 2);
+	});
+
+	for (const v of VERSIONS) {
+		test(`NO_REQUIRED: no node keeps \`required\` (${v}); the raw schema had some`, () => {
+			const raw = loadRaw(v);
+			assert.ok([...nodes(raw)].some(([, n]) => n.required !== undefined), 'fixture has required');
+			const out = transformSchema(raw, loadDocs(v));
+			const left = [...nodes(out)].filter(([, n]) => n.required !== undefined).map(([at]) => at);
+			assert.deepStrictEqual(left, []);
+		});
+	}
+
+	test('VALUE_OPTIONS: file.codec suggests its annotated options with descriptions, still any string', () => {
+		const codec = (fileOutput(transformSchema(loadRaw('4.112.0'), loadDocs('4.112.0'))).properties as JsonObject).codec as JsonObject;
+		assert.strictEqual(codec.type, 'string', 'type kept');
+		assert.strictEqual(codec.default, 'lines', 'default kept');
+		const [suggestion, any] = codec.anyOf as JsonObject[];
+		assert.deepStrictEqual(suggestion.enum, ['all-bytes', 'append', 'delim:x', 'lines']);
+		const descriptions = suggestion.markdownEnumDescriptions as string[];
+		assert.strictEqual(descriptions.length, 4);
+		assert.ok(descriptions[0].startsWith('Only applicable to file based outputs.'), descriptions[0]);
+		assert.deepStrictEqual(any, { type: 'string' });
+	});
+
+	test('the raw input is not modified', () => {
+		const raw = loadRaw('4.112.0');
+		const before = JSON.stringify(raw);
+		transformSchema(raw, loadDocs('4.112.0'));
+		assert.strictEqual(JSON.stringify(raw), before);
+	});
+
+	/** A one-component schema with field `f` of `node`, documented by `doc`. */
+	const tiny = (node: JsonObject, doc: JsonObject) => {
+		const raw: JsonObject = {
+			definitions: { output: { allOf: [{ anyOf: [{ properties: { c: { properties: { f: node }, type: 'object' } }, type: 'object' }] }] } },
+			properties: { output: { $ref: '#/definitions/output' } },
+		};
+		const docs: JsonObject = { outputs: [{ name: 'c', config: { kind: 'scalar', children: [{ name: 'f', ...doc }] } }] };
+		const out = transformSchema(raw, docs);
+		const c = ((((out.definitions as JsonObject).output as JsonObject).allOf as JsonObject[])[0].anyOf as JsonObject[])[0];
+		return ((c.properties as JsonObject).c as JsonObject).properties as JsonObject;
+	};
+
+	test('PLAIN_OPTIONS: options without descriptions give an enum without markdownEnumDescriptions', () => {
+		const f = tiny({ type: 'string' }, { kind: 'scalar', type: 'string', options: ['a', 'b', 'a', '', 3] }).f as JsonObject;
+		assert.deepStrictEqual(f.anyOf, [{ type: 'string', enum: ['a', 'b'] }, { type: 'string' }]);
+	});
+
+	test('annotated_options without a usable pair fall back to options', () => {
+		const f = tiny({ type: 'string' }, { kind: 'scalar', type: 'string', annotated_options: [[1, 'x'], 'bad'], options: ['a'] }).f as JsonObject;
+		assert.deepStrictEqual(f.anyOf, [{ type: 'string', enum: ['a'] }, { type: 'string' }]);
+	});
+
+	test('annotated options with some descriptions missing get "" for those', () => {
+		const f = tiny({ type: 'string' }, { kind: 'scalar', type: 'string', annotated_options: [['a', 'Alpha'], ['b', ''], ['c']] }).f as JsonObject;
+		assert.deepStrictEqual((f.anyOf as JsonObject[])[0], { type: 'string', enum: ['a', 'b', 'c'], markdownEnumDescriptions: ['Alpha', '', ''] });
+	});
+
+	test('ARRAY_OPTIONS: an array of strings gets the suggestions on its items', () => {
+		const f = tiny({ type: 'array', items: { type: 'string' } }, { kind: 'array', type: 'string', options: ['x', 'y'] }).f as JsonObject;
+		assert.deepStrictEqual((f.items as JsonObject).anyOf, [{ type: 'string', enum: ['x', 'y'] }, { type: 'string' }]);
+		assert.strictEqual(f.anyOf, undefined);
+	});
+
+	test('SKIP: non-string nodes and nodes with anyOf or enum are left alone', () => {
+		const num = tiny({ type: 'number' }, { kind: 'scalar', type: 'int', options: ['1', '2'] }).f as JsonObject;
+		assert.deepStrictEqual((num.anyOf as JsonObject[]).map((m) => m.type), ['number', 'string'], 'only the ${VAR} interpolation');
+		const withEnum = tiny({ type: 'string', enum: ['q'] }, { kind: 'scalar', type: 'string', options: ['a'] }).f as JsonObject;
+		assert.deepStrictEqual(withEnum, { type: 'string', enum: ['q'] });
+		const map = tiny({ type: 'object', properties: {} }, { kind: 'map', type: 'string', options: ['a'] }).f as JsonObject;
+		assert.strictEqual(map.anyOf, undefined);
+	});
+});

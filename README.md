@@ -24,7 +24,7 @@ If no usable binary is found, a warning appears once (and again only after the s
 
 For the resolved binary, the extension runs `list --format jsonschema` and merges in the field descriptions, examples and defaults from `list --format json-full`. The result is cached in the extension's global storage as `schema-<hash>.json`, whose name changes with the binary path, its version and the transform version. Later activations still run `--version` to find the binary, but on a cache hit they skip both `list` runs. After a successful write (never on a cache hit), other `schema-<16 hex>.json` files unused for more than 30 days are removed.
 
-**Redpanda Connect: Refresh Schema** looks for the binary again and regenerates the schema, even when a cached copy exists. The schema is served to YAML by Red Hat for detected configs only (completion and hover).
+**Redpanda Connect: Refresh Schema** looks for the binary again and regenerates the schema, even when a cached copy exists. The schema is served to YAML by Red Hat for detected configs only (completion and hover). The served schema drops `required` (lint on save reports missing fields), so a component's fields are still offered while a required one is missing, and fields with documented options (for example `codec` or `logger.level`) suggest those values with their descriptions; any other string stays valid. Known limit: Red Hat offers nothing on a completely empty component block or value (`generate:` with nothing under it, or `codec:` with nothing typed); type the first character.
 
 ## Which files are Redpanda Connect configs
 

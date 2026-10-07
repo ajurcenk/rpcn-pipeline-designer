@@ -86,6 +86,19 @@ unknown = "The grace period before SIGKILL."
 notes = ["Waits on 4 and 10 for shared files (extension.ts composition root, package.json contributions), not their behavior."]
 
 [[entry]]
+id = 13
+type = "story"
+title = "Schema completion fixes: incomplete components and value options"
+description = "The schema transform drops `required` so Red Hat still offers a component's fields while a required field is missing, and turns json-full `options` / `annotated_options` into value suggestions (one of the options, or any string) with their descriptions; TRANSFORM_VERSION bumps (AD-10, AD-12: lint stays the validation)."
+verify = "Under `file:` with only `codec: lines`, completion offers `path`; after `codec: `, completion offers all-bytes, append, delim:x and lines with descriptions; `codec: delim:foobar` gets no schema error; corpus and suite green."
+covers = ["E2 (R1)"]
+after = [1]
+hitl = false
+risk = "low"
+unknown = "Empty component blocks (`generate:` with nothing under it) still get no completions; investigated separately."
+notes = ["Found in the user's manual check of 2.7 (2026-10-07): Ctrl+Space under an incomplete `file:` showed only word suggestions."]
+
+[[entry]]
 id = 8
 type = "story"
 title = "Feedback when the schema or binary changes"
@@ -142,7 +155,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

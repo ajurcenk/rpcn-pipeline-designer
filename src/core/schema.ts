@@ -9,9 +9,16 @@
 // The transform:
 //   1. adds `"$schema": "http://json-schema.org/draft-07/schema#"` (first key);
 //   2. lets every `number` / `integer` / `boolean` node also accept a `${VAR}` string;
-//   3. keeps every other key (including `is_*`) as is;
-//   4. merges json-full docs: field `description` + `examples` → `markdownDescription`,
-//      field `default` → `default`, component `summary` → the component's `markdownDescription`.
+//   3. drops every `required`: Red Hat drops a component's `anyOf` branch while a required
+//      field is missing, and with it every completion for that component; lint on save is the
+//      validation for missing fields (AD-12; ticket 2.13);
+//   4. keeps every other key (including `is_*`) as is;
+//   5. merges json-full docs: field `description` + `examples` → `markdownDescription`,
+//      field `default` → `default`, component `summary` → the component's `markdownDescription`,
+//      field `options` / `annotated_options` → value suggestions on a string node (or the
+//      string items of an array field):
+//      `anyOf: [{type: string, enum, markdownEnumDescriptions}, {type: string}]` (any string
+//      stays valid, e.g. `delim:foobar`; ticket 2.13).
 // A field or component missing on either side is skipped, never an error.
 //
 // Bump TRANSFORM_VERSION whenever the output for the same input changes: it is part of the
@@ -19,7 +26,7 @@
 
 import { createHash } from 'crypto';
 
-export const TRANSFORM_VERSION = 1;
+export const TRANSFORM_VERSION = 2;
 
 export const DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 
@@ -107,6 +114,7 @@ export function transformSchema(raw: JsonObject, docs?: JsonObject): JsonObject 
 	const body = structuredClone(raw);
 	delete body.$schema;
 	allowInterpolation(body);
+	dropRequired(body);
 	if (docs) {
 		mergeDocs(body, docs);
 	}
@@ -163,6 +171,12 @@ function allowInterpolation(node: JsonObject): void {
 	}
 	delete node.type;
 	node.anyOf = [typed, { type: 'string', pattern: INTERPOLATION_PATTERN }];
+}
+
+/** Removes `required` from every node (step 3). */
+function dropRequired(node: JsonObject): void {
+	forEachSubSchema(node, dropRequired);
+	delete node.required;
 }
 
 // ---- json-full doc merge -------------------------------------------------------------
@@ -236,7 +250,58 @@ function applyField(node: JsonObject, field: JsonObject): void {
 	if (field.default !== undefined) {
 		node.default = structuredClone(field.default);
 	}
+	applyOptions(node, field);
 	applyChildrenByKind(node, field);
+}
+
+interface FieldOption {
+	readonly value: string;
+	readonly description?: string;
+}
+
+/** A field's `annotated_options` (`[value, description]` pairs), else its `options` (strings). */
+function optionsOf(field: JsonObject): FieldOption[] {
+	const seen = new Set<string>();
+	const out: FieldOption[] = [];
+	const add = (value: unknown, description?: unknown) => {
+		if (typeof value === 'string' && value !== '' && !seen.has(value)) {
+			seen.add(value);
+			out.push({ value, description: typeof description === 'string' && description.trim() ? description.trim() : undefined });
+		}
+	};
+	if (Array.isArray(field.annotated_options)) {
+		for (const pair of field.annotated_options) {
+			if (Array.isArray(pair)) {
+				add(pair[0], pair[1]);
+			}
+		}
+	}
+	if (out.length === 0 && Array.isArray(field.options)) {
+		field.options.forEach((value) => add(value));
+	}
+	return out;
+}
+
+/**
+ * Value suggestions (step 5): a string scalar, or the string items of an array field, gains
+ * `anyOf: [{type: string, enum, markdownEnumDescriptions?}, {type: string}]`. Nodes of another
+ * type, or that already have `anyOf` / `enum`, are left alone.
+ */
+function applyOptions(node: JsonObject, field: JsonObject): void {
+	const options = optionsOf(field);
+	if (options.length === 0) {
+		return;
+	}
+	const kind = typeof field.kind === 'string' ? field.kind : 'scalar';
+	const target = kind === 'scalar' ? node : kind === 'array' && isJsonObject(node.items) ? node.items : undefined;
+	if (!target || target.type !== 'string' || target.anyOf !== undefined || target.enum !== undefined) {
+		return;
+	}
+	const suggestion: JsonObject = { type: 'string', enum: options.map((o) => o.value) };
+	if (options.some((o) => o.description)) {
+		suggestion.markdownEnumDescriptions = options.map((o) => o.description ?? '');
+	}
+	target.anyOf = [suggestion, { type: 'string' }];
 }
 
 /** Descends from a field's node to the node holding its children, according to `kind`. */
