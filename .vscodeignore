@@ -4,6 +4,7 @@
 .agents/**
 .claude/**
 .cache/**
+.dev-host/**
 _bmad/**
 _bmad-output/**
 scripts/**

@@ -21,3 +21,6 @@ _bmad/render/
 
 # Spike binary cache (never committed)
 .cache/
+
+# Manual-check VS Code profile and workspace (scripts/dev-host.sh)
+.dev-host/

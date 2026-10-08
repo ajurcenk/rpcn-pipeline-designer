@@ -77,7 +77,7 @@ npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and 
 npx vsce package --no-dependencies
 ```
 
-Press F5 in VS Code to start an Extension Development Host.
+Press F5 in VS Code to start an Extension Development Host, or run `scripts/dev-host.sh [folder] [file...]` to rebuild and (re)start a VS Code window with the extension loaded from source; its profile, YAML by Red Hat and default workspace live in the git-ignored `.dev-host/`.
 
 ## License
 
