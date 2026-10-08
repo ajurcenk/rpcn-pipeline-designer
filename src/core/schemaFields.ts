@@ -100,6 +100,81 @@ export function optionsAt(schema: JsonObject, path: readonly PathStep[], key: st
 	return [...options];
 }
 
+/** Every schema node `path` leads to, expanded through `$ref`, `allOf` and `anyOf`. */
+export function nodesAt(schema: JsonObject, path: readonly PathStep[]): JsonObject[] {
+	let nodes: JsonObject[] = [schema];
+	for (const step of path) {
+		nodes = nodes.flatMap((n) => expand(schema, n, false, 0)).flatMap(({ node }) => {
+			const next = typeof step === 'number' ? node.items : isJsonObject(node.properties) ? node.properties[step] : undefined;
+			return isJsonObject(next) ? [next] : [];
+		});
+		if (nodes.length === 0) {
+			return [];
+		}
+	}
+	return nodes.flatMap((n) => expand(schema, n, false, 0)).map(({ node }) => node);
+}
+
+/** Whether `path` runs through a component (a key that is a component name where it sits). */
+export function insideComponent(schema: JsonObject, path: readonly PathStep[]): boolean {
+	for (let i = 0; i < path.length; i++) {
+		const step = path[i];
+		if (typeof step === 'string' && fieldsAt(schema, path.slice(0, i))?.components.includes(step)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export interface FieldOptionInfo {
+	readonly value: string;
+	readonly description?: string;
+}
+
+/** What completion needs to know about one field. */
+export interface FieldInfo {
+	readonly name: string;
+	readonly markdown?: string;
+	/** A scalar default (string, number or boolean), if the schema has one. */
+	readonly default?: string | number | boolean;
+	readonly shape: 'object' | 'array' | 'scalar';
+	readonly boolean: boolean;
+	readonly deprecated: boolean;
+	readonly options: readonly FieldOptionInfo[];
+}
+
+/** Field `key` of the mapping at `path`; `undefined` when the schema has no such field. */
+export function fieldInfo(schema: JsonObject, path: readonly PathStep[], key: string): FieldInfo | undefined {
+	const nodes = nodesAt(schema, [...path, key]);
+	if (nodes.length === 0) {
+		return undefined;
+	}
+	const types = new Set(nodes.flatMap((n) => (Array.isArray(n.type) ? n.type : [n.type])).filter((t): t is string => typeof t === 'string'));
+	const markdown = nodes.map((n) => n.markdownDescription).find((m): m is string => typeof m === 'string');
+	const rawDefault = nodes.map((n) => n.default).find((d) => d !== undefined);
+	const options: FieldOptionInfo[] = [];
+	for (const n of nodes) {
+		if (Array.isArray(n.enum)) {
+			const descriptions = Array.isArray(n.markdownEnumDescriptions) ? n.markdownEnumDescriptions : [];
+			n.enum.forEach((v, i) => {
+				if (typeof v === 'string' && !options.some((o) => o.value === v)) {
+					const d = descriptions[i];
+					options.push({ value: v, description: typeof d === 'string' && d ? d : undefined });
+				}
+			});
+		}
+	}
+	return {
+		name: key,
+		markdown,
+		default: typeof rawDefault === 'string' || typeof rawDefault === 'number' || typeof rawDefault === 'boolean' ? rawDefault : undefined,
+		shape: types.has('object') || nodes.some((n) => isJsonObject(n.properties)) ? 'object' : types.has('array') ? 'array' : 'scalar',
+		boolean: types.has('boolean'),
+		deprecated: nodes.some((n) => n.is_deprecated === true),
+		options,
+	};
+}
+
 /** The node itself plus everything its `$ref`, `allOf` and `anyOf` lead to. */
 function expand(schema: JsonObject, node: JsonObject, branch: boolean, depth: number): Expanded[] {
 	if (depth > MAX_EXPAND_DEPTH) {

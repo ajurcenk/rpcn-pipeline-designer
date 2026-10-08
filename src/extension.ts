@@ -9,6 +9,7 @@ import { registerSchemaContributor, SchemaContributor } from './adapters/redhatY
 import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
 import { LintQuickFix } from './adapters/vscode/quickFix';
+import { GapCompletionProvider } from './adapters/vscode/completion';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
@@ -114,6 +115,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		{ language: 'yaml' },
 		new LintQuickFix(() => schemaStore.current?.json),
 		{ providedCodeActionKinds: LintQuickFix.providedCodeActionKinds },
+	));
+
+	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
+		{ language: 'yaml' },
+		new GapCompletionProvider({ schema: () => schemaStore.current?.json, isDetected: (uri) => detection.isDetected(uri) }),
 	));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });

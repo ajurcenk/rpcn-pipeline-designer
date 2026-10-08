@@ -115,9 +115,9 @@ companions: []
 
 ### AD-11 — Red Hat YAML is a hard dependency; we supply schema via registerContributor and run no YAML LSP of our own [ADOPTED]
 
-- **Binds:** `package.json` `extensionDependencies`, `src/adapters/redhatYaml`
+- **Binds:** `package.json` `extensionDependencies`, `src/adapters/redhatYaml`, `src/adapters/vscode` (gap completion)
 - **Prevents:** duplicate completion and diagnostics from two YAML language servers
-- **Rule:** `redhat.vscode-yaml` is listed in `extensionDependencies`. Our extension supplies the generated schema through its `registerContributor` API as content: `requestSchema` answers only for files the DetectionRegistry (AD-18) accepts, with a URI in our own scheme embedding the schema hash (AD-10), and `requestSchemaContent` serves the JSON from the in-memory schema store, never from the cache file. We never start our own YAML language server and never register our own YAML completion or schema validation.
+- **Rule:** `redhat.vscode-yaml` is listed in `extensionDependencies`. Our extension supplies the generated schema through its `registerContributor` API as content: `requestSchema` answers only for files the DetectionRegistry (AD-18) accepts, with a URI in our own scheme embedding the schema hash (AD-10), and `requestSchemaContent` serves the JSON from the in-memory schema store, never from the cache file. We never start our own YAML language server and never register our own schema validation. Completion is Red Hat's, with one exception (amended 2026-10-07, ticket 2.16): for detected files the extension adds completion items only where Red Hat 1.24.0 returns none, which is an empty component block (`socket:` with nothing under it) or an empty value inside a component (`network: `). The items come from the same served schema, and in every other position our provider returns nothing, so the two never duplicate.
 
 ### AD-12 — Diagnostics ownership and dedupe [ADOPTED]
 
