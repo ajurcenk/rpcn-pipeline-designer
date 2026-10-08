@@ -32,7 +32,7 @@ An open YAML file is treated as a Redpanda Connect config when one of its YAML d
 
 ## Bloblang highlighting
 
-Bloblang is highlighted in the values of Redpanda Connect mapping fields (`mapping`, `mutation`, `bloblang`, `check`, `request_map`, `result_map`, `args_mapping` and the other `*_mapping` / `*_map` fields), as a block (`|`), a plain or a quoted value, and in `${! … }` interpolations inside any YAML string. Highlighting only: there is no Bloblang completion or checking yet. Generic field names that also hold Bloblang in a few components (`when`, `query`, …) are not highlighted, because the highlighting applies to every YAML file.
+Bloblang is highlighted in the values of Redpanda Connect mapping fields (`mapping`, `mutation`, `bloblang`, `check`, `request_map`, `result_map`, `args_mapping` and the other `*_mapping` / `*_map` fields), as a block (`|`), a plain or a quoted value, and in `${! … }` interpolations inside any YAML string. Inside Bloblang, completion offers the Bloblang **functions** (`now()`, `uuid_v4()`, …) and, after a dot, the **methods** (`.uppercase()`, `.parse_json()`, …) of your binary's version, with descriptions and parameter placeholders, and hovering a function or method name shows its docs and an example. They come from the binary's own docs (`list --format json-full`), so they match the version you run. There is no Bloblang checking while typing; lint on save checks mappings. Generic field names that also hold Bloblang in a few components (`when`, `query`, …) are not highlighted, because the highlighting applies to every YAML file.
 
 ## Lint on save
 

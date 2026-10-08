@@ -282,8 +282,8 @@ suite('core/schema transformSchema completion fixes (ticket 2.13)', () => {
 		return (branch.properties as JsonObject).file as JsonObject;
 	};
 
-	test('VERSION: the transform version is 4 (2.17)', () => {
-		assert.strictEqual(TRANSFORM_VERSION, 4);
+	test('VERSION: the transform version is 5 (2.19)', () => {
+		assert.strictEqual(TRANSFORM_VERSION, 5);
 	});
 
 	test('TRANSFORM (2.17): required lists move to x-rpcn-required (socket: network, address)', () => {

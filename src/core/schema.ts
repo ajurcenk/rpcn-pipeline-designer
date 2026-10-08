@@ -20,15 +20,17 @@
 //      string items of an array field):
 //      `anyOf: [{type: string, enum, markdownEnumDescriptions}, {type: string}]` (any string
 //      stays valid, e.g. `delim:foobar`; ticket 2.13), and an `Options: …` line in the field's
-//      `markdownDescription` (hover; ticket 2.15).
+//      `markdownDescription` (hover; ticket 2.15); the Bloblang functions and methods go under
+//      `x-rpcn-bloblang` (completion and hover inside Bloblang; ticket 2.19).
 // A field or component missing on either side is skipped, never an error.
 //
 // Bump TRANSFORM_VERSION whenever the output for the same input changes: it is part of the
 // schema cache key, so a new extension version never serves a schema cached by an old one.
 
 import { createHash } from 'crypto';
+import { BLOBLANG_KEY, bloblangCatalogFromDocs } from './bloblang';
 
-export const TRANSFORM_VERSION = 4;
+export const TRANSFORM_VERSION = 5;
 
 export const DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 
@@ -119,6 +121,10 @@ export function transformSchema(raw: JsonObject, docs?: JsonObject): JsonObject 
 	dropRequired(body);
 	if (docs) {
 		mergeDocs(body, docs);
+		const catalog = bloblangCatalogFromDocs(docs);
+		if ((catalog.functions as unknown[]).length > 0 || (catalog.methods as unknown[]).length > 0) {
+			body[BLOBLANG_KEY] = catalog;
+		}
 	}
 	return { $schema: DRAFT_07, ...body };
 }

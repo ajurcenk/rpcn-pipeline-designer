@@ -189,6 +189,19 @@ risk = "low"
 unknown = "None."
 
 [[entry]]
+id = 19
+type = "story"
+title = "Bloblang function and method completion and hover"
+description = "Inside Bloblang (the 2.9 Bloblang fields and ${! } interpolations), completion offers the binary's Bloblang functions (expression positions) and methods (after a dot) with descriptions and parameter placeholders, and hover shows a function's or method's docs; data from json-full kept in the served schema under a private key (AD-14 amended)."
+verify = "In a mapping block, `root.id = ` + Ctrl+Space offers uuid_v4 and now; `this.name.` offers uppercase; hover on `now` shows its description; deprecated entries are tagged; hidden ones absent; no items outside Bloblang."
+covers = ["E2 (R6)"]
+after = [9, 16]
+hitl = false
+risk = "medium"
+unknown = "None."
+notes = ["User request 2026-10-08 (Redpanda Connect function list); the docs page and the 4.100.0/4.112.0 binaries list the same 41 functions."]
+
+[[entry]]
 id = 10
 type = "story"
 title = "Pipeline snippets"
@@ -220,7 +233,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

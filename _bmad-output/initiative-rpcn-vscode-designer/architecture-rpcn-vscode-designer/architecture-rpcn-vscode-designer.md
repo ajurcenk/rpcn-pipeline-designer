@@ -131,11 +131,11 @@ companions: []
 - **Prevents:** terminal sprawl; running stale on-disk content; Stop with no mechanism or acting on the wrong process; a shell spawning outside AD-9
 - **Rule:** Run is disabled for untitled documents. If the file is dirty, Run saves it without prompting, then runs the saved file. Each file has one terminal named `Redpanda Connect: <file name>`, tracked by URI (AD-1) and reused on re-run. The terminal is a `Pseudoterminal` whose child process the RedpandaConnect adapter spawns with the AD-9 arguments; nothing is typed into a shell. Stop (status bar or command) calls `child.kill('SIGINT')` on that file's child and escalates to `SIGKILL` if it has not exited after a grace period; the exit status goes to the status bar. The child is a long-lived, streaming handle from the spawn site (AD-9), not the buffered, timeout-killed one-shot runner.
 
-### AD-14 — Bloblang support is TextMate injection only [ADOPTED]
+### AD-14 — Bloblang support: TextMate injection, plus completion and hover for functions and methods [ADOPTED]
 
 - **Binds:** `syntaxes/`, `package.json` grammars
 - **Prevents:** a half-built Bloblang language service competing with a later LSP
-- **Rule:** Bloblang gets our own TextMate grammar, injected into `source.yaml` and the versioned YAML scopes, for highlighting only. No Bloblang completion, diagnostics or LSP in this release.
+- **Rule:** Bloblang gets our own TextMate grammar, injected into `source.yaml` and the versioned YAML scopes, for highlighting. Amended 2026-10-08 (user, ticket 2.19): inside Bloblang (the values of the grammar's Bloblang fields and `${! }` interpolations), the extension also offers completion and hover for Bloblang functions and methods, from the binary's own `list --format json-full` docs (the served schema carries them under a private key), so they match the user's version. Still no Bloblang diagnostics (lint on save checks mappings) and no Bloblang language server.
 
 ### AD-15 — Dependency direction [ADOPTED]
 

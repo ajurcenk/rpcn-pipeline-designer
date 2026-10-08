@@ -10,6 +10,7 @@ import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
 import { LintQuickFix } from './adapters/vscode/quickFix';
 import { GapCompletionProvider } from './adapters/vscode/completion';
+import { BloblangProvider } from './adapters/vscode/bloblang';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
@@ -141,6 +142,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		{ language: 'yaml' },
 		new GapCompletionProvider({ schema: () => schemaStore.current?.json, isDetected: (uri) => detection.isDetected(uri) }),
 	));
+
+	const bloblang = new BloblangProvider({ schema: () => schemaStore.current?.json, isDetected: (uri) => detection.isDetected(uri) });
+	context.subscriptions.push(
+		vscode.languages.registerCompletionItemProvider({ language: 'yaml' }, bloblang, ...BloblangProvider.triggerCharacters),
+		vscode.languages.registerHoverProvider({ language: 'yaml' }, bloblang),
+	);
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());
