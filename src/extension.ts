@@ -15,6 +15,7 @@ import { SnippetCompletionProvider } from './adapters/vscode/snippets';
 import { forgetDocument } from './adapters/vscode/parseCache';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
+import type { JsonObject } from './core/schema';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -103,6 +104,27 @@ export function createVsCodeNotifier(log: LogLine): BinaryNotifier {
 	};
 }
 
+/**
+ * The editor features on YAML documents (2.5, 2.14, 2.16, 2.19, 2.10): Quick Fixes on lint findings, completion
+ * where Red Hat returns none, Bloblang completion and hover, and pipeline snippets. All share one parse per
+ * document version (`parseCache`), which is dropped when the document closes.
+ */
+function registerEditorProviders(schema: () => JsonObject | undefined, detection: DetectionRegistry): vscode.Disposable[] {
+	const yaml: vscode.DocumentSelector = { language: 'yaml' };
+	const isDetected = (uri: vscode.Uri) => detection.isDetected(uri);
+	const bloblang = new BloblangProvider({ schema, isDetected });
+	return [
+		vscode.languages.registerCodeActionsProvider(yaml, new LintQuickFix(schema), {
+			providedCodeActionKinds: LintQuickFix.providedCodeActionKinds,
+		}),
+		vscode.languages.registerCompletionItemProvider(yaml, new GapCompletionProvider({ schema, isDetected })),
+		vscode.languages.registerCompletionItemProvider(yaml, bloblang, ...BloblangProvider.triggerCharacters),
+		vscode.languages.registerHoverProvider(yaml, bloblang),
+		vscode.languages.registerCompletionItemProvider(yaml, new SnippetCompletionProvider(isDetected)),
+		vscode.workspace.onDidCloseTextDocument((doc) => forgetDocument(doc.uri)),
+	];
+}
+
 export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	context.subscriptions.push(channel);
@@ -134,28 +156,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		log,
 	});
 	context.subscriptions.push(lintDiagnostics);
-	context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
-		{ language: 'yaml' },
-		new LintQuickFix(() => schemaStore.current?.json),
-		{ providedCodeActionKinds: LintQuickFix.providedCodeActionKinds },
-	));
-
-	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
-		{ language: 'yaml' },
-		new GapCompletionProvider({ schema: () => schemaStore.current?.json, isDetected: (uri) => detection.isDetected(uri) }),
-	));
-
-	const bloblang = new BloblangProvider({ schema: () => schemaStore.current?.json, isDetected: (uri) => detection.isDetected(uri) });
-	context.subscriptions.push(
-		vscode.languages.registerCompletionItemProvider({ language: 'yaml' }, bloblang, ...BloblangProvider.triggerCharacters),
-		vscode.languages.registerHoverProvider({ language: 'yaml' }, bloblang),
-	);
-
-	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
-		{ language: 'yaml' }, new SnippetCompletionProvider((uri) => detection.isDetected(uri)),
-	));
-
-	context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((doc) => forgetDocument(doc.uri)));
+	context.subscriptions.push(...registerEditorProviders(() => schemaStore.current?.json, detection));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());
