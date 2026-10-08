@@ -47,7 +47,8 @@ suite('core/bloblang (2.19, 4.112.0 docs)', () => {
 	});
 
 	test('functions at an expression position; methods after a dot', () => {
-		assert.deepStrictEqual(ctx(block('root.id = §')), { kind: 'function', prefix: '', start: block('root.id = ').length - 1 });
+		const fn = ctx(block('root.id = §'))!;
+		assert.deepStrictEqual([fn.kind, fn.prefix, fn.start], ['function', '', block('root.id = ').length - 1]);
 		assert.deepStrictEqual(ctx(block('root.n = this.name.up§'))?.kind, 'method');
 		assert.deepStrictEqual(ctx(block('root.n = this.name.up§'))?.prefix, 'up');
 		assert.strictEqual(ctx('pipeline:\n  processors:\n    - switch:\n        - check: this.a.§\n')?.kind, 'method');
@@ -60,8 +61,8 @@ suite('core/bloblang (2.19, 4.112.0 docs)', () => {
 		assert.strictEqual(ctx(block('root = "str§"')), undefined);
 		assert.strictEqual(ctx(block('# comm§')), undefined);
 		assert.strictEqual(ctx(block('root = this # x.§')), undefined);
-		assert.strictEqual(ctx(block('root.k = @sou§')), undefined);
-		assert.strictEqual(ctx(block('let x = $va§')), undefined);
+		assert.strictEqual(ctx(block('root.k = @sou§'))?.kind, 'metadata', 'metadata names (2.20)');
+		assert.strictEqual(ctx(block('let x = $va§'))?.kind, 'variable', 'variable names (2.20)');
 		assert.strictEqual(ctx('pipeline:\n  processors:\n    - log:\n        message: root = §\n'), undefined);
 		assert.strictEqual(ctx('output:\n  file:\n    path: /tmp/x§.txt\n'), undefined);
 		assert.strictEqual(ctx('input:\n  stdin: {}\nlogger:\n  level: §\n'), undefined);

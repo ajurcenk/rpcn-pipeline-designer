@@ -103,14 +103,18 @@ export function bloblangCatalogOf(schema: JsonObject): BloblangCatalog | undefin
 }
 
 export type BloblangContext = {
-	/** `method` after a dot, `function` elsewhere. */
-	readonly kind: 'function' | 'method';
+	/** `method` after a dot, `variable` after `$`, `metadata` after `@`, `function` elsewhere. */
+	readonly kind: 'function' | 'method' | 'variable' | 'metadata';
 	/** The identifier typed so far, and where it starts. */
 	readonly prefix: string;
 	readonly start: number;
+	/** After a dot on a plain path from `this` or `root` (`this.user.`): that path (ticket 2.20). */
+	readonly receiver?: { readonly base: 'this' | 'root'; readonly path: readonly string[] };
+	/** Start of the Bloblang region the cursor is in (for collecting names above it). */
+	readonly regionStart?: number;
 };
 
-interface Region {
+export interface Region {
 	readonly start: number;
 	readonly end: number;
 	/** A YAML double-quoted scalar: `\"` in the source is a `"` in Bloblang. */
@@ -118,6 +122,10 @@ interface Region {
 }
 
 /** The Bloblang regions of the document: Bloblang field values and `${! }` interpolations. */
+export function bloblangRegions(parsed: ParsedYaml, text: string): readonly Region[] {
+	return regions(parsed, text);
+}
+
 function regions(parsed: ParsedYaml, text: string): Region[] {
 	const out: Region[] = [];
 	const fields = new Set(BLOBLANG_FIELDS);
@@ -156,6 +164,11 @@ function regions(parsed: ParsedYaml, text: string): Region[] {
 		out.push({ start: i + 3, end: j });
 	}
 	return out;
+}
+
+/** Bloblang code of `source` with strings and comments blanked (same length, newlines kept). */
+export function bloblangCode(source: string): string {
+	return codeOf(source).code;
 }
 
 /**
@@ -238,10 +251,20 @@ export function bloblangContext(parsed: ParsedYaml | undefined, text: string, of
 		const m = /([A-Za-z_][\w]*)?$/.exec(code)!;
 		const prefix = m[1] ?? '';
 		const before = code.slice(0, code.length - prefix.length).trimEnd();
-		if (/[@$][\w]*$/.test(code) || /\d\.$/.test(before)) {
-			return undefined; // a metadata key, a variable name, or a decimal point
+		const sigil = /([@$])([\w]*)$/.exec(code);
+		if (sigil) {
+			// `$name` and `@name` (ticket 2.20); `meta("x")`-style keys are not tracked here.
+			return { kind: sigil[1] === '$' ? 'variable' : 'metadata', prefix: sigil[2], start: offset - sigil[2].length, regionStart: region.start };
 		}
-		return { kind: before.endsWith('.') ? 'method' : 'function', prefix, start: offset - prefix.length };
+		if (/\d\.$/.test(before)) {
+			return undefined; // a decimal point
+		}
+		if (!before.endsWith('.')) {
+			return { kind: 'function', prefix, start: offset - prefix.length, regionStart: region.start };
+		}
+		const chain = /(?:^|[^\w.$@])(this|root)((?:\.[A-Za-z_]\w*)*)\.$/.exec(before);
+		const receiver = chain ? { base: chain[1] as 'this' | 'root', path: chain[2].split('.').filter(Boolean) } : undefined;
+		return { kind: 'method', prefix, start: offset - prefix.length, regionStart: region.start, ...(receiver ? { receiver } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -249,6 +272,9 @@ export function bloblangContext(parsed: ParsedYaml | undefined, text: string, of
 
 /** The entries to offer for `context`, deprecated ones last. */
 export function bloblangItems(catalog: BloblangCatalog, context: BloblangContext): BloblangEntry[] {
+	if (context.kind === 'variable' || context.kind === 'metadata') {
+		return [];
+	}
 	const list = context.kind === 'method' ? catalog.methods : catalog.functions;
 	return [...list].sort((a, b) => Number(a.status === 'deprecated') - Number(b.status === 'deprecated'));
 }

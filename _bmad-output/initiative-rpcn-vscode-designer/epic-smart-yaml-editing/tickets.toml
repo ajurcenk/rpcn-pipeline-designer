@@ -202,6 +202,19 @@ unknown = "None."
 notes = ["User request 2026-10-08 (Redpanda Connect function list); the docs page and the 4.100.0/4.112.0 binaries list the same 41 functions."]
 
 [[entry]]
+id = 20
+type = "story"
+title = "Bloblang completion of names already written"
+description = "Inside Bloblang, after `this.` / `root.` (and deeper paths) completion offers the fields the config already assigns or reads above the cursor (same mapping first, then earlier steps; object-literal keys as nested fields), after `$` the `let` variables and after `@` the metadata keys, each with where it came from (ticket 19's provider, AD-14 as amended)."
+verify = "With `this.test = content().string()` on the line above, `let h = this.` offers `test` first with 'assigned on line N'; `$` offers `let` variables; `@` offers metadata keys; nothing from the line being typed or from later steps."
+covers = ["E2 (R6)"]
+after = [19]
+hitl = false
+risk = "medium"
+unknown = "None."
+notes = ["User request 2026-10-08 with a screenshot: offer this.test after it was assigned."]
+
+[[entry]]
 id = 10
 type = "story"
 title = "Pipeline snippets"
@@ -233,7 +246,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

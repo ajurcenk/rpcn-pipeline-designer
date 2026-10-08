@@ -540,6 +540,21 @@ suite('Schema contributor (integration)', function () {
 		assert.ok(!outside.items.some((it) => it.label === 'uuid_v4'), 'not in a plain message: value');
 	});
 
+	test('BLOBLANG_NAMES (2.20): this.test assigned above is offered first, with its line; $ and @ names', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('names.yaml', 'pipeline:\n  processors:\n    - mapping: |\n        this.test = content().string()\n        meta src = "x"\n        let h = this.\n        root.v = $\n        root.m = @\n');
+		const at = async (line: number, ch: number, trigger?: string) => (await vscode.commands.executeCommand<vscode.CompletionList>(
+			'vscode.executeCompletionItemProvider', doc.uri, new vscode.Position(line, ch), trigger)).items;
+		const afterDot = await at(5, 21, '.');
+		const test = afterDot.find((it) => it.label === 'test')!;
+		assert.ok(test, afterDot.slice(0, 10).map((it) => it.label).join(','));
+		assert.strictEqual(test.kind, vscode.CompletionItemKind.Field);
+		assert.strictEqual(test.detail, 'assigned on line 4');
+		assert.ok(afterDot.indexOf(test) < afterDot.findIndex((it) => it.label === 'uppercase'), 'fields before methods');
+		assert.ok((await at(6, 18)).some((it) => it.label === 'h'), '$h');
+		assert.ok((await at(7, 18)).some((it) => it.label === 'src'), '@src');
+	});
+
 	test('BLOBLANG (2.19): the dot trigger, deprecated tag, word replacement and an existing paren', async () => {
 		await schemaFrom(fakeBinary, '4.112.0');
 		const doc = await openYaml('blobl2.yaml', 'pipeline:\n  processors:\n    - mapping: |\n        root.n = this.name.\n        root.m = meta("x")\n        root.u = this.a.upp()\n');
