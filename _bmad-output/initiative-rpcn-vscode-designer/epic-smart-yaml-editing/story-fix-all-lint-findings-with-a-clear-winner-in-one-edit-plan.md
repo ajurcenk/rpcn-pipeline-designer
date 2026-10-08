@@ -121,7 +121,7 @@ context: []
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean; `npm test` 521 passing on VS Code stable and on 1.100.0; `npm run test:corpus` 89 passed. The dev-host manual check with a real binary has not been done yet.
+**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean; `npm test` 521 passing on VS Code stable and on 1.100.0; `npm run test:corpus` 89 passed. **Manual check done (user, 2026-10-08, "tested"):** `scripts/dev-host.sh` with the user's `rpk connect` (Redpanda Connect 4.112.0) on `.dev-host/workspace/fix-all-demo.yaml` (`network: tpc`, `adress`, `topci`): save, Fix all from the light bulb, one undo step, save again.
 
 **Commands:**
 - `npm run compile`: exit 0.
