@@ -263,3 +263,16 @@ after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."
+
+[[entry]]
+id = 22
+type = "story"
+title = "Fix all lint findings with a clear winner in one edit"
+description = "Alongside the per-finding Quick Fixes (2.5, 2.14), one code action applies every lint fix in the file that has a clear winner as a single WorkspaceEdit, so the first-edit clear rule (R3, AD-17) no longer forces a save between fixes. Findings without a clear winner are left for a later save."
+verify = "A file with three clear-winner findings (two unknown fields, one invalid option) is fixed by one action and lints clean on the next save; a finding with no clear winner is untouched; the existing per-finding fixes are unchanged."
+covers = ["E2 (R5)"]
+after = [5, 14]
+hitl = false
+risk = "medium"
+unknown = "Whether the action is also offered as `source.fixAll` (editor.codeActionsOnSave) or only from the light bulb."
+notes = ["E2 retrospective F2 / A2: user decision 2026-10-08 \"go with D now, add a backlog story for B\"."]
