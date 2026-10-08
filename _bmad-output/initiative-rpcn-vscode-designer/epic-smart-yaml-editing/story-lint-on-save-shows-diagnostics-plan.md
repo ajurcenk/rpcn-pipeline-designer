@@ -3,7 +3,7 @@ title: 'Lint on save shows diagnostics'
 type: 'feature'
 ticket: '4'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '63e71f7002dc8327cb0461a727135ee88bc48161'
 route: 'full'
 route_source: 'auto'

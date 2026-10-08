@@ -3,7 +3,7 @@ title: 'Completion for empty list items inside a component'
 type: 'feature'
 ticket: '18'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'e287d7ccf6767298f1331a7e54a69588b7262285'
 route: 'full'
 route_source: 'auto'

@@ -3,7 +3,7 @@ title: "Hover lists a field's options"
 type: 'feature'
 ticket: '15'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: 'd371572df0679e5f46860bb55a4c01868bfb49bf'
 route: 'full'
 route_source: 'auto'

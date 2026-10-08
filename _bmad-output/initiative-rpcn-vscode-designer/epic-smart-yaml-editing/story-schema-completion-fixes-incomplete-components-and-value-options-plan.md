@@ -3,7 +3,7 @@ title: 'Schema completion fixes: incomplete components and value options'
 type: 'feature'
 ticket: '13'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '98c0d964ce600749df47478ede0eee160c99586d'
 route: 'full'
 route_source: 'auto'

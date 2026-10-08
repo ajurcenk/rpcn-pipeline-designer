@@ -3,7 +3,7 @@ title: 'Quick Fix for unknown fields'
 type: 'feature'
 ticket: '5'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '554095e91b87f71ac46e1e763783503f155a0946'
 route: 'full'
 route_source: 'auto'

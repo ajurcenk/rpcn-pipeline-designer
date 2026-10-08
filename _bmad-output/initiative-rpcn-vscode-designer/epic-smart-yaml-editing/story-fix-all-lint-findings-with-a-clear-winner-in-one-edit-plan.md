@@ -3,7 +3,7 @@ title: 'Fix all lint findings with a clear winner in one edit'
 type: 'feature'
 ticket: '22'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: '5c94ce6c26a581b6e8c11d79dce98792eade829b'
 route: 'full'
 route_source: 'auto'

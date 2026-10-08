@@ -3,7 +3,7 @@ title: 'Bloblang completion of names already written'
 type: 'feature'
 ticket: '20'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: '623ebf98ddf72274501a75ca56cea366f2f0e2f3'
 route: 'full'
 route_source: 'auto'

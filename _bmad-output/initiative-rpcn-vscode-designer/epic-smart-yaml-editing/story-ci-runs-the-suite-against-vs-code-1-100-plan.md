@@ -3,7 +3,7 @@ title: 'CI runs the suite against VS Code 1.100'
 type: 'chore'
 ticket: '11'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'abae6f9f12658ceedf9af0411b2d2825dee552dc'
 route: 'full'
 route_source: 'auto'

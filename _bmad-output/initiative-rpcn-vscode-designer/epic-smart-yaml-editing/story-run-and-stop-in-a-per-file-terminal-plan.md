@@ -3,7 +3,7 @@ title: 'Run and Stop in a per-file terminal'
 type: 'feature'
 ticket: '7'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '10da87e239846d53d9ee4e61a9c582b108b5fe23'
 route: 'full'
 route_source: 'auto'

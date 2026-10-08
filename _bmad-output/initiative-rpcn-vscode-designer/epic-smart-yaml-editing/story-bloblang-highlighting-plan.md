@@ -3,7 +3,7 @@ title: 'Bloblang highlighting'
 type: 'feature'
 ticket: '9'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'e46568c08740da81858e2bc602a1c97c57e3c495'
 route: 'full'
 route_source: 'auto'

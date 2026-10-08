@@ -3,7 +3,7 @@ title: "Detected config gets completion and hover from the binary's schema"
 type: 'feature'
 ticket: '1'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '11565f1f0219a4e7d9c2572cbd5aa61f5f1939e9'
 route: 'full'
 route_source: 'auto'

@@ -3,7 +3,7 @@ title: 'Spawn site: caller environment and a streaming child handle'
 type: 'feature'
 ticket: '3'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: 'b712737823a5d63389b95321770015ef2b0e5380'
 route: 'full'
 route_source: 'auto'

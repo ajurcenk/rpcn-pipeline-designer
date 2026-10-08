@@ -3,7 +3,7 @@ title: 'Bloblang methods narrowed by a known type'
 type: 'feature'
 ticket: '21'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: '161f32492aca1699ea3687a15ca765de223bb568'
 route: 'full'
 route_source: 'auto'

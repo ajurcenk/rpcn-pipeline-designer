@@ -6,6 +6,7 @@ covers: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-11, CAP-14]
 after: []
 assignee: ""
 risk: medium
+status: done
 ---
 
 # Smart YAML editing and local run
@@ -86,3 +87,4 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 - Decision (user, 2026-10-07): AD-11 amended; ticket 16 adds our own completion only where Red Hat 1.24.0 returns none (empty component block, empty value inside a component). This answers the empty-block open question above. An upstream issue in redhat-developer/yaml-language-server remains optional.
 - Note (2.16 review, 2026-10-07): Red Hat 1.24.0 and our gap provider both give nothing for an empty list item inside a component (`kafka_franz.batching.processors: - `, `tls.client_certs: - `). Candidate follow-up. **Answered (user, 2026-10-08):** ticket 18; AD-11 amended to include list items.
 - Decision (user, 2026-10-08, E2 retrospective F2/A2): ticket 22 adds a "Fix all" code action that applies every clear-winner lint fix as one edit, extending the Quick Fix decisions above. The first-edit clear rule (R3, AD-17) stays; keeping findings on lines an edit did not touch is backlog story 10.
+- Decision: epic closed as done (user, 2026-10-08, "close epic 2"). Closure check: the E2 retrospective (`epic-smart-yaml-editing-retrospective.md`) verified Done when 1–5 against the code, the tests and an end-to-end run with the real 4.112.0 binary. Ticket 2.22, added after it for finding F2, is built, reviewed with the full lens set, CI-green on VS Code stable and 1.100.0, and checked by hand. All 22 tickets are done. Open items move to the retrospective's action items, not this epic: F1 docs-less schema (A1), spec and architecture reconciliation (A3), untracked limits (A4), the code-health sweep (A5), and the process lessons A6–A8. Backlog stories 7–10 hold the deferred features.

@@ -216,7 +216,7 @@ Everything here is **proposed**. Remediation goes to the normal dev loop, and sp
 - The open items are F1 and F2 (medium), the spec reconciliation (A3) and the deferred low code items (A5).
 - 20 tickets are still at `built` (state `review`). Closing the epic and marking them done is `bmad-ticket`'s job, confirmed by the user.
 
-**Human decision:** none yet on the verdict. After the retrospective, the user added ticket 2.22 for F2 (2026-10-08). It is unfinished, so the epic cannot be closed until it is built; the machine verdict above was rendered before it was added.
+**Human decision (user, 2026-10-08, "close epic 2"):** accepted-with-open-items, as rendered. After the retrospective, the user added ticket 2.22 for F2. It was built, reviewed, CI-green and checked by hand before the closure, so all 22 tickets are done. The open items are A1 and A3–A8.
 
 ## Open questions
 

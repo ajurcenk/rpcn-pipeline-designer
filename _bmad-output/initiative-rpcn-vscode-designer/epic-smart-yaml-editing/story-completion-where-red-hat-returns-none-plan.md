@@ -3,7 +3,7 @@ title: 'Completion where Red Hat returns none'
 type: 'feature'
 ticket: '16'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: 'c1002a6ac93a07c2b5bf4cfbb647fd5e8f1cfe36'
 route: 'full'
 route_source: 'auto'

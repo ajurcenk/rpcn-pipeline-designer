@@ -3,7 +3,7 @@ title: 'Feedback when the schema or binary changes'
 type: 'feature'
 ticket: '8'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'c3150a5f4053fc380d80550917951532b32ccc2b'
 route: 'full'
 route_source: 'auto'

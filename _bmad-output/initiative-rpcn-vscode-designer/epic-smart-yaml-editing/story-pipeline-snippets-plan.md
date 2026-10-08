@@ -3,7 +3,7 @@ title: 'Pipeline snippets'
 type: 'feature'
 ticket: '10'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'acb91aa7bdf50b527d2370b884007d9f0ecc2842'
 route: 'full'
 route_source: 'auto'

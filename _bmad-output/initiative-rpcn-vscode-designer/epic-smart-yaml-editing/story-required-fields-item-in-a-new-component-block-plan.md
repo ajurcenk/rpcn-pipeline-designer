@@ -3,7 +3,7 @@ title: 'Required fields item in a new component block'
 type: 'feature'
 ticket: '17'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '29a239c1ff77fd1bcd0a2d9e7d7e3a3a5400f9b2'
 route: 'full'
 route_source: 'auto'

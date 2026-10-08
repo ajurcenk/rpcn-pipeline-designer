@@ -3,7 +3,7 @@ title: 'Bloblang function and method completion and hover'
 type: 'feature'
 ticket: '19'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: '23b9119e4fcf4acab6450b69048cb2e40ea916cc'
 route: 'full'
 route_source: 'auto'

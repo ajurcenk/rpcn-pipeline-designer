@@ -3,7 +3,7 @@ title: 'Diagnostics parity in the corpus harness'
 type: 'feature'
 ticket: '6'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '990a6dce5c51112a01fa0656854ec6815079d778'
 route: 'full'
 route_source: 'auto'

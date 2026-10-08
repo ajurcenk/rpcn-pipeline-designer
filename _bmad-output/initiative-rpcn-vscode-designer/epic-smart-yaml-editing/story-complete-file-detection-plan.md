@@ -3,7 +3,7 @@ title: 'Complete file detection'
 type: 'feature'
 ticket: '2'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '8795d9b5833ab6a4be9f789d3e13f5656fd84ca8'
 route: 'full'
 route_source: 'auto'

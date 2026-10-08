@@ -3,7 +3,7 @@ title: 'Quick Fix for invalid option values'
 type: 'feature'
 ticket: '14'
 created: '2026-10-07'
-status: 'built'
+status: done
 baseline_revision: '5619a4ea03984442ef993f4c283c8e2022ac9584'
 route: 'full'
 route_source: 'auto'
