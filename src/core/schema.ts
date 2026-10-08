@@ -28,7 +28,7 @@
 // schema cache key, so a new extension version never serves a schema cached by an old one.
 
 import { createHash } from 'crypto';
-import { BLOBLANG_KEY, bloblangCatalogFromDocs } from './bloblang';
+import { BLOBLANG_KEY, bloblangCatalogFromDocs } from './bloblangCatalog';
 
 export const TRANSFORM_VERSION = 6;
 
