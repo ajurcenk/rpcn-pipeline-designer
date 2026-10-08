@@ -2,7 +2,7 @@
 
 A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-connect/) configs: a read-only pipeline graph beside the YAML editor, Redpanda Connect-aware YAML editing, and local runs.
 
-> **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary, warns when none is usable, and generates and caches the config schema from it; details go to the **Redpanda Connect** output channel. The graph, lint, schema-backed editing and run features arrive in later releases.
+> **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary and builds the config schema from it, and adds schema-backed completion and hover, lint on save with Quick Fixes, Bloblang highlighting and completion, pipeline snippets, and Run and Stop. Details go to the **Redpanda Connect** output channel. The pipeline graph arrives in a later release.
 
 ## Finding the binary
 
@@ -34,7 +34,7 @@ An open YAML file is treated as a Redpanda Connect config when one of its YAML d
 
 In a Redpanda Connect file, completion also offers starters marked *snippet*. At the top level: a whole pipeline (also in a completely blank YAML file), or an `input`, `pipeline` or `output` section the file does not have yet. Under `input:`: `generate`, `redpanda`. Under `output:`: `redpanda`, `stdout`. On any `processors:` list item, including nested ones in `switch` or `branch`: `mapping`, `switch`, `branch`, `log`. Each inserts a block that lints clean as is; Tab moves through its placeholders. Type the component name (or `rpcn-` for the sections) to find them.
 
-## Bloblang highlighting
+## Bloblang
 
 Bloblang is highlighted in the values of Redpanda Connect mapping fields (`mapping`, `mutation`, `bloblang`, `check`, `request_map`, `result_map`, `args_mapping` and the other `*_mapping` / `*_map` fields), as a block (`|`), a plain or a quoted value, and in `${! … }` interpolations inside any YAML string. Inside Bloblang, completion offers the Bloblang **functions** (`now()`, `uuid_v4()`, …) and, after a dot, the **methods** (`.uppercase()`, `.parse_json()`, …) of your binary's version, with descriptions and parameter placeholders, and hovering a function or method name shows its docs and an example. They come from the binary's own docs (`list --format json-full`), so they match the version you run. After `this.` or `root.` (and deeper, such as `this.user.`), the fields your config already writes or reads above the cursor come first: the same mapping, then earlier steps (an input's `generate` mapping, earlier processors), including the keys of object literals such as `root.user = {"name": …}`; each says where it came from ("assigned on line 23"). `$` offers your `let` variables and `@` your metadata keys. When the type before the dot is known, the methods are narrowed to it: after a literal (`"test".` offers string methods, `[1, 2].` array methods, `{…}.` object methods) or a field assigned one above (`root.n = 5`, then `this.n.` offers number methods). Otherwise all methods are offered. This is read from the config, not from the messages, so fields that only arrive in the input data appear once you have used them. There is no Bloblang checking while typing; lint on save checks mappings. Generic field names that also hold Bloblang in a few components (`when`, `query`, …) are not highlighted, because the highlighting applies to every YAML file.
 
@@ -61,8 +61,8 @@ Saving a detected config runs `lint --deprecated --skip-env-var-check` with the 
 | `redpandaConnect.binaryPath` | `""` | Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory, a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`. |
 | `redpandaConnect.autoOpenGraph` | `true` | Open the graph beside a detected config (not used yet). |
 | `redpandaConnect.filePatterns` | `[]` | Globs always treated as Redpanda Connect configs, matched relative to the file's workspace folder or against its absolute path: `*.rpcn.yaml` matches only at a folder root, `**/*.rpcn.yaml` anywhere. |
-| `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (not used yet). |
-| `redpandaConnect.envFile` | `""` | Environment file passed to lint and run (not used yet). |
+| `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (`--resources`), each entry may be a glob. `~` expands to the home directory; a relative path resolves against the first workspace folder. |
+| `redpandaConnect.envFile` | `""` | Environment file passed to lint and run (`--env-file`). `~` expands to the home directory; a relative path resolves against the first workspace folder. |
 
 ## Development
 
