@@ -5,7 +5,7 @@
 import * as vscode from 'vscode';
 import { gapContext, gapItems } from '../../core/gapCompletion';
 import type { JsonObject } from '../../core/schema';
-import { parseYaml } from '../../core/yamlPath';
+import { parsedDocument } from './parseCache';
 
 export interface GapCompletionOptions {
 	readonly schema: () => JsonObject | undefined;
@@ -21,8 +21,8 @@ export class GapCompletionProvider implements vscode.CompletionItemProvider {
 			if (!schema || !this.options.isDetected(doc.uri)) {
 				return undefined;
 			}
-			const text = doc.getText();
-			const context = gapContext(parseYaml(text), text, doc.offsetAt(position));
+			const { text, parsed } = parsedDocument(doc);
+			const context = gapContext(parsed, text, doc.offsetAt(position));
 			if (!context) {
 				return undefined;
 			}

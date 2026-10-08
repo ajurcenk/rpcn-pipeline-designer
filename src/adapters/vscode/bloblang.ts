@@ -8,7 +8,7 @@ import {
 } from '../../core/bloblang';
 import type { JsonObject } from '../../core/schema';
 import { fieldSuggestions, knownNames, nameSuggestions, NameSuggestion, originText, typeOfPath } from '../../core/bloblangNames';
-import { parseYaml } from '../../core/yamlPath';
+import { parsedDocument } from './parseCache';
 
 export interface BloblangProviderOptions {
 	readonly schema: () => JsonObject | undefined;
@@ -27,8 +27,7 @@ export class BloblangProvider implements vscode.CompletionItemProvider, vscode.H
 			if (!catalog) {
 				return undefined;
 			}
-			const text = doc.getText();
-			const parsed = parseYaml(text);
+			const { text, parsed } = parsedDocument(doc);
 			const context = bloblangContext(parsed, text, doc.offsetAt(position));
 			if (!context) {
 				return undefined;
@@ -89,8 +88,8 @@ export class BloblangProvider implements vscode.CompletionItemProvider, vscode.H
 			if (!catalog) {
 				return undefined;
 			}
-			const text = doc.getText();
-			const found = bloblangHoverAt(catalog, parseYaml(text), text, doc.offsetAt(position));
+			const { text, parsed } = parsedDocument(doc);
+			const found = bloblangHoverAt(catalog, parsed, text, doc.offsetAt(position));
 			return found
 				? new vscode.Hover(new vscode.MarkdownString(bloblangMarkdown(found.entry)),
 					new vscode.Range(doc.positionAt(found.start), doc.positionAt(found.end)))

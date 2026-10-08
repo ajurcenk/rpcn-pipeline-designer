@@ -8,7 +8,8 @@ import * as vscode from 'vscode';
 import type { JsonObject } from '../../core/schema';
 import { candidateFields, optionsAt } from '../../core/schemaFields';
 import { hasClearWinner, rankNames, Suggestion } from '../../core/suggest';
-import { findKeyOnLine, findValueOnLine, ParsedYaml, parseYaml, yamlString } from '../../core/yamlPath';
+import { findKeyOnLine, findValueOnLine, ParsedYaml, yamlString } from '../../core/yamlPath';
+import { parsedDocument } from './parseCache';
 import { LINT_SOURCE } from './diagnostics';
 
 const UNKNOWN_FIELD = /^field (\S+) not recognised$/;
@@ -33,7 +34,7 @@ export class LintQuickFix implements vscode.CodeActionProvider {
 			if (ours.length === 0) {
 				return [];
 			}
-			const parsed = parseYaml(doc.getText()); // once per request, whatever the number of diagnostics
+			const { parsed } = parsedDocument(doc); // once per document version, shared with the other providers
 			return ours.flatMap((diagnostic) => {
 				const field = UNKNOWN_FIELD.exec(diagnostic.message);
 				return field

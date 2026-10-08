@@ -12,6 +12,7 @@ import { LintQuickFix } from './adapters/vscode/quickFix';
 import { GapCompletionProvider } from './adapters/vscode/completion';
 import { BloblangProvider } from './adapters/vscode/bloblang';
 import { SnippetCompletionProvider } from './adapters/vscode/snippets';
+import { forgetDocument } from './adapters/vscode/parseCache';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
@@ -153,6 +154,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
 		{ language: 'yaml' }, new SnippetCompletionProvider((uri) => detection.isDetected(uri)),
 	));
+
+	context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((doc) => forgetDocument(doc.uri)));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());

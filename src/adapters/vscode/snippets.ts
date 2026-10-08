@@ -5,19 +5,19 @@
 import * as vscode from 'vscode';
 import { slotAt } from '../../core/gapCompletion';
 import { renderSnippet, snippetSlotOf, snippetsFor } from '../../core/snippets';
-import { parseYaml, topLevelKeys } from '../../core/yamlPath';
+import { topLevelKeys } from '../../core/yamlPath';
+import { parsedDocument } from './parseCache';
 
 export class SnippetCompletionProvider implements vscode.CompletionItemProvider {
 	constructor(private readonly isDetected: (uri: vscode.Uri) => boolean) {}
 
 	provideCompletionItems(doc: vscode.TextDocument, position: vscode.Position): vscode.CompletionItem[] | undefined {
 		try {
-			const text = doc.getText();
+			const { text, parsed } = parsedDocument(doc);
 			const blank = text.trim() === '';
 			if (!blank && !this.isDetected(doc.uri)) {
 				return undefined;
 			}
-			const parsed = parseYaml(text);
 			const slot = snippetSlotOf(slotAt(parsed, text, doc.offsetAt(position)));
 			if (!slot || (blank && slot !== 'root')) {
 				return undefined;
