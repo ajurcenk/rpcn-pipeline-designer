@@ -16,6 +16,26 @@ import { lintFile } from './adapters/redpandaConnect/lint';
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
 
+/** Logged when Refresh Schema finds no usable binary (2.8, retro A1). */
+export const REFRESH_NO_BINARY_LINE = 'Refresh Schema: no usable Redpanda Connect binary, so there is no schema. Completion, hover and lint need one.';
+
+/**
+ * Refresh Schema (2.8): re-resolves the binary and regenerates the schema. With no usable binary
+ * the user gets visible feedback: one log line and the binary warning again (same actions as at
+ * activation). Open files follow the new schema without reopening (AD-10, AD-11).
+ */
+export async function refreshSchema(deps: {
+	readonly schemaStore: { refresh(): Promise<unknown> };
+	readonly binary: { readonly state: BinaryState; showBinaryWarning(): boolean };
+	readonly log: (line: string) => void;
+}): Promise<void> {
+	await deps.schemaStore.refresh();
+	if (deps.binary.state.kind !== 'ok') {
+		deps.log(REFRESH_NO_BINARY_LINE);
+		deps.binary.showBinaryWarning();
+	}
+}
+
 /** Returned from `activate`; used by integration tests. */
 export interface ExtensionApi {
 	/** The single owner of `binaryState` (AD-9). */
@@ -97,7 +117,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const schemaStore = new SchemaStore({ binary: redpandaConnect, storageUri: context.globalStorageUri, log });
 	context.subscriptions.push(
 		schemaStore,
-		vscode.commands.registerCommand(REFRESH_SCHEMA_COMMAND, () => schemaStore.refresh()),
+		vscode.commands.registerCommand(REFRESH_SCHEMA_COMMAND, () => refreshSchema({ schemaStore, binary: redpandaConnect, log })),
 	);
 
 	const detection = new DetectionRegistry();
