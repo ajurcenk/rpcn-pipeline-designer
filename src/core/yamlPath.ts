@@ -26,6 +26,13 @@ export interface ParsedYaml {
 	readonly length: number;
 }
 
+/** The top-level mapping keys of every document (snippets, ticket 2.10). */
+export function topLevelKeys(parsed: ParsedYaml | undefined): string[] {
+	return parsed?.docs.flatMap((d) => (isMap(d.contents) ? d.contents.items : []))
+		.map((pair) => (isScalar(pair.key) ? String(pair.key.value) : ''))
+		.filter((k) => k !== '') ?? [];
+}
+
 /** Parses all YAML documents in `text`; `undefined` if the parser gives up. Never throws. */
 export function parseYaml(text: string): ParsedYaml | undefined {
 	try {

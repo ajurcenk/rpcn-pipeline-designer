@@ -43,6 +43,20 @@ interface PairInfo {
 
 /** Where the cursor at `offset` is, if it is in a gap. Never throws. */
 export function gapContext(parsed: ParsedYaml | undefined, text: string, offset: number): GapContext | undefined {
+	const slot = slotAt(parsed, text, offset);
+	// Below the top level only: Red Hat completes empty top-level blocks itself.
+	return slot && slot.kind !== 'root' && !(slot.kind === 'block' && slot.path.length === 1) ? slot : undefined;
+}
+
+/** A gap context, or the top level of the document (a line at column 0 with no parent key). */
+export type Slot = GapContext | { readonly kind: 'root'; readonly partial: boolean };
+
+/**
+ * Where the cursor is, at any depth (snippets, ticket 2.10): a value, a list item, an empty
+ * block (`path` is the block's own path, `['input']` for a top-level `input:`), or the top level.
+ * Never throws.
+ */
+export function slotAt(parsed: ParsedYaml | undefined, text: string, offset: number): Slot | undefined {
 	try {
 		if (!parsed) {
 			return undefined;
@@ -81,15 +95,16 @@ export function gapContext(parsed: ParsedYaml | undefined, text: string, offset:
 			return undefined;
 		}
 		const indent = before.length - before.trimStart().length;
+		const partial = before.trim() !== '';
 		const parent = pairs
 			.filter((p) => p.keyStart < lineStart && column(lineStarts, p.keyStart) < indent
 				&& (isEmpty(p.value) || startsOnLine(p.value, lineStart, lineEnd))
 				&& onlyBlankBetween(text, lineStarts, p.keyStart, line))
 			.sort((a, b) => b.keyStart - a.keyStart)[0];
-		// Below the top level only: Red Hat completes empty top-level blocks itself.
-		return parent && parent.path.length > 0
-			? { kind: 'block', path: [...parent.path, parent.key], partial: before.trim() !== '' }
-			: undefined;
+		if (parent) {
+			return { kind: 'block', path: [...parent.path, parent.key], partial };
+		}
+		return indent === 0 ? { kind: 'root', partial } : undefined;
 	} catch {
 		return undefined;
 	}

@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLintArgs } from '../../src/core/args';
 import { documentLine, findingsForTarget, TargetFindings } from '../../src/core/lint';
+import { PIPELINE_SNIPPETS, PipelineSnippet, renderSnippet } from '../../src/core/snippets';
 import { parseVersionOutput } from '../../src/core/version';
 import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/process';
 
@@ -293,6 +294,51 @@ describe('diagnostics parity (recorded lint output → extension diagnostics)', 
 			`${PLACEHOLDER}/x.yaml(2,1) component foo is deprecated`, `${PLACEHOLDER}/x.yaml(3,1) bad (4,2) thing`], target, 10)).toEqual([]);
 	});
 });
+
+/**
+ * A full config with `snippet` inserted the way VS Code inserts it: every line after the first
+ * gets the cursor line's indentation (2 under `input:` / `output:`, 4 on a processor list item).
+ */
+function embedSnippet(snippet: PipelineSnippet): string {
+	const body = renderSnippet(snippet.body);
+	const indent = (prefix: string) => body.split('\n').map((l, i) => (i === 0 || l === '' ? l : prefix + l)).join('\n');
+	const input = 'input:\n  generate:\n    count: 1\n    interval: ""\n    mapping: root = "x"\n';
+	const output = 'output:\n  drop: {}\n';
+	switch (snippet.slot) {
+		case 'root':
+			return [body, ...(snippet.topKeys!.includes('input') ? [] : [input]), ...(snippet.topKeys!.includes('output') ? [] : [output])].join('\n');
+		case 'input':
+			return `input:\n  ${indent('  ')}\n${output}`;
+		case 'output':
+			return `${input}output:\n  ${indent('  ')}\n`;
+		case 'processor':
+			return `${input}pipeline:\n  processors:\n    - ${indent('    ')}\n${output}`;
+	}
+}
+
+for (const ver of VERSIONS) {
+	describe.runIf(hasBinary(ver))(`snippets lint clean with redpanda-connect ${ver} (2.10)`, () => {
+		for (const snippet of PIPELINE_SNIPPETS) {
+			it(`${snippet.slot}: ${snippet.label}`, async () => {
+				const dir = fs.mkdtempSync(path.join(ROOT, '.cache', 'snippet-'));
+				try {
+					const file = path.join(dir, 'snippet.yaml');
+					fs.writeFileSync(file, embedSnippet(snippet));
+					const built = buildLintArgs({ invocation: [binaryOf(ver)], targets: [file], resourceFiles: [] });
+					if (built.kind !== 'ok') {
+						throw new Error(JSON.stringify(built));
+					}
+					const [command, ...args] = built.argv;
+					const outcome = await runProcess([command], args, LINT_TIMEOUT_MS);
+					expect(outcome.kind === 'exited' && outcome.exitCode === 0,
+						`${snippet.label} with ${ver}:\n${fs.readFileSync(file, 'utf8')}\n${JSON.stringify(outcome)}`).toBe(true);
+				} finally {
+					fs.rmSync(dir, { recursive: true, force: true });
+				}
+			});
+		}
+	});
+}
 
 describe('corpus layout', () => {
 	it('pins the same versions as scripts/spike/fetch-binaries.sh', () => {

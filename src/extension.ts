@@ -11,6 +11,7 @@ import { LintDiagnostics } from './adapters/vscode/diagnostics';
 import { LintQuickFix } from './adapters/vscode/quickFix';
 import { GapCompletionProvider } from './adapters/vscode/completion';
 import { BloblangProvider } from './adapters/vscode/bloblang';
+import { SnippetCompletionProvider } from './adapters/vscode/snippets';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 
@@ -148,6 +149,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		vscode.languages.registerCompletionItemProvider({ language: 'yaml' }, bloblang, ...BloblangProvider.triggerCharacters),
 		vscode.languages.registerHoverProvider({ language: 'yaml' }, bloblang),
 	);
+
+	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
+		{ language: 'yaml' }, new SnippetCompletionProvider((uri) => detection.isDetected(uri)),
+	));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());
