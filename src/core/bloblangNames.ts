@@ -4,7 +4,7 @@
 // keys of `root.x = {"k": …}`) and read (`this.a.b`, `root.a`), the `let` variables and the
 // metadata keys (`meta k =`, `@k`). It knows what the config writes, not what messages contain.
 
-import { bloblangCode, bloblangRegions, BloblangContext } from './bloblang';
+import { bloblangCode, bloblangRegions, BloblangContext, LiteralType, literalTypeAtStart } from './bloblang';
 import type { ParsedYaml } from './yamlPath';
 
 export type NameOrigin = 'set' | 'set-earlier' | 'read';
@@ -14,6 +14,8 @@ export interface KnownField {
 	/** 1-based line where it was first seen with this origin. */
 	readonly line: number;
 	readonly origin: NameOrigin;
+	/** For an assignment of a literal (`root.n = 5`): its type (2.21). */
+	readonly type?: LiteralType;
 }
 
 export interface KnownName {
@@ -101,8 +103,9 @@ export function knownNames(parsed: ParsedYaml | undefined, text: string, offset:
 			if (m[7] && KEYWORDS.has(path[0])) {
 				continue;
 			}
+			const literal = literalTypeAtStart(source.slice(m.index + m[0].length));
 			if (path.length > 0) {
-				fields.push({ path, line: at, origin: set });
+				fields.push({ path, line: at, origin: set, ...(literal ? { type: literal } : {}) });
 			}
 			// `root.x = { "k": … }`: the literal's keys are fields under that path.
 			const rhs = code.slice(m.index + m[0].length);
@@ -136,6 +139,19 @@ export function knownNames(parsed: ParsedYaml | undefined, text: string, offset:
 }
 
 const RANK: Record<NameOrigin, number> = { 'set': 0, 'set-earlier': 1, 'read': 2 };
+
+/** The type of the latest literal assigned to exactly `path` above the cursor, if any (2.21). */
+export function typeOfPath(names: KnownNames, path: readonly string[]): LiteralType | undefined {
+	let type: LiteralType | undefined;
+	let line = -1;
+	for (const f of names.fields) {
+		if (f.origin !== 'read' && f.path.length === path.length && f.path.every((s, i) => s === path[i]) && f.line >= line) {
+			type = f.type;
+			line = f.line;
+		}
+	}
+	return type;
+}
 
 export interface NameSuggestion {
 	readonly name: string;

@@ -4,10 +4,10 @@
 
 import * as vscode from 'vscode';
 import {
-	bloblangCatalogOf, bloblangContext, bloblangHoverAt, bloblangItems, bloblangMarkdown, bloblangSnippet,
+	bloblangCatalogOf, bloblangContext, bloblangHoverAt, bloblangItems, bloblangMarkdown, bloblangSnippet, methodsFor,
 } from '../../core/bloblang';
 import type { JsonObject } from '../../core/schema';
-import { fieldSuggestions, knownNames, nameSuggestions, NameSuggestion, originText } from '../../core/bloblangNames';
+import { fieldSuggestions, knownNames, nameSuggestions, NameSuggestion, originText, typeOfPath } from '../../core/bloblangNames';
 import { parseYaml } from '../../core/yamlPath';
 
 export interface BloblangProviderOptions {
@@ -57,12 +57,17 @@ export class BloblangProvider implements vscode.CompletionItemProvider, vscode.H
 				item.sortText = `0${String(i).padStart(4, '0')}`;
 				return item;
 			});
-			const catalogItems = bloblangItems(catalog, context).map((entry, i) => {
+			// A known type before the dot (a literal, or a field assigned one) narrows the methods (2.21).
+			const type = context.kind === 'method'
+				? context.literal ?? (context.receiver && context.receiver.path.length > 0 && names ? typeOfPath(names, context.receiver.path) : undefined)
+				: undefined;
+			const entries = type ? bloblangItems({ functions: catalog.functions, methods: methodsFor(catalog, type) }, context) : bloblangItems(catalog, context);
+			const catalogItems = entries.map((entry, i) => {
 				const item = new vscode.CompletionItem(entry.name,
 					entry.kind === 'method' ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Function);
 				item.insertText = new vscode.SnippetString(bloblangSnippet(entry, parenFollows));
 				item.range = range;
-				item.detail = `${entry.kind}${entry.category ? ` · ${entry.category}` : ''}`;
+				item.detail = `${entry.kind}${entry.category ? ` · ${entry.category}` : ''}${type ? ` · for ${type}s` : ''}`;
 				item.documentation = new vscode.MarkdownString(bloblangMarkdown(entry));
 				item.sortText = `1${String(i).padStart(4, '0')}`;
 				if (entry.status === 'deprecated') {

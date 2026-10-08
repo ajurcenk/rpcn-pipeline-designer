@@ -36,6 +36,8 @@ export interface BloblangEntry {
 	readonly kind: 'function' | 'method';
 	readonly status: string;
 	readonly category?: string;
+	/** Every category the docs give (methods can have several, e.g. `contains`). */
+	readonly categories?: readonly string[];
 	readonly description?: string;
 	readonly params: readonly BloblangParam[];
 	/** Takes any number of arguments (`format`, `concat`, …); the docs list none by name. */
@@ -75,6 +77,7 @@ function entriesOf(list: JsonValue | undefined, kind: 'function' | 'method'): Bl
 		const mapping = str(obj(examples[0])?.mapping);
 		out.push({
 			name, kind, status: str(e.status) ?? 'stable', category: str(e.category) ?? categories[0],
+			...(categories.length > 0 ? { categories: categories as string[] } : {}),
 			description: plainText(str(e.description)), params, ...(variadic ? { variadic } : {}),
 			example: mapping?.split('\n').slice(0, MAX_EXAMPLE_LINES).join('\n'),
 		});
@@ -102,6 +105,91 @@ export function bloblangCatalogOf(schema: JsonObject): BloblangCatalog | undefin
 	return c && Array.isArray(c.functions) && Array.isArray(c.methods) ? (c as unknown as BloblangCatalog) : undefined;
 }
 
+/** The type of a value whose type is known statically: a literal, or a field assigned one (2.21). */
+export type LiteralType = 'string' | 'number' | 'boolean' | 'array' | 'object';
+
+/** Method categories that apply to each type; `General` and `Type Coercion` apply to all. */
+const TYPE_CATEGORIES: Record<LiteralType, readonly string[]> = {
+	string: ['String Manipulation', 'Regular Expressions', 'Parsing', 'Encoding and Encryption', 'JSON Web Tokens', 'Timestamp Manipulation', 'GeoIP'],
+	number: ['Number Manipulation', 'Timestamp Manipulation'],
+	boolean: [],
+	array: ['Object & Array Manipulation', 'Parsing', 'SQL'],
+	object: ['Object & Array Manipulation', 'Parsing'],
+};
+const ANY_TYPE = ['General', 'Type Coercion'];
+
+/** The methods that apply to `type` (by the docs' categories); all methods when `type` is unknown. */
+export function methodsFor(catalog: BloblangCatalog, type: LiteralType | undefined): readonly BloblangEntry[] {
+	if (!type) {
+		return catalog.methods;
+	}
+	const allowed = new Set([...TYPE_CATEGORIES[type], ...ANY_TYPE]);
+	return catalog.methods.filter((m) => (m.categories ?? (m.category ? [m.category] : [])).some((c) => allowed.has(c)));
+}
+
+/** The literal type of a Bloblang value that starts `source` (`"…"`, `[…]`, `{…}`, a number, true/false). */
+export function literalTypeAtStart(source: string): LiteralType | undefined {
+	const s = source.trimStart();
+	if (s.startsWith('"')) {
+		return 'string';
+	}
+	if (s.startsWith('[')) {
+		return 'array';
+	}
+	if (s.startsWith('{')) {
+		return 'object';
+	}
+	if (/^-?\d+(?:\.\d+)?(?![\w.])/.test(s)) {
+		return 'number';
+	}
+	return /^(?:true|false)\b/.test(s) ? 'boolean' : undefined;
+}
+
+/**
+ * The literal that ends right before the dot at the end of `raw` (the region source up to the
+ * cursor, with `code` its blanked form): `"…".`, `[…].`, `{…}.`, `true.`. An index (`this.a[0].`)
+ * or a block is not a literal.
+ */
+function literalBeforeDot(raw: string, code: string): LiteralType | undefined {
+	let i = code.length - 1;
+	while (i >= 0 && code[i] !== '.') {
+		i--;
+	}
+	let j = i - 1;
+	while (j >= 0 && /\s/.test(raw[j])) {
+		j--; // skip spaces in the raw text (in `code` a whole string is spaces)
+	}
+	if (j < 0) {
+		return undefined;
+	}
+	if (raw[j] === '"' && code[j] === ' ') {
+		return 'string'; // the closing quote of a string (blanked in `code`)
+	}
+	if (/\b(?:true|false)$/.test(code.slice(0, j + 1))) {
+		return 'boolean';
+	}
+	const close = code[j];
+	if (close !== ']' && close !== '}') {
+		return undefined;
+	}
+	const open = close === ']' ? '[' : '{';
+	let depth = 0;
+	for (let k = j; k >= 0; k--) {
+		if (code[k] === close) {
+			depth++;
+		} else if (code[k] === open && --depth === 0) {
+			// A literal starts an expression: after an operator, `(`, `,`, `:`, `=`, or the start.
+			const before = code.slice(0, k).trimEnd();
+			// After `if …` / `else` / `match …` a brace opens a block, not an object.
+			if (close === '}' && /(?:\belse|\bif\b[^{}]*|\bmatch\b[^{}]*)$/.test(before)) {
+				return undefined;
+			}
+			return before === '' || /[=(,:[{+\-*/%<>!&|?]$/.test(before) ? (close === ']' ? 'array' : 'object') : undefined;
+		}
+	}
+	return undefined;
+}
+
 export type BloblangContext = {
 	/** `method` after a dot, `variable` after `$`, `metadata` after `@`, `function` elsewhere. */
 	readonly kind: 'function' | 'method' | 'variable' | 'metadata';
@@ -112,6 +200,8 @@ export type BloblangContext = {
 	readonly receiver?: { readonly base: 'this' | 'root'; readonly path: readonly string[] };
 	/** Start of the Bloblang region the cursor is in (for collecting names above it). */
 	readonly regionStart?: number;
+	/** After a dot on a literal (`"test".`): its type, to narrow the methods (2.21). */
+	readonly literal?: LiteralType;
 };
 
 export interface Region {
@@ -264,7 +354,10 @@ export function bloblangContext(parsed: ParsedYaml | undefined, text: string, of
 		}
 		const chain = /(?:^|[^\w.$@])(this|root)((?:\.[A-Za-z_]\w*)*)\.$/.exec(before);
 		const receiver = chain ? { base: chain[1] as 'this' | 'root', path: chain[2].split('.').filter(Boolean) } : undefined;
-		return { kind: 'method', prefix, start: offset - prefix.length, regionStart: region.start, ...(receiver ? { receiver } : {}) };
+		const raw = sourceUpTo(text, region, offset);
+		const literal = receiver ? undefined : literalBeforeDot(raw.slice(0, raw.length - prefix.length), scanned.code.slice(0, scanned.code.length - prefix.length));
+		return { kind: 'method', prefix, start: offset - prefix.length, regionStart: region.start,
+			...(receiver ? { receiver } : {}), ...(literal ? { literal } : {}) };
 	} catch {
 		return undefined;
 	}

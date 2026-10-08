@@ -215,6 +215,19 @@ unknown = "None."
 notes = ["User request 2026-10-08 with a screenshot: offer this.test after it was assigned."]
 
 [[entry]]
+id = 21
+type = "story"
+title = "Bloblang methods narrowed by a known type"
+description = "After a dot on a literal (`\"test\".`, `[…].`, `{…}.`, `true.`) or on a field assigned a literal above the cursor (`root.n = 5` then `this.n.`), completion offers only the methods whose docs categories apply to that type (String/Number/Object & Array Manipulation, …, plus General and Type Coercion); unknown types keep the full list (ticket 19's provider, AD-14 as amended)."
+verify = "`\"test\".` offers uppercase and parse_json but not abs or append; `this.n.` after `root.n = 5` offers abs; an if/else block or a method result keeps all methods."
+covers = ["E2 (R6)"]
+after = [20]
+hitl = false
+risk = "low"
+unknown = "None."
+notes = ["User request 2026-10-08: methods for string constants."]
+
+[[entry]]
 id = 10
 type = "story"
 title = "Pipeline snippets"
@@ -246,7 +259,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

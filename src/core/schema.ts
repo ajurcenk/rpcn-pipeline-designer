@@ -30,7 +30,7 @@
 import { createHash } from 'crypto';
 import { BLOBLANG_KEY, bloblangCatalogFromDocs } from './bloblang';
 
-export const TRANSFORM_VERSION = 5;
+export const TRANSFORM_VERSION = 6;
 
 export const DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 

@@ -555,6 +555,17 @@ suite('Schema contributor (integration)', function () {
 		assert.ok((await at(7, 18)).some((it) => it.label === 'src'), '@src');
 	});
 
+	test('BLOBLANG_TYPES (2.21): after "test". only methods that apply to strings', async () => {
+		await schemaFrom(fakeBinary, '4.112.0');
+		const doc = await openYaml('types.yaml', 'pipeline:\n  processors:\n    - mapping: |\n        root.a = "test".\n');
+		const items = (await vscode.commands.executeCommand<vscode.CompletionList>(
+			'vscode.executeCompletionItemProvider', doc.uri, new vscode.Position(3, 24), '.')).items;
+		const labels = items.map((it) => (typeof it.label === 'string' ? it.label : it.label.label));
+		assert.ok(labels.includes('uppercase') && labels.includes('parse_json'), labels.slice(0, 10).join(','));
+		assert.ok(!labels.includes('abs') && !labels.includes('append'), 'no number or array methods');
+		assert.ok(items.find((it) => it.label === 'uppercase')!.detail!.endsWith('· for strings'));
+	});
+
 	test('BLOBLANG (2.19): the dot trigger, deprecated tag, word replacement and an existing paren', async () => {
 		await schemaFrom(fakeBinary, '4.112.0');
 		const doc = await openYaml('blobl2.yaml', 'pipeline:\n  processors:\n    - mapping: |\n        root.n = this.name.\n        root.m = meta("x")\n        root.u = this.a.upp()\n');

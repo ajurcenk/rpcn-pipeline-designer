@@ -4,7 +4,9 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import {
 	BLOBLANG_FIELDS, BLOBLANG_KEY, bloblangCatalogOf, bloblangContext, bloblangHoverAt, bloblangItems, bloblangMarkdown, bloblangSnippet,
+	literalTypeAtStart, methodsFor,
 } from '../../core/bloblang';
+import { knownNames, typeOfPath } from '../../core/bloblangNames';
 import { JsonObject, transformSchema } from '../../core/schema';
 import { parseYaml } from '../../core/yamlPath';
 import { REPO_ROOT, SCHEMA_FIXTURES } from '../helpers/fakeBinary';
@@ -128,6 +130,48 @@ suite('core/bloblang (2.19, 4.112.0 docs)', () => {
 	test('hover inside a double-quoted interpolation', () => {
 		const text = 'x:\n  message: "${! now() }"\n';
 		assert.strictEqual(bloblangHoverAt(CATALOG, parseYaml(text), text, text.indexOf('now') + 1)?.entry.name, 'now');
+	});
+
+	test('2.21: the literal before the dot gives its type', () => {
+		const lit = (line: string) => ctx(block(line))?.literal;
+		assert.strictEqual(lit('root.a = "test".§'), 'string');
+		assert.strictEqual(lit('root.a = "test".up§'), 'string');
+		assert.strictEqual(lit('root.a = "te st" .§'), 'string');
+		assert.strictEqual(lit('root.a = [1,2].§'), 'array');
+		assert.strictEqual(lit('root.a = {"a":1}.§'), 'object');
+		assert.strictEqual(lit('root.a = true.§'), 'boolean');
+		assert.strictEqual(lit('root.a = this.items[0].§'), undefined, 'an index is not a literal');
+		assert.strictEqual(lit('root.a = if this.x { "y" } else { "z" }.§'), undefined, 'a block is not an object');
+		assert.strictEqual(lit('root.a = match this.x { _ => 1 }.§'), undefined);
+		assert.strictEqual(lit('root.a = "a".length().§'), undefined, 'a method result');
+	});
+
+	test('2.21: methods narrowed by type', () => {
+		const names = (t: Parameters<typeof methodsFor>[1]) => methodsFor(CATALOG, t).map((m) => m.name);
+		assert.strictEqual(names(undefined).length, 193);
+		const str = names('string');
+		assert.ok(str.includes('uppercase') && str.includes('parse_json') && str.includes('re_match') && str.includes('contains'));
+		assert.ok(!str.includes('abs') && !str.includes('append'));
+		assert.ok(names('number').includes('abs') && !names('number').includes('uppercase'));
+		assert.ok(names('array').includes('append') && names('object').includes('keys'));
+		assert.ok(names('boolean').every((n) => !['uppercase', 'abs', 'append'].includes(n)));
+		for (const t of ['string', 'number', 'boolean', 'array', 'object'] as const) {
+			assert.ok(names(t).includes('string') && names(t).includes('type'), `${t}: Type Coercion applies to all`);
+		}
+	});
+
+	test('2.21: a field assigned a literal has that type', () => {
+		const marked = block('root.n = 5\n        root.s = "x"\n        root.n2 = this.n.§');
+		const offset = marked.indexOf('§');
+		const text = marked.replace('§', '');
+		const parsed = parseYaml(text);
+		const c = bloblangContext(parsed, text, offset)!;
+		const names = knownNames(parsed, text, offset, c);
+		assert.strictEqual(typeOfPath(names, ['n']), 'number');
+		assert.strictEqual(typeOfPath(names, ['s']), 'string');
+		assert.strictEqual(typeOfPath(names, ['other']), undefined);
+		assert.deepStrictEqual(['"a"', ' [1]', '{}', '-1.5', 'true', 'this.x', 'now()'].map(literalTypeAtStart),
+			['string', 'array', 'object', 'number', 'boolean', undefined, undefined]);
 	});
 });
 
