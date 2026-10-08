@@ -169,7 +169,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean (one started/finished pair); `npm test` 540 passing on VS Code stable and 1.100.0; `npm run test:corpus` 89 passed; `vsce package --no-dependencies` holds `extension/dist/extension.js`, `dist/webview.js` (1.9 MB, vsce warns about the size) and `dist/webview.css`, and no `extension/webview/`. The dev-host manual check is pending (the user).
+**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean (one started/finished pair); `npm test` 540 passing on VS Code stable and 1.100.0; `npm run test:corpus` 89 passed; `vsce package --no-dependencies` holds `extension/dist/extension.js`, `dist/webview.js` (1.9 MB, vsce warns about the size) and `dist/webview.css`, and no `extension/webview/`. **Manual check (user, 2026-10-08, screenshot):** in the dev host with the user's `rpk connect` 4.112.0, Show graph on a copy of `stateful_polling.yaml` drew generate → cache → catch → sql_select → unarchive → broker, and clicking `sql_select` selected its YAML block. The graph was unreadably small (fit to view shrank a fixed-width 180 px chain into the panel), so a follow-up fix after review sizes nodes to their label (110–220 px), keeps fit to view between 75% and 100% zoom, and starts a too-wide graph at its input; the user asked to commit it.
 
 **Commands:**
 - `npm run compile`: exit 0 (type-checks root, corpus and webview; lint over `webview/`).
