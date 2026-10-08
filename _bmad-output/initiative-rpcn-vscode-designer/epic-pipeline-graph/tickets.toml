@@ -1,0 +1,161 @@
+# tickets.toml — epic-pipeline-graph's agreed children. The order of the tables is the build order; `id` names a child for good.
+# Lanes: host panel (1 → 6 → 7 → 8 → 9 → 10, serialised because they share src/adapters/graphPanel, webview/ and src/extension.ts),
+# core (3 → 5), webview (4, then 11 after the host lane). Shared fixture models: `src/test/fixtures/models/` (from 2).
+
+[[entry]]
+id = 1
+type = "story"
+title = "Tracer: Show graph draws a pipeline and a click selects its YAML"
+description = "The thinnest path through every layer: a second esbuild bundle for the webview (its own tsconfig and an eslint layer rule: webview imports only src/shared), React, @xyflow/react and elkjs added with their notices in NOTICE, a minimal `src/shared/protocol.ts` (ready, snapshot, nodeActivated), a `src/adapters/graphPanel` that opens one panel per URI beside the editor (tab \"Graph: {filename}\") from the now-visible Show graph command (sentence-case titles), a minimal core model of the top-level input, `pipeline.processors` and output as a flat chain, an elkjs layout, and a click that reveals and selects the node's YAML range."
+verify = "An integration test runs Show graph on a corpus config and checks that one panel opens for the URI and that a nodeActivated message for a processor selects its YAML range."
+covers = ["R3", "R4", "R6", "R13"]
+after = []
+hitl = false
+risk = "medium"
+unknown = "The webview's Content Security Policy (script nonce, styles, codicon font) is not specified anywhere; this entry sets it."
+
+[[entry]]
+id = 2
+type = "story"
+title = "Full protocol and model types with fixture models"
+description = "Completes `src/shared/protocol.ts` with the AD-5 union (host→webview: snapshot, model, parseError, nodeStatus, selection, hostStatus; webview→host: ready, nodeActivated {via}, bannerClicked, installGuideRequested, setPathRequested, and retryRequested for the Retry decision) and the full `PipelineModel` (nodes, groups, resources, edges, ranges, AD-7 ids), plus hand-written fixture models in `src/test/fixtures/models/` that the webview lane renders before the core builder exists and that 3's builder must reproduce."
+verify = "Type-checked unit tests pin each message's shape and check every fixture model against the types."
+covers = ["R3"]
+after = [1]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 14
+type = "spike"
+title = "Probe: group lock, focus return and restored tabs on VS Code 1.100"
+description = "Answers the least certain part of auto-open before it is built: whether opening a webview beside the editor and running `workbench.action.lockEditorGroup` locks that group and returns focus on VS Code 1.100.0 and stable, and what a window reload does to restored YAML tabs; the findings set 10's approach."
+verify = "A findings note beside the plan records, for both VS Code versions, what the lock command did, where focus ended, and what a reload restored, with the probe code."
+covers = ["R1"]
+after = [1]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 3
+type = "story"
+title = "PipelineModel from the schema's component catalogue"
+description = "A pure `src/core` ComponentCatalog derived from the cached transformed schema (the category of every component name; a component with child processor lists or outputs is a group) and a PipelineModel builder for every component, route and nested group, with `*_resources` as standalone nodes, AD-7 ids and UTF-16 ranges; it reproduces 2's fixture models and replaces the tracer's flat model in graphPanel."
+verify = "Unit tests on the pinned 4.100.0 and 4.112.0 schemas build 2's fixture models from their YAML, including switch, branch, try/catch, workflow, broker, fallback, retry, while, parallel and resources."
+covers = ["R4"]
+after = [2, "1.6"]
+hitl = false
+risk = "medium"
+unknown = "Which schema fields hold child components is not specified (AD-20); this entry derives and documents the rule."
+
+[[entry]]
+id = 4
+type = "story"
+title = "Groups, resources and design tokens in the graph view"
+description = "The webview renders the full model: expanded, collapsible group boxes (collapse is webview view state, kept across re-renders and in `setState`), case labels on switch routes, standalone resource nodes, codicons, DESIGN tokens only, nothing draggable, pan and zoom without animation under reduced motion, and fit to view, laid out by elkjs with INCLUDE_CHILDREN; it owns the vitest setup for webview tests (pure layout and mapping modules)."
+verify = "Vitest unit tests map each of 2's fixture models to the elk graph and node props, covering groups, collapse kept across a re-render, resources and token-only colours."
+covers = ["R5"]
+after = [2]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Graph accuracy in the corpus harness"
+description = "A core `nodeAt(model, offset)` (innermost node wins) and a graph-accuracy check in the vitest corpus harness: one recorded `<name>.graph/<ver>.json` per corpus config per pinned binary, built from that binary's schema, compared in CI, with record mode, orphan and layout checks extended to the new records, and a range-to-node round trip for every node."
+verify = "`npm run test:corpus` compares every corpus config's model on 4.100.0 and 4.112.0 with its record and checks that `nodeAt` at each node's range start returns that node."
+covers = ["R4", "R12"]
+after = [3, 4, "1.7"]
+hitl = false
+risk = "medium"
+unknown = "The record format and how the harness gets each binary's schema (running `list --format jsonschema` or using the pinned fixtures) are set here."
+
+[[entry]]
+id = 6
+type = "story"
+title = "Live updates that keep the last valid graph"
+description = "The host re-sends the complete model on every document change (from the shared parse cache) and sends `parseError` instead while the YAML does not parse; the webview keeps the last valid graph with the banner (or the banner over an empty canvas on a first open), sends bannerClicked so the host selects the error, and keeps unchanged nodes in place; the per-keystroke cost on the largest corpus config is recorded in the plan."
+verify = "An integration test edits a file valid → broken → valid and checks model, parseError, model in that order, and that bannerClicked selects the error range."
+covers = ["R7"]
+after = [3, 4]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Two-way navigation between the YAML and the graph"
+description = "Click or Enter on a node reveals, centres and selects its range in the driving editor (the last-focused text editor for that file), a click on a group header label reveals the whole block, and moving the cursor sends `selection` from `nodeAt` so the webview highlights the innermost node without moving focus or opening the panel."
+verify = "An integration test moves the cursor into a nested group and checks the selection message names the innermost node while focus stays in the editor, and that nodeActivated selects its range."
+covers = ["R6"]
+after = [5, 6]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 8
+type = "story"
+title = "Error and warning markers on nodes"
+description = "A host NodeStatusService maps `LintDiagnostics.diagnosticsFor(uri)` to nodes with `nodeAt` at each line's first non-whitespace character, error beating warning and rolled up to every ancestor group, ignoring diagnostics churn it caused itself; status goes as its own `nodeStatus` and stays frozen while the banner shows; the webview shows a border plus a distinct codicon per state, the roll-up on collapsed headers, and the message verbatim on hover. After 7 because both change graphPanel's per-URI wiring."
+verify = "An integration test saves a file whose fake lint reports one error and one deprecation and receives a nodeStatus with the error and warning on the right nodes and their groups."
+covers = ["R8"]
+after = [7, "2.4"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 9
+type = "story"
+title = "Empty states: no binary and nothing to draw"
+description = "The host sends `hostStatus` {binary, schema}; with no usable binary it sends no model and the panel shows the binary-missing empty state with Install guide, Set path and Retry (installGuideRequested, setPathRequested, retryRequested wired to the existing binary actions), and after Set path or Retry the graph draws without reopening; with no pipeline keys it shows \"Nothing to draw yet\". After 8 because both change the panel's message handling."
+verify = "An integration test with the fake binary goes missing → empty state → Set path to a valid binary → model drawn in the same panel."
+covers = ["R9", "R10"]
+after = [8, "1.3", "1.4"]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 10
+type = "story"
+title = "Auto-open, the Hide graph toggle and per-file memory"
+description = "Following 14's findings: auto-open beside the editor on a detected file's first open per session with the group locked where it works and focus returned, honouring `autoOpenGraph`; the editor-title toggle and commands with a per-URI Hide in `workspaceState` that survives reload and suppresses auto-open; Show graph marks the URI detected; closing the YAML tab closes its graph; panels and Hide state are re-keyed on rename and Save As. After 9 because both change the panel registry."
+verify = "An integration test on stable and 1.100.0 opens a detected file (one graph beside it, focus back in the editor), hides it, reopens the file (no auto-open), and renames it (the graph follows)."
+covers = ["R1", "R2"]
+after = [9, 14, "2.2", "2.11"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 11
+type = "story"
+title = "Keyboard and screen-reader model"
+description = "The graph follows EXPERIENCE's Interaction Primitives: Tab into the graph, arrows between nodes, Enter reveals, Space toggles a group, Esc returns to the editor, node announcements including their error or warning, the 'Pipeline graph, read-only' name, a polite live region for the banner and new errors, and the focusBorder ring; tested with happy-dom (new dev dependency, webview tests only)."
+verify = "happy-dom tests drive Tab, arrows, Enter, Space and Esc over a fixture model with node status and check the ARIA names, announcements and live-region text."
+covers = ["R11"]
+after = [10]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 12
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
+verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
+covers = []
+after = [1, 2, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = false
+risk = "low"
+unknown = "Scope is set when it starts."
+
+[[entry]]
+id = 13
+type = "story"
+title = "Newcomer Flow 3 and reload checks by hand"
+description = "For Done when 5 and the manual reload decision: the user times a newcomer (or themselves on a clean profile) through EXPERIENCE Flow 3 from an empty file to a running pipeline, and checks a real window reload with a graph open and a stored Hide; findings become tickets."
+verify = "The plan records Flow 3 completing in under 10 minutes and what the reload showed."
+covers = []
+after = [12]
+hitl = true
+risk = "low"

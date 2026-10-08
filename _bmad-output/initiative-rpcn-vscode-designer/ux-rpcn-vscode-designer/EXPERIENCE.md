@@ -51,7 +51,7 @@ The tone is terse, developer to developer, and VS Code-native. Use sentence case
 | Binary-invalid notification | "Redpanda Connect at `{path}` can't be used: {reason}." Same three actions. `{reason}` is one of: "version {version} is older than the required v{min}", "it did not report a version", "it reported a version that can't be read", "its version check exited with an error", "it timed out", "it could not be started", "a relative path needs an open workspace folder" |
 | Graph empty state (no binary) | "No Redpanda Connect binary. The graph needs it to read the schema." Actions: **Install guide** · **Set path**; plus **Retry** `[ASSUMPTION]` |
 | Graph empty state (no pipeline keys) | "Nothing to draw yet. Add an `input`, `pipeline` or `output` section." `[ASSUMPTION]` |
-| Node error / warning hover | The diagnostic message verbatim, e.g. "Missing property \"topic\"." or a `lint --deprecated` message |
+| Node error / warning hover | The diagnostic message verbatim, e.g. lint's "field topic is required" or "field fields is deprecated" |
 | Quick Fix title | "Change to `topic`" `[ASSUMPTION]` |
 | Toggle (editor title / Command Palette) | "Show graph" · "Hide graph" |
 | Run terminal title | "Redpanda Connect: {filename}" (AD-13) |
@@ -71,8 +71,8 @@ Behavioral only. Visual specs are in `DESIGN.md.Components`.
 | Component | Behavioral rules |
 |---|---|
 | Pipeline node (`{components.pipeline-node}`) | Single-click selects the node and reveals and selects that component's YAML range in the left (driving) YAML editor. Hover shows the component type, plus the error or warning message if any. Nodes cannot be dragged or edited. Mock: [mockups/key-editor-and-graph.html](mockups/key-editor-and-graph.html) |
-| Pipeline node (error) (`{components.pipeline-node-error}`) | Shown whenever the node's YAML range has an error diagnostic: a Red Hat schema error, or any `lint` finding that is not a deprecation. Hover shows the message. Click reveals the range, where the inline diagnostic and quick fix are available. |
-| Pipeline node (warning) (`{components.pipeline-node-warning}`) | Shown only for Red Hat warning-severity diagnostics and `lint --deprecated` findings (AD-17), when the node has no error (error wins). Warning border plus a distinct warning icon, never color alone. Hover shows the warning message verbatim. Click reveals the range. Mock: [mockups/key-editor-and-graph.html](mockups/key-editor-and-graph.html) |
+| Pipeline node (error) (`{components.pipeline-node-error}`) | Shown whenever the node's YAML range has an error diagnostic: any `lint` finding that is not a deprecation, or a Red Hat diagnostic (in practice a YAML syntax error; the schema does not constrain component fields, AD-12). Hover shows the message. Click reveals the range, where the inline diagnostic and quick fix are available. |
+| Pipeline node (warning) (`{components.pipeline-node-warning}`) | Shown only for Red Hat warning-severity diagnostics and `lint --deprecated` findings (AD-17; in practice the deprecation findings), when the node has no error (error wins). Warning border plus a distinct warning icon, never color alone. Hover shows the warning message verbatim. Click reveals the range. Mock: [mockups/key-editor-and-graph.html](mockups/key-editor-and-graph.html) |
 | Group box (`{components.group-box}`) | Used for `switch` / `branch` / `try`/`catch` / `workflow` / brokers. **Always expanded** when a file opens; collapse state is not persisted across sessions. Clicking the header chevron (or pressing the keyboard toggle) collapses or expands it. Clicking the header label reveals the whole block's YAML. Severity rolls up to the group header: a collapsed group that contains an error or warning shows that treatment on its header (AD-17). |
 | Graph edge (`{components.graph-edge}`) | Not interactive. |
 | Resources area | Resources (`*_resources`) are drawn as standalone nodes. Clicking one reveals its YAML. References from processors to resources are not drawn as edges `[ASSUMPTION]`. |
@@ -146,9 +146,9 @@ Anna inherited a 300-line pipeline from a colleague who has left. Orders are sho
 4. She follows the flow to the `switch` group and sees that cases 1 and 2 both point to output nodes she recognizes by their labels.
 5. **Climax:** she clicks the case-2 output node. The YAML editor on the left scrolls to and selects that case's `check` and `output` block. She hovers over `check`; the field docs and example explain that cases are evaluated in order and the first match wins. Case 1's check, `this.type.has_prefix("pay")`, is broader than intended and also catches `payout_order` events. The graph showed her where to look, and the YAML explained why.
 6. She tightens case 1's check in the YAML. The graph re-renders as she types. For a moment the banner reads "YAML has errors — showing last valid graph." It disappears when the expression is valid again.
-7. She makes a typo, `chek`. While she is still typing, the schema check flags it: the case node gets the error treatment and the YAML shows the inline diagnostic with the quick fix "Change to `check`".
-8. She saves. `lint` runs on save and reports that `fields` on the `unknown_region` log processor is deprecated; that node gets the warning treatment (lint's own report of `chek` is on the same line as the schema error, so it is not shown twice).
-9. She applies the quick fix and the error treatment clears. The fix is an edit, so the lint warning clears too and returns on her next save. She leaves the deprecation for a follow-up ticket.
+7. She makes a typo, `chek`, and saves. `lint` runs on save and reports it (`field chek not recognised`): the case node gets the error treatment and the YAML shows the inline diagnostic with the quick fix "Change to `check`". Lint also reports that `fields` on the `unknown_region` log processor is deprecated; that node gets the warning treatment.
+8. She applies the quick fix and the error treatment clears. The fix is an edit, so the lint warning clears too and returns on her next save.
+9. She saves again; only the deprecation comes back, and she leaves it for a follow-up ticket.
 
 Failure: the YAML stays unparseable → the graph keeps the last valid render with the banner, and clicking the banner jumps to the parse error.
 
