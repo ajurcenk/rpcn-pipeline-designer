@@ -69,7 +69,8 @@ Saving a detected config runs `lint --deprecated --skip-env-var-check` with the 
 ```sh
 npm ci
 npm run compile          # type-check, lint, bundle to dist/
-npm test                 # unit + integration tests in a downloaded VS Code
+npm test                 # unit + integration tests, twice: latest stable VS Code and VS Code 1.100.0 (the engines floor)
+npx vscode-test --label floor     # one of the two (stable | floor), after npm run pretest
 scripts/spike/fetch-binaries.sh   # pinned Redpanda Connect 4.100.0 and 4.112.0 into .cache/ (needs an authenticated gh)
 npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and compare with the recorded output;
                          # also checks the extension's diagnostics match every record (diagnostics parity)

@@ -19,7 +19,13 @@ jobs:
       # check-types + lint (AD-15 dependency direction) + esbuild bundle
       - run: npm run compile
 
-      # unit + integration tests in a downloaded VS Code (needs a display)
+      # VS Code 1.100.0 is the engines floor (ticket 2.11); its download is pinned, so cache it
+      - uses: actions/cache@v6.1.0
+        with:
+          path: .vscode-test/vscode-linux-x64-1.100.0
+          key: vscode-1.100.0-${{ runner.os }}-${{ runner.arch }}
+
+      # unit + integration tests in two downloaded VS Codes, latest stable and 1.100.0 (needs a display)
       - run: xvfb-run -a npm test
 
       # Corpus harness (ticket 1.7): pinned standalone binaries, keyed on fetch-binaries.sh (which pins the versions)

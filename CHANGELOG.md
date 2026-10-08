@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - A warning with **Install guide**, **Set path** and **Retry** appears when no usable binary is found, once per change of state.
 - Shared argument builder for lint and run (`--resources` from `redpandaConnect.resourceFiles` only, `--env-file` from `redpandaConnect.envFile`, `NO_COLOR=1`); not used by any command yet.
 - Lint on save: findings from `lint --deprecated` appear as whole-line diagnostics (deprecated fields as warnings), hidden on lines YAML by Red Hat already flags (and lint's YAML syntax errors while Red Hat reports one), and cleared by the first edit.
+- CI runs the test suite on VS Code 1.100.0, the minimum supported version, as well as on the latest stable release.
 - Pipeline snippets: a whole-pipeline starter, input/pipeline/output sections, and generate, redpanda, stdout, mapping, switch, branch and log blocks, offered only in Redpanda Connect files (and the starter in a blank YAML file).
 - Bloblang methods narrowed to the type of a literal (`"test".`) or of a field assigned one.
 - Bloblang completion of names already written: fields after `this.` / `root.`, `let` variables after `$`, metadata keys after `@`.
