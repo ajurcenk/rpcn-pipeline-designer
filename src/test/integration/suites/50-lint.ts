@@ -55,6 +55,7 @@ suite('Lint on save (integration)', function () {
 			`for n in $('${grep}' -n 'codec:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field codec is deprecated" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'topci:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field topci not recognised" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'network: tpc' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) value tpc is not a valid option for this field" >&2; found=1; done`,
+			`for n in $('${grep}' -n 'adress:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field adress not recognised" >&2; found=1; done`,
 			'exit $found',
 		].join('\n');
 		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter }));
@@ -167,5 +168,33 @@ suite('Lint on save (integration)', function () {
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('network: tpc', 'network: tcp')}\n`);
 		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+	});
+
+	test('FIX_ALL (2.22): one light bulb fixes all three findings in one undo step; the next save reports none', async () => {
+		const text = 'input:\n  socket_server:\n    network: tpc  # keep\n    adress: 0.0.0.0:6000\noutput:\n  kafka_franz:\n    seed_brokers: [x]\n    topci: t\n';
+		const doc = await openSaved('fixall.yaml', text);
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000));
+		await editAndSave(doc); // appends '\n'
+		const saved = doc.getText();
+		assert.ok(await waitFor(() => lintOf(doc).length === 3, 15_000), JSON.stringify(lintOf(doc)));
+		const tpc = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect' && d.message.startsWith('value tpc'))!;
+		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+			'vscode.executeCodeActionProvider', doc.uri, tpc.range, vscode.CodeActionKind.QuickFix.value);
+		const titles = list.map((a) => a.title);
+		const index = titles.indexOf('Fix all lint findings with a clear fix (3)');
+		assert.ok(index > titles.indexOf('Change to `tcp`') && titles.indexOf('Change to `tcp`') >= 0, JSON.stringify(titles));
+		assert.ok(await vscode.workspace.applyEdit(list[index].edit!));
+		const fixed = `${text.replace('network: tpc', 'network: tcp').replace('adress:', 'address:').replace('topci:', 'topic:')}\n`;
+		assert.strictEqual(doc.getText(), fixed);
+		await vscode.commands.executeCommand('undo');
+		assert.strictEqual(doc.getText(), saved, 'one undo step reverts all three');
+		await vscode.commands.executeCommand('redo');
+		assert.strictEqual(doc.getText(), fixed);
+		const lints = () => readCounter(counter).filter((l) => l === 'lint').length;
+		const before = lints();
+		assert.ok(await doc.save());
+		assert.ok(await waitFor(() => lints() === before + 1, 15_000), 'fixall.yaml was not linted');
+		await new Promise((r) => setTimeout(r, 500));
+		assert.deepStrictEqual(lintOf(doc), []);
 	});
 });

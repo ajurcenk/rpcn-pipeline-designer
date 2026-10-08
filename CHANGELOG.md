@@ -5,6 +5,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Quick Fix **Fix all lint findings with a clear fix (N)**: applies the preferred fix of every lint finding in the file that has a clear one, as a single edit. Because the first edit after a save clears all findings, fixing them one by one needed a save after each fix.
 - Binary resolution: `rpk connect` on `PATH`, then `redpanda-connect` on `PATH`, then `redpandaConnect.binaryPath` as a fallback; binaries older than v4.100.0 are rejected. The binary is resolved again when the setting changes.
 - A warning with **Install guide**, **Set path** and **Retry** appears when no usable binary is found, once per change of state.
 - Shared argument builder for lint and run (`--resources` from `redpandaConnect.resourceFiles` only, `--env-file` from `redpandaConnect.envFile`, `NO_COLOR=1`), used by lint on save and Run.
