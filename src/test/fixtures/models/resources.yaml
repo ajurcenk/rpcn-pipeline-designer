@@ -1,0 +1,18 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - resource: normalise
+    - cache:
+        resource: seen
+        operator: add
+        key: '${! this.id }'
+output:
+  stdout: {}
+processor_resources:
+  - label: normalise
+    mapping: 'root = this.map_each_key(k -> k.lowercase())'
+cache_resources:
+  - label: seen
+    memory:
+      default_ttl: 60s

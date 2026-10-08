@@ -1,0 +1,59 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "resource",
+			"range": [47, 68]
+		},
+		{
+			"id": "path:pipeline.processors[1]",
+			"role": "processor",
+			"component": "cache",
+			"range": [73, 155]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [156, 176]
+		},
+		{
+			"id": "res:processor:normalise",
+			"role": "resource",
+			"component": "mapping",
+			"label": "normalise",
+			"range": [200, 278]
+		},
+		{
+			"id": "res:cache:seen",
+			"role": "resource",
+			"component": "memory",
+			"label": "seen",
+			"range": [298, 346]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:pipeline.processors[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1]->path:output",
+			"source": "path:pipeline.processors[1]",
+			"target": "path:output"
+		}
+	]
+}

@@ -1,0 +1,87 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "workflow",
+			"range": [47, 770],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_user",
+			"role": "route",
+			"caption": "fetch_user",
+			"range": [148, 374],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_user.processors[0]",
+			"role": "processor",
+			"component": "http",
+			"range": [245, 331],
+			"parent": "path:pipeline.processors[0].workflow.branches.fetch_user"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_orders",
+			"role": "route",
+			"caption": "fetch_orders",
+			"range": [385, 616],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_orders.processors[0]",
+			"role": "processor",
+			"component": "http",
+			"range": [484, 571],
+			"parent": "path:pipeline.processors[0].workflow.branches.fetch_orders"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.combine",
+			"role": "route",
+			"caption": "combine",
+			"range": [627, 770],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.combine.processors[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [674, 720],
+			"parent": "path:pipeline.processors[0].workflow.branches.combine"
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [771, 791]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:output",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:output"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_user->path:pipeline.processors[0].workflow.branches.combine",
+			"source": "path:pipeline.processors[0].workflow.branches.fetch_user",
+			"target": "path:pipeline.processors[0].workflow.branches.combine"
+		},
+		{
+			"id": "path:pipeline.processors[0].workflow.branches.fetch_orders->path:pipeline.processors[0].workflow.branches.combine",
+			"source": "path:pipeline.processors[0].workflow.branches.fetch_orders",
+			"target": "path:pipeline.processors[0].workflow.branches.combine"
+		}
+	]
+}

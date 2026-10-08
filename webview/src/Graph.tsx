@@ -18,8 +18,13 @@ const VIEW_MARGIN = 16;
 
 /** A node's width from its longest label line. */
 export function nodeWidth(node: PipelineNode): number {
-	const chars = Math.max(node.name.length, node.kind.length);
+	const chars = Math.max(nodeName(node).length, node.role.length);
 	return Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, chars * CHAR_WIDTH + NODE_PADDING));
+}
+
+/** The second label line: the component name (a route has none; it shows its caption). */
+function nodeName(node: PipelineNode): string {
+	return node.component ?? node.caption ?? '';
 }
 
 /** Fits the graph into the view between MIN_FIT_ZOOM and 100%; a graph still too wide starts at its input. */
@@ -41,11 +46,11 @@ type ComponentNode = Node<ComponentData, 'component'>;
 function ComponentView({ data }: NodeProps<ComponentNode>) {
 	const { node } = data;
 	return (
-		<div className={`rpcn-node rpcn-node-${node.kind}`} title={`${node.kind}: ${node.name}`}>
-			{node.kind !== 'input' && <Handle type="target" position={Position.Left} isConnectable={false} />}
-			<div className="rpcn-node-kind">{node.kind}</div>
-			<div className="rpcn-node-name">{node.name}</div>
-			{node.kind !== 'output' && <Handle type="source" position={Position.Right} isConnectable={false} />}
+		<div className={`rpcn-node rpcn-node-${node.role}`} title={`${node.role}: ${nodeName(node)}`}>
+			{node.role !== 'input' && <Handle type="target" position={Position.Left} isConnectable={false} />}
+			<div className="rpcn-node-kind">{node.role}</div>
+			<div className="rpcn-node-name">{nodeName(node)}</div>
+			{node.role !== 'output' && <Handle type="source" position={Position.Right} isConnectable={false} />}
 		</div>
 	);
 }

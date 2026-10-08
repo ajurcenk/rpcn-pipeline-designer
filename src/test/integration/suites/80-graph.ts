@@ -15,7 +15,7 @@ suite('Pipeline graph (3.1, integration)', function () {
 	let dir: string;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const snapshots = (handle: GraphPanelHandle): PipelineModel[] =>
-		handle.posted.flatMap((m) => (m.type === 'snapshot' ? [m.model] : []));
+		handle.posted.flatMap((m) => (m.type === 'snapshot' && m.model ? [m.model] : []));
 	const ids = (model: PipelineModel | undefined) => model?.nodes.map((n) => n.id);
 
 	async function open(name: string, text: string): Promise<vscode.TextDocument> {
@@ -68,14 +68,23 @@ suite('Pipeline graph (3.1, integration)', function () {
 		// The real webview boots, posts `ready` and gets the snapshot.
 		assert.ok(await waitFor(() => snapshots(handle).length > 0, 30_000), 'the webview posted ready');
 		assert.deepStrictEqual(ids(snapshots(handle)[0]), [
-			'input:generate',
-			'processor:0:cache',
-			'processor:1:catch',
-			'processor:2:sql_select',
-			'processor:3:unarchive',
-			'output:broker',
+			'path:input',
+			'path:pipeline.processors[0]',
+			'path:pipeline.processors[1]',
+			'path:pipeline.processors[2]',
+			'path:pipeline.processors[3]',
+			'path:output',
 		]);
 		assert.strictEqual(snapshots(handle)[0].edges.length, 5);
+		// The full snapshot (AD-5): status, selection and host status are not reported yet (3.6-3.9).
+		const snapshot = handle.posted.find((m) => m.type === 'snapshot')!;
+		assert.deepStrictEqual({ ...snapshot, model: undefined }, {
+			type: 'snapshot',
+			model: undefined,
+			nodeStatus: {},
+			selection: null,
+			hostStatus: { binary: 'unresolved', schema: 'none' },
+		});
 	});
 
 	test('PALETTE: Show graph with no argument opens the active editor\'s graph', async () => {
@@ -94,7 +103,7 @@ suite('Pipeline graph (3.1, integration)', function () {
 		const doc = await open('click.yaml', text);
 		const handle = await showGraph(doc);
 		await handle.receive({ type: 'ready' });
-		const node = snapshots(handle).at(-1)!.nodes.find((n) => n.id === 'processor:2:sql_select')!;
+		const node = snapshots(handle).at(-1)!.nodes.find((n) => n.id === 'path:pipeline.processors[2]')!;
 
 		await handle.receive({ type: 'nodeActivated', nodeId: node.id, via: 'click' });
 		const editor = vscode.window.activeTextEditor;
@@ -107,11 +116,24 @@ suite('Pipeline graph (3.1, integration)', function () {
 		assert.ok(!doc.isDirty, 'nothing edits the text');
 
 		const before = editor.selection;
-		await handle.receive({ type: 'nodeActivated', nodeId: 'processor:9:nope', via: 'click' });
+		await handle.receive({ type: 'nodeActivated', nodeId: 'path:pipeline.processors[9]', via: 'click' });
 		await handle.receive({ type: 'nodeActivated', nodeId: 42, via: 'click' });
+		await handle.receive({ type: 'nodeActivated', nodeId: node.id, via: 'mouse' });
 		await handle.receive({ type: 'somethingElse' });
 		assert.ok(vscode.window.activeTextEditor!.selection.isEqual(before));
 		assert.strictEqual(api().graphPanels.size, 1);
+	});
+
+	test('KEYBOARD: nodeActivated via keyboard selects the node, as a click does', async () => {
+		const text = fs.readFileSync(path.join(REPO_ROOT, 'test', 'corpus', 'stateful_polling.yaml'), 'utf8');
+		const doc = await open('keyboard.yaml', text);
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		const node = snapshots(handle).at(-1)!.nodes.find((n) => n.id === 'path:pipeline.processors[3]')!;
+		await handle.receive({ type: 'nodeActivated', nodeId: node.id, via: 'keyboard' });
+		const editor = vscode.window.activeTextEditor!;
+		assert.strictEqual(editor.document.uri.toString(), doc.uri.toString());
+		assert.strictEqual(doc.getText(editor.selection), '- unarchive:\n        format: json_array');
 	});
 
 	test('AGAIN: Show graph twice on one file keeps one panel', async () => {
@@ -132,8 +154,8 @@ suite('Pipeline graph (3.1, integration)', function () {
 		assert.strictEqual(api().graphPanels.size, 2);
 		await panelA.receive({ type: 'ready' });
 		await panelB.receive({ type: 'ready' });
-		assert.deepStrictEqual(ids(snapshots(panelA).at(-1)), ['input:stdin']);
-		assert.deepStrictEqual(ids(snapshots(panelB).at(-1)), ['output:stdout']);
+		assert.deepStrictEqual(ids(snapshots(panelA).at(-1)), ['path:input']);
+		assert.deepStrictEqual(ids(snapshots(panelB).at(-1)), ['path:output']);
 		assert.strictEqual(panelB.panel.title, 'Graph: b.yaml');
 	});
 

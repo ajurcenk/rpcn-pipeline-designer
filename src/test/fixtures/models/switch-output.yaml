@@ -1,0 +1,14 @@
+input:
+  stdin: {}
+output:
+  switch:
+    cases:
+      - check: this.type == "order"
+        output:
+          file:
+            path: ./orders.jsonl
+      - check: this.type == "refund" && this.amount > 1000
+        output:
+          drop: {}
+      - output:
+          stdout: {}

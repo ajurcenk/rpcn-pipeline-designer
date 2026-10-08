@@ -1,0 +1,45 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "broker",
+			"range": [19, 132],
+			"group": true
+		},
+		{
+			"id": "path:output.broker.outputs",
+			"role": "route",
+			"caption": "fan_out",
+			"range": [62, 132],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.broker.outputs[0]",
+			"role": "output",
+			"component": "stdout",
+			"range": [77, 89],
+			"parent": "path:output.broker.outputs"
+		},
+		{
+			"id": "path:output.broker.outputs[1]",
+			"role": "output",
+			"component": "file",
+			"range": [96, 132],
+			"parent": "path:output.broker.outputs"
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:output",
+			"source": "path:input",
+			"target": "path:output"
+		}
+	]
+}

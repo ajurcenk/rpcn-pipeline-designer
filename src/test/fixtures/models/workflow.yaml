@@ -1,0 +1,27 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - workflow:
+        order: [ [ fetch_user, fetch_orders ], [ combine ] ]
+        branches:
+          fetch_user:
+            request_map: 'root = this.user_id'
+            processors:
+              - http:
+                  url: http://localhost:8080/users
+                  verb: GET
+            result_map: 'root.user = this'
+          fetch_orders:
+            request_map: 'root = this.user_id'
+            processors:
+              - http:
+                  url: http://localhost:8080/orders
+                  verb: GET
+            result_map: 'root.orders = this'
+          combine:
+            processors:
+              - mapping: 'root.count = this.orders.length()'
+            result_map: 'root.count = this.count'
+output:
+  stdout: {}

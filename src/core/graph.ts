@@ -1,7 +1,7 @@
 // The flat pipeline model for the graph (epic 3, ticket 3.1): the top-level input, the
 // `pipeline.processors` list in order, and the output of the first YAML document. Pure (AD-15);
-// no coordinates (AD-4); ranges are UTF-16 `[start, end)` offsets from the parse (AD-16); ids
-// in the simplest AD-7 form. Nested groups, resources and labels come in later tickets.
+// no coordinates (AD-4); ranges are UTF-16 `[start, end)` offsets from the parse (AD-16); AD-7
+// ids (`label:<label>`, else `path:<yamlPath>`). Nested groups and resources come in ticket 3.3.
 
 import { isMap, isPair, isScalar, isSeq, type Node, type Pair, type YAMLMap } from 'yaml';
 import { EMPTY_MODEL, type PipelineEdge, type PipelineModel, type PipelineNode } from '../shared/protocol';
@@ -22,34 +22,46 @@ export function buildPipelineModel(parsed: ParsedYaml | undefined, text: string)
 		}
 		const root = doc.contents;
 		const nodes: PipelineNode[] = [];
+		const labels = new Set<string>();
+		const add = (role: PipelineNode['role'], path: string, value: unknown, range: () => readonly [number, number]) => {
+			const component = componentName(value);
+			if (!component) {
+				return;
+			}
+			const label = labelOf(value);
+			const duplicateLabel = label !== undefined && labels.has(label);
+			if (label !== undefined) {
+				labels.add(label);
+			}
+			nodes.push({
+				id: label !== undefined && !duplicateLabel ? `label:${label}` : `path:${path}`,
+				role,
+				component,
+				...(label !== undefined ? { label } : {}),
+				range: range(),
+				...(duplicateLabel ? { duplicateLabel: true } : {}),
+			});
+		};
 
 		const input = pairOf(root, 'input');
-		const inputName = input && componentName(input.value);
-		if (input && inputName) {
-			nodes.push({ id: `input:${inputName}`, kind: 'input', name: inputName, range: pairRange(input, text) });
+		if (input) {
+			add('input', 'input', input.value, () => pairRange(input, text));
 		}
 
 		const pipeline = pairOf(root, 'pipeline');
 		const processors = pipeline && isMap(pipeline.value) ? pairOf(pipeline.value, 'processors') : undefined;
 		if (processors && isSeq(processors.value)) {
 			processors.value.items.forEach((item, index) => {
-				const name = componentName(item);
 				const node = item as Node;
-				if (name && node.range) {
-					nodes.push({
-						id: `processor:${index}:${name}`,
-						kind: 'processor',
-						name,
-						range: [itemStart(text, node.range[0]), valueEnd(text, node.range[1])],
-					});
+				if (node?.range) {
+					add('processor', `pipeline.processors[${index}]`, item, () => [itemStart(text, node.range![0]), valueEnd(text, node.range![1])]);
 				}
 			});
 		}
 
 		const output = pairOf(root, 'output');
-		const outputName = output && componentName(output.value);
-		if (output && outputName) {
-			nodes.push({ id: `output:${outputName}`, kind: 'output', name: outputName, range: pairRange(output, text) });
+		if (output) {
+			add('output', 'output', output.value, () => pairRange(output, text));
 		}
 
 		const edges: PipelineEdge[] = nodes.slice(1).map((target, i) => ({
@@ -83,6 +95,24 @@ function componentName(value: unknown): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+/**
+ * The component's `label`, when it is a non-empty scalar. A number or boolean (`label: 123`) is
+ * read as Redpanda Connect reads it, as its source text (`"123"`).
+ */
+function labelOf(value: unknown): string | undefined {
+	const pair = isMap(value) ? pairOf(value, 'label') : undefined;
+	if (!pair || !isScalar(pair.value)) {
+		return undefined;
+	}
+	const scalar = pair.value;
+	const raw = scalar.value;
+	const label = typeof raw === 'string' ? raw
+		: typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint'
+			? (typeof scalar.source === 'string' ? scalar.source : String(raw))
+			: undefined;
+	return label !== undefined && label !== '' ? label : undefined;
 }
 
 /** From the start of the pair's key to the end of its value (AD-16). */

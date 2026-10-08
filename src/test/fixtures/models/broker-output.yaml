@@ -1,0 +1,9 @@
+input:
+  stdin: {}
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+      - stdout: {}
+      - file:
+          path: ./copy.jsonl

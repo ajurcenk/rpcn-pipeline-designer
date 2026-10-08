@@ -1,0 +1,61 @@
+{
+	"nodes": [
+		{
+			"id": "label:ticks",
+			"role": "input",
+			"component": "generate",
+			"label": "ticks",
+			"range": [0, 58]
+		},
+		{
+			"id": "label:enrich",
+			"role": "processor",
+			"component": "mapping",
+			"label": "enrich",
+			"range": [87, 135]
+		},
+		{
+			"id": "path:pipeline.processors[1]",
+			"role": "processor",
+			"component": "log",
+			"range": [140, 169]
+		},
+		{
+			"id": "path:pipeline.processors[2]",
+			"role": "processor",
+			"component": "mapping",
+			"label": "enrich",
+			"range": [174, 224],
+			"duplicateLabel": true
+		},
+		{
+			"id": "label:sink",
+			"role": "output",
+			"component": "stdout",
+			"label": "sink",
+			"range": [225, 259]
+		}
+	],
+	"edges": [
+		{
+			"id": "label:ticks->label:enrich",
+			"source": "label:ticks",
+			"target": "label:enrich"
+		},
+		{
+			"id": "label:enrich->path:pipeline.processors[1]",
+			"source": "label:enrich",
+			"target": "path:pipeline.processors[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1]->path:pipeline.processors[2]",
+			"source": "path:pipeline.processors[1]",
+			"target": "path:pipeline.processors[2]"
+		},
+		{
+			"id": "path:pipeline.processors[2]->label:sink",
+			"source": "path:pipeline.processors[2]",
+			"target": "label:sink"
+		}
+	]
+}

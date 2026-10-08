@@ -1,0 +1,66 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "switch",
+			"range": [19, 279],
+			"group": true
+		},
+		{
+			"id": "path:output.switch.cases[0]",
+			"role": "route",
+			"caption": "this.type == \"order\"",
+			"range": [54, 148],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.switch.cases[0].output",
+			"role": "output",
+			"component": "file",
+			"range": [92, 148],
+			"parent": "path:output.switch.cases[0]"
+		},
+		{
+			"id": "path:output.switch.cases[1]",
+			"role": "route",
+			"caption": "this.type == \"refund\" && this.a…",
+			"range": [155, 242],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.switch.cases[1].output",
+			"role": "output",
+			"component": "drop",
+			"range": [216, 242],
+			"parent": "path:output.switch.cases[1]"
+		},
+		{
+			"id": "path:output.switch.cases[2]",
+			"role": "route",
+			"caption": "case 2",
+			"range": [249, 279],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.switch.cases[2].output",
+			"role": "output",
+			"component": "stdout",
+			"range": [251, 279],
+			"parent": "path:output.switch.cases[2]"
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:output",
+			"source": "path:input",
+			"target": "path:output"
+		}
+	]
+}

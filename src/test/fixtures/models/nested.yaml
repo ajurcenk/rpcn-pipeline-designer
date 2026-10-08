@@ -1,0 +1,15 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - branch:
+        processors:
+          - switch:
+              - check: this.vip
+                processors:
+                  - mapping: 'root.tier = "gold"'
+              - processors:
+                  - mapping: 'root.tier = "basic"'
+        result_map: 'root.tier = this.tier'
+output:
+  stdout: {}

@@ -1,0 +1,14 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - branch:
+        request_map: 'root = this.id'
+        processors:
+          - http:
+              url: http://localhost:8080/lookup
+              verb: POST
+          - mapping: 'root = this.body'
+        result_map: 'root.lookup = this'
+output:
+  stdout: {}

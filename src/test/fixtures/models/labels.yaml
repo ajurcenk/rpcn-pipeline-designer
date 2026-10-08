@@ -1,0 +1,15 @@
+input:
+  label: ticks
+  generate:
+    mapping: 'root = {}'
+pipeline:
+  processors:
+    - label: enrich
+      mapping: 'root.at = now()'
+    - log:
+        message: hello
+    - label: enrich
+      mapping: 'root.again = true'
+output:
+  label: sink
+  stdout: {}

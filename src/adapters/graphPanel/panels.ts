@@ -1,12 +1,14 @@
 // The graph panel registry (ticket 3.1, AD-1): one WebviewPanel per file, beside the editor,
 // keyed by `uri.toString()`. The webview posts `ready` (again whenever it is recreated, since
-// `retainContextWhenHidden` is off) and gets a fresh `snapshot`; a `nodeActivated` click selects
-// and reveals that node's YAML range in the file's text editor. Nothing edits the text (AD-19).
+// `retainContextWhenHidden` is off) and gets a fresh `snapshot`; a `nodeActivated` (click or
+// keyboard) selects and reveals that node's YAML range in the file's text editor. Nothing edits
+// the text (AD-19). Node status, selection and host status are not sent yet (3.6-3.9), so the
+// snapshot carries them empty.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { buildPipelineModel } from '../../core/graph';
-import type { HostMessage, PipelineModel, WebviewMessage } from '../../shared/protocol';
+import { parseWebviewMessage, type HostMessage, type HostStatus, type PipelineModel } from '../../shared/protocol';
 import { parsedDocument } from '../vscode/parseCache';
 import { graphHtml } from './html';
 
@@ -17,6 +19,9 @@ export const GRAPH_VIEW_TYPE = 'redpandaConnect.graph';
 export function graphTitle(uri: vscode.Uri): string {
 	return `Graph: ${path.posix.basename(uri.path)}`;
 }
+
+/** Until the host reports its status (3.9), the snapshot says nothing is known yet. */
+const SNAPSHOT_HOST_STATUS: HostStatus = { binary: 'unresolved', schema: 'none' };
 
 /** One file's panel, as seen by tests (the host-side seam; tests don't drive the webview DOM). */
 export interface GraphPanelHandle {
@@ -42,9 +47,15 @@ class GraphPanel implements GraphPanelHandle {
 
 	async receive(message: unknown): Promise<void> {
 		try {
-			const msg = asWebviewMessage(message);
+			const msg = parseWebviewMessage(message);
 			if (msg?.type === 'ready') {
-				await this.post({ type: 'snapshot', model: await this.model() });
+				await this.post({
+					type: 'snapshot',
+					model: await this.model(),
+					nodeStatus: {},
+					selection: null,
+					hostStatus: SNAPSHOT_HOST_STATUS,
+				});
 			} else if (msg?.type === 'nodeActivated') {
 				await this.activate(msg.nodeId);
 			}
@@ -91,21 +102,6 @@ class GraphPanel implements GraphPanelHandle {
 		editor.selection = new vscode.Selection(range.start, range.end);
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 	}
-}
-
-/** Validates a message from the webview; `undefined` for anything else. */
-function asWebviewMessage(message: unknown): WebviewMessage | undefined {
-	if (typeof message !== 'object' || message === null) {
-		return undefined;
-	}
-	const m = message as { type?: unknown; nodeId?: unknown; via?: unknown };
-	if (m.type === 'ready') {
-		return { type: 'ready' };
-	}
-	if (m.type === 'nodeActivated' && typeof m.nodeId === 'string' && m.via === 'click') {
-		return { type: 'nodeActivated', nodeId: m.nodeId, via: 'click' };
-	}
-	return undefined;
 }
 
 export interface GraphPanelsOptions {

@@ -1,0 +1,71 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "branch",
+			"range": [47, 329],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].branch.processors[0]",
+			"role": "processor",
+			"component": "switch",
+			"range": [87, 285],
+			"parent": "path:pipeline.processors[0]",
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].branch.processors[0].switch[0]",
+			"role": "route",
+			"caption": "this.vip",
+			"range": [111, 206],
+			"parent": "path:pipeline.processors[0].branch.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].branch.processors[0].switch[0].processors[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [175, 206],
+			"parent": "path:pipeline.processors[0].branch.processors[0].switch[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].branch.processors[0].switch[1]",
+			"role": "route",
+			"caption": "case 1",
+			"range": [221, 285],
+			"parent": "path:pipeline.processors[0].branch.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].branch.processors[0].switch[1].processors[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [253, 285],
+			"parent": "path:pipeline.processors[0].branch.processors[0].switch[1]"
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [330, 350]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:output",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:output"
+		}
+	]
+}

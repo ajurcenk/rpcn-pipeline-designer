@@ -1,0 +1,14 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - try:
+        - mapping: 'root = this.parse_json()'
+        - log:
+            message: parsed
+    - catch:
+        - log:
+            message: '${! error() }'
+        - mapping: 'root = deleted()'
+output:
+  stdout: {}

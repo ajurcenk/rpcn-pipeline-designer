@@ -1,0 +1,45 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "generate",
+			"range": [0, 69]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [98, 130]
+		},
+		{
+			"id": "path:pipeline.processors[1]",
+			"role": "processor",
+			"component": "log",
+			"range": [135, 174]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [175, 195]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:pipeline.processors[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1]->path:output",
+			"source": "path:pipeline.processors[1]",
+			"target": "path:output"
+		}
+	]
+}

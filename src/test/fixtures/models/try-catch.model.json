@@ -1,0 +1,97 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "try",
+			"range": [47, 142],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].try",
+			"role": "route",
+			"range": [49, 142],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].try[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [62, 99],
+			"parent": "path:pipeline.processors[0].try"
+		},
+		{
+			"id": "path:pipeline.processors[0].try[1]",
+			"role": "processor",
+			"component": "log",
+			"range": [108, 142],
+			"parent": "path:pipeline.processors[0].try"
+		},
+		{
+			"id": "path:pipeline.processors[1]",
+			"role": "processor",
+			"component": "catch",
+			"range": [147, 245],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[1].catch",
+			"role": "route",
+			"range": [149, 245],
+			"parent": "path:pipeline.processors[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1].catch[0]",
+			"role": "processor",
+			"component": "log",
+			"range": [164, 207],
+			"parent": "path:pipeline.processors[1].catch"
+		},
+		{
+			"id": "path:pipeline.processors[1].catch[1]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [216, 245],
+			"parent": "path:pipeline.processors[1].catch"
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [246, 266]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:pipeline.processors[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1]->path:output",
+			"source": "path:pipeline.processors[1]",
+			"target": "path:output"
+		},
+		{
+			"id": "path:pipeline.processors[0].try[0]->path:pipeline.processors[0].try[1]",
+			"source": "path:pipeline.processors[0].try[0]",
+			"target": "path:pipeline.processors[0].try[1]"
+		},
+		{
+			"id": "path:pipeline.processors[1].catch[0]->path:pipeline.processors[1].catch[1]",
+			"source": "path:pipeline.processors[1].catch[0]",
+			"target": "path:pipeline.processors[1].catch[1]"
+		}
+	]
+}

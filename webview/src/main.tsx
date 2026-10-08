@@ -1,21 +1,22 @@
-// The graph webview's entry (ticket 3.1): posts `ready`, renders every `snapshot` it is sent.
+// The graph webview's entry (ticket 3.1): posts `ready`, renders the model of every `snapshot`
+// (or `model`) it is sent; anything that fails `parseHostMessage` is ignored.
 // It holds no domain state and parses no YAML (AD-2, AD-3).
 
 import '@xyflow/react/dist/style.css';
 import './graph.css';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { HostMessage, PipelineModel } from '../../src/shared/protocol';
+import { parseHostMessage, type PipelineModel } from '../../src/shared/protocol';
 import { Graph } from './Graph';
 import { post } from './host';
 
 function App() {
 	const [model, setModel] = useState<PipelineModel | undefined>(undefined);
 	useEffect(() => {
-		const onMessage = (event: MessageEvent<HostMessage>) => {
-			const message = event.data;
-			if (message?.type === 'snapshot') {
-				setModel(message.model);
+		const onMessage = (event: MessageEvent<unknown>) => {
+			const message = parseHostMessage(event.data);
+			if (message?.type === 'snapshot' || message?.type === 'model') {
+				setModel(message.model ?? undefined);
 			}
 		};
 		window.addEventListener('message', onMessage);

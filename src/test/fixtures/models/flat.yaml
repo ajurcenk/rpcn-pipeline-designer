@@ -1,0 +1,11 @@
+input:
+  generate:
+    interval: '@every 5s'
+    mapping: 'root = {}'
+pipeline:
+  processors:
+    - mapping: 'root.id = uuid_v4()'
+    - log:
+        message: '${! this.id }'
+output:
+  stdout: {}

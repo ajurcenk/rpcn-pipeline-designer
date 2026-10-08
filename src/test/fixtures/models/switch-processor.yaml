@@ -1,0 +1,14 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - switch:
+        - check: this.kind == "a"
+          processors:
+            - mapping: 'root.a = true'
+            - log:
+                message: an a
+        - processors:
+            - mapping: 'root.other = true'
+output:
+  stdout: {}
