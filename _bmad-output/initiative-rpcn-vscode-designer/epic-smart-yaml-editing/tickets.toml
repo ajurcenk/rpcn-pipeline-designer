@@ -138,6 +138,19 @@ unknown = "Which nested empty positions Red Hat already completes (probe before 
 notes = ["User decision 2026-10-07 after the 2.13 manual checks: build our own gap provider instead of forking Red Hat."]
 
 [[entry]]
+id = 17
+type = "story"
+title = "Required fields item in a new component block"
+description = "In an empty component block (the ticket 16 gap), the completion list starts with one '<component>: required fields' item that inserts the component's required fields as a snippet (choices for fields with options, defaults as placeholders); the transform keeps `required` lists under a private `x-rpcn-required` key that Red Hat ignores (AD-10, AD-11 as amended)."
+verify = "After picking `socket`, Ctrl+Space in the empty block offers 'socket: required fields' first; inserting it gives `network:` (choice unix/tcp) and `address:`; components without required fields get no such item."
+covers = ["E2 (R1)"]
+after = [16]
+hitl = false
+risk = "low"
+unknown = "None."
+notes = ["User decision 2026-10-07: option 1 of two (completion item now; a 'missing required fields' Quick Fix may follow)."]
+
+[[entry]]
 id = 8
 type = "story"
 title = "Feedback when the schema or binary changes"
@@ -194,7 +207,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

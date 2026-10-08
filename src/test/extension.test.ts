@@ -508,6 +508,8 @@ suite('Schema contributor (integration)', function () {
 			return doc.getText();
 		};
 		assert.strictEqual(await insert('input:\n  socket:\n    \n', 2, 4, 'tls'), 'input:\n  socket:\n    tls:\n      \n');
+		assert.strictEqual(await insert('input:\n  socket:\n    \n', 2, 4, 'socket: required fields'),
+			'input:\n  socket:\n    network: unix\n    address: \n', 'the first choice is inserted; lines keep the block indent');
 		assert.strictEqual(await insert('input:\n  socket:\n    \n', 2, 4, 'max_buffer'), 'input:\n  socket:\n    max_buffer: 1000000\n');
 		assert.strictEqual(await insert('input:\n  socket:\n    ad\n', 2, 6, 'address'), 'input:\n  socket:\n    address: \n');
 		assert.strictEqual(await insert('input:\n  socket:\n    network: tcp\n    tls:\n      \n', 4, 6, 'client_certs'),

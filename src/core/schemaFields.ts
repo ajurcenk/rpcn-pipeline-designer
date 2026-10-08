@@ -7,7 +7,7 @@
 // maps (`patternProperties`, e.g. `workflow.branches.<name>`) are not stepped through: no fix
 // there (known limit, user 2026-10-07).
 
-import { isJsonObject, JsonObject } from './schema';
+import { isJsonObject, JsonObject, REQUIRED_KEY } from './schema';
 import type { PathStep } from './yamlPath';
 
 /** `$ref` / `allOf` / `anyOf` nesting followed per step; deeper is treated as unknown. */
@@ -113,6 +113,22 @@ export function nodesAt(schema: JsonObject, path: readonly PathStep[]): JsonObje
 		}
 	}
 	return nodes.flatMap((n) => expand(schema, n, false, 0)).map(({ node }) => node);
+}
+
+/** The required field names of the mapping at `path` (from `x-rpcn-required`), in schema order. */
+export function requiredFieldsAt(schema: JsonObject, path: readonly PathStep[]): string[] {
+	const names: string[] = [];
+	for (const node of nodesAt(schema, path)) {
+		const list = node[REQUIRED_KEY];
+		if (Array.isArray(list)) {
+			for (const name of list) {
+				if (typeof name === 'string' && !names.includes(name)) {
+					names.push(name);
+				}
+			}
+		}
+	}
+	return names;
 }
 
 /** Whether `path` runs through a component (a key that is a component name where it sits). */

@@ -282,8 +282,20 @@ suite('core/schema transformSchema completion fixes (ticket 2.13)', () => {
 		return (branch.properties as JsonObject).file as JsonObject;
 	};
 
-	test('VERSION: the transform version is 3 (2.15)', () => {
-		assert.strictEqual(TRANSFORM_VERSION, 3);
+	test('VERSION: the transform version is 4 (2.17)', () => {
+		assert.strictEqual(TRANSFORM_VERSION, 4);
+	});
+
+	test('TRANSFORM (2.17): required lists move to x-rpcn-required (socket: network, address)', () => {
+		const out = transformSchema(loadRaw('4.112.0'), loadDocs('4.112.0'));
+		const input = (out.definitions as JsonObject).input as JsonObject;
+		const branch = ((input.allOf as JsonObject[])[0].anyOf as JsonObject[]).find((b) => isJsonObject(b.properties) && 'socket' in b.properties)!;
+		const socket = (branch.properties as JsonObject).socket as JsonObject;
+		assert.deepStrictEqual(socket['x-rpcn-required'], ['network', 'address']);
+		assert.strictEqual(socket.required, undefined);
+		const raw = loadRaw('4.112.0');
+		const rawCount = [...nodes(raw)].filter(([, n]) => Array.isArray(n.required) && n.required.length > 0).length;
+		assert.strictEqual([...nodes(out)].filter(([, n]) => Array.isArray(n['x-rpcn-required'])).length, rawCount);
 	});
 
 	for (const v of VERSIONS) {

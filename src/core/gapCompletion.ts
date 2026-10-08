@@ -10,18 +10,19 @@
 
 import { isMap, isScalar, isSeq, Scalar } from 'yaml';
 import type { JsonObject } from './schema';
-import { fieldInfo, FieldInfo, fieldsAt, insideComponent } from './schemaFields';
+import { fieldInfo, FieldInfo, fieldsAt, insideComponent, requiredFieldsAt } from './schemaFields';
 import { ParsedYaml, PathStep, yamlString } from './yamlPath';
 
 export type GapContext =
-	/** The cursor is in the empty block at `path`. */
-	| { readonly kind: 'block'; readonly path: readonly PathStep[] }
+	/** The cursor is in the empty block at `path`; `partial` when a first key is partly typed. */
+	| { readonly kind: 'block'; readonly path: readonly PathStep[]; readonly partial: boolean }
 	/** The cursor is on the empty value of `key` in the mapping at `path`. */
 	| { readonly kind: 'value'; readonly path: readonly PathStep[]; readonly key: string };
 
 export interface GapItem {
 	readonly label: string;
-	readonly kind: 'field' | 'value';
+	/** `required`: all required fields of the block at once (ticket 2.17). */
+	readonly kind: 'field' | 'value' | 'required';
 	/** VS Code snippet syntax. */
 	readonly snippet: string;
 	readonly documentation?: string;
@@ -74,7 +75,9 @@ export function gapContext(parsed: ParsedYaml | undefined, text: string, offset:
 				&& onlyBlankBetween(text, lineStarts, p.keyStart, line))
 			.sort((a, b) => b.keyStart - a.keyStart)[0];
 		// Below the top level only: Red Hat completes empty top-level blocks itself.
-		return parent && parent.path.length > 0 ? { kind: 'block', path: [...parent.path, parent.key] } : undefined;
+		return parent && parent.path.length > 0
+			? { kind: 'block', path: [...parent.path, parent.key], partial: before.trim() !== '' }
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -104,10 +107,57 @@ export function gapItems(schema: JsonObject, context: GapContext): GapItem[] {
 	if (!fields || fields.components.length > 0) {
 		return [];
 	}
-	return fields.all
+	const infos = fields.all
 		.map((name) => fieldInfo(schema, context.path, name))
-		.filter((info): info is FieldInfo => info !== undefined)
-		.map((info) => ({ label: info.name, kind: 'field', snippet: fieldSnippet(info), documentation: info.markdown, deprecated: info.deprecated }));
+		.filter((info): info is FieldInfo => info !== undefined);
+	const items: GapItem[] = infos.map((info) => ({
+		label: info.name, kind: 'field', snippet: fieldSnippet(info), documentation: info.markdown, deprecated: info.deprecated,
+	}));
+	// The schema's list, minus deprecated fields: it is broader than lint's (list fields such as
+	// `file.paths` are listed though lint accepts them empty), which makes a better scaffold.
+	const required = context.partial ? [] : requiredFieldsAt(schema, context.path)
+		.map((name) => infos.find((i) => i.name === name))
+		.filter((info): info is FieldInfo => info !== undefined && !info.deprecated);
+	if (required.length === 0) {
+		return items;
+	}
+	const owner = [...context.path].reverse().find((s): s is string => typeof s === 'string') ?? '';
+	return [{
+		label: `${owner}: required fields`,
+		kind: 'required',
+		snippet: requiredSnippet(required),
+		documentation: `Inserts the required fields: ${required.map((i) => `\`${i.name}\``).join(', ')}.`,
+	}, ...items];
+}
+
+/**
+ * All required fields, one per line, tab stops in order: options as a choice, a scalar default
+ * as a placeholder, objects and arrays opened on an indented line (ticket 2.17).
+ */
+function requiredSnippet(infos: readonly FieldInfo[]): string {
+	return infos.map((info, i) => {
+		const stop = i + 1;
+		const name = escapeSnippet(info.name);
+		if (info.options.length > 0) {
+			return `${name}: \${${stop}|${info.options.map((o) => escapeChoice(yamlString(o.value))).join(',')}|}`;
+		}
+		switch (info.shape) {
+			case 'object':
+				return `${name}:\n  $${stop}`;
+			case 'array':
+				return `${name}:\n  - $${stop}`;
+			default:
+				if (info.default === undefined || info.default === '') {
+					return `${name}: $${stop}`;
+				}
+				return `${name}: \${${stop}:${escapeSnippet(typeof info.default === 'string' ? yamlString(info.default) : String(info.default), true)}}`;
+		}
+	}).join('\n');
+}
+
+/** Escapes a snippet choice value (`,`, `|`, `$`, `}`, `\`). */
+function escapeChoice(text: string): string {
+	return text.replace(/[,|$}\\]/g, (c) => `\\${c}`);
 }
 
 /** `name: ${1:default}` (no placeholder for an empty default), `name:\n  $0` (object) or `name:\n  - $0` (array). */

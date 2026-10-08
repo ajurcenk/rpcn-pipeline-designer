@@ -28,8 +28,11 @@ export class GapCompletionProvider implements vscode.CompletionItemProvider {
 			}
 			const items = gapItems(schema, context);
 			return items.length === 0 ? undefined : items.map((item, i) => {
-				const ci = new vscode.CompletionItem(item.label,
-					item.kind === 'field' ? vscode.CompletionItemKind.Property : vscode.CompletionItemKind.Value);
+				const ci = new vscode.CompletionItem(item.label, item.kind === 'field' ? vscode.CompletionItemKind.Property
+					: item.kind === 'required' ? vscode.CompletionItemKind.Snippet : vscode.CompletionItemKind.Value);
+				if (item.kind === 'required') {
+					ci.preselect = true;
+				}
 				ci.insertText = new vscode.SnippetString(item.snippet);
 				if (item.documentation) {
 					ci.documentation = new vscode.MarkdownString(item.documentation);

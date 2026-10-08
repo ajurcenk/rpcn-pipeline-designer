@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { gapContext, gapItems } from '../../core/gapCompletion';
 import { JsonObject, transformSchema } from '../../core/schema';
-import { insideComponent } from '../../core/schemaFields';
+import { insideComponent, requiredFieldsAt } from '../../core/schemaFields';
 import { parseYaml } from '../../core/yamlPath';
 import { SCHEMA_FIXTURES } from '../helpers/fakeBinary';
 
@@ -25,20 +25,20 @@ const labels = (marked: string) => at(marked).items.map((i) => i.label);
 suite('core/gapCompletion (ticket 2.16, 4.112.0 schema)', () => {
 	test('EMPTY_COMPONENT: an empty socket block offers its 8 fields with docs', () => {
 		const { context, items } = at('input:\n  socket:\n    |\noutput:\n  stdout: {}\n');
-		assert.deepStrictEqual(context, { kind: 'block', path: ['input', 'socket'] });
+		assert.deepStrictEqual(context, { kind: 'block', path: ['input', 'socket'], partial: false });
 		assert.deepStrictEqual(items.map((i) => i.label),
-			['address', 'auto_replay_nacks', 'codec', 'max_buffer', 'network', 'open_message_mapping', 'scanner', 'tls']);
-		assert.ok(items.every((i) => i.kind === 'field'));
+			['socket: required fields', 'address', 'auto_replay_nacks', 'codec', 'max_buffer', 'network', 'open_message_mapping', 'scanner', 'tls']);
+		assert.ok(items.slice(1).every((i) => i.kind === 'field'));
 		assert.ok(items.find((i) => i.label === 'network')!.documentation!.includes('Options: `unix`, `tcp`'));
 	});
 
 	test('a blank line holding only spaces, or with comment lines between, still counts as empty', () => {
-		assert.strictEqual(labels('input:\n  socket:\n    # comment\n\n    |\n').length, 8);
+		assert.strictEqual(labels('input:\n  socket:\n    # comment\n\n    |\n').length, 9);
 	});
 
 	test('NESTED_EMPTY / PROCESSOR_ITEM / resource item / broker output item', () => {
 		assert.ok(labels('input:\n  socket:\n    network: tcp\n    tls:\n      |\n').includes('skip_cert_verify'));
-		assert.deepStrictEqual(labels('pipeline:\n  processors:\n    - branch:\n        |\n'), ['processors', 'request_map', 'result_map']);
+		assert.deepStrictEqual(labels('pipeline:\n  processors:\n    - branch:\n        |\n'), ['branch: required fields', 'processors', 'request_map', 'result_map']);
 		assert.ok(labels('cache_resources:\n  - label: c\n    memory:\n      |\n').includes('default_ttl'));
 		assert.deepStrictEqual(labels('output:\n  broker:\n    outputs:\n      - stdout:\n          |\n'), ['codec']);
 	});
@@ -110,6 +110,24 @@ suite('core/gapCompletion (ticket 2.16, 4.112.0 schema)', () => {
 		const items = at('input:\n  kafka_franz:\n    |\n').items;
 		assert.strictEqual(items.find((i) => i.label === 'regexp_topics')?.deprecated, true);
 		assert.strictEqual(items.find((i) => i.label === 'topics')?.deprecated, false);
+	});
+
+	test('REQUIRED (2.17): the first item inserts the required fields', () => {
+		const first = (marked: string) => at(marked).items[0];
+		assert.deepStrictEqual(first('input:\n  socket:\n    |\n'), {
+			label: 'socket: required fields', kind: 'required', snippet: 'network: ${1|unix,tcp|}\naddress: $2',
+			documentation: 'Inserts the required fields: `network`, `address`.',
+		});
+		assert.strictEqual(first('input:\n  generate:\n    |\n').snippet, 'mapping: $1');
+		assert.strictEqual(first('output:\n  kafka_franz:\n    |\n').snippet, 'seed_brokers:\n  - $1\ntopic: $2', 'deprecated rack_id left out');
+		assert.strictEqual(first('pipeline:\n  processors:\n    - branch:\n        |\n').snippet, 'processors:\n  - $1');
+		assert.deepStrictEqual(requiredFieldsAt(SCHEMA, ['output', 'kafka_franz']), ['seed_brokers', 'topic', 'rack_id']);
+	});
+
+	test('REQUIRED: none for components without required fields, nor while a key is typed', () => {
+		assert.ok(at('input:\n  stdin:\n    |\n').items.every((i) => i.kind !== 'required'));
+		assert.ok(at('input:\n  socket:\n    ad|\n').items.every((i) => i.kind !== 'required'));
+		assert.ok(at('input:\n  socket_server:\n    network: |\n').items.every((i) => i.kind !== 'required'));
 	});
 
 	test('BROKEN: unparseable text gives nothing, never a throw', () => {

@@ -11,7 +11,8 @@
 //   2. lets every `number` / `integer` / `boolean` node also accept a `${VAR}` string;
 //   3. drops every `required`: Red Hat drops a component's `anyOf` branch while a required
 //      field is missing, and with it every completion for that component; lint on save is the
-//      validation for missing fields (AD-12; ticket 2.13);
+//      validation for missing fields (AD-12; ticket 2.13). The list moves to `x-rpcn-required`,
+//      a private key Red Hat ignores, for the "required fields" completion item (ticket 2.17);
 //   4. keeps every other key (including `is_*`) as is;
 //   5. merges json-full docs: field `description` + `examples` → `markdownDescription`,
 //      field `default` → `default`, component `summary` → the component's `markdownDescription`,
@@ -27,7 +28,7 @@
 
 import { createHash } from 'crypto';
 
-export const TRANSFORM_VERSION = 3;
+export const TRANSFORM_VERSION = 4;
 
 export const DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 
@@ -174,9 +175,18 @@ function allowInterpolation(node: JsonObject): void {
 	node.anyOf = [typed, { type: 'string', pattern: INTERPOLATION_PATTERN }];
 }
 
-/** Removes `required` from every node (step 3). */
+/** Key that keeps a node's `required` list for our own completion (2.17); Red Hat ignores it. */
+export const REQUIRED_KEY = 'x-rpcn-required';
+
+/** Moves `required` to `x-rpcn-required` on every node (step 3). */
 function dropRequired(node: JsonObject): void {
 	forEachSubSchema(node, dropRequired);
+	if (Array.isArray(node.required)) {
+		const names = node.required.filter((n): n is string => typeof n === 'string');
+		if (names.length > 0) {
+			node[REQUIRED_KEY] = names;
+		}
+	}
 	delete node.required;
 }
 
