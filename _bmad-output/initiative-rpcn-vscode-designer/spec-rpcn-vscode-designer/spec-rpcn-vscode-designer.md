@@ -25,16 +25,16 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
   - **success:** Resolution follows AD-9 order; with no valid binary a notification and the graph empty state both offer Install guide / Set path (EXPERIENCE Voice and Tone strings); after Set path, schema, graph and diagnostics appear without reopening the file (EXPERIENCE Flow 2).
 
 - **CAP-2 — Schema-aware YAML editing**
-  - **intent:** Developers get validation, completion and hover docs that match the components their own binary can run, in VS Code's native editor.
-  - **success:** Schema is generated from the binary and cached per path + version, refreshed on version change or Refresh schema (AD-10); schema errors appear live while typing; completion offers only keys/values valid at the cursor; hover shows field docs plus an example (AD-11).
+  - **intent:** Developers get completion and hover docs that match the components their own binary can run, in VS Code's native editor; Redpanda Connect validation comes from lint on save (CAP-3).
+  - **success:** Schema is generated from the binary and cached per path + version, refreshed on version change or Refresh schema (AD-10); completion offers the keys valid at the cursor and each field's documented option values (as suggestions; any string stays valid), including where Red Hat YAML offers nothing (empty component blocks, empty values and list items inside a component, a new component's required fields; AD-11); hover shows field docs plus an example and the field's options (AD-10); YAML syntax errors appear live while typing, and the binary's schema does not constrain component fields, so Redpanda Connect errors come from lint (AD-12).
 
 - **CAP-3 — Lint diagnostics on save + Quick Fixes**
   - **intent:** Developers see `rpk connect lint` findings inline and can apply fixes for common errors without leaving the editor.
-  - **success:** On save, lint findings appear as diagnostics, a lint finding on the same line as a schema diagnostic is not shown twice, and lint diagnostics clear on the first edit after save (AD-12, AD-17); a misspelled field offers a Quick Fix to the nearest valid field ("Change to `topic`") whose edit touches only that range (AD-19).
+  - **success:** On save, lint findings appear as diagnostics, a lint finding on the same line as a schema diagnostic is not shown twice, and lint diagnostics clear on the first edit after save (AD-12, AD-17); a misspelled field offers a Quick Fix to the nearest valid field ("Change to `topic`"), an invalid option value offers the nearest valid options ("Change to `tcp`"), and when two or more findings have a clear fix one action fixes them all as one edit; every fix touches only its token's range (AD-19).
 
-- **CAP-4 — Bloblang highlighting**
-  - **intent:** Bloblang in `mapping`, `check` and `${! }` interpolations reads as Bloblang inside YAML.
-  - **success:** Those regions are highlighted with Bloblang scopes in YAML files; no Bloblang completion or diagnostics are provided (AD-14).
+- **CAP-4 — Bloblang highlighting, completion and hover**
+  - **intent:** Bloblang in mapping fields (`mapping`, `check`, `mutation`, the `*_mapping` / `*_map` fields, …) and `${! }` interpolations reads as Bloblang inside YAML, and its functions and methods are discoverable.
+  - **success:** Those regions are highlighted with Bloblang scopes in YAML files; inside them, completion offers the binary's own Bloblang functions and methods (narrowed by a statically known type) and the field, variable and metadata names already written above the cursor, and hover shows a function's or method's docs; there are no Bloblang diagnostics (lint on save checks mappings) and no Bloblang language server (AD-14).
 
 - **CAP-5 — Snippets**
   - **intent:** Developers can scaffold pipeline sections and common components without recalling exact structure.
@@ -99,7 +99,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Unit testing, AI assistance, metrics, debugging and profiling (including groundwork such as per-processor run output), data-flow visualization, log-error node highlighting.
 - Large configs (thousands of lines).
 - Lint while typing.
-- Bloblang LSP, completion or diagnostics.
+- A Bloblang language server or Bloblang diagnostics (completion and hover are in CAP-4).
 - A default keybinding for Show / Hide graph.
 - Publishing to the VS Code Marketplace or Open VSX (publisher accounts, tokens, release workflow) — parked for the POC.
 - Restoring the graph panel after a window reload.

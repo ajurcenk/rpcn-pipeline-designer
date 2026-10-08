@@ -25,25 +25,25 @@ A developer edits a detected config in the native editor with schema help that m
 - E2 (R2) → CAP-6 (part): One DetectionRegistry decides which files are Redpanda Connect configs: `redpandaConnect.filePatterns`, or top-level `input`/`pipeline`/`output`/`buffer`/resource keys, excluding templates; recomputed on open, change and setting change; `onDidChangeDetection`; a session-mark hook for epic 3's Show graph (AD-18).
 - E2 (R3) → CAP-3: On save, lint the saved detected file through the AD-9 builder and spawn site; parse `<path>(<line>,<col>) <message>`; show each finding on its whole line (lint reports column 1); `field … is deprecated` as Warning, everything else as Error; clear the file's lint diagnostics on its first edit after save (AD-12, AD-17 rule).
 - E2 (R4) → CAP-3: Suppress a lint diagnostic on a line that already has a Red Hat diagnostic (AD-12).
-- E2 (R5) → CAP-3: One Quick Fix type: for "field X not recognised", offer the closest valid field names from the schema at that position, applied as a minimal-range edit (AD-19).
-- E2 (R6) → CAP-4: Bloblang highlighting in `mapping`, `check` and `${! }` via a TextMate grammar injected into YAML (AD-14).
+- E2 (R5) → CAP-3: Quick Fixes as minimal-range edits (AD-19): for "field X not recognised", the closest valid field names from the schema at that position; for "value X is not a valid option for this field", the closest options (2.14); and one Fix all for the findings with a clear fix (2.22). (Reconciled 2026-10-08, retro A3; originally one fix type.)
+- E2 (R6) → CAP-4: Bloblang highlighting in the mapping fields (`mapping`, `check`, `mutation`, the `*_mapping` / `*_map` fields: 26 names) and `${! }` via a TextMate grammar injected into every YAML file, plus completion and hover inside Bloblang (AD-14 as amended; 2.9, 2.19–2.21). (Reconciled 2026-10-08, retro A3.)
 - E2 (R7) → CAP-5: Snippets that scaffold pipeline sections and common components.
 - E2 (R8) → CAP-11: Run auto-saves, then runs the file through the builder in a per-file Pseudoterminal (logs streamed); Stop sends SIGINT and escalates to SIGKILL after a grace period; untitled files cannot Run; the Run and Stop commands become visible (AD-13).
 - E2 (R9) → CAP-1 (part): After Set path / Retry / Refresh Schema, editor features update without reopening; Refresh Schema with no usable binary logs a line and shows the binary warning again.
-- E2 (R10) → CAP-14 (part): The corpus harness asserts the extension's parsed lint diagnostics equal `rpk connect lint` for every corpus config (diagnostics parity).
+- E2 (R10) → CAP-14 (part): The corpus harness asserts the extension's parsed lint diagnostics equal `rpk connect lint` for every corpus config (diagnostics parity). As built (2.6), parity runs the recorded lint output through the extension's parser (line, message, severity); the deduplication against Red Hat is tested in the VS Code suite, not the harness. (Reconciled 2026-10-08, retro A3.)
 - E2 (R11) → spec Constraints (`engines.vscode ^1.100.0`): CI also runs the VS Code test suite against VS Code 1.100.
 
 ## Done when
 
 1. In a detected config (no naming convention) the native editor offers completion and hover from the user's binary's schema via Red Hat YAML; after Set path these appear without reopening the file.
 2. Saving shows lint findings inline, deduplicated against schema diagnostics (AD-12), with Quick Fixes applied as minimal-range edits (AD-19).
-3. Bloblang in `mapping`, `check` and `${! }` is highlighted, and snippets scaffold pipeline sections.
+3. Bloblang in the mapping fields and `${! }` is highlighted, and snippets scaffold pipeline sections.
 4. Run auto-saves, streams logs to a per-file Pseudoterminal and Stop interrupts it; untitled files cannot Run.
-5. Diagnostics match `rpk connect lint` for every config in the corpus, checked in CI; the CI `.vsix` carries it.
+5. Diagnostics match `rpk connect lint` for every config in the corpus, checked in CI; the CI `.vsix` carries these features. (Reconciled 2026-10-08, retro A3: "it" read as the features; the harness itself is excluded from the `.vsix` by `.vscodeignore`.)
 
 ## Boundaries
 
-Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal parts of `src/adapters/vscode`, the core lint parser and detection predicate, the DetectionRegistry (AD-18), and `syntaxes/`. No webview. CAP-6 here: detection only; auto-open is epic-pipeline-graph. CAP-1 here: editor features appearing after Set path. CAP-14 here: diagnostics-parity assertions.
+Owns `src/adapters/redhatYaml`; the diagnostics, Quick Fix, completion, Bloblang, snippet, parse-cache and terminal parts of `src/adapters/vscode`; the core lint parser, detection predicate, YAML path lookup, schema field walk, suggestion ranking, gap completion, snippets and Bloblang modules (`src/core/{lint,detection,yamlPath,schemaFields,suggest,gapCompletion,snippets,bloblang,bloblangCatalog,bloblangNames}.ts`); the DetectionRegistry (AD-18); and `syntaxes/`. (Reconciled 2026-10-08, retro A3.) No webview. CAP-6 here: detection only; auto-open is epic-pipeline-graph. CAP-1 here: editor features appearing after Set path. CAP-14 here: diagnostics-parity assertions.
 
 ## References
 
@@ -88,3 +88,4 @@ Owns `src/adapters/redhatYaml`, the diagnostics, Quick Fix, snippet and terminal
 - Note (2.16 review, 2026-10-07): Red Hat 1.24.0 and our gap provider both give nothing for an empty list item inside a component (`kafka_franz.batching.processors: - `, `tls.client_certs: - `). Candidate follow-up. **Answered (user, 2026-10-08):** ticket 18; AD-11 amended to include list items.
 - Decision (user, 2026-10-08, E2 retrospective F2/A2): ticket 22 adds a "Fix all" code action that applies every clear-winner lint fix as one edit, extending the Quick Fix decisions above. The first-edit clear rule (R3, AD-17) stays; keeping findings on lines an edit did not touch is backlog story 10.
 - Decision: epic closed as done (user, 2026-10-08, "close epic 2"). Closure check: the E2 retrospective (`epic-smart-yaml-editing-retrospective.md`) verified Done when 1–5 against the code, the tests and an end-to-end run with the real 4.112.0 binary. Ticket 2.22, added after it for finding F2, is built, reviewed with the full lens set, CI-green on VS Code stable and 1.100.0, and checked by hand. All 22 tickets are done. Open items move to the retrospective's action items, not this epic: F1 docs-less schema (A1), spec and architecture reconciliation (A3), untracked limits (A4), the code-health sweep (A5), and the process lessons A6–A8. Backlog stories 7–10 hold the deferred features.
+- Decision (user, 2026-10-08, "execute A3"): R5, R6, R10, Done when 3 and 5 and the Boundaries reconciled with the as-built, after closure; the spec (CAP-2, CAP-3, CAP-4, Non-goals), architecture (AD-10–AD-14) and EXPERIENCE (YAML editor features, Run control, diagnostics timing, Flow 3) reconciled with memlog lines (E2 retrospective A3).
