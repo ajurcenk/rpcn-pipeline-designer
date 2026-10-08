@@ -45,3 +45,4 @@ Relative `binaryPath`, `resourceFiles` and `envFile` values resolve against the 
 ## Notes
 
 - Open question: `binaryPath` is resolved once per window, not per file; decide whether it follows the active file's folder or stays workspace-wide.
+- Note (2.7 and 2.12, 2026-10-08): Run now uses the file's own workspace folder as its working directory, while relative `resourceFiles` / `envFile` still resolve against the first folder; the README records this as a known limit. This story should make both use the same folder.
