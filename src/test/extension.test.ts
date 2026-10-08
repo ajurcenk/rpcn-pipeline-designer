@@ -457,6 +457,9 @@ suite('Schema contributor (integration)', function () {
 			['input:\n  socket_server:\n    network: \n', 2, 13, true],
 			['input:\n  socket:\n    auto_replay_nacks: \n', 2, 23, true],
 			['input:\n  socket_server:\n    network: tcp\n    tls:\n      client_auth: \n', 4, 19, true],
+			['pipeline:\n  processors:\n    - switch:\n        - check: A\n          processors:\n            - \n', 5, 14, true],
+			['output:\n  broker:\n    outputs:\n      - \n', 3, 8, true],
+			['input:\n  socket:\n    network: tcp\n    tls:\n      client_certs:\n        - \n', 5, 10, true],
 			['input:\n  socket:\n    network: tcp\n    \n', 3, 4, false],
 			['input:\n  stdin: {}\nlogger:\n  \n', 3, 2, false],
 			['input:\n  stdin: {}\nlogger:\n  level: \n', 3, 9, false],
@@ -512,6 +515,9 @@ suite('Schema contributor (integration)', function () {
 			'input:\n  socket:\n    network: unix\n    address: \n', 'the first choice is inserted; lines keep the block indent');
 		assert.strictEqual(await insert('input:\n  socket:\n    \n', 2, 4, 'max_buffer'), 'input:\n  socket:\n    max_buffer: 1000000\n');
 		assert.strictEqual(await insert('input:\n  socket:\n    ad\n', 2, 6, 'address'), 'input:\n  socket:\n    address: \n');
+		assert.strictEqual(await insert('pipeline:\n  processors:\n    - switch:\n        - check: A\n          processors:\n            - \n', 5, 14, 'log'),
+			'pipeline:\n  processors:\n    - switch:\n        - check: A\n          processors:\n            - log:\n                \n',
+			'a component in a nested list item: its fields go under the name');
 		assert.strictEqual(await insert('input:\n  socket:\n    network: tcp\n    tls:\n      \n', 4, 6, 'client_certs'),
 			'input:\n  socket:\n    network: tcp\n    tls:\n      client_certs:\n        - \n');
 	});

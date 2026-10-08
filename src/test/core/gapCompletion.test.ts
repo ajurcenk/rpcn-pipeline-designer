@@ -130,6 +130,35 @@ suite('core/gapCompletion (ticket 2.16, 4.112.0 schema)', () => {
 		assert.ok(at('input:\n  socket_server:\n    network: |\n').items.every((i) => i.kind !== 'required'));
 	});
 
+	test('ITEM (2.18): an empty list item in a nested processors list offers the processor names', () => {
+		const user = 'pipeline:\n  processors:\n    - log:\n        level: INFO\n    - switch:\n        - check: A\n          processors:\n'
+			+ '            - log:\n                message: x\n            - |\n';
+		const { context, items } = at(user);
+		assert.deepStrictEqual(context, { kind: 'item', path: ['pipeline', 'processors', 1, 'switch', 0, 'processors', 1], partial: false });
+		const names = items.map((i) => i.label);
+		assert.ok(names.includes('log') && names.includes('mapping') && names.includes('branch'), names.slice(0, 10).join(','));
+		assert.strictEqual(items.find((i) => i.label === 'log')!.snippet, 'log:\n    $0');
+		assert.strictEqual(items.find((i) => i.label === 'switch')!.snippet, 'switch:\n    - $0', 'switch holds a list');
+		assert.ok(items.find((i) => i.label === 'mapping')!.documentation!.length > 0, 'component summary as docs');
+	});
+
+	test('ITEM: partly typed, broker outputs, batching processors, switch cases, tls client_certs', () => {
+		assert.ok(labels('pipeline:\n  processors:\n    - switch:\n        - check: A\n          processors:\n            - lo|\n').includes('log'));
+		assert.ok(labels('output:\n  broker:\n    outputs:\n      - |\n').includes('kafka_franz'));
+		assert.ok(labels('output:\n  kafka_franz:\n    batching:\n      processors:\n        - |\n').includes('mapping'));
+		assert.deepStrictEqual(labels('pipeline:\n  processors:\n    - switch:\n        - |\n'), ['check', 'continue', 'fallthrough', 'processors']);
+		assert.deepStrictEqual(labels('input:\n  socket:\n    network: tcp\n    tls:\n      client_certs:\n        - |\n'),
+			['cert', 'cert_file', 'key', 'key_file', 'password']);
+		assert.strictEqual(at('pipeline:\n  processors:\n    - switch:\n        - |\n').items.find((i) => i.label === 'processors')!.snippet,
+			'processors:\n    - $0', 'children 4 columns past the dash line');
+	});
+
+	test('ITEM: silent where Red Hat answers (top-level processors) and for lists of plain values', () => {
+		assert.deepStrictEqual(labels('pipeline:\n  processors:\n    - |\n'), []);
+		assert.deepStrictEqual(labels('input:\n  redpanda:\n    topics:\n      - |\n'), []);
+		assert.deepStrictEqual(labels('input:\n  socket:\n    network: tcp\n    tls:\n      client_certs:\n        - cert: x|\n'), []);
+	});
+
 	test('BROKEN: unparseable text gives nothing, never a throw', () => {
 		assert.doesNotThrow(() => at('\t: [{\n  |\n'));
 		assert.strictEqual(gapContext(undefined, 'x', 0), undefined);

@@ -151,6 +151,19 @@ unknown = "None."
 notes = ["User decision 2026-10-07: option 1 of two (completion item now; a 'missing required fields' Quick Fix may follow)."]
 
 [[entry]]
+id = 18
+type = "story"
+title = "Completion for empty list items inside a component"
+description = "The gap completion (ticket 16) also answers on an empty or partly typed list item inside a component: component names (with summaries) for lists of components such as nested `processors`, `outputs` or `cases[].processors`, and the item's fields for lists of objects; silent where Red Hat answers (top-level `pipeline.processors`), AD-11 amended."
+verify = "In `switch` case `processors:` then `- `, Ctrl+Space offers the processor names; Red Hat's server sweep finds no overlap; the duplicate guard covers the new positions."
+covers = ["E2 (R1)"]
+after = [16, 17]
+hitl = false
+risk = "medium"
+unknown = "Which list positions Red Hat already completes (sweep before trusting the rule)."
+notes = ["User report 2026-10-08: nested switch processors list showed only word suggestions."]
+
+[[entry]]
 id = 8
 type = "story"
 title = "Feedback when the schema or binary changes"
@@ -207,7 +220,7 @@ title = "Refactor sweep"
 description = "Cleans up what this epic's build records and deferred review findings name; cleanup only, new scope becomes a new ticket."
 verify = "The suite, the corpus harness and CI are green and every deferred finding is either fixed or moved to a new ticket."
 covers = ["E2 (R1)", "E2 (R2)", "E2 (R3)", "E2 (R4)", "E2 (R5)", "E2 (R6)", "E2 (R7)", "E2 (R8)", "E2 (R9)", "E2 (R10)", "E2 (R11)"]
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18]
 hitl = false
 risk = "low"
 unknown = "Scope is set when it starts."

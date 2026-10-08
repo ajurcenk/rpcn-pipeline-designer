@@ -3,7 +3,10 @@
 // the gaps the 2026-10-07 probes found, and build the items:
 //   - an empty block inside a component (`socket:` with nothing under it, `socket.tls:`), or a
 //     partly typed first key in one → the fields of that block;
-//   - an empty value inside a component (`network: `) → the field's options, or true/false.
+//   - an empty value inside a component (`network: `) → the field's options, or true/false;
+//   - an empty or partly typed list item inside a component (`switch` case `processors:` then
+//     `- `) → the component names of a list of components, or the fields of a list of objects
+//     (ticket 2.18).
 // Everywhere else (top-level blocks, plain nested blocks such as `logger.file:`, blocks that
 // already have a field, list items, values outside components) Red Hat completes, so this
 // returns nothing and the lists never overlap (a sweep of Red Hat's server over 1039 positions).
@@ -16,6 +19,8 @@ import { ParsedYaml, PathStep, yamlString } from './yamlPath';
 export type GapContext =
 	/** The cursor is in the empty block at `path`; `partial` when a first key is partly typed. */
 	| { readonly kind: 'block'; readonly path: readonly PathStep[]; readonly partial: boolean }
+	/** The cursor is on the empty (or partly typed) list item at `path` (its last step is the index). */
+	| { readonly kind: 'item'; readonly path: readonly PathStep[]; readonly partial: boolean }
 	/** The cursor is on the empty value of `key` in the mapping at `path`. */
 	| { readonly kind: 'value'; readonly path: readonly PathStep[]; readonly key: string };
 
@@ -65,6 +70,13 @@ export function gapContext(parsed: ParsedYaml | undefined, text: string, offset:
 			return pair ? { kind: 'value', path: pair.path, key } : undefined;
 		}
 
+		const itemMatch = /^\s*-\s+([A-Za-z_][\w-]*)?$/.exec(before) ?? /^\s*-$/.exec(before);
+		if (itemMatch) {
+			const item = allItems(parsed).find((i) => i.start >= lineStart && i.start <= lineEnd
+				&& (isEmpty(i.value) || startsOnLine(i.value, lineStart, lineEnd)));
+			return item ? { kind: 'item', path: item.path, partial: !!itemMatch[1] } : undefined;
+		}
+
 		if (!/^\s*([A-Za-z_][\w-]*)?$/.test(before)) {
 			return undefined;
 		}
@@ -103,6 +115,13 @@ export function gapItems(schema: JsonObject, context: GapContext): GapItem[] {
 		return [];
 	}
 	const fields = fieldsAt(schema, context.path);
+	if (context.kind === 'item') {
+		// A new list item: its key sits after `- `, so children go 4 columns past the dash's line.
+		return (fields?.all ?? [])
+			.map((name) => fieldInfo(schema, context.path, name))
+			.filter((info): info is FieldInfo => info !== undefined && !info.deprecated)
+			.map((info) => ({ label: info.name, kind: 'field', snippet: fieldSnippet(info, '    '), documentation: info.markdown }));
+	}
 	// A component-level mapping (its names are components) is left to Red Hat's component list.
 	if (!fields || fields.components.length > 0) {
 		return [];
@@ -160,14 +179,18 @@ function escapeChoice(text: string): string {
 	return text.replace(/[,|$}\\]/g, (c) => `\\${c}`);
 }
 
-/** `name: ${1:default}` (no placeholder for an empty default), `name:\n  $0` (object) or `name:\n  - $0` (array). */
-function fieldSnippet(info: FieldInfo): string {
+/**
+ * `name: ${1:default}` (no placeholder for an empty default), `name:\n<indent>$0` (object) or
+ * `name:\n<indent>- $0` (array). `indent` is relative to the line's own indentation: 2 in a
+ * block, 4 after a list item's `- `.
+ */
+function fieldSnippet(info: FieldInfo, indent = '  '): string {
 	const name = escapeSnippet(info.name);
 	switch (info.shape) {
 		case 'object':
-			return `${name}:\n  $0`;
+			return `${name}:\n${indent}$0`;
 		case 'array':
-			return `${name}:\n  - $0`;
+			return `${name}:\n${indent}- $0`;
 		default: {
 			if (info.default === undefined || info.default === '') {
 				return `${name}: $0`;
@@ -215,6 +238,30 @@ function onlyBlankBetween(text: string, lineStarts: readonly number[], keyStart:
 		}
 	}
 	return keyLine < line;
+}
+
+/** Every list item, with its path (ending in its index) and start offset. */
+function allItems(parsed: ParsedYaml): { readonly path: readonly PathStep[]; readonly start: number; readonly value: unknown }[] {
+	const out: { path: PathStep[]; start: number; value: unknown }[] = [];
+	const visit = (node: unknown, path: PathStep[]): void => {
+		if (isMap(node)) {
+			for (const pair of node.items) {
+				if (isScalar(pair.key)) {
+					visit(pair.value, [...path, String(pair.key.value)]);
+				}
+			}
+		} else if (isSeq(node)) {
+			node.items.forEach((item, i) => {
+				const range = isScalar(item) || isMap(item) || isSeq(item) ? item.range : undefined;
+				if (range) {
+					out.push({ path: [...path, i], start: range[0], value: item });
+				}
+				visit(item, [...path, i]);
+			});
+		}
+	};
+	parsed.docs.forEach((doc) => visit(doc.contents, []));
+	return out;
 }
 
 function allPairs(parsed: ParsedYaml): PairInfo[] {
