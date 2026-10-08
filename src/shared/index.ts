@@ -1,5 +1,4 @@
 // Shared types for the host and the webview (AD-5, AD-15).
 // This layer imports nothing from `src/core`, `src/adapters` or `vscode`.
-// The host<->webview protocol (`protocol.ts`) lands here in a later epic.
 
-export {};
+export * from './protocol';

@@ -5,6 +5,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Pipeline graph: **Show graph** opens a read-only graph beside a detected config (input, `pipeline.processors` and output, laid out with elkjs and drawn with @xyflow/react), one panel per file; clicking a node selects its YAML. Bundles React, react-dom, @xyflow/react and their dependencies (MIT, ISC, BSD-3-Clause) and elkjs (EPL-2.0), listed in NOTICE.
 - Quick Fix **Fix all lint findings with a clear fix (N)**: applies the preferred fix of every lint finding in the file that has a clear one, as a single edit. Because the first edit after a save clears all findings, fixing them one by one needed a save after each fix.
 - Binary resolution: `rpk connect` on `PATH`, then `redpanda-connect` on `PATH`, then `redpandaConnect.binaryPath` as a fallback; binaries older than v4.100.0 are rejected. The binary is resolved again when the setting changes.
 - A warning with **Install guide**, **Set path** and **Retry** appears when no usable binary is found, once per change of state.

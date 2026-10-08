@@ -1,0 +1,43 @@
+/* The graph inherits the VS Code theme (DESIGN.md): every colour is a theme variable. */
+html, body, #root {
+	height: 100%;
+	margin: 0;
+	padding: 0;
+}
+body {
+	background: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+	font-weight: var(--vscode-font-weight);
+}
+.react-flow {
+	--xy-background-color: var(--vscode-editor-background);
+	--xy-edge-stroke: var(--vscode-editorLineNumber-foreground);
+	--xy-handle-background-color: var(--vscode-editorLineNumber-foreground);
+	--xy-handle-border-color: var(--vscode-editorLineNumber-foreground);
+	--xy-background-pattern-dots-color: var(--vscode-panel-border, transparent);
+}
+.rpcn-node {
+	box-sizing: border-box;
+	width: 180px;
+	height: 48px;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	border-radius: 4px;
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-editor-foreground);
+	cursor: pointer;
+	overflow: hidden;
+}
+.rpcn-node-kind {
+	color: var(--vscode-descriptionForeground);
+	text-transform: capitalize;
+}
+.rpcn-node-name {
+	font-family: var(--vscode-editor-font-family);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

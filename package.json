@@ -71,12 +71,12 @@
     "commands": [
       {
         "command": "redpandaConnect.showGraph",
-        "title": "Show Graph",
+        "title": "Show graph",
         "category": "Redpanda Connect"
       },
       {
         "command": "redpandaConnect.hideGraph",
-        "title": "Hide Graph",
+        "title": "Hide graph",
         "category": "Redpanda Connect"
       },
       {
@@ -108,7 +108,7 @@
       "commandPalette": [
         {
           "command": "redpandaConnect.showGraph",
-          "when": "false"
+          "when": "redpandaConnect.activeEditorDetected"
         },
         {
           "command": "redpandaConnect.hideGraph",
@@ -168,8 +168,8 @@
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile-tests && npm run compile",
-    "check-types": "tsc --noEmit && tsc -p test/corpus/tsconfig.json",
-    "lint": "eslint src test/corpus vitest.config.mts",
+    "check-types": "tsc --noEmit && tsc -p test/corpus/tsconfig.json && tsc -p webview/tsconfig.json",
+    "lint": "eslint src webview test/corpus vitest.config.mts",
     "test": "vscode-test",
     "test:corpus": "vitest run --config vitest.config.mts",
     "test:corpus:record": "vitest run --config vitest.config.mts --mode record"
@@ -177,6 +177,8 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "20.19.43",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "@types/vscode": "1.100.0",
     "@vscode/test-cli": "0.0.15",
     "@vscode/test-electron": "3.1.0",
@@ -198,6 +200,10 @@
     }
   },
   "dependencies": {
+    "@xyflow/react": "12.12.0",
+    "elkjs": "0.12.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "yaml": "2.9.1"
   }
 }

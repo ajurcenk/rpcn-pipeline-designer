@@ -15,6 +15,7 @@ import { SnippetCompletionProvider } from './adapters/vscode/snippets';
 import { forgetDocument } from './adapters/vscode/parseCache';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
+import { GraphPanels } from './adapters/graphPanel/panels';
 import type { JsonObject } from './core/schema';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -54,6 +55,8 @@ export interface ExtensionApi {
 	readonly lintDiagnostics: Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
 	/** Run and Stop (2.7). */
 	readonly run: RunController;
+	/** The pipeline graph panels, one per file (3.1); tests use `panelFor` as their seam. */
+	readonly graphPanels: GraphPanels;
 	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
@@ -161,6 +164,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());
 
+	const graphPanels = new GraphPanels({ extensionUri: context.extensionUri, log });
+	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
@@ -168,6 +174,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		detection,
 		lintDiagnostics,
 		run,
+		graphPanels,
 		schemaContributor,
 		contributorRegistered,
 		outputLines: () => [...lines],

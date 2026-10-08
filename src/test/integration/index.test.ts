@@ -9,3 +9,4 @@ import './suites/40-snippets';
 import './suites/50-lint';
 import './suites/60-run';
 import './suites/70-feedback';
+import './suites/80-graph';

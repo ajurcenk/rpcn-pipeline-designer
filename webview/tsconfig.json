@@ -1,0 +1,16 @@
+{
+    // Type-check only (noEmit) for the graph webview (AD-15): browser code with DOM and JSX,
+    // bundled by esbuild to dist/webview.js. Not part of the mocha `compile-tests` build.
+    "compilerOptions": {
+        "module": "ESNext",
+        "moduleResolution": "Bundler",
+        "target": "ES2022",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "types": [],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true
+    },
+    "include": ["src", "../src/shared"]
+}

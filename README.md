@@ -2,7 +2,7 @@
 
 A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-connect/) configs: a read-only pipeline graph beside the YAML editor, Redpanda Connect-aware YAML editing, and local runs.
 
-> **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary and builds the config schema from it, and adds schema-backed completion and hover, lint on save with Quick Fixes, Bloblang highlighting and completion, pipeline snippets, and Run and Stop. Details go to the **Redpanda Connect** output channel. The pipeline graph arrives in a later release.
+> **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary and builds the config schema from it, and adds schema-backed completion and hover, lint on save with Quick Fixes, Bloblang highlighting and completion, pipeline snippets, and Run and Stop, and a first read-only pipeline graph. Details go to the **Redpanda Connect** output channel.
 
 ## Finding the binary
 
@@ -47,6 +47,10 @@ Saving a detected config runs `lint --deprecated --skip-env-var-check` with the 
 **Run** (the play button in the editor title of a detected config, or **Redpanda Connect: Run**) saves unsaved changes and runs the file with `run --set http.enabled=false`, plus the `redpandaConnect.resourceFiles` and `redpandaConnect.envFile` settings. The output goes to a terminal named "Redpanda Connect: <file>", one per file, which is reused when you run the file again. The process is started directly, not through a shell. Its working directory is the file's workspace folder, or the file's directory when it is in none.
 
 **Stop** (the status-bar item, Ctrl+C in that terminal, or **Redpanda Connect: Stop**) sends an interrupt and, if the pipeline is still running after 10 s, kills it; pressing Stop again kills at once. When the run ends, the status bar shows how it ended ("Pipeline stopped" for a run you stopped, otherwise "Pipeline exited (code N)"), and the terminal keeps the output. Closing the terminal ends its run; a Stop or close while a re-run is waiting for the old run to end cancels the restart. Untitled files cannot be run: save the file first. Known limit: in a multi-root workspace, relative `resourceFiles` / `envFile` settings resolve against the first folder, while the run's working directory is the file's own folder.
+
+## Pipeline graph
+
+**Redpanda Connect: Show graph** (Command Palette, in a detected config) opens a panel named "Graph: <file>" beside the editor, one per file; running it again on the same file brings that panel to the front. The graph draws the top-level input, the `pipeline.processors` in order and the output, left to right and joined by arrows. Clicking a node selects that component's YAML in the editor and scrolls it into view. The graph is read-only and is drawn from the file as it was when the panel opened or was last shown: it does not yet follow edits, nested components (`switch`, `branch`, broker outputs), resources or lint markers, and a file that is not valid YAML shows an empty graph. Close the panel to hide it.
 
 ## Requirements
 
