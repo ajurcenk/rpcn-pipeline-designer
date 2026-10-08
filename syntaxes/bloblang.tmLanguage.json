@@ -1,0 +1,142 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Bloblang",
+	"scopeName": "source.bloblang",
+	"comment": "Bloblang, Redpanda Connect's mapping language; highlighting only (AD-14, ticket 2.9).",
+	"patterns": [
+		{
+			"include": "#expression"
+		}
+	],
+	"repository": {
+		"expression": {
+			"patterns": [
+				{
+					"include": "#comment"
+				},
+				{
+					"include": "#triple-string"
+				},
+				{
+					"include": "#string"
+				},
+				{
+					"include": "#number"
+				},
+				{
+					"include": "#keyword"
+				},
+				{
+					"include": "#language-variable"
+				},
+				{
+					"include": "#constant"
+				},
+				{
+					"include": "#variable"
+				},
+				{
+					"include": "#metadata"
+				},
+				{
+					"include": "#method"
+				},
+				{
+					"include": "#function"
+				},
+				{
+					"include": "#operator"
+				},
+				{
+					"include": "#braces"
+				}
+			]
+		},
+		"comment": {
+			"name": "comment.line.number-sign.bloblang",
+			"match": "#.*$"
+		},
+		"triple-string": {
+			"name": "string.quoted.triple.bloblang",
+			"begin": "\"\"\"",
+			"end": "\"\"\""
+		},
+		"string": {
+			"name": "string.quoted.double.bloblang",
+			"begin": "\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "constant.character.escape.bloblang",
+					"match": "\\\\(?:[\"\\\\/bfnrt]|u[0-9a-fA-F]{4})"
+				}
+			]
+		},
+		"number": {
+			"name": "constant.numeric.bloblang",
+			"match": "(?<![\\w.])-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
+		},
+		"keyword": {
+			"name": "keyword.control.bloblang",
+			"match": "\\b(?:let|if|else|match|map|import|from)\\b"
+		},
+		"language-variable": {
+			"name": "variable.language.bloblang",
+			"match": "\\b(?:root|this)\\b"
+		},
+		"constant": {
+			"name": "constant.language.bloblang",
+			"match": "\\b(?:true|false|null)\\b"
+		},
+		"variable": {
+			"name": "variable.other.bloblang",
+			"match": "\\$[A-Za-z_][\\w]*"
+		},
+		"metadata": {
+			"name": "variable.other.metadata.bloblang",
+			"match": "@(?:[A-Za-z_][\\w]*)?"
+		},
+		"method": {
+			"match": "(\\.)\\s*([A-Za-z_][\\w]*)(?=\\s*\\()",
+			"captures": {
+				"1": {
+					"name": "punctuation.accessor.bloblang"
+				},
+				"2": {
+					"name": "entity.name.function.method.bloblang"
+				}
+			}
+		},
+		"function": {
+			"name": "entity.name.function.bloblang",
+			"match": "\\b[A-Za-z_][\\w]*(?=\\s*\\()"
+		},
+		"operator": {
+			"name": "keyword.operator.bloblang",
+			"match": "==|!=|>=|<=|&&|\\|\\||=>|->|[=<>!+\\-*/%|]"
+		},
+		"braces": {
+			"patterns": [
+				{
+					"begin": "\\{",
+					"end": "\\}",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.section.braces.begin.bloblang"
+						}
+					},
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.section.braces.end.bloblang"
+						}
+					},
+					"patterns": [
+						{
+							"include": "#expression"
+						}
+					]
+				}
+			]
+		}
+	}
+}
