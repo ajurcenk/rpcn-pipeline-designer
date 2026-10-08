@@ -74,7 +74,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 
 - **CAP-14 — Reference corpus and parity verification**
   - **intent:** Graph accuracy and diagnostics parity are measured, not asserted, against real configs.
-  - **success:** A corpus of real configs (including Redpanda Connect cookbook examples and community configs) exists early; automated tests against the minimum supported binary (v4.100.0) and a pinned current one (v4.112.0) in CI check every corpus config for graph accuracy and for editor diagnostics matching `rpk connect lint` output.
+  - **success:** A corpus of real configs (Apache-2.0 configs from the public `redpanda-data/connect` repository, with source and license recorded per file) exists early; automated tests against the minimum supported binary (v4.100.0) and a pinned current one (v4.112.0) in CI check every corpus config for graph accuracy and for editor diagnostics matching `rpk connect lint` output.
 
 ## Constraints
 
@@ -122,5 +122,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 
 ## Open Questions
 
-- Does the standalone `redpanda-connect` binary match `rpk connect` subcommands and flags? Verify in the first spike.
-- Do the real `lint` stderr format and `list --format jsonschema` output match the recorded facts? Verify in the first spike.
+None open. Both questions from the first draft were answered by the 1.1 spike (`epic-foundation/spike-1-1-findings/findings.md`):
+
+- ~~Does the standalone `redpanda-connect` binary match `rpk connect` subcommands and flags?~~ Yes, for everything the extension uses (Q1).
+- ~~Do the real `lint` stderr format and `list --format jsonschema` output match the recorded facts?~~ Recorded in Q2 and Q4. Two facts differ: lint always reports column 1, and the jsonschema carries no docs (they are merged from `list --format json-full`).

@@ -81,9 +81,9 @@ No previous retrospective file exists: E1 is the first epic (`after: []`). Nothi
 | # | Action | Owner | Kind |
 |---|---|---|---|
 | A1 | Decide and specify feedback for user-triggered commands with no visible effect (Refresh Schema with no binary; Retry with nothing changed) | product owner (user), at E2 inception | proposed |
-| A2 | Reconcile the architecture with the as-built test setup: core tests under mocha (or move them to vitest), and the Node pin (`24` vs `24.21.0`) | architect, via `bmad-architecture` update | spec reconciliation, awaiting human application |
-| A3 | Reconcile upstream docs: close the spec's two Open Questions (answered by 1.1), CAP-14 corpus source, AD-9/R4 long-flag wording, the 1.6 entry's `defaultSnippets` | `bmad-spec` / `bmad-architecture` / `bmad-ticket` updates | spec reconciliation, awaiting human application |
-| A4 | Run the `@vscode/test-cli` suite against VS Code 1.100 (the engine floor) in CI, in addition to the default download | E2 or a backlog story | proposed remediation |
+| A2 | Reconcile the architecture with the as-built test setup: core tests under mocha (or move them to vitest), and the Node pin (`24` vs `24.21.0`) | architect, via `bmad-architecture` update | applied in 2.12 (user-approved sweep, 2026-10-08): mocha kept and documented; Node 24.x |
+| A3 | Reconcile upstream docs: close the spec's two Open Questions (answered by 1.1), CAP-14 corpus source, AD-9/R4 long-flag wording, the 1.6 entry's `defaultSnippets` | `bmad-spec` / `bmad-architecture` / `bmad-ticket` updates | applied in 2.12 (user-approved sweep, 2026-10-08) |
+| A4 | Run the `@vscode/test-cli` suite against VS Code 1.100 (the engine floor) in CI, in addition to the default download | E2 or a backlog story | done in 2.11 (CI runs stable and 1.100.0) |
 | A5 | At E2 inception, settle cross-cutting decisions (resolution order, validation source per AD-12, diagnostics range rule) before the first build, so they are not renegotiated in review | E2 inception (`bmad-ticket`) | process lesson |
 | A6 | Choose the review depth per ticket risk: keep `quick` for low risk, run the full lens set for medium/high-risk tickets in E2 (lint/diagnostics, Quick Fixes, Run) | user, per build | process lesson |
 

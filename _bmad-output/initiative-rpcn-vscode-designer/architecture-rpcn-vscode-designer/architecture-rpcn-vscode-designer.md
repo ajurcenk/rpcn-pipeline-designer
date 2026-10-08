@@ -101,7 +101,7 @@ companions: []
 - **Rule:**
   - Only `src/adapters/redpandaConnect` spawns processes or resolves the binary. Resolution order: `rpk` on PATH (`rpk connect …`), then `redpanda-connect` on PATH, then the binary path setting as a fallback used only when PATH yields no usable binary; a setting naming `rpk` runs as `rpk connect`.
   - It exposes an observable `binaryState`: `unresolved | ok{path, version} | missing | invalid`, with `onDidChange`. A binary older than Redpanda Connect v4.100.0 is `invalid`. A notification fires once per transition into `missing` or `invalid`. The graph gets it as `hostStatus`.
-  - One shared argument builder serves lint and run: `--resources` from the `redpandaConnect.resourceFiles` setting only (no automatic resource-file detection), `-e` from `redpandaConnect.envFile`. Lint adds `--skip-env-var-check`. `[ASSUMPTION]` Every child gets env `NO_COLOR=1`.
+  - One shared argument builder serves lint and run: `--resources` from the `redpandaConnect.resourceFiles` setting only (no automatic resource-file detection), `--env-file` from `redpandaConnect.envFile` (the long flags, as built in 1.5). Lint adds `--deprecated` and `--skip-env-var-check`. `[ASSUMPTION]` Every child gets env `NO_COLOR=1`.
 
 ### AD-10 — Schema: generated per binary, transformed once, cache-busted by version [ADOPTED]
 
@@ -202,7 +202,7 @@ graph LR
 | Errors | Binary state and its notifications are owned by the RedpandaConnect adapter (AD-9). Other modules get a typed result and never notify on their own. Parse errors go to the webview banner (AD-6), not notifications. |
 | Logging | One `OutputChannel` named "Redpanda Connect", created in `src/extension.ts` and passed to the adapters. The core does not log. `[ASSUMPTION]` |
 | Config | Settings are read only in adapters and passed to the core as plain values. Settings changes re-resolve the binary and re-read the version (AD-9, AD-10). |
-| Tests | Core: vitest against `test/corpus/` configs. Adapters and extension: `@vscode/test-cli` integration tests. |
+| Tests | Core unit tests, adapter tests and integration tests run under mocha through `@vscode/test-cli` (`npm test`, on VS Code stable and the 1.100.0 floor). The corpus harness runs under vitest against `test/corpus/` configs and real binaries (`npm run test:corpus`). |
 
 ## Stack
 
@@ -211,7 +211,7 @@ graph LR
 | VS Code engine (`engines.vscode`) | ^1.100.0 |
 | @types/vscode | 1.100.0 (matches engine; vsce rejects types newer than the engine; generator-code writes latest, so edit after scaffold) |
 | VS Code stable (target) | 1.140.0 |
-| Node.js (dev / CI) | 24.21.0 LTS |
+| Node.js (dev / CI) | 24.x LTS (CI `node-version: '24'`, latest 24.x; not pinned to a patch) |
 | @types/node | 20.19.43 (20.x, the engine floor's Node) |
 | TypeScript | ~6.0.3 (not 7.x) |
 | generator-code (scaffold) | 1.12.0 |
@@ -287,7 +287,7 @@ Operational envelope:
 | Distribution | POC: GitHub Actions packages a `.vsix` with `vsce package` on every push, installed by hand. Publishing to the VS Code Marketplace (`vsce publish`) and Open VSX (`ovsx`) is parked. |
 | Versioning | SemVer 0.x for the POC. `[ASSUMPTION]` |
 | Publisher | `ajurcenk` on both VS Code Marketplace and Open VSX; display name "Pipeline Designer for Redpanda Connect"; extension name `rpcn-pipeline-designer` `[ASSUMPTION]`. |
-| Environments | Local dev through the Extension Development Host (F5). CI on GitHub Actions, Node 24.21.0: vitest + `@vscode/test-cli`. No server-side infrastructure. |
+| Environments | Local dev through the Extension Development Host (F5). CI on GitHub Actions, Node 24.x: `@vscode/test-cli` (mocha) + the vitest corpus harness. No server-side infrastructure. |
 | CI binary | CI runs parity and corpus tests against Redpanda Connect v4.100.0 (minimum supported) and pinned v4.112.0. |
 | Secrets | None for the POC; `VSCE_PAT` and `OVSX_PAT` only once publishing is unparked. |
 | Runtime dependencies | The user's local `rpk` or `redpanda-connect` binary (AD-9), plus `redhat.vscode-yaml` (AD-11). Minimum supported Redpanda Connect version is v4.100.0. |
