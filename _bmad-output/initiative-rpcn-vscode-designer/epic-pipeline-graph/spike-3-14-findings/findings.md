@@ -18,7 +18,7 @@ Date: 2026-10-09.
 | `activeTextEditor` while the webview is focused | still the YAML editor | **`undefined`** (step 3); and at step 8 it named `c.yaml@col3` although the active group was col1 with `a.yaml` active: on 1.100 it can point at another group's editor | steps 3, 8 |
 | Can the extension read the lock state? | no: `TabGroup` has no `isLocked` in `@types/vscode` 1.100.0, and the extension API cannot read context keys. VS Code's `activeEditorGroupLocked` context key exists for `when` clauses (menus, keybindings). | — | `node_modules/@types/vscode/index.d.ts` `interface TabGroup` |
 | After **Developer: Reload Window**: the YAML tab | restored, on screen (1.103.2). **Not observed:** whether the extension sees it as an open (`onDidOpenTextDocument`, `workspace.textDocuments` at activation) or only as a tab in `tabGroups`, and what happens to restored tabs that are not visible | not checked | screenshot |
-| After reload: the graph tab | **gone** (1.103.2); no serializer, by spec (Non-goal "restoring the graph panel after a window reload") | not checked | screenshot |
+| After reload: the graph tab | **gone** (1.103.2); no serializer, by spec (Non-goal "restoring the graph panel after a window reload") | same on **1.100.0**: the graph group is left empty (user, 2026-10-09, "Graph tab is still empty") | screenshot; user |
 | After reload: the graph's group | **remains, empty and still locked** on screen (1.103.2): lock icon in its toolbar, only the VS Code watermark inside. Not checked through the API (`tabGroups.all`, `tabs.length === 0`); the probe's step 9 (after `closeAllEditors`) shows an emptied locked group does **not** survive a close-all | not checked | screenshot; step 9 |
 
 ## Recommendation for entry 10 (auto-open)
@@ -31,7 +31,7 @@ Date: 2026-10-09.
 
 ## Not covered
 
-- The reload on VS Code 1.100.0, and whether restored YAML tabs reach the extension as opens after a reload. Both matter for entry 10's first-open-per-session rule; entry 10 or entry 13 checks them.
+- The reload on VS Code 1.100.0 was repeated by the user (2026-10-09) in a 1.100.0 dev host (`.vscode-test/vscode-linux-x64-1.100.0/code`, separate profile `.dev-host/user-1100`): the graph tab is gone and its group is left empty, as on 1.103.2; the lock and the non-visible tabs were not reported. Still open: whether restored YAML tabs reach the extension as opens after a reload. Both matter for entry 10's first-open-per-session rule; entry 10 or entry 13 checks them.
 
 - Remote windows (SSH, WSL, dev containers): not tried. They are the same workbench, so the same behaviour is expected.
 - Locks set by the user on other groups, and the `workbench.editor.autoLockGroups` setting (which can auto-lock groups for some editor types): not probed. Entry 10 should leave user settings alone.
