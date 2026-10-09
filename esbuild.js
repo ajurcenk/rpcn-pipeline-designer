@@ -68,6 +68,9 @@ async function main() {
 		outfile: 'dist/webview.js',
 		// elk.bundled.js requires `web-worker` only when given a `workerUrl`; the graph never is (AD-4).
 		external: ['web-worker'],
+		// The codicon font referenced by @vscode/codicons' CSS lands next to it as dist/codicon.ttf.
+		loader: { '.ttf': 'file' },
+		assetNames: '[name]',
 		define: {
 			'process.env.NODE_ENV': production ? '"production"' : '"development"',
 		},

@@ -1,0 +1,10 @@
+{
+    // Type-check only (noEmit) for the graph view's vitest files (ticket 3.4): the webview code
+    // plus Node (fs, URL) for reading fixtures. Run by `npm run test:webview`.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "types": ["node"]
+    },
+    "include": ["src", "../src/shared", "vitest.config.mts"],
+    "exclude": []
+}

@@ -77,11 +77,13 @@ const nonNormalizedImport = {
 // A relative import out of webview/ may only go into src/shared: from `webview/<depth dirs>/x.tsx`,
 // any `../` chain that climbs above webview/ must continue with `src/shared/`.
 const MAX_WEBVIEW_DEPTH = 6;
-const webviewBlocks = Array.from({ length: MAX_WEBVIEW_DEPTH }, (_, depth) => ({
-    files: [`webview/${"*/".repeat(depth)}*.{ts,tsx}`],
+// The vitest files (`*.test.ts`, ticket 3.4) run in Node, not the browser: they may read fixtures
+// with Node built-ins, and keep every other webview/ rule.
+const webviewBlocks = [false, true].flatMap((test) => Array.from({ length: MAX_WEBVIEW_DEPTH }, (_, depth) => ({
+    files: [`webview/${"*/".repeat(depth)}*.${test ? "test.ts" : "{ts,tsx}"}`],
     rules: {
         "no-restricted-imports": ["error", {
-            patterns: [vscodeImport, childProcessImport, yamlImport, nodeBuiltinImport, nonNormalizedImport, {
+            patterns: [vscodeImport, childProcessImport, yamlImport, ...(test ? [] : [nodeBuiltinImport]), nonNormalizedImport, {
                 // `depth` x `../` then one more `../` leaves webview/; only `src/shared` may follow.
                 regex: `^(\\.\\./){${depth + 1}}(?!src/shared(/|$))`,
                 message: "AD-15: webview/ imports only src/shared.",
@@ -89,7 +91,7 @@ const webviewBlocks = Array.from({ length: MAX_WEBVIEW_DEPTH }, (_, depth) => ({
         }],
         "no-restricted-syntax": ["error", ...childProcessSyntax, ...yamlSyntax],
     },
-}));
+})));
 
 export default [{
     files: ["**/*.ts", "**/*.mts", "**/*.tsx"],

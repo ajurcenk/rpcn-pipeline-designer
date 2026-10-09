@@ -45,6 +45,9 @@ jobs:
         env:
           CI: 'true'
 
+      # Graph view (ticket 3.4): layout and theme-token tests of webview/, plain Node
+      - run: npm run test:webview
+
       - run: npx vsce package --no-dependencies
 
       - uses: actions/upload-artifact@v7.0.1

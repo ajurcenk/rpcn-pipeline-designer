@@ -17,6 +17,8 @@ body {
 	--xy-handle-background-color: var(--vscode-editorLineNumber-foreground);
 	--xy-handle-border-color: var(--vscode-editorLineNumber-foreground);
 	--xy-background-pattern-dots-color: var(--vscode-panel-border, transparent);
+	--xy-edge-label-background-color: var(--vscode-editor-background);
+	--xy-edge-label-color: var(--vscode-editor-foreground);
 }
 .rpcn-node {
 	box-sizing: border-box;
@@ -33,10 +35,96 @@ body {
 }
 .rpcn-node-kind {
 	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* Only the role is capitalised, never a user's label. */
+.rpcn-node-role {
+	display: inline-block;
 	text-transform: capitalize;
 }
 .rpcn-node-name {
 	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Group box (DESIGN group-box): transparent, {colors.group-border} outline, {rounded.md}; the
+   header row is {typography.ui-muted}; children sit {spacing.3} inside (ELK padding). */
+.rpcn-group,
+.rpcn-route {
+	box-sizing: border-box;
+	width: 100%;
+	height: 100%;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	cursor: pointer;
+}
+.rpcn-group {
+	border: 1px solid var(--vscode-panel-border);
+}
+.rpcn-group-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 32px;
+	padding: 0 8px 0 4px;
+	white-space: nowrap;
+	overflow: hidden;
+}
+.rpcn-group-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: none;
+	border-radius: 2px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+.rpcn-group-toggle:hover {
+	background: var(--vscode-toolbar-hoverBackground, transparent);
+	color: var(--vscode-editor-foreground);
+}
+.rpcn-group-component,
+.rpcn-group-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.rpcn-group-label {
+	color: var(--vscode-editor-foreground);
+}
+/* A collapsed group: one node-sized box, header plus a muted count of what it hides. */
+.rpcn-group-collapsed .rpcn-group-header {
+	height: 22px;
+	padding-top: 2px;
+}
+.rpcn-group-summary {
+	padding: 0 8px 0 28px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* A route (switch case, broker outputs, try/catch body, workflow branch): a dashed sub-box with
+   its caption in {typography.code}; an uncaptioned route has no header. */
+.rpcn-route {
+	border: 1px dashed var(--vscode-panel-border);
+}
+.rpcn-route-caption {
+	height: 26px;
+	line-height: 26px;
+	padding: 0 8px;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;

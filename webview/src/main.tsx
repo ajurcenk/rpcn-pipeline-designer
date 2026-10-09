@@ -1,7 +1,8 @@
-// The graph webview's entry (ticket 3.1): posts `ready`, renders the model of every `snapshot`
+// The graph webview's entry (tickets 3.1, 3.4): posts `ready`, renders the model of every `snapshot`
 // (or `model`) it is sent; anything that fails `parseHostMessage` is ignored.
 // It holds no domain state and parses no YAML (AD-2, AD-3).
 
+import '@vscode/codicons/dist/codicon.css';
 import '@xyflow/react/dist/style.css';
 import './graph.css';
 import { StrictMode, useEffect, useState } from 'react';

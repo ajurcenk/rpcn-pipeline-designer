@@ -168,11 +168,12 @@
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile-tests && npm run compile",
-    "check-types": "tsc --noEmit && tsc -p test/corpus/tsconfig.json && tsc -p webview/tsconfig.json",
+    "check-types": "tsc --noEmit && tsc -p test/corpus/tsconfig.json && tsc -p webview/tsconfig.json && tsc -p webview/tsconfig.test.json",
     "lint": "eslint src webview test/corpus vitest.config.mts",
     "test": "vscode-test",
     "test:corpus": "vitest run --config vitest.config.mts",
-    "test:corpus:record": "vitest run --config vitest.config.mts --mode record"
+    "test:corpus:record": "vitest run --config vitest.config.mts --mode record",
+    "test:webview": "vitest run --config webview/vitest.config.mts"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -200,6 +201,7 @@
     }
   },
   "dependencies": {
+    "@vscode/codicons": "0.0.46-24",
     "@xyflow/react": "12.12.0",
     "elkjs": "0.12.0",
     "react": "19.3.0",
