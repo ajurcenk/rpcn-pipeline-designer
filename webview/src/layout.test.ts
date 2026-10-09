@@ -189,3 +189,28 @@ describe('REDUCED_MOTION', () => {
 		expect(motionDuration(false)).toBeGreaterThan(0);
 	});
 });
+
+describe('STABLE (ticket 3.6): the layout is deterministic, so an edit that keeps the model moves nothing', () => {
+	const positions = (l: Awaited<ReturnType<typeof layout>>) =>
+		l.nodes.map((n) => ({ id: n.id, parentId: n.parentId, position: n.position, width: n.width, height: n.height }));
+	for (const name of NAMES) {
+		it(name, async () => {
+			const model = fixture(name);
+			const first = positions(await layout(model));
+			// The same model sent twice.
+			expect(positions(await layout(fixture(name)))).toEqual(first);
+			// A whitespace-only edit above the config: the same model with every range shifted.
+			const shifted: PipelineModel = {
+				...model,
+				nodes: model.nodes.map((n) => ({ ...n, range: [n.range[0] + 3, n.range[1] + 3] as const })),
+			};
+			expect(positions(await layout(shifted))).toEqual(first);
+			// And with a group collapsed, both ways.
+			const group = model.nodes.find((n) => n.group === true);
+			if (group) {
+				const collapsed = new Set([group.id]);
+				expect(positions(await layout(shifted, collapsed))).toEqual(positions(await layout(model, collapsed)));
+			}
+		});
+	}
+});

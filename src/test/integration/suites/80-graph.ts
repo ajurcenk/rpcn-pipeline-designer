@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { GraphPanels, type GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import { type ExtensionApi } from '../../../extension';
-import type { PipelineModel } from '../../../shared/protocol';
+import type { HostMessage, PipelineModel } from '../../../shared/protocol';
 import { makeTempDir, REPO_ROOT } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
 import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../schemaHarness';
@@ -12,13 +12,23 @@ import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../sche
 // The graph panel through its host-side seam (`graphPanels.panelFor`, `receive`): the tests
 // check what the host posts and does, and don't drive the webview DOM (ticket 3.1). The model is
 // built with the schema of the fake 4.112.0 binary (ticket 3.3, AD-20).
-suite('Pipeline graph (3.1, 3.3, integration)', function () {
+suite('Pipeline graph (3.1, 3.3, 3.6, integration)', function () {
 	this.timeout(60_000);
 	let dir: string;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const snapshots = (handle: GraphPanelHandle): PipelineModel[] =>
 		handle.posted.flatMap((m) => (m.type === 'snapshot' && m.model ? [m.model] : []));
 	const ids = (model: PipelineModel | undefined) => model?.nodes.map((n) => n.id);
+	/** The live updates posted (`model` and `parseError`), without the snapshots answering `ready`. */
+	const live = (handle: GraphPanelHandle): HostMessage[] => handle.posted.filter((m) => m.type === 'model' || m.type === 'parseError');
+	const VALID = 'input:\n  stdin: {}\noutput:\n  stdout: {}\n';
+
+	async function replace(doc: vscode.TextDocument, start: number, end: number, text: string): Promise<void> {
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(doc.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(end)), text);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	}
+	const insert = (doc: vscode.TextDocument, at: number, text: string) => replace(doc, at, at, text);
 
 	async function open(name: string, text: string): Promise<vscode.TextDocument> {
 		const file = path.join(dir, name);
@@ -183,11 +193,114 @@ suite('Pipeline graph (3.1, 3.3, integration)', function () {
 		assert.strictEqual(panelB.panel.title, 'Graph: b.yaml');
 	});
 
-	test('UNPARSEABLE: a YAML parse error gives a snapshot with an empty model', async () => {
-		const doc = await open('broken.yaml', 'input:\n  generate: {\n');
+	test('FIRST_BROKEN: Show graph on a file that does not parse gives a snapshot with no model and the parse error', async () => {
+		const text = 'input:\n  stdin: {}\n bad: 1\n';
+		const doc = await open('broken.yaml', text);
 		const handle = await showGraph(doc);
 		await handle.receive({ type: 'ready' });
-		assert.deepStrictEqual(snapshots(handle).at(-1), { nodes: [], edges: [] });
+		const snapshot = handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+		assert.ok(snapshot?.type === 'snapshot');
+		assert.strictEqual(snapshot.model, null);
+		assert.strictEqual(snapshot.parseError?.message, 'All mapping items must start at the same column at line 3, column 1');
+		assert.strictEqual(snapshot.parseError?.range[0], text.indexOf(' bad'));
+		assert.deepStrictEqual(live(handle), [], 'nothing but snapshots without an edit');
+	});
+
+	test('EDIT / BREAK / HEAL: each change posts one complete model, or only the parse error', async () => {
+		const doc = await open('live.yaml', VALID);
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		assert.deepStrictEqual(ids(snapshots(handle).at(-1)), ['path:input', 'path:output']);
+
+		// EDIT: adding a processor sends one model with the new node.
+		await insert(doc, doc.getText().indexOf('output:'), 'pipeline:\n  processors:\n    - mapping: root = this\n');
+		assert.ok(await waitFor(() => live(handle).length === 1, 10_000), 'one update');
+		const edited = live(handle)[0];
+		assert.ok(edited.type === 'model', `a model, not ${edited.type}`);
+		assert.deepStrictEqual(ids(edited.model), ['path:input', 'path:pipeline.processors[0]', 'path:output']);
+
+		// BREAK: an edit that makes the YAML unparseable sends only the parse error.
+		const at = doc.getText().indexOf('output:');
+		await insert(doc, at, ' ');
+		assert.ok(await waitFor(() => live(handle).length === 2, 10_000), 'a second update');
+		const broken = live(handle)[1];
+		assert.ok(broken.type === 'parseError', `a parseError, not ${broken.type}`);
+		assert.ok(broken.message.length > 0);
+		assert.ok(broken.range[0] <= broken.range[1] && broken.range[1] <= doc.getText().length);
+
+		// Typing on while broken: still only parse errors.
+		await insert(doc, at + 1, 'x');
+		assert.ok(await waitFor(() => live(handle).length === 3, 10_000), 'a third update');
+		assert.strictEqual(live(handle)[2].type, 'parseError');
+
+		// HEAL: the next valid edit sends a model again.
+		await replace(doc, at, at + 2, '');
+		assert.ok(await waitFor(() => live(handle).length === 4, 10_000), 'a fourth update');
+		const healed = live(handle)[3];
+		assert.ok(healed.type === 'model', `a model, not ${healed.type}`);
+		assert.deepStrictEqual(healed.model, edited.model);
+		assert.strictEqual(live(handle).length, 4, 'one message per change');
+	});
+
+	test('RECREATED: a webview recreated while the YAML is broken gets the last valid model and the parse error', async () => {
+		const doc = await open('recreated.yaml', VALID);
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		const valid = snapshots(handle).at(-1);
+		await insert(doc, doc.getText().indexOf('output:'), ' ');
+		assert.ok(await waitFor(() => live(handle).some((m) => m.type === 'parseError'), 10_000));
+		// The panel hidden and shown: the new webview posts ready again.
+		await handle.receive({ type: 'ready' });
+		const snapshot = handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+		assert.ok(snapshot?.type === 'snapshot');
+		assert.deepStrictEqual(snapshot.model, valid);
+		assert.ok(snapshot.parseError, 'the snapshot carries the parse error');
+	});
+
+	test('BANNER_CLICK: bannerClicked selects the parse error in the file\'s editor; ignored when the YAML parses', async () => {
+		const text = 'input:\n  stdin: {}\n bad: 1\noutput:\n  stdout: {}\n';
+		const doc = await open('banner.yaml', text);
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		const error = handle.posted.find((m) => m.type === 'snapshot' && m.parseError);
+		assert.ok(error?.type === 'snapshot' && error.parseError);
+		await handle.receive({ type: 'bannerClicked' });
+		const editor = vscode.window.activeTextEditor;
+		assert.ok(editor, 'the text editor is focused');
+		assert.strictEqual(editor.document.uri.toString(), doc.uri.toString());
+		assert.strictEqual(editor.viewColumn, vscode.ViewColumn.One);
+		assert.strictEqual(doc.offsetAt(editor.selection.start), error.parseError.range[0]);
+		// The parser marks one character; the selection runs to the end of that line.
+		assert.deepStrictEqual(error.parseError.range, [text.indexOf(' bad'), text.indexOf(' bad') + 1]);
+		assert.strictEqual(doc.getText(editor.selection), ' bad: 1');
+		assert.ok(!doc.isDirty, 'nothing edits the text');
+
+		// Once the YAML parses, a (late) click does nothing.
+		await replace(doc, text.indexOf(' bad'), text.indexOf('output:'), '');
+		const before = editor.selection;
+		await handle.receive({ type: 'bannerClicked' });
+		assert.ok(vscode.window.activeTextEditor!.selection.isEqual(before));
+	});
+
+	test('OTHER_DOC / CLOSED: edits to a file without a panel, or after its panel closed, post nothing', async () => {
+		const a = await open('with-panel.yaml', VALID);
+		const handle = await showGraph(a);
+		const b = await open('without-panel.yaml', VALID);
+		assert.strictEqual(api().graphPanels.panelFor(b.uri), undefined);
+		await insert(b, 0, '# a comment\n');
+		await insert(b, b.getText().indexOf('output:'), ' ');
+		// Give a stray update the time to arrive.
+		await new Promise((r) => setTimeout(r, 300));
+		assert.deepStrictEqual(live(handle), [], 'nothing posted for the other file');
+
+		const logged = api().outputLines().length;
+		handle.panel.dispose();
+		assert.strictEqual(api().graphPanels.panelFor(a.uri), undefined);
+		await insert(a, 0, '# a comment\n');
+		await insert(a, a.getText().indexOf('output:'), ' ');
+		await new Promise((r) => setTimeout(r, 300));
+		assert.deepStrictEqual(live(handle), [], 'nothing posted after the panel closed');
+		assert.ok(!api().outputLines().slice(logged).some((l) => l.startsWith('Graph')), 'no error logged');
 	});
 
 	test('NO_SCHEMA: with no schema snapshot the panel answers ready with the empty model', async () => {

@@ -1,30 +1,52 @@
-// The graph webview's entry (tickets 3.1, 3.4): posts `ready`, renders the model of every `snapshot`
-// (or `model`) it is sent; anything that fails `parseHostMessage` is ignored.
-// It holds no domain state and parses no YAML (AD-2, AD-3).
+// The graph webview's entry (tickets 3.1, 3.4, 3.6): posts `ready`, then folds every host message
+// into the view (state.ts): the latest valid model, plus the invalid-YAML banner while a
+// `parseError` stands. A click on the banner posts `bannerClicked`. Anything that fails
+// `parseHostMessage` is ignored. It holds no domain state and parses no YAML (AD-2, AD-3).
 
 import '@vscode/codicons/dist/codicon.css';
 import '@xyflow/react/dist/style.css';
 import './graph.css';
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect, useReducer } from 'react';
 import { createRoot } from 'react-dom/client';
-import { parseHostMessage, type PipelineModel } from '../../src/shared/protocol';
+import { parseHostMessage, type ParseError } from '../../src/shared/protocol';
 import { Graph } from './Graph';
 import { post } from './host';
+import { BANNER_TEXT, INITIAL_VIEW, reduce } from './state';
+
+/** DESIGN invalid-yaml-banner: full width over the top of the canvas, clickable, not dismissible, a polite live region. */
+function Banner({ error }: { readonly error: ParseError }) {
+	return (
+		<div className="rpcn-banner" role="status">
+			<button type="button" className="rpcn-banner-button" onClick={() => post({ type: 'bannerClicked' })}>
+				<span className="codicon codicon-warning rpcn-banner-icon" aria-hidden="true" />
+				<span className="rpcn-banner-text">{BANNER_TEXT}</span>
+				<span className="rpcn-banner-detail">{error.message}</span>
+			</button>
+		</div>
+	);
+}
 
 function App() {
-	const [model, setModel] = useState<PipelineModel | undefined>(undefined);
+	const [view, dispatch] = useReducer(reduce, INITIAL_VIEW);
 	useEffect(() => {
 		const onMessage = (event: MessageEvent<unknown>) => {
 			const message = parseHostMessage(event.data);
-			if (message?.type === 'snapshot' || message?.type === 'model') {
-				setModel(message.model ?? undefined);
+			if (message) {
+				dispatch(message);
 			}
 		};
 		window.addEventListener('message', onMessage);
 		post({ type: 'ready' });
 		return () => window.removeEventListener('message', onMessage);
 	}, []);
-	return model ? <Graph model={model} onActivate={(nodeId) => post({ type: 'nodeActivated', nodeId, via: 'click' })} /> : null;
+	// Fixed slots, so the banner coming and going never remounts the graph (its viewport stays);
+	// the banner overlays the top of the canvas, so the canvas never resizes either.
+	return (
+		<div className="rpcn-canvas">
+			{view.model && <Graph model={view.model} onActivate={(nodeId) => post({ type: 'nodeActivated', nodeId, via: 'click' })} />}
+			{view.parseError && <Banner error={view.parseError} />}
+		</div>
+	);
 }
 
 const root = document.getElementById('root');

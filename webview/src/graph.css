@@ -129,3 +129,61 @@ body {
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+
+/* The canvas fills the panel; the invalid-YAML banner overlays its top, so it never resizes. */
+.rpcn-canvas {
+	position: relative;
+	height: 100%;
+}
+
+/* Invalid-YAML banner (DESIGN invalid-yaml-banner): a full-width strip, {colors.banner-surface}
+   with a 1px {colors.banner-border}, {rounded.sm}, {spacing.2} padding, a codicon-warning in
+   {colors.warning}, {typography.ui}; the parser's message follows in {colors.on-surface-muted}.
+   Clickable (it selects the error), not dismissible. */
+.rpcn-banner {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 10;
+}
+.rpcn-banner-button {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	box-sizing: border-box;
+	width: 100%;
+	padding: 8px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	border-radius: 2px;
+	background: var(--vscode-inputValidation-warningBackground);
+	color: var(--vscode-editor-foreground);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.rpcn-banner-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-banner-icon {
+	flex: none;
+	color: var(--vscode-editorWarning-foreground);
+}
+/* Both texts shrink on a narrow panel, the parser's message first. */
+.rpcn-banner-text {
+	flex: 0 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.rpcn-banner-detail {
+	flex: 0 1000 auto;
+	min-width: 0;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

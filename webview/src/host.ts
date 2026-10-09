@@ -1,12 +1,15 @@
 // The webview's only channel to the host (AD-3, AD-5): it posts user intents and nothing else,
-// and keeps its view state (collapsed groups) with `setState` so it survives a reload.
+// and keeps its view state (collapsed groups, viewport) with `setState` so it survives a reload.
 
 import type { WebviewMessage } from '../../src/shared/protocol';
+import { parseViewport, type Viewport } from './state';
 
 /** The webview's view state (AD-3): never domain state. */
 export interface ViewState {
 	/** Ids of the groups the user has collapsed. */
 	readonly collapsed?: readonly string[];
+	/** The pan and zoom at the end of the last move. */
+	readonly viewport?: Viewport;
 }
 
 interface VsCodeApi {
@@ -27,13 +30,18 @@ export function post(message: WebviewMessage): void {
 /** The view state saved by an earlier `saveViewState`, or an empty one. */
 export function loadViewState(): ViewState {
 	const state = api.getState();
-	if (typeof state === 'object' && state !== null && Array.isArray((state as ViewState).collapsed)) {
-		return { collapsed: (state as ViewState).collapsed!.filter((id): id is string => typeof id === 'string') };
+	if (typeof state !== 'object' || state === null) {
+		return {};
 	}
-	return {};
+	const { collapsed, viewport } = state as Record<string, unknown>;
+	const saved = parseViewport(viewport);
+	return {
+		...(Array.isArray(collapsed) ? { collapsed: collapsed.filter((id): id is string => typeof id === 'string') } : {}),
+		...(saved ? { viewport: saved } : {}),
+	};
 }
 
-/** Saves the view state for the next load of this panel. */
+/** Saves part of the view state for the next load of this panel; the other parts are kept. */
 export function saveViewState(state: ViewState): void {
-	api.setState(state);
+	api.setState({ ...loadViewState(), ...state });
 }

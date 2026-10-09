@@ -2,13 +2,18 @@
 // routes as captioned sub-boxes, resources standalone. The layout itself is in layout.ts. The view
 // holds only view state (AD-3): which groups are collapsed, kept across models and in `setState`.
 // A click on a node reports `onActivate(nodeId)`; the chevron of a group toggles its collapse.
+// Each new model (ticket 3.6) is laid out again and replaces the drawing in place. The view is
+// placed once per mount, on the first laid-out model with nodes (`firstView`): the viewport saved
+// in `setState` at the end of every move is restored (a recreated webview), else the graph fits.
+// Later models keep the user's pan and zoom.
 
 import { Background, ReactFlow, type Edge, type ReactFlowInstance } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PipelineModel } from '../../src/shared/protocol';
 import { loadViewState, saveViewState } from './host';
 import { layout, pruneCollapsed, toggleCollapsed, type Collapsed, type Layout, type ViewNode } from './layout';
 import { nodeTypes, ToggleContext } from './nodes';
+import { firstView } from './state';
 
 /** Fit to view never shrinks the graph below this, so labels stay readable; pan for the rest. */
 const MIN_FIT_ZOOM = 0.75;
@@ -50,6 +55,25 @@ export function Graph({ model, onActivate }: { readonly model: PipelineModel; re
 			current = false;
 		};
 	}, [model, collapsed]);
+
+	const [instance, setInstance] = useState<ReactFlowInstance<ViewNode, Edge> | undefined>(undefined);
+	const [savedViewport] = useState(() => loadViewState().viewport);
+	const placed = useRef(false);
+	useEffect(() => {
+		if (!instance || !laidOut) {
+			return;
+		}
+		const action = firstView(placed.current, laidOut.nodes.length, savedViewport);
+		if (action === 'none') {
+			return;
+		}
+		placed.current = true;
+		if (action === 'restore' && savedViewport) {
+			void instance.setViewport(savedViewport);
+		} else {
+			fitReadable(instance, window.innerWidth);
+		}
+	}, [instance, laidOut, savedViewport]);
 	if (!laidOut) {
 		return null;
 	}
@@ -66,7 +90,8 @@ export function Graph({ model, onActivate }: { readonly model: PipelineModel; re
 				elementsSelectable={false}
 				minZoom={0.25}
 				maxZoom={2}
-				onInit={(instance) => fitReadable(instance, window.innerWidth)}
+				onInit={setInstance}
+				onMoveEnd={(_, { x, y, zoom }) => saveViewState({ viewport: { x, y, zoom } })}
 				proOptions={{ hideAttribution: true }}
 			>
 				<Background />

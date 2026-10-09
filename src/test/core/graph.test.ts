@@ -358,4 +358,21 @@ suite('core/graph (3.3, nested over the catalogue)', () => {
 		assert.deepStrictEqual(model('input: [\n  : ]: x\n'), EMPTY_MODEL);
 		assert.deepStrictEqual(buildPipelineModel(undefined, '', CATALOGUE), EMPTY_MODEL);
 	});
+
+	test('STABLE_IDS (3.6): a comment line and a blank line at the top keep every id, parent, group and edge', () => {
+		for (const name of FIXTURE_NAMES) {
+			const { yaml } = fixture(name);
+			const shape = (m: ReturnType<typeof model>) => ({
+				nodes: m.nodes.map((n) => [n.id, n.role, n.component, n.label, n.caption, n.parent, n.group, n.duplicateLabel]),
+				edges: m.edges,
+			});
+			const before = model(yaml);
+			const edited = '# a comment\n\n' + yaml;
+			const after = model(edited);
+			assert.ok(before.nodes.length > 0, name);
+			assert.deepStrictEqual(shape(after), shape(before), name);
+			// Only the ranges move, by the inserted length.
+			assert.deepStrictEqual(after.nodes.map((n) => n.range), before.nodes.map((n) => [n.range[0] + 13, n.range[1] + 13]), name);
+		}
+	});
 });
