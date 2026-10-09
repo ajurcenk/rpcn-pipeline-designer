@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "jira",
+      "range": [
+        216,
+        492
+      ]
+    },
+    {
+      "id": "res:cache:jira_state",
+      "role": "resource",
+      "component": "file",
+      "label": "jira_state",
+      "range": [
+        513,
+        590
+      ]
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "stdout",
+      "range": [
+        592,
+        612
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:output",
+      "source": "path:input",
+      "target": "path:output"
+    }
+  ]
+}

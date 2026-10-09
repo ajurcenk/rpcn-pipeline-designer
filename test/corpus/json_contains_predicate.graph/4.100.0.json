@@ -1,0 +1,15 @@
+{
+  "nodes": [
+    {
+      "id": "res:processor:woof_drop",
+      "role": "resource",
+      "component": "mapping",
+      "label": "woof_drop",
+      "range": [
+        23,
+        125
+      ]
+    }
+  ],
+  "edges": []
+}

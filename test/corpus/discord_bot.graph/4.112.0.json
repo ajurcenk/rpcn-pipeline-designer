@@ -1,0 +1,273 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "discord",
+      "range": [
+        0,
+        161
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "switch",
+      "range": [
+        191,
+        2213
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[0]",
+      "role": "route",
+      "caption": "this.type == 7",
+      "range": [
+        209,
+        443
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[0].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        267,
+        443
+      ],
+      "parent": "path:pipeline.processors[0].switch[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[1]",
+      "role": "route",
+      "caption": "this.content == \"/commands\"",
+      "range": [
+        453,
+        770
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[1].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        524,
+        770
+      ],
+      "parent": "path:pipeline.processors[0].switch[1]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[2]",
+      "role": "route",
+      "caption": "this.content == \"/joke\"",
+      "range": [
+        780,
+        1254
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[2].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        847,
+        1254
+      ],
+      "parent": "path:pipeline.processors[0].switch[2]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[3]",
+      "role": "route",
+      "caption": "this.content == \"/roast\"",
+      "range": [
+        1264,
+        1762
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[3].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        1332,
+        1762
+      ],
+      "parent": "path:pipeline.processors[0].switch[3]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4]",
+      "role": "route",
+      "caption": "this.content == \"/release\"",
+      "range": [
+        1772,
+        2147
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        1842,
+        1865
+      ],
+      "parent": "path:pipeline.processors[0].switch[4]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[1]",
+      "role": "processor",
+      "component": "try",
+      "range": [
+        1878,
+        2147
+      ],
+      "parent": "path:pipeline.processors[0].switch[4]",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[1].try",
+      "role": "route",
+      "range": [
+        1880,
+        2147
+      ],
+      "parent": "path:pipeline.processors[0].switch[4].processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[1].try[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        1899,
+        2024
+      ],
+      "parent": "path:pipeline.processors[0].switch[4].processors[1].try"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[1].try[1]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        2039,
+        2147
+      ],
+      "parent": "path:pipeline.processors[0].switch[4].processors[1].try"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[5]",
+      "role": "route",
+      "caption": "case 5",
+      "range": [
+        2157,
+        2213
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[5].processors[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        2183,
+        2213
+      ],
+      "parent": "path:pipeline.processors[0].switch[5]"
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "catch",
+      "range": [
+        2219,
+        2454
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[1].catch",
+      "role": "route",
+      "range": [
+        2221,
+        2454
+      ],
+      "parent": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1].catch[0]",
+      "role": "processor",
+      "component": "log",
+      "range": [
+        2234,
+        2348
+      ],
+      "parent": "path:pipeline.processors[1].catch"
+    },
+    {
+      "id": "path:pipeline.processors[1].catch[1]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        2355,
+        2454
+      ],
+      "parent": "path:pipeline.processors[1].catch"
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "discord",
+      "range": [
+        2456,
+        2553
+      ]
+    },
+    {
+      "id": "res:cache:request_tracking",
+      "role": "resource",
+      "component": "file",
+      "label": "request_tracking",
+      "range": [
+        2574,
+        2643
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:pipeline.processors[0]",
+      "source": "path:input",
+      "target": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1]->path:output",
+      "source": "path:pipeline.processors[1]",
+      "target": "path:output"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[0]->path:pipeline.processors[0].switch[4].processors[1]",
+      "source": "path:pipeline.processors[0].switch[4].processors[0]",
+      "target": "path:pipeline.processors[0].switch[4].processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[0].switch[4].processors[1].try[0]->path:pipeline.processors[0].switch[4].processors[1].try[1]",
+      "source": "path:pipeline.processors[0].switch[4].processors[1].try[0]",
+      "target": "path:pipeline.processors[0].switch[4].processors[1].try[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1].catch[0]->path:pipeline.processors[1].catch[1]",
+      "source": "path:pipeline.processors[1].catch[0]",
+      "target": "path:pipeline.processors[1].catch[1]"
+    }
+  ]
+}

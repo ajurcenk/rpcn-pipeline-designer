@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "dedupe",
+      "range": [
+        28,
+        87
+      ]
+    },
+    {
+      "id": "res:cache:local",
+      "role": "resource",
+      "component": "memory",
+      "label": "local",
+      "range": [
+        108,
+        156
+      ]
+    }
+  ],
+  "edges": []
+}

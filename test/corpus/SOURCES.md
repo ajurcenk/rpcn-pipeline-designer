@@ -34,8 +34,21 @@ with `--resources` only where this file marks a dependency: `set_grab_cache.yaml
 - `npm run test:corpus` compares only. It fails on a differing record (naming file, version and lines), a
   `.yaml` without a record, or a record without its `.yaml` (or for an unpinned version). A missing binary
   skips that version locally and fails it in CI (`CI=true`).
-- `npm run test:corpus:record` rewrites every record and deletes orphaned ones; it needs both binaries.
+- `npm run test:corpus:record` rewrites every lint and graph record and deletes orphaned ones; it needs both binaries.
 - Diagnostics parity (no binary needed): every record's lines are also run through the extension's own lint pipeline (`src/core/lint.ts`). Each recorded line must become exactly one diagnostic with the same line, message and severity (`field <name> is deprecated` is a Warning, everything else an Error; a `(1,1) yaml: line N: …` syntax error belongs on line N). Lint not checking resource references is expected (no run-time check).
+- Graph accuracy (no binary needed): `<name>.graph/<ver>.json` holds the extension's `PipelineModel` of
+  `<name>.yaml`, built with the catalogue of that version's pinned schema recording
+  (`test/fixtures/schema/`), as `JSON.stringify(model, null, 2)` plus a newline. `npm run test:corpus`
+  compares it (a difference names the file and version, with a diff); record mode writes it. Before
+  either, the model must be non-empty for a file the extension detects and empty for one it does not
+  (the three templates record the empty model), be well formed (unique ids, parents in the model,
+  children's ranges within their parents', edge ends in the model), and round-trip through `nodeAt`
+  (a node's start offset gives the node, its last offset the node or a descendant). Both pinned
+  versions currently record identical graphs, since their catalogue slots match. `test:corpus:record`
+  needs both binaries even for a graph-only change; to re-record only the graphs, run
+  `npx vitest run --config vitest.config.mts --mode record -t "graph accuracy"` (this skips the layout checks, so it does not delete orphaned graph records; the full `npm run test:corpus:record` does).
+- The YAML and the records are checked out with LF line endings (`.gitattributes`): recorded ranges are
+  offsets into the YAML as committed.
 
 | File | Upstream path (permalink) | Kind | Constructs | Blob | Lint 4.100.0 / 4.112.0 |
 |---|---|---|---|---|---|

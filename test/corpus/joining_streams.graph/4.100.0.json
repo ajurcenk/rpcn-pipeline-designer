@@ -1,0 +1,231 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "broker",
+      "range": [
+        0,
+        758
+      ],
+      "group": true
+    },
+    {
+      "id": "path:input.broker.inputs[0]",
+      "role": "input",
+      "component": "redpanda",
+      "range": [
+        35,
+        159
+      ],
+      "parent": "path:input"
+    },
+    {
+      "id": "path:input.broker.inputs[1]",
+      "role": "input",
+      "component": "redpanda",
+      "range": [
+        167,
+        758
+      ],
+      "parent": "path:input",
+      "group": true
+    },
+    {
+      "id": "path:input.broker.inputs[1].processors[0]",
+      "role": "processor",
+      "component": "for_each",
+      "range": [
+        329,
+        758
+      ],
+      "parent": "path:input.broker.inputs[1]",
+      "group": true
+    },
+    {
+      "id": "path:input.broker.inputs[1].processors[0].for_each",
+      "role": "route",
+      "range": [
+        331,
+        758
+      ],
+      "parent": "path:input.broker.inputs[1].processors[0]"
+    },
+    {
+      "id": "path:input.broker.inputs[1].processors[0].for_each[0]",
+      "role": "processor",
+      "component": "sleep",
+      "range": [
+        653,
+        758
+      ],
+      "parent": "path:input.broker.inputs[1].processors[0].for_each"
+    },
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "try",
+      "range": [
+        788,
+        2221
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].try",
+      "role": "route",
+      "range": [
+        790,
+        2221
+      ],
+      "parent": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0]",
+      "role": "processor",
+      "component": "for_each",
+      "range": [
+        1090,
+        2161
+      ],
+      "parent": "path:pipeline.processors[0].try",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each",
+      "role": "route",
+      "range": [
+        1092,
+        2012
+      ],
+      "parent": "path:pipeline.processors[0].try[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each[0]",
+      "role": "processor",
+      "component": "branch",
+      "range": [
+        1182,
+        1542
+      ],
+      "parent": "path:pipeline.processors[0].try[0].for_each",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each[0].branch.processors[0]",
+      "role": "processor",
+      "component": "cache",
+      "range": [
+        1297,
+        1422
+      ],
+      "parent": "path:pipeline.processors[0].try[0].for_each[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each[1]",
+      "role": "processor",
+      "component": "branch",
+      "range": [
+        1620,
+        2012
+      ],
+      "parent": "path:pipeline.processors[0].try[0].for_each",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each[1].branch.processors[0]",
+      "role": "processor",
+      "component": "cache",
+      "range": [
+        1839,
+        2012
+      ],
+      "parent": "path:pipeline.processors[0].try[0].for_each[1]"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[1]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        2168,
+        2221
+      ],
+      "parent": "path:pipeline.processors[0].try"
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "catch",
+      "range": [
+        2227,
+        2416
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[1].catch",
+      "role": "route",
+      "range": [
+        2229,
+        2416
+      ],
+      "parent": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1].catch[0]",
+      "role": "processor",
+      "component": "bloblang",
+      "range": [
+        2303,
+        2416
+      ],
+      "parent": "path:pipeline.processors[1].catch"
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "kafka",
+      "range": [
+        2494,
+        2572
+      ]
+    },
+    {
+      "id": "res:cache:hydration_cache",
+      "role": "resource",
+      "component": "memory",
+      "label": "hydration_cache",
+      "range": [
+        2593,
+        2856
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:pipeline.processors[0]",
+      "source": "path:input",
+      "target": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1]->path:output",
+      "source": "path:pipeline.processors[1]",
+      "target": "path:output"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0]->path:pipeline.processors[0].try[1]",
+      "source": "path:pipeline.processors[0].try[0]",
+      "target": "path:pipeline.processors[0].try[1]"
+    },
+    {
+      "id": "path:pipeline.processors[0].try[0].for_each[0]->path:pipeline.processors[0].try[0].for_each[1]",
+      "source": "path:pipeline.processors[0].try[0].for_each[0]",
+      "target": "path:pipeline.processors[0].try[0].for_each[1]"
+    }
+  ]
+}

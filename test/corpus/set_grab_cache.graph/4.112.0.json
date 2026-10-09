@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "cache",
+      "range": [
+        28,
+        132
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "cache",
+      "range": [
+        137,
+        211
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    }
+  ]
+}

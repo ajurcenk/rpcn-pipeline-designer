@@ -1,0 +1,177 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "generate",
+      "range": [
+        133,
+        202
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "cache",
+      "range": [
+        319,
+        408
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "catch",
+      "range": [
+        513,
+        555
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[1].catch",
+      "role": "route",
+      "range": [
+        515,
+        555
+      ],
+      "parent": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1].catch[0]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        530,
+        555
+      ],
+      "parent": "path:pipeline.processors[1].catch"
+    },
+    {
+      "id": "path:pipeline.processors[2]",
+      "role": "processor",
+      "component": "sql_select",
+      "range": [
+        598,
+        833
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[3]",
+      "role": "processor",
+      "component": "unarchive",
+      "range": [
+        930,
+        969
+      ]
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "broker",
+      "range": [
+        1025,
+        1589
+      ],
+      "group": true
+    },
+    {
+      "id": "path:output.broker.outputs",
+      "role": "route",
+      "caption": "fan_out_sequential",
+      "range": [
+        1142,
+        1589
+      ],
+      "parent": "path:output"
+    },
+    {
+      "id": "path:output.broker.outputs[0]",
+      "role": "output",
+      "component": "stdout",
+      "range": [
+        1157,
+        1199
+      ],
+      "parent": "path:output.broker.outputs"
+    },
+    {
+      "id": "path:output.broker.outputs[1]",
+      "role": "output",
+      "component": "cache",
+      "range": [
+        1327,
+        1589
+      ],
+      "parent": "path:output.broker.outputs",
+      "group": true
+    },
+    {
+      "id": "path:output.broker.outputs[1].processors[0]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        1422,
+        1486
+      ],
+      "parent": "path:output.broker.outputs[1]"
+    },
+    {
+      "id": "res:cache:cached_pgstate",
+      "role": "resource",
+      "component": "multilevel",
+      "label": "cached_pgstate",
+      "range": [
+        1692,
+        1750
+      ]
+    },
+    {
+      "id": "res:cache:inmem",
+      "role": "resource",
+      "component": "memory",
+      "label": "inmem",
+      "range": [
+        1754,
+        1830
+      ]
+    },
+    {
+      "id": "res:cache:pgstate",
+      "role": "resource",
+      "component": "sql",
+      "label": "pgstate",
+      "range": [
+        1834,
+        2235
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:pipeline.processors[0]",
+      "source": "path:input",
+      "target": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1]->path:pipeline.processors[2]",
+      "source": "path:pipeline.processors[1]",
+      "target": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2]->path:pipeline.processors[3]",
+      "source": "path:pipeline.processors[2]",
+      "target": "path:pipeline.processors[3]"
+    },
+    {
+      "id": "path:pipeline.processors[3]->path:output",
+      "source": "path:pipeline.processors[3]",
+      "target": "path:output"
+    }
+  ]
+}

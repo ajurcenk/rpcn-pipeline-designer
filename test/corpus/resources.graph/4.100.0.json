@@ -1,0 +1,15 @@
+{
+  "nodes": [
+    {
+      "id": "res:cache:foocache",
+      "role": "resource",
+      "component": "memory",
+      "label": "foocache",
+      "range": [
+        19,
+        51
+      ]
+    }
+  ],
+  "edges": []
+}

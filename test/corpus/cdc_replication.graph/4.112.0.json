@@ -1,0 +1,81 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "postgres_cdc",
+      "range": [
+        0,
+        870
+      ],
+      "group": true
+    },
+    {
+      "id": "path:input.postgres_cdc.batching.processors[0]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        708,
+        870
+      ],
+      "parent": "path:input"
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "switch",
+      "range": [
+        871,
+        2165
+      ],
+      "group": true
+    },
+    {
+      "id": "path:output.switch.cases[0]",
+      "role": "route",
+      "caption": "@operation != \"delete\"",
+      "range": [
+        983,
+        1891
+      ],
+      "parent": "path:output"
+    },
+    {
+      "id": "path:output.switch.cases[0].output",
+      "role": "output",
+      "component": "sql_raw",
+      "range": [
+        1025,
+        1891
+      ],
+      "parent": "path:output.switch.cases[0]"
+    },
+    {
+      "id": "path:output.switch.cases[1]",
+      "role": "route",
+      "caption": "@operation == \"delete\"",
+      "range": [
+        1898,
+        2165
+      ],
+      "parent": "path:output"
+    },
+    {
+      "id": "path:output.switch.cases[1].output",
+      "role": "output",
+      "component": "sql_raw",
+      "range": [
+        1940,
+        2165
+      ],
+      "parent": "path:output.switch.cases[1]"
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:output",
+      "source": "path:input",
+      "target": "path:output"
+    }
+  ]
+}

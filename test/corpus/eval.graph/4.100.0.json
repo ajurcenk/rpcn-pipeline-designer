@@ -1,0 +1,246 @@
+{
+  "nodes": [
+    {
+      "id": "path:input",
+      "role": "input",
+      "component": "generate",
+      "range": [
+        0,
+        1817
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "unarchive",
+      "range": [
+        1846,
+        1885
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        1890,
+        1920
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[2]",
+      "role": "processor",
+      "component": "workflow",
+      "range": [
+        1925,
+        5021
+      ],
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.cohere_pgvector",
+      "role": "route",
+      "caption": "cohere_pgvector",
+      "range": [
+        2000,
+        2183
+      ],
+      "parent": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.cohere_pgvector.processors[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        2055,
+        2129
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.cohere_pgvector"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.openai_pgvector",
+      "role": "route",
+      "caption": "openai_pgvector",
+      "range": [
+        2194,
+        2377
+      ],
+      "parent": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.openai_pgvector.processors[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        2249,
+        2323
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.openai_pgvector"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.ollama_pgvector",
+      "role": "route",
+      "caption": "ollama_pgvector",
+      "range": [
+        2388,
+        2571
+      ],
+      "parent": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.ollama_pgvector.processors[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        2443,
+        2517
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.ollama_pgvector"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score",
+      "role": "route",
+      "caption": "score",
+      "range": [
+        2582,
+        5021
+      ],
+      "parent": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[0]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        2866,
+        3497
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.score"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[1]",
+      "role": "processor",
+      "component": "while",
+      "range": [
+        3594,
+        4965
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.score",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[0]",
+      "role": "processor",
+      "component": "branch",
+      "range": [
+        3708,
+        4888
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.score.processors[1]",
+      "group": true
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[0].branch.processors[0]",
+      "role": "processor",
+      "component": "gcp_vertex_ai_chat",
+      "range": [
+        3966,
+        4888
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "role": "processor",
+      "component": "mutation",
+      "range": [
+        4907,
+        4965
+      ],
+      "parent": "path:pipeline.processors[2].workflow.branches.score.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[3]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        5026,
+        5132
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[4]",
+      "role": "processor",
+      "component": "archive",
+      "range": [
+        5137,
+        5174
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[5]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        5179,
+        5225
+      ]
+    },
+    {
+      "id": "path:output",
+      "role": "output",
+      "component": "file",
+      "range": [
+        5226,
+        5307
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:input->path:pipeline.processors[0]",
+      "source": "path:input",
+      "target": "path:pipeline.processors[0]"
+    },
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[1]->path:pipeline.processors[2]",
+      "source": "path:pipeline.processors[1]",
+      "target": "path:pipeline.processors[2]"
+    },
+    {
+      "id": "path:pipeline.processors[2]->path:pipeline.processors[3]",
+      "source": "path:pipeline.processors[2]",
+      "target": "path:pipeline.processors[3]"
+    },
+    {
+      "id": "path:pipeline.processors[3]->path:pipeline.processors[4]",
+      "source": "path:pipeline.processors[3]",
+      "target": "path:pipeline.processors[4]"
+    },
+    {
+      "id": "path:pipeline.processors[4]->path:pipeline.processors[5]",
+      "source": "path:pipeline.processors[4]",
+      "target": "path:pipeline.processors[5]"
+    },
+    {
+      "id": "path:pipeline.processors[5]->path:output",
+      "source": "path:pipeline.processors[5]",
+      "target": "path:output"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[0]->path:pipeline.processors[2].workflow.branches.score.processors[1]",
+      "source": "path:pipeline.processors[2].workflow.branches.score.processors[0]",
+      "target": "path:pipeline.processors[2].workflow.branches.score.processors[1]"
+    },
+    {
+      "id": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[0]->path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "source": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[0]",
+      "target": "path:pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]"
+    }
+  ]
+}

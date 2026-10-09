@@ -1,0 +1,5 @@
+# Graph records hold UTF-16 offsets into the YAML as committed; a CRLF checkout would shift them.
+test/corpus/*.yaml text eol=lf
+test/corpus/*.graph/*.json text eol=lf
+src/test/fixtures/models/*.yaml text eol=lf
+src/test/fixtures/models/*.json text eol=lf

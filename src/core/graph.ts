@@ -22,6 +22,8 @@ import { EMPTY_MODEL, type PipelineEdge, type PipelineModel, type PipelineNode, 
 import { slotsOf, type CategoryCatalog, type ComponentCatalog, type Slot, type SlotStep } from './catalogue';
 import type { ParsedYaml } from './yamlPath';
 
+export { nodeAt } from './nodeAt';
+
 // ---------------------------------------------------------------------------------------------
 // Display hints: how the structure is shown, per `<category>:<component>`.
 // ---------------------------------------------------------------------------------------------

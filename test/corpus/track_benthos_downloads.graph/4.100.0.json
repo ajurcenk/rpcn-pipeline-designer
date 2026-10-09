@@ -1,0 +1,282 @@
+{
+  "nodes": [
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        42,
+        64
+      ]
+    },
+    {
+      "id": "path:pipeline.processors[1]",
+      "role": "processor",
+      "component": "workflow",
+      "range": [
+        69,
+        158
+      ]
+    },
+    {
+      "id": "res:processor:dockerhub",
+      "role": "resource",
+      "component": "branch",
+      "label": "dockerhub",
+      "range": [
+        183,
+        739
+      ],
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0]",
+      "role": "processor",
+      "component": "try",
+      "range": [
+        271,
+        739
+      ],
+      "parent": "res:processor:dockerhub",
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try",
+      "role": "route",
+      "range": [
+        273,
+        739
+      ],
+      "parent": "path:processor_resources[0].branch.processors[0]"
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        321,
+        522
+      ],
+      "parent": "path:processor_resources[0].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try[1]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        533,
+        704
+      ],
+      "parent": "path:processor_resources[0].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try[2]",
+      "role": "processor",
+      "component": "resource",
+      "range": [
+        715,
+        739
+      ],
+      "parent": "path:processor_resources[0].branch.processors[0].try"
+    },
+    {
+      "id": "res:processor:github",
+      "role": "resource",
+      "component": "branch",
+      "label": "github",
+      "range": [
+        743,
+        1651
+      ],
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0]",
+      "role": "processor",
+      "component": "try",
+      "range": [
+        828,
+        1651
+      ],
+      "parent": "res:processor:github",
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try",
+      "role": "route",
+      "range": [
+        830,
+        1651
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0]"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        893,
+        1028
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[1]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        1039,
+        1494
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[2]",
+      "role": "processor",
+      "component": "unarchive",
+      "range": [
+        1505,
+        1550
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[3]",
+      "role": "processor",
+      "component": "resource",
+      "range": [
+        1561,
+        1585
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[4]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        1596,
+        1651
+      ],
+      "parent": "path:processor_resources[1].branch.processors[0].try"
+    },
+    {
+      "id": "res:processor:homebrew",
+      "role": "resource",
+      "component": "branch",
+      "label": "homebrew",
+      "range": [
+        1655,
+        2120
+      ],
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0]",
+      "role": "processor",
+      "component": "try",
+      "range": [
+        1742,
+        2120
+      ],
+      "parent": "res:processor:homebrew",
+      "group": true
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try",
+      "role": "route",
+      "range": [
+        1744,
+        2120
+      ],
+      "parent": "path:processor_resources[2].branch.processors[0]"
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try[0]",
+      "role": "processor",
+      "component": "http",
+      "range": [
+        1759,
+        1884
+      ],
+      "parent": "path:processor_resources[2].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try[1]",
+      "role": "processor",
+      "component": "mapping",
+      "range": [
+        1895,
+        2085
+      ],
+      "parent": "path:processor_resources[2].branch.processors[0].try"
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try[2]",
+      "role": "processor",
+      "component": "resource",
+      "range": [
+        2096,
+        2120
+      ],
+      "parent": "path:processor_resources[2].branch.processors[0].try"
+    },
+    {
+      "id": "res:processor:metric_gauge",
+      "role": "resource",
+      "component": "metric",
+      "label": "metric_gauge",
+      "range": [
+        2124,
+        2373
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "path:pipeline.processors[0]->path:pipeline.processors[1]",
+      "source": "path:pipeline.processors[0]",
+      "target": "path:pipeline.processors[1]"
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try[0]->path:processor_resources[0].branch.processors[0].try[1]",
+      "source": "path:processor_resources[0].branch.processors[0].try[0]",
+      "target": "path:processor_resources[0].branch.processors[0].try[1]"
+    },
+    {
+      "id": "path:processor_resources[0].branch.processors[0].try[1]->path:processor_resources[0].branch.processors[0].try[2]",
+      "source": "path:processor_resources[0].branch.processors[0].try[1]",
+      "target": "path:processor_resources[0].branch.processors[0].try[2]"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[0]->path:processor_resources[1].branch.processors[0].try[1]",
+      "source": "path:processor_resources[1].branch.processors[0].try[0]",
+      "target": "path:processor_resources[1].branch.processors[0].try[1]"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[1]->path:processor_resources[1].branch.processors[0].try[2]",
+      "source": "path:processor_resources[1].branch.processors[0].try[1]",
+      "target": "path:processor_resources[1].branch.processors[0].try[2]"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[2]->path:processor_resources[1].branch.processors[0].try[3]",
+      "source": "path:processor_resources[1].branch.processors[0].try[2]",
+      "target": "path:processor_resources[1].branch.processors[0].try[3]"
+    },
+    {
+      "id": "path:processor_resources[1].branch.processors[0].try[3]->path:processor_resources[1].branch.processors[0].try[4]",
+      "source": "path:processor_resources[1].branch.processors[0].try[3]",
+      "target": "path:processor_resources[1].branch.processors[0].try[4]"
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try[0]->path:processor_resources[2].branch.processors[0].try[1]",
+      "source": "path:processor_resources[2].branch.processors[0].try[0]",
+      "target": "path:processor_resources[2].branch.processors[0].try[1]"
+    },
+    {
+      "id": "path:processor_resources[2].branch.processors[0].try[1]->path:processor_resources[2].branch.processors[0].try[2]",
+      "source": "path:processor_resources[2].branch.processors[0].try[1]",
+      "target": "path:processor_resources[2].branch.processors[0].try[2]"
+    }
+  ]
+}

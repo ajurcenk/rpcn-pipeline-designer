@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {
+      "id": "path:pipeline.processors[0]",
+      "role": "processor",
+      "component": "awk",
+      "range": [
+        28,
+        197
+      ]
+    },
+    {
+      "id": "res:output:foo",
+      "role": "resource",
+      "component": "kafka",
+      "label": "foo",
+      "range": [
+        264,
+        342
+      ]
+    }
+  ],
+  "edges": []
+}
