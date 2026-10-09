@@ -1,6 +1,9 @@
-// What the graph view shows (ticket 3.6, AD-6): the latest valid model it was sent and the current
-// parse error, if any. A `parseError` keeps the last valid model (the banner shows over it); the
-// next `model` clears the banner. A `snapshot` replaces both: it is the host's complete state.
+// What the graph view shows (tickets 3.6, 3.7, AD-6, AD-8): the latest valid model it was sent, the
+// current parse error, if any, and the node the host last said is under the cursor. A `parseError`
+// keeps the last valid model (the banner shows over it) and the highlight; the next `model` clears
+// the banner. A `selection` replaces the highlight; the host sends one after a model whenever the
+// node under the cursor changed, so a model keeps it. A `snapshot` replaces all three: it is the
+// host's complete state.
 // Pure: no DOM, no React (vitest runs it in plain Node).
 
 import type { HostMessage, ParseError, PipelineModel } from '../../src/shared/protocol';
@@ -10,9 +13,11 @@ export interface ViewModel {
 	readonly model: PipelineModel | null;
 	/** Set while the YAML does not parse: the banner shows. */
 	readonly parseError: ParseError | null;
+	/** The node under the cursor in the driving editor, as the host computed it (`null`: none). */
+	readonly selection: string | null;
 }
 
-export const INITIAL_VIEW: ViewModel = { model: null, parseError: null };
+export const INITIAL_VIEW: ViewModel = { model: null, parseError: null, selection: null };
 
 /** The banner's text (EXPERIENCE, invalid-YAML banner). */
 export const BANNER_TEXT = 'YAML has errors — showing last valid graph.';
@@ -21,11 +26,13 @@ export const BANNER_TEXT = 'YAML has errors — showing last valid graph.';
 export function reduce(state: ViewModel, message: HostMessage): ViewModel {
 	switch (message.type) {
 		case 'snapshot':
-			return { model: message.model, parseError: message.parseError ?? null };
+			return { model: message.model, parseError: message.parseError ?? null, selection: message.selection };
 		case 'model':
-			return { model: message.model, parseError: null };
+			return { ...state, model: message.model, parseError: null };
 		case 'parseError':
-			return { model: state.model, parseError: { message: message.message, range: message.range } };
+			return { ...state, parseError: { message: message.message, range: message.range } };
+		case 'selection':
+			return message.nodeId === state.selection ? state : { ...state, selection: message.nodeId };
 		default:
 			return state;
 	}

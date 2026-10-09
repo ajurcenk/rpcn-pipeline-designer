@@ -2,6 +2,8 @@
 // routes as captioned sub-boxes, resources standalone. The layout itself is in layout.ts. The view
 // holds only view state (AD-3): which groups are collapsed, kept across models and in `setState`.
 // A click on a node reports `onActivate(nodeId)`; the chevron of a group toggles its collapse.
+// The node the host says is under the cursor (`selection`, ticket 3.7) is highlighted, or the
+// collapsed group hiding it; a selection change restyles the drawing without laying it out again.
 // Each new model (ticket 3.6) is laid out again and replaces the drawing in place. The view is
 // placed once per mount, on the first laid-out model with nodes (`firstView`): the viewport saved
 // in `setState` at the end of every move is restored (a recreated webview), else the graph fits.
@@ -11,8 +13,10 @@ import { Background, ReactFlow, type Edge, type ReactFlowInstance } from '@xyflo
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PipelineModel } from '../../src/shared/protocol';
 import { loadViewState, saveViewState } from './host';
-import { layout, pruneCollapsed, toggleCollapsed, type Collapsed, type Layout, type ViewNode } from './layout';
-import { nodeTypes, ToggleContext } from './nodes';
+import {
+	highlightDrawn, layout, pruneCollapsed, toggleCollapsed, type Collapsed, type Drawn, type ViewNode,
+} from './layout';
+import { ActivateContext, nodeTypes, ToggleContext } from './nodes';
 import { firstView } from './state';
 
 /** Fit to view never shrinks the graph below this, so labels stay readable; pan for the rest. */
@@ -33,7 +37,12 @@ function fitReadable(instance: ReactFlowInstance<ViewNode, Edge>, width: number)
 	});
 }
 
-export function Graph({ model, onActivate }: { readonly model: PipelineModel; readonly onActivate: (nodeId: string) => void }) {
+export function Graph({ model, selection, onActivate }: {
+	readonly model: PipelineModel;
+	/** The node under the cursor in the driving editor (`null`: none). */
+	readonly selection: string | null;
+	readonly onActivate: (nodeId: string) => void;
+}) {
 	const [collapsedState, setCollapsedState] = useState<Collapsed>(() => new Set(loadViewState().collapsed ?? []));
 	// Only groups the current model still has (COLLAPSE_KEPT / COLLAPSE_GONE).
 	const collapsed = useMemo(() => pruneCollapsed(collapsedState, model), [collapsedState, model]);
@@ -42,13 +51,13 @@ export function Graph({ model, onActivate }: { readonly model: PipelineModel; re
 	}, [collapsed]);
 	const toggle = useCallback((id: string) => setCollapsedState((current) => toggleCollapsed(pruneCollapsed(current, model), id)), [model]);
 
-	const [laidOut, setLaidOut] = useState<Layout | undefined>(undefined);
+	const [laidOut, setLaidOut] = useState<Drawn | undefined>(undefined);
 	useEffect(() => {
 		let current = true;
-		layout(model, collapsed).then((l) => current && setLaidOut(l), (error: unknown) => {
+		layout(model, collapsed).then((l) => current && setLaidOut({ ...l, model, collapsed }), (error: unknown) => {
 			console.error('Graph layout failed:', error);
 			if (current) {
-				setLaidOut({ nodes: [], edges: [] });
+				setLaidOut({ nodes: [], edges: [], model, collapsed });
 			}
 		});
 		return () => {
@@ -74,28 +83,32 @@ export function Graph({ model, onActivate }: { readonly model: PipelineModel; re
 			fitReadable(instance, window.innerWidth);
 		}
 	}, [instance, laidOut, savedViewport]);
+	// The drawn node to highlight (VIEW_HIGHLIGHT), against the model and collapse state drawn.
+	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection) : []), [laidOut, selection]);
 	if (!laidOut) {
 		return null;
 	}
 	return (
 		<ToggleContext.Provider value={toggle}>
-			<ReactFlow
-				nodes={laidOut.nodes}
-				edges={laidOut.edges}
-				nodeTypes={nodeTypes}
-				onNodeClick={(_, node) => onActivate(node.id)}
-				nodesDraggable={false}
-				nodesConnectable={false}
-				edgesFocusable={false}
-				elementsSelectable={false}
-				minZoom={0.25}
-				maxZoom={2}
-				onInit={setInstance}
-				onMoveEnd={(_, { x, y, zoom }) => saveViewState({ viewport: { x, y, zoom } })}
-				proOptions={{ hideAttribution: true }}
-			>
-				<Background />
-			</ReactFlow>
+			<ActivateContext.Provider value={onActivate}>
+				<ReactFlow
+					nodes={highlighted}
+					edges={laidOut.edges}
+					nodeTypes={nodeTypes}
+					onNodeClick={(_, node) => onActivate(node.id)}
+					nodesDraggable={false}
+					nodesConnectable={false}
+					edgesFocusable={false}
+					elementsSelectable={false}
+					minZoom={0.25}
+					maxZoom={2}
+					onInit={setInstance}
+					onMoveEnd={(_, { x, y, zoom }) => saveViewState({ viewport: { x, y, zoom } })}
+					proOptions={{ hideAttribution: true }}
+				>
+					<Background />
+				</ReactFlow>
+			</ActivateContext.Provider>
 		</ToggleContext.Provider>
 	);
 }

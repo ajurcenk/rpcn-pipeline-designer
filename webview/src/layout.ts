@@ -34,6 +34,8 @@ export interface ViewData extends Record<string, unknown> {
 	readonly collapsed?: boolean;
 	/** For a collapsed group, what it hides ("3 cases", "4 processors"). */
 	readonly summary?: string;
+	/** The node under the cursor in the driving editor, or the collapsed group hiding it (3.7). */
+	readonly selected?: boolean;
 }
 
 export type ViewNode = Node<ViewData, NodeKind>;
@@ -122,6 +124,57 @@ export function toggleCollapsed(collapsed: Collapsed, id: string): Collapsed {
 		next.add(id);
 	}
 	return next;
+}
+
+/**
+ * The node drawn for `id` (VIEW_HIGHLIGHT): the node itself, or, when a collapsed group hides it,
+ * the outermost collapsed group above it, which is its nearest visible ancestor (a group inside a
+ * collapsed group is hidden too). `undefined` for `null` or an id the model does not have.
+ */
+export function visibleAncestor(model: PipelineModel, collapsed: Collapsed, id: string | null): string | undefined {
+	if (id === null) {
+		return undefined;
+	}
+	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const node = byId.get(id);
+	if (!node) {
+		return undefined;
+	}
+	let shown = node.id;
+	const seen = new Set<string>([node.id]);
+	for (let p = node.parent; p !== undefined && !seen.has(p); p = byId.get(p)?.parent) {
+		seen.add(p);
+		if (collapsed.has(p)) {
+			shown = p;
+		}
+	}
+	return shown;
+}
+
+/** The nodes with `id` marked as the selected one (`data.selected`), the others as they are. */
+export function markSelected(nodes: readonly ViewNode[], id: string | undefined): ViewNode[] {
+	return nodes.map((n) => {
+		const selected = n.id === id;
+		if (selected === (n.data.selected === true)) {
+			return n;
+		}
+		return { ...n, data: { ...n.data, selected } };
+	});
+}
+
+/** A layout result with the model and collapse state it was laid out from. */
+export interface Drawn extends Layout {
+	readonly model: PipelineModel;
+	readonly collapsed: Collapsed;
+}
+
+/**
+ * The drawn nodes with the selection highlighted, resolved against the model and collapse state
+ * the drawing was made from (not newer ones still being laid out), so a lagging drawing never
+ * highlights the wrong box.
+ */
+export function highlightDrawn(drawn: Drawn, selection: string | null): ViewNode[] {
+	return markSelected(drawn.nodes, visibleAncestor(drawn.model, drawn.collapsed, selection));
 }
 
 /** Fit view and zoom animate, except under `prefers-reduced-motion: reduce` (REDUCED_MOTION). */

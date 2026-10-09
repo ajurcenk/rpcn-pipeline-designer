@@ -5,7 +5,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import type { ElkNode } from 'elkjs/lib/elk-api';
 import { describe, expect, it } from 'vitest';
 import type { PipelineModel } from '../../src/shared/protocol';
-import { collapsedSummary, isContainer, layout, motionDuration, pruneCollapsed, toElkGraph, toggleCollapsed } from './layout';
+import {
+	collapsedSummary, highlightDrawn, isContainer, layout, markSelected, motionDuration, pruneCollapsed, toElkGraph, toggleCollapsed, visibleAncestor,
+} from './layout';
 
 const FIXTURES = new URL('../../src/test/fixtures/models/', import.meta.url);
 
@@ -213,4 +215,65 @@ describe('STABLE (ticket 3.6): the layout is deterministic, so an edit that keep
 			}
 		});
 	}
+});
+
+describe('VIEW_HIGHLIGHT (ticket 3.7): the selected node, or the collapsed group hiding it', () => {
+	const model = fixture('switch-processor');
+	const inner = `${BRANCH}.switch[0].processors[1]`;
+	it('is the node itself while nothing above it is collapsed', () => {
+		expect(visibleAncestor(model, new Set(), inner)).toBe(inner);
+		expect(visibleAncestor(model, new Set(), 'path:input')).toBe('path:input');
+		expect(visibleAncestor(model, new Set(), BRANCH)).toBe(BRANCH);
+	});
+	it('is the collapsed group\'s box for a node inside it', () => {
+		expect(visibleAncestor(model, new Set([BRANCH]), inner)).toBe(BRANCH);
+		expect(visibleAncestor(model, new Set([BRANCH]), `${BRANCH}.switch[1]`)).toBe(BRANCH);
+		// The collapsed group itself.
+		expect(visibleAncestor(model, new Set([BRANCH]), BRANCH)).toBe(BRANCH);
+	});
+	it('is the outermost collapsed group when groups nest', () => {
+		const nested: PipelineModel = {
+			nodes: [
+				{ id: 'outer', role: 'processor', component: 'switch', group: true, range: [0, 100] },
+				{ id: 'case', role: 'route', parent: 'outer', range: [10, 90] },
+				{ id: 'middle', role: 'processor', component: 'try', group: true, parent: 'case', range: [20, 80] },
+				{ id: 'leaf', role: 'processor', component: 'mapping', parent: 'middle', range: [30, 40] },
+			],
+			edges: [],
+		};
+		expect(visibleAncestor(nested, new Set(['middle']), 'leaf')).toBe('middle');
+		expect(visibleAncestor(nested, new Set(['outer', 'middle']), 'leaf')).toBe('outer');
+		expect(visibleAncestor(nested, new Set(['outer']), 'leaf')).toBe('outer');
+	});
+	it('is nothing for null or an id the model does not have', () => {
+		expect(visibleAncestor(model, new Set(), null)).toBeUndefined();
+		expect(visibleAncestor(model, new Set(), 'path:gone')).toBeUndefined();
+	});
+	it('marks only that drawn node selected, and null clears it', async () => {
+		const { nodes } = await layout(model, new Set([BRANCH]));
+		const marked = markSelected(nodes, visibleAncestor(model, new Set([BRANCH]), inner));
+		expect(marked.filter((n) => n.data.selected === true).map((n) => n.id)).toEqual([BRANCH]);
+		// Unchanged nodes keep their identity, so xyflow redraws only the changed ones.
+		expect(marked.filter((n, i) => n !== nodes[i]).map((n) => n.id)).toEqual([BRANCH]);
+		const cleared = markSelected(marked, visibleAncestor(model, new Set([BRANCH]), null));
+		expect(cleared.some((n) => n.data.selected === true)).toBe(false);
+	});
+});
+
+describe('VIEW_HIGHLIGHT: a lagging drawing is highlighted against what it was drawn from', () => {
+	it('resolves against the laid-out model and collapse state, not the newer ones', async () => {
+		// Drawn: the leaf inside a collapsed group. Newer model (still being laid out): the leaf at the top.
+		const drawnModel: PipelineModel = {
+			nodes: [
+				{ id: 'group', role: 'processor', component: 'branch', group: true, range: [0, 50] },
+				{ id: 'leaf', role: 'processor', component: 'mapping', parent: 'group', range: [10, 20] },
+			],
+			edges: [],
+		};
+		const collapsed = new Set(['group']);
+		const drawn = { ...(await layout(drawnModel, collapsed)), model: drawnModel, collapsed };
+		expect(drawn.nodes.map((n) => n.id)).toEqual(['group']);
+		expect(highlightDrawn(drawn, 'leaf').filter((n) => n.data.selected === true).map((n) => n.id)).toEqual(['group']);
+		expect(highlightDrawn(drawn, null).some((n) => n.data.selected === true)).toBe(false);
+	});
 });

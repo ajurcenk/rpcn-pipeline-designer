@@ -130,6 +130,40 @@ body {
 	text-overflow: ellipsis;
 }
 
+/* A group's header label: a click on it selects the whole group's YAML (ticket 3.7). */
+.rpcn-group-title {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	overflow: hidden;
+}
+
+/* The node under the cursor (DESIGN pipeline-node-selected, ticket 3.7): {colors.selection} with
+   {colors.on-selection}. Groups and routes keep their transparent fill and get an outline in the
+   same colour instead, so their children stay readable. */
+.rpcn-node-selected {
+	border-color: var(--vscode-list-activeSelectionBackground);
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+.rpcn-node-selected .rpcn-node-kind {
+	color: inherit;
+}
+.rpcn-group-selected,
+.rpcn-route-selected {
+	border-color: var(--vscode-list-activeSelectionBackground);
+	outline: 1px solid var(--vscode-list-activeSelectionBackground);
+}
+/* A collapsed group is drawn as a node, so it is selected like one. */
+.rpcn-group-collapsed.rpcn-group-selected {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+.rpcn-group-collapsed.rpcn-group-selected .rpcn-group-label {
+	color: inherit;
+}
+
 /* The canvas fills the panel; the invalid-YAML banner overlays its top, so it never resizes. */
 .rpcn-canvas {
 	position: relative;
