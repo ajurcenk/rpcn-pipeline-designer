@@ -132,7 +132,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 83 passed; `npm test` 596 passing on stable and 1.100.0; `npm run test:corpus` 123 passed. Manual check pending (the user).
+**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 83 passed; `npm test` 596 passing on stable and 1.100.0; `npm run test:corpus` 123 passed. **Manual check:** the dev host was started with the checklist (2026-10-09); the user moved on ("continue") without reporting a result, so the check is not recorded as passed. Entry 13's hands-on pass covers navigation again.
 
 **Commands:**
 - `npm run compile`: exit 0.
