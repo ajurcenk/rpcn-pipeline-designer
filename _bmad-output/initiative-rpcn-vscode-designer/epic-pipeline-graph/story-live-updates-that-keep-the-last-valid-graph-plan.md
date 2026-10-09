@@ -153,7 +153,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 75 passed; `npm test` 589 passing on stable and 1.100.0; `npm run test:corpus` 123 passed. Manual check pending (the user).
+**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 75 passed; `npm test` 589 passing on stable and 1.100.0; `npm run test:corpus` 123 passed. **Manual check (user, 2026-10-09, "tested"):** in the dev host on a fresh `graph-demo.yaml` (stateful_polling): a live edit adds a node, a break keeps the last graph under the overlay banner, a banner click selects the error, the heal clears it, and pan, zoom and collapse are kept across edits and across hiding and showing the graph tab inside its locked group.
 
 **Commands:**
 - `npm run compile`: exit 0.
