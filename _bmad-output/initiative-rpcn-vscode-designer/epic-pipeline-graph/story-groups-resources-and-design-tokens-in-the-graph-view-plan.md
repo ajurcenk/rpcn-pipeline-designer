@@ -145,7 +145,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 47 passed; `npm test` 572 passing on stable and 1.100.0; `npm run test:corpus` 89 passed; the `.vsix` holds `dist/codicon.ttf`, `webview.css` and `webview.js`. Manual check pending (the user).
+**Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 47 passed; `npm test` 572 passing on stable and 1.100.0; `npm run test:corpus` 89 passed; the `.vsix` holds `dist/codicon.ttf`, `webview.css` and `webview.js`. **Manual check (user, 2026-10-09, "tested, looks good"):** in the dev host with the user's `rpk connect` 4.112.0, on `graph-demo.yaml` (stateful_polling), `switch-demo.yaml` (switch-processor fixture) and `nested-demo.yaml`: group boxes with headers and chevrons, captioned case routes, resources in a row below the flow, collapse and expand, and click-to-select.
 
 **Commands:**
 - `npm run compile`: exit 0.
