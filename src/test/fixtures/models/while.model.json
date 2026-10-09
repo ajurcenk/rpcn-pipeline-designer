@@ -1,0 +1,54 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "generate",
+			"range": [0, 57]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "while",
+			"range": [86, 240],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].while.processors[0]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [153, 185],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].while.processors[1]",
+			"role": "processor",
+			"component": "log",
+			"range": [196, 240],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [241, 261]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:output",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:output"
+		},
+		{
+			"id": "path:pipeline.processors[0].while.processors[0]->path:pipeline.processors[0].while.processors[1]",
+			"source": "path:pipeline.processors[0].while.processors[0]",
+			"target": "path:pipeline.processors[0].while.processors[1]"
+		}
+	]
+}

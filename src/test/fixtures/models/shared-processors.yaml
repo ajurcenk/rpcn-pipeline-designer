@@ -1,0 +1,12 @@
+input:
+  stdin: {}
+  processors:
+    - mapping: 'root = this.parse_json()'
+pipeline:
+  processors:
+    - log:
+        message: '${! this.id }'
+output:
+  stdout: {}
+  processors:
+    - mapping: 'root.sent_at = now()'

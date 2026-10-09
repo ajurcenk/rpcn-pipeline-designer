@@ -1,0 +1,43 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "kafka_franz",
+			"range": [19, 255],
+			"group": true
+		},
+		{
+			"id": "path:output.kafka_franz.batching.processors[0]",
+			"role": "processor",
+			"component": "archive",
+			"range": [171, 207],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.kafka_franz.batching.processors[1]",
+			"role": "processor",
+			"component": "compress",
+			"range": [216, 255],
+			"parent": "path:output"
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:output",
+			"source": "path:input",
+			"target": "path:output"
+		},
+		{
+			"id": "path:output.kafka_franz.batching.processors[0]->path:output.kafka_franz.batching.processors[1]",
+			"source": "path:output.kafka_franz.batching.processors[0]",
+			"target": "path:output.kafka_franz.batching.processors[1]"
+		}
+	]
+}

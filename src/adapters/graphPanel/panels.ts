@@ -2,12 +2,16 @@
 // keyed by `uri.toString()`. The webview posts `ready` (again whenever it is recreated, since
 // `retainContextWhenHidden` is off) and gets a fresh `snapshot`; a `nodeActivated` (click or
 // keyboard) selects and reveals that node's YAML range in the file's text editor. Nothing edits
-// the text (AD-19). Node status, selection and host status are not sent yet (3.6-3.9), so the
-// snapshot carries them empty.
+// the text (AD-19). The model is built with the ComponentCatalog of the current schema (AD-20,
+// ticket 3.3), derived once per schema object; with no schema the snapshot carries the empty
+// model. Node status, selection and host status are not sent yet (3.6-3.9), so the snapshot
+// carries them empty.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { componentCatalogue, type ComponentCatalog } from '../../core/catalogue';
 import { buildPipelineModel } from '../../core/graph';
+import type { JsonObject } from '../../core/schema';
 import { parseWebviewMessage, type HostMessage, type HostStatus, type PipelineModel } from '../../shared/protocol';
 import { parsedDocument } from '../vscode/parseCache';
 import { graphHtml } from './html';
@@ -41,6 +45,7 @@ class GraphPanel implements GraphPanelHandle {
 		readonly uri: vscode.Uri,
 		readonly panel: vscode.WebviewPanel,
 		private readonly log: (line: string) => void,
+		private readonly catalogue: () => ComponentCatalog | undefined,
 	) {
 		this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
 	}
@@ -82,7 +87,9 @@ class GraphPanel implements GraphPanelHandle {
 	private async model(doc?: vscode.TextDocument): Promise<PipelineModel> {
 		const d = doc ?? await this.document();
 		const { text, parsed } = parsedDocument(d);
-		return buildPipelineModel(parsed, text);
+		// With no schema snapshot the catalogue is undefined and the builder gives the empty model
+		// (the no-binary empty state is ticket 3.9).
+		return buildPipelineModel(parsed, text, this.catalogue());
 	}
 
 	/** Selects and reveals the node's range; an unknown id does nothing. */
@@ -107,6 +114,23 @@ class GraphPanel implements GraphPanelHandle {
 export interface GraphPanelsOptions {
 	readonly extensionUri: vscode.Uri;
 	readonly log: (line: string) => void;
+	/** The current transformed schema (AD-10), `undefined` while there is none. */
+	readonly schema: () => JsonObject | undefined;
+}
+
+/** One catalogue per schema object: derived once, dropped with the schema (AD-20). */
+const catalogues = new WeakMap<JsonObject, ComponentCatalog>();
+
+function catalogueOf(schema: JsonObject | undefined): ComponentCatalog | undefined {
+	if (!schema) {
+		return undefined;
+	}
+	let catalogue = catalogues.get(schema);
+	if (!catalogue) {
+		catalogue = componentCatalogue(schema);
+		catalogues.set(schema, catalogue);
+	}
+	return catalogue;
 }
 
 /** All open graph panels, one per file (AD-1). */
@@ -144,7 +168,7 @@ export class GraphPanels implements vscode.Disposable {
 					localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')],
 				},
 			);
-			const graph = new GraphPanel(target, panel, this.options.log);
+			const graph = new GraphPanel(target, panel, this.options.log, () => catalogueOf(this.options.schema()));
 			this.panels.set(key, graph);
 			panel.onDidDispose(() => {
 				graph.dispose();

@@ -1,0 +1,19 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - retry:
+        backoff:
+          initial_interval: 1s
+        processors:
+          - http:
+              url: http://localhost:8080/enrich
+              verb: POST
+          - mapping: 'root.enriched = this'
+output:
+  retry:
+    max_retries: 3
+    output:
+      http_client:
+        url: http://localhost:8080/ingest
+        verb: POST

@@ -1,0 +1,14 @@
+input:
+  generate:
+    count: 1
+    mapping: 'root.n = 0'
+pipeline:
+  processors:
+    - while:
+        check: 'this.n < 3'
+        processors:
+          - mapping: 'root.n = this.n + 1'
+          - log:
+              message: '${! this.n }'
+output:
+  stdout: {}

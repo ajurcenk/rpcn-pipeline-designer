@@ -1,0 +1,13 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - parallel:
+        cap: 4
+        processors:
+          - http:
+              url: http://localhost:8080/score
+              verb: POST
+          - mapping: 'root.score = this.score'
+output:
+  stdout: {}

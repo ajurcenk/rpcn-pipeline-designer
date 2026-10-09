@@ -1,0 +1,14 @@
+input:
+  stdin: {}
+output:
+  kafka_franz:
+    seed_brokers: [ localhost:9092 ]
+    topic: events
+    batching:
+      count: 100
+      period: 1s
+      processors:
+        - archive:
+            format: lines
+        - compress:
+            algorithm: gzip

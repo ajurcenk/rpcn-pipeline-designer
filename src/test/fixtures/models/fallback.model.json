@@ -1,0 +1,44 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "fallback",
+			"range": [19, 159],
+			"group": true
+		},
+		{
+			"id": "path:output.fallback",
+			"role": "route",
+			"range": [29, 159],
+			"parent": "path:output"
+		},
+		{
+			"id": "path:output.fallback[0]",
+			"role": "output",
+			"component": "http_client",
+			"range": [43, 118],
+			"parent": "path:output.fallback"
+		},
+		{
+			"id": "path:output.fallback[1]",
+			"role": "output",
+			"component": "file",
+			"range": [123, 159],
+			"parent": "path:output.fallback"
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:output",
+			"source": "path:input",
+			"target": "path:output"
+		}
+	]
+}

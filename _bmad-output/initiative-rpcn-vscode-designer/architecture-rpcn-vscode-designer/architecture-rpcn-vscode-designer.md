@@ -189,7 +189,7 @@ graph LR
 
 - **Binds:** `src/core` (YAML → PipelineModel), `src/adapters/redpandaConnect` (schema, AD-10), `src/adapters/graphPanel`, `webview/` empty state
 - **Prevents:** the parser and the schema disagreeing on which fields hold child components; a hand-maintained table drifting from the user's runtime, plugins or edition
-- **Rule:** The core builds the PipelineModel from the YAML plus a `ComponentCatalog` passed in as a pure input. The catalog is derived from the cached, transformed schema (AD-10) and says, per component, which fields hold child components or component lists (for example `switch.cases[].output`, `branch.processors`). There is no built-in structural table. With no binary or schema (`binaryState` ≠ `ok`), the host sends no model and the webview shows the binary-missing empty state (AD-9).
+- **Rule:** The core builds the PipelineModel from the YAML plus a `ComponentCatalog` passed in as a pure input. The catalog is derived from the cached, transformed schema (AD-10) and says, per component, which fields hold child components or component lists (for example `switch.cases[].output`, `branch.processors`). There is no built-in structural table. Amended 2026-10-08 (user, ticket 3.3): a small core table of display hints (a `switch` case's caption, a broker's outputs route, `workflow` order edges) may say how that structure is shown, never which fields hold children. With no binary or schema (`binaryState` ≠ `ok`), the host sends no model and the webview shows the binary-missing empty state (AD-9).
 
 ## Consistency Conventions
 

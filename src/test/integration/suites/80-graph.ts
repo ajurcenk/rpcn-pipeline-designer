@@ -2,15 +2,17 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
+import { GraphPanels, type GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import { type ExtensionApi } from '../../../extension';
 import type { PipelineModel } from '../../../shared/protocol';
 import { makeTempDir, REPO_ROOT } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../schemaHarness';
 
 // The graph panel through its host-side seam (`graphPanels.panelFor`, `receive`): the tests
-// check what the host posts and does, and don't drive the webview DOM (ticket 3.1).
-suite('Pipeline graph (3.1, integration)', function () {
+// check what the host posts and does, and don't drive the webview DOM (ticket 3.1). The model is
+// built with the schema of the fake 4.112.0 binary (ticket 3.3, AD-20).
+suite('Pipeline graph (3.1, 3.3, integration)', function () {
 	this.timeout(60_000);
 	let dir: string;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
@@ -37,6 +39,10 @@ suite('Pipeline graph (3.1, integration)', function () {
 		dir = makeTempDir('rpcn-graph-');
 		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
 	});
+	const h = useSchemaBinary();
+	setup(async () => {
+		await schemaFrom(h.fakeBinary, '4.112.0');
+	});
 
 	teardown(async () => {
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
@@ -57,7 +63,7 @@ suite('Pipeline graph (3.1, integration)', function () {
 		assert.strictEqual(palette['redpandaConnect.hideGraph'], 'false');
 	});
 
-	test('FLAT: one panel beside the editor, "Graph: <file>", whose webview gets input -> 4 processors -> output', async () => {
+	test('PANEL: one panel beside the editor, "Graph: <file>", whose webview gets the nested model', async () => {
 		const text = fs.readFileSync(path.join(REPO_ROOT, 'test', 'corpus', 'stateful_polling.yaml'), 'utf8');
 		const doc = await open('stateful_polling.yaml', text);
 		const handle = await showGraph(doc);
@@ -67,15 +73,33 @@ suite('Pipeline graph (3.1, integration)', function () {
 		assert.strictEqual(api().graphPanels.size, 1);
 		// The real webview boots, posts `ready` and gets the snapshot.
 		assert.ok(await waitFor(() => snapshots(handle).length > 0, 30_000), 'the webview posted ready');
-		assert.deepStrictEqual(ids(snapshots(handle)[0]), [
+		const model = snapshots(handle)[0];
+		assert.deepStrictEqual(ids(model), [
 			'path:input',
 			'path:pipeline.processors[0]',
 			'path:pipeline.processors[1]',
+			'path:pipeline.processors[1].catch',
+			'path:pipeline.processors[1].catch[0]',
 			'path:pipeline.processors[2]',
 			'path:pipeline.processors[3]',
 			'path:output',
+			'path:output.broker.outputs',
+			'path:output.broker.outputs[0]',
+			'path:output.broker.outputs[1]',
+			'path:output.broker.outputs[1].processors[0]',
+			'res:cache:cached_pgstate',
+			'res:cache:inmem',
+			'res:cache:pgstate',
 		]);
-		assert.strictEqual(snapshots(handle)[0].edges.length, 5);
+		// `catch` is a group holding its body route and, in it, its mapping.
+		const node = (id: string) => model.nodes.find((n) => n.id === id)!;
+		assert.strictEqual(node('path:pipeline.processors[1]').group, true);
+		assert.strictEqual(node('path:pipeline.processors[1].catch').parent, 'path:pipeline.processors[1]');
+		assert.deepStrictEqual(
+			[node('path:pipeline.processors[1].catch[0]').component, node('path:pipeline.processors[1].catch[0]').parent],
+			['mapping', 'path:pipeline.processors[1].catch'],
+		);
+		assert.strictEqual(model.edges.length, 5);
 		// The full snapshot (AD-5): status, selection and host status are not reported yet (3.6-3.9).
 		const snapshot = handle.posted.find((m) => m.type === 'snapshot')!;
 		assert.deepStrictEqual({ ...snapshot, model: undefined }, {
@@ -164,6 +188,40 @@ suite('Pipeline graph (3.1, integration)', function () {
 		const handle = await showGraph(doc);
 		await handle.receive({ type: 'ready' });
 		assert.deepStrictEqual(snapshots(handle).at(-1), { nodes: [], edges: [] });
+	});
+
+	test('NO_SCHEMA: with no schema snapshot the panel answers ready with the empty model', async () => {
+		const doc = await open('no-schema.yaml', 'input:\n  stdin: {}\noutput:\n  stdout: {}\n');
+		const panels = new GraphPanels({
+			extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
+			log: () => undefined,
+			schema: () => undefined,
+		});
+		try {
+			const handle = panels.show(doc.uri);
+			assert.ok(handle, 'a graph panel for the file');
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(snapshots(handle).at(-1), { nodes: [], edges: [] });
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('CURRENT_SCHEMA: after the binary changes, ready gets a model built with the new schema', async () => {
+		// Two keys that are not 4.112.0 input names: the first is the component until the schema lists the second.
+		const doc = await open('current-schema.yaml', `input:\n  rpcn_typo: {}\n  ${EXTRA_INPUT}: {}\n`);
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		assert.strictEqual(snapshots(handle).at(-1)?.nodes[0]?.component, 'rpcn_typo');
+		try {
+			await setBinaryPath(h.changedBinary);
+			await schemaFrom(h.changedBinary, '4.113.0');
+			await handle.receive({ type: 'ready' });
+			assert.strictEqual(snapshots(handle).at(-1)?.nodes[0]?.component, EXTRA_INPUT);
+		} finally {
+			await setBinaryPath(h.fakeBinary);
+			await schemaFrom(h.fakeBinary, '4.112.0');
+		}
 	});
 
 	test('CLOSED: closing the panel disposes it; Show graph again opens a new one', async () => {

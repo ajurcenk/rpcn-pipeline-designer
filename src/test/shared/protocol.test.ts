@@ -1,9 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as path from 'path';
 import {
 	EMPTY_MODEL,
-	isPipelineModel,
 	parseHostMessage,
 	parseWebviewMessage,
 	type HostMessage,
@@ -11,27 +9,7 @@ import {
 	type PipelineNode,
 	type WebviewMessage,
 } from '../../shared/protocol';
-import { REPO_ROOT } from '../helpers/fakeBinary';
-
-const FIXTURES = path.join(REPO_ROOT, 'src', 'test', 'fixtures', 'models');
-const FIXTURE_NAMES = [
-	'flat', 'labels', 'switch-processor', 'switch-output', 'broker-output',
-	'branch', 'try-catch', 'workflow', 'nested', 'resources',
-];
-
-interface Fixture {
-	readonly name: string;
-	readonly yaml: string;
-	readonly model: PipelineModel;
-}
-
-/** Reads a fixture pair; the JSON must pass the protocol's own model check to be typed. */
-function fixture(name: string): Fixture {
-	const yaml = fs.readFileSync(path.join(FIXTURES, `${name}.yaml`), 'utf8');
-	const json: unknown = JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.model.json`), 'utf8'));
-	assert.ok(isPipelineModel(json), `${name}.model.json is a PipelineModel`);
-	return { name, yaml, model: json };
-}
+import { fixture, FIXTURE_NAMES, FIXTURES } from '../helpers/fixtureModels';
 
 const SAMPLE_MODEL: PipelineModel = {
 	nodes: [

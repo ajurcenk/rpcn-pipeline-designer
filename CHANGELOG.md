@@ -5,6 +5,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Pipeline graph: the model now holds nested components (`switch` cases, `branch`, `try` / `catch`, `workflow` branches, broker and fallback outputs, batching processors, an input's and output's own processors, …) and `*_resources`, with which fields hold children read from the binary's schema. With no schema the graph is empty. Groups are not drawn as boxes yet.
 - Pipeline graph: **Show graph** opens a read-only graph beside a detected config (input, `pipeline.processors` and output, laid out with elkjs and drawn with @xyflow/react), one panel per file; clicking a node selects its YAML. Bundles React, react-dom, @xyflow/react and their dependencies (MIT, ISC, BSD-3-Clause) and elkjs (EPL-2.0), listed in NOTICE.
 - Quick Fix **Fix all lint findings with a clear fix (N)**: applies the preferred fix of every lint finding in the file that has a clear one, as a single edit. Because the first edit after a save clears all findings, fixing them one by one needed a save after each fix.
 - Binary resolution: `rpk connect` on `PATH`, then `redpanda-connect` on `PATH`, then `redpandaConnect.binaryPath` as a fallback; binaries older than v4.100.0 are rejected. The binary is resolved again when the setting changes.

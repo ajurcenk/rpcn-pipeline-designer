@@ -1,0 +1,9 @@
+input:
+  stdin: {}
+output:
+  fallback:
+    - http_client:
+        url: http://localhost:8080/ingest
+        verb: POST
+    - file:
+        path: ./failed.jsonl

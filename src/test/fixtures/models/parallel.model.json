@@ -1,0 +1,54 @@
+{
+	"nodes": [
+		{
+			"id": "path:input",
+			"role": "input",
+			"component": "stdin",
+			"range": [0, 18]
+		},
+		{
+			"id": "path:pipeline.processors[0]",
+			"role": "processor",
+			"component": "parallel",
+			"range": [47, 230],
+			"group": true
+		},
+		{
+			"id": "path:pipeline.processors[0].parallel.processors[0]",
+			"role": "processor",
+			"component": "http",
+			"range": [104, 183],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0].parallel.processors[1]",
+			"role": "processor",
+			"component": "mapping",
+			"range": [194, 230],
+			"parent": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:output",
+			"role": "output",
+			"component": "stdout",
+			"range": [231, 251]
+		}
+	],
+	"edges": [
+		{
+			"id": "path:input->path:pipeline.processors[0]",
+			"source": "path:input",
+			"target": "path:pipeline.processors[0]"
+		},
+		{
+			"id": "path:pipeline.processors[0]->path:output",
+			"source": "path:pipeline.processors[0]",
+			"target": "path:output"
+		},
+		{
+			"id": "path:pipeline.processors[0].parallel.processors[0]->path:pipeline.processors[0].parallel.processors[1]",
+			"source": "path:pipeline.processors[0].parallel.processors[0]",
+			"target": "path:pipeline.processors[0].parallel.processors[1]"
+		}
+	]
+}

@@ -164,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const run = new RunController({ binary: redpandaConnect, detection, log });
 	context.subscriptions.push(run, ...run.registerCommands());
 
-	const graphPanels = new GraphPanels({ extensionUri: context.extensionUri, log });
+	const graphPanels = new GraphPanels({ extensionUri: context.extensionUri, log, schema: () => schemaStore.current?.json });
 	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
 
 	return {

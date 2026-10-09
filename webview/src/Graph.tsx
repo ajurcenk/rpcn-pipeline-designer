@@ -62,7 +62,18 @@ interface Layout {
 	readonly edges: Edge[];
 }
 
-async function layout(model: PipelineModel): Promise<Layout> {
+/**
+ * The part of the model drawn until groups are (3.4): the top-level nodes, and the edges between
+ * them. Nested routes and children stay in the model but are not drawn as loose boxes.
+ */
+export function drawnPart(model: PipelineModel): PipelineModel {
+	const nodes = model.nodes.filter((n) => n.parent === undefined);
+	const ids = new Set(nodes.map((n) => n.id));
+	return { nodes, edges: model.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
+}
+
+async function layout(full: PipelineModel): Promise<Layout> {
+	const model = drawnPart(full);
 	const graph = await elk.layout({
 		id: 'root',
 		layoutOptions: {
