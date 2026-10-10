@@ -19,44 +19,44 @@ const fold = (messages: readonly HostMessage[], from: ViewModel = INITIAL_VIEW) 
 
 describe('state reducer', () => {
 	it('starts with nothing to draw and no banner', () => {
-		expect(INITIAL_VIEW).toEqual({ model: null, parseError: null, selection: null });
+		expect(INITIAL_VIEW).toEqual({ model: null, parseError: null, selection: null, nodeStatus: {} });
 		expect(BANNER_TEXT).toBe('YAML has errors — showing last valid graph.');
 	});
 
 	it('snapshot: the host\'s complete state replaces the view', () => {
-		expect(reduce(INITIAL_VIEW, snapshot(A))).toEqual({ model: A, parseError: null, selection: null });
-		expect(reduce({ model: A, parseError: ERROR, selection: null }, snapshot(B))).toEqual({ model: B, parseError: null, selection: null });
+		expect(reduce(INITIAL_VIEW, snapshot(A))).toEqual({ model: A, parseError: null, selection: null, nodeStatus: {} });
+		expect(reduce({ model: A, parseError: ERROR, selection: null, nodeStatus: {} }, snapshot(B))).toEqual({ model: B, parseError: null, selection: null, nodeStatus: {} });
 		// FIRST_BROKEN: the banner over an empty canvas.
-		expect(reduce(INITIAL_VIEW, snapshot(null, ERROR))).toEqual({ model: null, parseError: ERROR, selection: null });
+		expect(reduce(INITIAL_VIEW, snapshot(null, ERROR))).toEqual({ model: null, parseError: ERROR, selection: null, nodeStatus: {} });
 		// RECREATED: the last valid model and the banner.
-		expect(reduce(INITIAL_VIEW, snapshot(A, ERROR))).toEqual({ model: A, parseError: ERROR, selection: null });
+		expect(reduce(INITIAL_VIEW, snapshot(A, ERROR))).toEqual({ model: A, parseError: ERROR, selection: null, nodeStatus: {} });
 	});
 
 	it('EDIT: a model replaces the last one', () => {
-		expect(fold([snapshot(A), { type: 'model', model: B }])).toEqual({ model: B, parseError: null, selection: null });
+		expect(fold([snapshot(A), { type: 'model', model: B }])).toEqual({ model: B, parseError: null, selection: null, nodeStatus: {} });
 	});
 
 	it('KEEP: a parseError keeps the last valid model and shows the banner, however often it comes', () => {
 		const broken = fold([snapshot(A), { type: 'model', model: B }, { type: 'parseError', ...ERROR }]);
-		expect(broken).toEqual({ model: B, parseError: ERROR, selection: null });
+		expect(broken).toEqual({ model: B, parseError: ERROR, selection: null, nodeStatus: {} });
 		const later = { message: 'Implicit keys need to be on a single line at line 2, column 6', range: [20, 20] as const };
-		expect(reduce(broken, { type: 'parseError', ...later })).toEqual({ model: B, parseError: later, selection: null });
+		expect(reduce(broken, { type: 'parseError', ...later })).toEqual({ model: B, parseError: later, selection: null, nodeStatus: {} });
 		// Only the error's own fields are kept (no `type`).
 		expect(Object.keys(broken.parseError!)).toEqual(['message', 'range']);
 	});
 
 	it('HEAL: the next model clears the banner', () => {
 		const healed = fold([snapshot(A), { type: 'parseError', ...ERROR }, { type: 'model', model: A }]);
-		expect(healed).toEqual({ model: A, parseError: null, selection: null });
+		expect(healed).toEqual({ model: A, parseError: null, selection: null, nodeStatus: {} });
 		// After a first open on a broken file too.
-		expect(fold([snapshot(null, ERROR), { type: 'model', model: B }])).toEqual({ model: B, parseError: null, selection: null });
+		expect(fold([snapshot(null, ERROR), { type: 'model', model: B }])).toEqual({ model: B, parseError: null, selection: null, nodeStatus: {} });
 	});
 
 	it('SELECTION: a selection replaces the highlight; null clears it; the same one changes nothing', () => {
 		const view = fold([snapshot(A), { type: 'selection', nodeId: 'path:input' }]);
-		expect(view).toEqual({ model: A, parseError: null, selection: 'path:input' });
+		expect(view).toEqual({ model: A, parseError: null, selection: 'path:input', nodeStatus: {} });
 		expect(reduce(view, { type: 'selection', nodeId: 'path:input' })).toBe(view);
-		expect(reduce(view, { type: 'selection', nodeId: null })).toEqual({ model: A, parseError: null, selection: null });
+		expect(reduce(view, { type: 'selection', nodeId: null })).toEqual({ model: A, parseError: null, selection: null, nodeStatus: {} });
 	});
 
 	it('SELECTION: a model and a parse error keep the highlight; a snapshot carries its own', () => {
@@ -64,14 +64,26 @@ describe('state reducer', () => {
 		expect(reduce(view, { type: 'model', model: B }).selection).toBe('path:input');
 		expect(reduce(view, { type: 'parseError', ...ERROR }).selection).toBe('path:input');
 		// SNAPSHOT: a recreated webview shows the host's current selection.
-		expect(reduce(view, snapshot(B, undefined, 'path:output'))).toEqual({ model: B, parseError: null, selection: 'path:output' });
+		expect(reduce(view, snapshot(B, undefined, 'path:output'))).toEqual({ model: B, parseError: null, selection: 'path:output', nodeStatus: {} });
 		expect(reduce(view, snapshot(B)).selection).toBeNull();
 	});
 
+	it('NODE_STATUS (3.8): a nodeStatus replaces the markers; a model and a parse error keep them; a snapshot carries its own', () => {
+		const status = { 'path:input': { severity: 'error', own: 'error', messages: ['field nope not recognised'] } } as const;
+		const view = fold([snapshot(A), { type: 'nodeStatus', byId: status }]);
+		expect(view).toEqual({ model: A, parseError: null, selection: null, nodeStatus: status });
+		expect(reduce(view, { type: 'model', model: B }).nodeStatus).toBe(status);
+		// FROZEN: the host sends none while broken, and the view keeps the last one.
+		expect(reduce(view, { type: 'parseError', ...ERROR }).nodeStatus).toBe(status);
+		expect(reduce(view, { type: 'nodeStatus', byId: {} }).nodeStatus).toEqual({});
+		const frozen = { 'path:output': { severity: 'warning', messages: ['field codec is deprecated'] } } as const;
+		expect(reduce(view, { ...snapshot(B, ERROR), nodeStatus: frozen } as HostMessage).nodeStatus).toBe(frozen);
+		expect(reduce(view, snapshot(B)).nodeStatus).toEqual({});
+	});
+
 	it('other messages leave the view as it is', () => {
-		const view: ViewModel = { model: A, parseError: ERROR, selection: null };
+		const view: ViewModel = { model: A, parseError: ERROR, selection: null, nodeStatus: {} };
 		const others: HostMessage[] = [
-			{ type: 'nodeStatus', byId: {} },
 			{ type: 'hostStatus', ...HOST_STATUS },
 		];
 		for (const message of others) {

@@ -77,18 +77,37 @@ export interface SchemaBinary {
 	changedBinary: string;
 }
 
+export interface SchemaBinaryOptions {
+	/**
+	 * Lint findings of the 4.112.0 fake, as `[needle, message]`: every line of the linted file
+	 * containing `needle` is reported as `<file>(<line>,1) <message>` (like real lint). Default: none.
+	 */
+	readonly lintFindings?: ReadonlyArray<readonly [string, string]>;
+}
+
 /** Call inside a suite: sets up (and tears down) the fake binaries; the fields fill in at suiteSetup. */
-export function useSchemaBinary(): SchemaBinary {
+export function useSchemaBinary(options: SchemaBinaryOptions = {}): SchemaBinary {
 	const h: SchemaBinary = { dir: '', fakeBinary: '', changedBinary: '' };
 	const originalPath = process.env.PATH;
 	suiteSetup(async () => {
 		const fixtures = fixtureBodies('4.112.0'); // absolute tool paths: resolved before PATH is filtered
 		const cat = toolPath('cat');
+		const grep = toolPath('grep');
+		const cut = toolPath('cut');
+		const findings = options.lintFindings ?? [];
+		// Single-quoted for the shell (a `'` closes, is escaped, and reopens); `grep -F`: a fixed string.
+		const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+		const lint = findings.length === 0 ? undefined : [
+			'found=0',
+			...findings.map(([needle, message]) =>
+				`for n in $('${grep}' -n -F -e ${quote(needle)} "$last" | '${cut}' -d: -f1); do printf '%s\\n' "$last($n,1) "${quote(message)} >&2; found=1; done`),
+			'exit $found',
+		].join('\n');
 		process.env.PATH = (originalPath ?? '').split(path.delimiter)
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
 		h.dir = currentDir = makeTempDir('rpcn-contributor-');
-		h.fakeBinary = writeFakeBinary(h.dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures }));
+		h.fakeBinary = writeFakeBinary(h.dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint }));
 
 		// A "different binary version": the 4.112.0 schema plus one extra input component.
 		const raw = JSON.parse(fs.readFileSync(path.join(SCHEMA_FIXTURES, 'jsonschema-4.112.0.json'), 'utf8'));

@@ -164,6 +164,65 @@ body {
 	color: inherit;
 }
 
+/* Error and warning markers (DESIGN pipeline-node-error / pipeline-node-warning, ticket 3.8): a
+   2px border in {colors.error-border} / {colors.warning-border} plus the matching codicon in
+   {colors.error} / {colors.warning} in the top-right corner, never colour alone. They come after
+   the selected styles, so a selected node keeps its marker's border. Routes keep their dashes.
+   Sizing: every box is `box-sizing: border-box` at 100% of the size ELK laid out, so the thicker
+   border never changes the box's size; the 1px it takes inside is given back (padding 1px less,
+   or a -1px margin on the header rows), so no label, header or caption shifts or clips. */
+.pipeline-node-error,
+.pipeline-node-warning {
+	position: relative;
+	border-width: 2px;
+}
+.pipeline-node-error {
+	border-color: var(--vscode-inputValidation-errorBorder);
+}
+.pipeline-node-warning {
+	border-color: var(--vscode-editorWarning-border, var(--vscode-editorWarning-foreground));
+}
+.rpcn-status-icon {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	pointer-events: none;
+}
+.pipeline-node-error .rpcn-status-icon {
+	color: var(--vscode-errorForeground);
+}
+.pipeline-node-warning .rpcn-status-icon {
+	color: var(--vscode-editorWarning-foreground);
+}
+/* A component: 4px 8px less the extra border pixel, with room on the right for the icon. */
+.rpcn-node.pipeline-node-error,
+.rpcn-node.pipeline-node-warning {
+	padding: 3px 23px 3px 7px;
+}
+/* Group headers, collapsed summaries and route captions: back by the extra pixel, and room for the icon. */
+.pipeline-node-error > .rpcn-group-header,
+.pipeline-node-warning > .rpcn-group-header,
+.pipeline-node-error > .rpcn-route-caption,
+.pipeline-node-warning > .rpcn-route-caption {
+	margin: -1px -1px 0;
+	padding-right: 24px;
+}
+.pipeline-node-error > .rpcn-group-summary,
+.pipeline-node-warning > .rpcn-group-summary {
+	margin: 0 -1px;
+	padding-right: 24px;
+}
+.rpcn-group.pipeline-node-error .rpcn-status-icon,
+.rpcn-group.pipeline-node-warning .rpcn-status-icon {
+	top: 7px;
+	right: 7px;
+}
+.rpcn-route.pipeline-node-error .rpcn-status-icon,
+.rpcn-route.pipeline-node-warning .rpcn-status-icon {
+	top: 4px;
+	right: 5px;
+}
+
 /* The canvas fills the panel; the invalid-YAML banner overlays its top, so it never resizes. */
 .rpcn-canvas {
 	position: relative;

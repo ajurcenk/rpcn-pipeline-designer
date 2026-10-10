@@ -60,3 +60,28 @@ describe('TOKENS', () => {
 		});
 	}
 });
+
+describe('MARKERS (ticket 3.8, DESIGN pipeline-node-error / -warning)', () => {
+	const css = readFileSync(new URL('graph.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	/** The declarations of every rule whose selector list names `selector`, joined. */
+	const rule = (selector: string) => [...css.matchAll(new RegExp(`(^|[},])\\s*${selector.replace(/[.-]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`, 'gm'))]
+		.map((m) => m[2]).join('\n');
+	it('a 2px border in the error and warning border tokens', () => {
+		expect(rule('.pipeline-node-warning')).toMatch(/border-width:\s*2px/);
+		expect(rule('.pipeline-node-error')).toContain('var(--vscode-inputValidation-errorBorder)');
+		expect(rule('.pipeline-node-warning')).toContain('var(--vscode-editorWarning-border, var(--vscode-editorWarning-foreground))');
+	});
+	it('the icon in the error and warning tokens', () => {
+		expect(rule('.pipeline-node-error .rpcn-status-icon')).toContain('var(--vscode-errorForeground)');
+		expect(rule('.pipeline-node-warning .rpcn-status-icon')).toContain('var(--vscode-editorWarning-foreground)');
+	});
+	it('SIZING: the boxes are border-box at the laid-out size, and the extra border pixel is given back', () => {
+		expect(rule('.rpcn-node')).toMatch(/box-sizing:\s*border-box/);
+		expect(rule('.rpcn-node')).toMatch(/width:\s*100%/);
+		expect(rule('.rpcn-route')).toMatch(/box-sizing:\s*border-box/);
+		// 4px 8px less one pixel on every side (the right also leaves room for the icon).
+		expect(rule('.rpcn-node.pipeline-node-warning')).toMatch(/padding:\s*3px 23px 3px 7px/);
+		expect(rule('.pipeline-node-warning > .rpcn-route-caption')).toMatch(/margin:\s*-1px -1px 0/);
+		expect(rule('.pipeline-node-warning > .rpcn-group-summary')).toMatch(/margin:\s*0 -1px/);
+	});
+});

@@ -39,6 +39,13 @@ const HOST_MESSAGES: readonly HostMessage[] = [
 	{ type: 'parseError', message: 'unexpected end', range: [10, 10] },
 	{ type: 'nodeStatus', byId: { 'path:output': { severity: 'warning', messages: ['deprecated', 'twice'] } } },
 	{ type: 'nodeStatus', byId: {} },
+	// VALIDATE (3.8): `own` is optional; a snapshot carries it too.
+	{ type: 'nodeStatus', byId: { 'path:pipeline.processors[0]': { severity: 'error', own: 'warning', messages: ['deprecated', 'not recognised'] } } },
+	{ type: 'nodeStatus', byId: { 'path:pipeline.processors[0]': { severity: 'error', own: 'error', messages: ['x'] }, 'label:in': { severity: 'warning', messages: ['y'] } } },
+	{ type: 'snapshot', model: null, nodeStatus: { a: { severity: 'error', own: 'error', messages: [] } }, selection: null, hostStatus: { binary: 'ok', schema: 'ok' } },
+	// `ownMessages` with `own`; and `own` equal to or better than the roll-up.
+	{ type: 'nodeStatus', byId: { g: { severity: 'error', own: 'warning', messages: ['w', 'e'], ownMessages: ['w'] } } },
+	{ type: 'nodeStatus', byId: { g: { severity: 'warning', own: 'warning', messages: ['w'], ownMessages: [] } } },
 	{ type: 'selection', nodeId: 'path:output' },
 	{ type: 'selection', nodeId: null },
 	{ type: 'hostStatus', binary: 'invalid', schema: 'ok' },
@@ -98,6 +105,16 @@ suite('shared/protocol (3.2)', () => {
 			{ ...snapshot, nodeStatus: { a: { severity: 'info', messages: [] } } },
 			{ ...snapshot, nodeStatus: { a: { severity: 'error', messages: [1] } } },
 			{ ...snapshot, nodeStatus: { a: null } },
+			// VALIDATE (3.8): a bad `own`.
+			{ ...snapshot, nodeStatus: { a: { severity: 'error', own: 'info', messages: [] } } },
+			{ ...snapshot, nodeStatus: { a: { severity: 'error', own: null, messages: [] } } },
+			{ type: 'nodeStatus', byId: { a: { severity: 'warning', own: 'fatal', messages: ['x'] } } },
+			// `own` worse than `severity`.
+			{ type: 'nodeStatus', byId: { a: { severity: 'warning', own: 'error', messages: ['x'], ownMessages: ['x'] } } },
+			// `ownMessages` without `own`, or with a non-string entry, or not a list.
+			{ type: 'nodeStatus', byId: { a: { severity: 'error', messages: ['x'], ownMessages: ['x'] } } },
+			{ type: 'nodeStatus', byId: { a: { severity: 'error', own: 'error', messages: ['x'], ownMessages: ['x', 2] } } },
+			{ type: 'nodeStatus', byId: { a: { severity: 'error', own: 'error', messages: ['x'], ownMessages: 'x' } } },
 			{ ...snapshot, selection: undefined },
 			{ ...snapshot, selection: 3 },
 			{ ...snapshot, hostStatus: { binary: 'ok' } },

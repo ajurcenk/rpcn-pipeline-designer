@@ -70,9 +70,18 @@ export interface ParseError {
 
 export type NodeSeverity = 'error' | 'warning';
 
+/**
+ * A node's markers (AD-17). `severity` is the worst of the node's own diagnostics and its
+ * descendants' (rolled up), `own` the worst of its own only (absent when it has none, never worse
+ * than `severity`), and `messages` its own messages followed by its descendants', verbatim, in
+ * document order. `ownMessages`, present exactly when `own` is, holds the node's own messages
+ * only, deduplicated, in document order.
+ */
 export interface NodeStatus {
 	readonly severity: NodeSeverity;
+	readonly own?: NodeSeverity;
 	readonly messages: readonly string[];
+	readonly ownMessages?: readonly string[];
 }
 
 /** Node status by node id (AD-17). */
@@ -177,10 +186,23 @@ function isParseError(value: Obj): boolean {
 	return isString(value.message) && isRange(value.range);
 }
 
+const isSeverity = (v: unknown): v is NodeSeverity => v === 'error' || v === 'warning';
+
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
+
+function isNodeStatus(s: unknown): s is NodeStatus {
+	return isObject(s)
+		&& isSeverity(s.severity)
+		&& isOptional(s.own, isSeverity)
+		// `own` is never worse than the roll-up.
+		&& !(s.own === 'error' && s.severity === 'warning')
+		&& isStrings(s.messages)
+		// `ownMessages` only with `own` (old messages without either still validate).
+		&& (s.ownMessages === undefined || (s.own !== undefined && isStrings(s.ownMessages)));
+}
+
 function isNodeStatusById(value: unknown): value is NodeStatusById {
-	return isObject(value) && Object.values(value).every((s) => isObject(s)
-		&& (s.severity === 'error' || s.severity === 'warning')
-		&& Array.isArray(s.messages) && s.messages.every(isString));
+	return isObject(value) && Object.values(value).every(isNodeStatus);
 }
 
 function isHostStatus(value: unknown): value is HostStatus {

@@ -6,7 +6,9 @@ import type { ElkNode } from 'elkjs/lib/elk-api';
 import { describe, expect, it } from 'vitest';
 import type { PipelineModel } from '../../src/shared/protocol';
 import {
-	collapsedSummary, highlightDrawn, isContainer, layout, markSelected, motionDuration, pruneCollapsed, toElkGraph, toggleCollapsed, visibleAncestor,
+	collapsedSummary, highlightDrawn, isContainer, layout, MAX_TITLE_MESSAGES, markerClass, markerIcon, markerOf, markSelected, markStatus,
+	motionDuration, nodeTitle, pruneCollapsed,
+	toElkGraph, toggleCollapsed, visibleAncestor,
 } from './layout';
 
 const FIXTURES = new URL('../../src/test/fixtures/models/', import.meta.url);
@@ -275,5 +277,82 @@ describe('VIEW_HIGHLIGHT: a lagging drawing is highlighted against what it was d
 		expect(drawn.nodes.map((n) => n.id)).toEqual(['group']);
 		expect(highlightDrawn(drawn, 'leaf').filter((n) => n.data.selected === true).map((n) => n.id)).toEqual(['group']);
 		expect(highlightDrawn(drawn, null).some((n) => n.data.selected === true)).toBe(false);
+	});
+});
+
+describe('VIEW_MARKERS (ticket 3.8): border and icon per node status', () => {
+	const model = fixture('switch-processor');
+	const CASE0 = `${BRANCH}.switch[0]`;
+	const LEAF = `${CASE0}.processors[1]`;
+	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const status = {
+		[BRANCH]: { severity: 'error', own: 'warning', messages: ['deprecated here', 'not recognised'], ownMessages: ['deprecated here'] },
+		[CASE0]: { severity: 'error', messages: ['not recognised'] },
+		[LEAF]: { severity: 'error', own: 'error', messages: ['not recognised'] },
+		'path:input': { severity: 'warning', own: 'warning', messages: ['old'] },
+	} as const;
+
+	it('a leaf by its severity; an expanded group or route by its own only; a collapsed group by its roll-up', () => {
+		expect(markerOf(byId.get(LEAF)!, false, status[LEAF])).toEqual({ severity: 'error', messages: ['not recognised'] });
+		expect(markerOf(byId.get('path:input')!, false, status['path:input'])).toEqual({ severity: 'warning', messages: ['old'] });
+		// An expanded group: its own warning and its own messages, not its child's error.
+		expect(markerOf(byId.get(BRANCH)!, false, status[BRANCH])).toEqual({ severity: 'warning', messages: ['deprecated here'] });
+		// An older host with no ownMessages: all messages.
+		expect(markerOf(byId.get(BRANCH)!, false, { severity: 'error', own: 'warning', messages: ['a', 'b'] }))
+			.toEqual({ severity: 'warning', messages: ['a', 'b'] });
+		// A route with no own: no marker (its children carry theirs).
+		expect(markerOf(byId.get(CASE0)!, false, status[CASE0])).toBeUndefined();
+		// A collapsed group: the roll-up of what it hides.
+		expect(markerOf(byId.get(BRANCH)!, true, status[BRANCH])).toEqual({ severity: 'error', messages: ['deprecated here', 'not recognised'] });
+		expect(markerOf(byId.get(BRANCH)!, true, { severity: 'error', messages: ['x'] })?.severity).toBe('error');
+		expect(markerOf(byId.get(BRANCH)!, false, { severity: 'error', messages: ['x'] })).toBeUndefined();
+		expect(markerOf(byId.get(LEAF)!, false, undefined)).toBeUndefined();
+	});
+
+	it('marks the drawn boxes, expanded and collapsed, and keeps unchanged nodes as they are', async () => {
+		const expanded = { ...(await layout(model)), model, collapsed: new Set<string>() };
+		const marked = markStatus(expanded, status);
+		const markers = Object.fromEntries(marked.filter((n) => n.data.marker).map((n) => [n.id, n.data.marker!.severity]));
+		expect(markers).toEqual({ 'path:input': 'warning', [BRANCH]: 'warning', [LEAF]: 'error' });
+		expect(marked.filter((n, i) => n !== expanded.nodes[i]).map((n) => n.id).sort()).toEqual(['path:input', BRANCH, LEAF].sort());
+		// The same status again changes no node.
+		const again = markStatus({ ...expanded, nodes: marked }, { ...status });
+		expect(again.every((n, i) => n === marked[i])).toBe(true);
+		// Cleared: no markers left.
+		expect(markStatus({ ...expanded, nodes: marked }, {}).some((n) => n.data.marker !== undefined)).toBe(false);
+
+		const collapsed = new Set([BRANCH]);
+		const drawn = { ...(await layout(model, collapsed)), model, collapsed };
+		const box = markStatus(drawn, status).find((n) => n.id === BRANCH)!;
+		expect(box.data.marker).toEqual({ severity: 'error', messages: ['deprecated here', 'not recognised'] });
+		// Markers and the highlight combine.
+		const both = highlightDrawn(drawn, LEAF, markStatus(drawn, status)).find((n) => n.id === BRANCH)!;
+		expect(both.data.selected).toBe(true);
+		expect(both.data.marker?.severity).toBe('error');
+	});
+
+	it('the hover text lists the messages verbatim, one per line, after the description', () => {
+		expect(nodeTitle('processor: log', { severity: 'error', messages: ['field nope not recognised', 'b  c'] }))
+			.toBe('processor: log\nfield nope not recognised\nb  c');
+		expect(nodeTitle(undefined, { severity: 'warning', messages: ['old'] })).toBe('old');
+		expect(nodeTitle('input: stdin', undefined)).toBe('input: stdin');
+	});
+
+	it('the hover lists at most MAX_TITLE_MESSAGES messages, then counts the rest', () => {
+		expect(MAX_TITLE_MESSAGES).toBe(20);
+		const messages = Array.from({ length: 23 }, (_, i) => `m${i}`);
+		const lines = nodeTitle('processor: log', { severity: 'error', messages })!.split('\n');
+		expect(lines).toEqual(['processor: log', ...messages.slice(0, 20), '…and 3 more']);
+		const twenty = messages.slice(0, 20);
+		expect(nodeTitle(undefined, { severity: 'error', messages: twenty })!.split('\n')).toEqual(twenty);
+	});
+
+	it('each severity has its own box class and codicon', () => {
+		expect(markerClass({ severity: 'error', messages: [] })).toBe('pipeline-node-error');
+		expect(markerClass({ severity: 'warning', messages: [] })).toBe('pipeline-node-warning');
+		expect(markerClass(undefined)).toBeUndefined();
+		expect(markerIcon({ severity: 'error', messages: [] })).toBe('codicon-error');
+		expect(markerIcon({ severity: 'warning', messages: [] })).toBe('codicon-warning');
+		expect(markerIcon(undefined)).toBeUndefined();
 	});
 });

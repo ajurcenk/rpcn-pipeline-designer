@@ -1,6 +1,6 @@
 // The graph webview's entry (tickets 3.1, 3.4, 3.6, 3.7): posts `ready`, then folds every host message
 // into the view (state.ts): the latest valid model, plus the invalid-YAML banner while a
-// `parseError` stands, and the highlighted node from `selection` (3.7). A click on the banner posts `bannerClicked`. Anything that fails
+// `parseError` stands, the highlighted node from `selection` (3.7) and the markers from `nodeStatus` (3.8). A click on the banner posts `bannerClicked`. Anything that fails
 // `parseHostMessage` is ignored. It holds no domain state and parses no YAML (AD-2, AD-3).
 
 import '@vscode/codicons/dist/codicon.css';
@@ -47,6 +47,7 @@ function App() {
 				<Graph
 					model={view.model}
 					selection={view.selection}
+					nodeStatus={view.nodeStatus}
 					onActivate={(nodeId) => post({ type: 'nodeActivated', nodeId, via: 'click' })}
 				/>
 			)}

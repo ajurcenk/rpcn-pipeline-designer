@@ -5,7 +5,9 @@
 import type { Edge, Node } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api';
-import type { PipelineEdge, PipelineModel, PipelineNode } from '../../src/shared/protocol';
+import type {
+	NodeSeverity, NodeStatus, NodeStatusById, PipelineEdge, PipelineModel, PipelineNode,
+} from '../../src/shared/protocol';
 
 export const NODE_HEIGHT = 48;
 /** Readable sizes (mockup key-editor-and-graph.html: nodes about 100-210 px wide at 100%). */
@@ -36,6 +38,14 @@ export interface ViewData extends Record<string, unknown> {
 	readonly summary?: string;
 	/** The node under the cursor in the driving editor, or the collapsed group hiding it (3.7). */
 	readonly selected?: boolean;
+	/** The error or warning marker drawn on this box (3.8), from the host's node status. */
+	readonly marker?: Marker;
+}
+
+/** What a box shows of its node status (DESIGN pipeline-node-error / -warning): a border plus an icon, and the messages on hover. */
+export interface Marker {
+	readonly severity: NodeSeverity;
+	readonly messages: readonly string[];
 }
 
 export type ViewNode = Node<ViewData, NodeKind>;
@@ -173,8 +183,73 @@ export interface Drawn extends Layout {
  * the drawing was made from (not newer ones still being laid out), so a lagging drawing never
  * highlights the wrong box.
  */
-export function highlightDrawn(drawn: Drawn, selection: string | null): ViewNode[] {
-	return markSelected(drawn.nodes, visibleAncestor(drawn.model, drawn.collapsed, selection));
+export function highlightDrawn(drawn: Drawn, selection: string | null, nodes: readonly ViewNode[] = drawn.nodes): ViewNode[] {
+	return markSelected(nodes, visibleAncestor(drawn.model, drawn.collapsed, selection));
+}
+
+/**
+ * The marker of a drawn node (VIEW_MARKERS): a leaf by its rolled-up `severity`; an expanded group
+ * or a route by its `own` severity and `ownMessages` only (`messages` when an older host sent
+ * none), since its children carry their own markers; a collapsed group by `severity` and all
+ * `messages`, the roll-up of what it hides. `undefined`: no marker. The messages are the host's,
+ * verbatim.
+ */
+export function markerOf(node: PipelineNode, collapsed: boolean, status: NodeStatus | undefined): Marker | undefined {
+	if (!status) {
+		return undefined;
+	}
+	if (!isContainer(node) || (node.group === true && collapsed)) {
+		return { severity: status.severity, messages: status.messages };
+	}
+	return status.own === undefined ? undefined : { severity: status.own, messages: status.ownMessages ?? status.messages };
+}
+
+/** The marker's box class (DESIGN pipeline-node-error / pipeline-node-warning); `undefined`: none. */
+export function markerClass(marker: Marker | undefined): 'pipeline-node-error' | 'pipeline-node-warning' | undefined {
+	return marker === undefined ? undefined : marker.severity === 'error' ? 'pipeline-node-error' : 'pipeline-node-warning';
+}
+
+/** The marker's codicon, each severity its own (never colour alone); `undefined`: none. */
+export function markerIcon(marker: Marker | undefined): 'codicon-error' | 'codicon-warning' | undefined {
+	return marker === undefined ? undefined : marker.severity === 'error' ? 'codicon-error' : 'codicon-warning';
+}
+
+const sameMarker = (a: Marker | undefined, b: Marker | undefined): boolean => a === b
+	|| (a !== undefined && b !== undefined && a.severity === b.severity
+		&& a.messages.length === b.messages.length && a.messages.every((m, i) => m === b.messages[i]));
+
+/**
+ * The drawn nodes with their markers (`data.marker`), resolved against the model and collapse
+ * state the drawing was made from; unchanged nodes keep their identity.
+ */
+export function markStatus(drawn: Drawn, status: NodeStatusById): ViewNode[] {
+	return drawn.nodes.map((n) => {
+		const marker = markerOf(n.data.node, drawn.collapsed.has(n.id), status[n.id]);
+		if (sameMarker(marker, n.data.marker)) {
+			return n;
+		}
+		return { ...n, data: { ...n.data, marker } };
+	});
+}
+
+/** The most messages a hover lists; the rest are counted on one last line. */
+export const MAX_TITLE_MESSAGES = 20;
+
+/**
+ * A box's hover text: its description, then each of its marker's messages, verbatim, one per
+ * line, at most MAX_TITLE_MESSAGES of them, then `…and N more`.
+ */
+export function nodeTitle(base: string | undefined, marker: Marker | undefined): string | undefined {
+	if (!marker || marker.messages.length === 0) {
+		return base;
+	}
+	const shown = marker.messages.slice(0, MAX_TITLE_MESSAGES);
+	const more = marker.messages.length - shown.length;
+	return [
+		...(base === undefined || base === '' ? [] : [base]),
+		...shown,
+		...(more > 0 ? [`…and ${more} more`] : []),
+	].join('\n');
 }
 
 /** Fit view and zoom animate, except under `prefers-reduced-motion: reduce` (REDUCED_MOTION). */

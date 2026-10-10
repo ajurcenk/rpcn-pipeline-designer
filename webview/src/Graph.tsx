@@ -7,14 +7,16 @@
 // Each new model (ticket 3.6) is laid out again and replaces the drawing in place. The view is
 // placed once per mount, on the first laid-out model with nodes (`firstView`): the viewport saved
 // in `setState` at the end of every move is restored (a recreated webview), else the graph fits.
-// Later models keep the user's pan and zoom.
+// Later models keep the user's pan and zoom. Node status (ticket 3.8): each drawn box gets its
+// error or warning marker from the host's `nodeStatus` (`markStatus`: a leaf and a collapsed group
+// by the roll-up, an expanded group or route by its own severity); the webview maps no ranges.
 
 import { Background, ReactFlow, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PipelineModel } from '../../src/shared/protocol';
+import type { NodeStatusById, PipelineModel } from '../../src/shared/protocol';
 import { loadViewState, saveViewState } from './host';
 import {
-	highlightDrawn, layout, pruneCollapsed, toggleCollapsed, type Collapsed, type Drawn, type ViewNode,
+	highlightDrawn, layout, markStatus, pruneCollapsed, toggleCollapsed, type Collapsed, type Drawn, type ViewNode,
 } from './layout';
 import { ActivateContext, nodeTypes, ToggleContext } from './nodes';
 import { firstView } from './state';
@@ -37,10 +39,12 @@ function fitReadable(instance: ReactFlowInstance<ViewNode, Edge>, width: number)
 	});
 }
 
-export function Graph({ model, selection, onActivate }: {
+export function Graph({ model, selection, nodeStatus, onActivate }: {
 	readonly model: PipelineModel;
 	/** The node under the cursor in the driving editor (`null`: none). */
 	readonly selection: string | null;
+	/** The error and warning markers by node id (3.8). */
+	readonly nodeStatus: NodeStatusById;
 	readonly onActivate: (nodeId: string) => void;
 }) {
 	const [collapsedState, setCollapsedState] = useState<Collapsed>(() => new Set(loadViewState().collapsed ?? []));
@@ -84,7 +88,9 @@ export function Graph({ model, selection, onActivate }: {
 		}
 	}, [instance, laidOut, savedViewport]);
 	// The drawn node to highlight (VIEW_HIGHLIGHT), against the model and collapse state drawn.
-	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection) : []), [laidOut, selection]);
+	// The markers (VIEW_MARKERS), against the same drawing.
+	const marked = useMemo(() => (laidOut ? markStatus(laidOut, nodeStatus) : []), [laidOut, nodeStatus]);
+	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection, marked) : []), [laidOut, selection, marked]);
 	if (!laidOut) {
 		return null;
 	}

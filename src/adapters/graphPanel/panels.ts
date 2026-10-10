@@ -13,16 +13,25 @@
 // changed, and none while the YAML does not parse; it never moves the cursor or reveals the panel
 // for a `selection`. Nothing edits the text (AD-19). The model is built with the ComponentCatalog
 // of the current schema (AD-20, ticket 3.3), derived once per schema object; with no schema the
-// model is empty. Node status and host status are not sent yet (3.8, 3.9), so the snapshot carries
-// them empty.
+// model is empty. Node status (ticket 3.8, AD-17): each panel's NodeStatusService part maps the
+// file's diagnostics (`LintDiagnostics.diagnosticsFor`: Red Hat's plus the deduplicated lint ones)
+// to nodes with `nodeStatusOf` (through `nodeAt` only) and sends `nodeStatus` after every model and
+// whenever those diagnostics change, only when the mapped status changed; while the YAML does not
+// parse the status is frozen (nothing is sent, the snapshot carries the last one) and the next
+// valid model recomputes it. Host status is not sent yet (3.9), so the snapshot says nothing is
+// known.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { componentCatalogue, type ComponentCatalog } from '../../core/catalogue';
 import { buildPipelineModel, nodeAt } from '../../core/graph';
+import { nodeStatusOf, type StatusDiagnostic, type StatusSeverity } from '../../core/nodeStatus';
 import { errorSelection, parseErrorOf } from '../../core/parseError';
 import type { JsonObject } from '../../core/schema';
-import { parseWebviewMessage, type HostMessage, type HostStatus, type ParseError, type PipelineModel } from '../../shared/protocol';
+import {
+	parseWebviewMessage, type HostMessage, type HostStatus, type NodeStatusById, type ParseError, type PipelineModel,
+} from '../../shared/protocol';
+import { LINT_SOURCE, type LintDiagnostics } from '../vscode/diagnostics';
 import { parsedDocument } from '../vscode/parseCache';
 import { graphHtml } from './html';
 
@@ -36,6 +45,34 @@ export function graphTitle(uri: vscode.Uri): string {
 
 /** Until the host reports its status (3.9), the snapshot says nothing is known yet. */
 const SNAPSHOT_HOST_STATUS: HostStatus = { binary: 'unresolved', schema: 'none' };
+
+/** What the graph needs of the file's diagnostics (AD-17): the deduplicated set and its change event. */
+export type GraphDiagnostics = Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
+
+const SEVERITIES: Readonly<Record<vscode.DiagnosticSeverity, StatusSeverity>> = {
+	[vscode.DiagnosticSeverity.Error]: 'error',
+	[vscode.DiagnosticSeverity.Warning]: 'warning',
+	[vscode.DiagnosticSeverity.Information]: 'information',
+	[vscode.DiagnosticSeverity.Hint]: 'hint',
+};
+
+/**
+ * The offset each diagnostic maps at: a lint finding (a whole line from column 1) at the first
+ * non-whitespace character of its start line, so that the line's indentation does not land in
+ * the parent node; any other diagnostic at its range's start.
+ */
+export function statusDiagnostics(doc: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): StatusDiagnostic[] {
+	return diagnostics.map((d) => {
+		let offset = doc.offsetAt(d.range.start);
+		if (d.source === LINT_SOURCE && d.range.start.line < doc.lineCount) {
+			const line = doc.lineAt(d.range.start.line);
+			if (!line.isEmptyOrWhitespace) {
+				offset = doc.offsetAt(new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex));
+			}
+		}
+		return { offset, severity: SEVERITIES[d.severity] ?? 'hint', message: d.message };
+	});
+}
 
 /** How many of a panel's posted messages `posted` keeps (test seam; a bound, not a log). */
 export const MAX_POSTED = 50;
@@ -71,6 +108,17 @@ class GraphPanel implements GraphPanelHandle {
 	 * `nodeAt` of the cursor in the current model (AD-8).
 	 */
 	private sentSelection: string | null = null;
+	/**
+	 * The node status last computed from a valid model and sent (in a snapshot or a `nodeStatus`),
+	 * with its serialisation; frozen while the YAML does not parse (AD-17).
+	 */
+	private status: NodeStatusById = {};
+	private sentStatus = '{}';
+	/**
+	 * The serialisation of the last status handed to `post` and not yet resolved, so that two
+	 * diagnostics changes in a row do not both send the same status while the first post is in flight.
+	 */
+	private postingStatus: string | undefined;
 
 	constructor(
 		readonly uri: vscode.Uri,
@@ -79,6 +127,8 @@ class GraphPanel implements GraphPanelHandle {
 		private readonly catalogue: () => ComponentCatalog | undefined,
 		/** The file's driving editor, else a visible editor for it (`undefined`: none is visible). */
 		private readonly editor: () => vscode.TextEditor | undefined,
+		/** The file's diagnostics: Red Hat's plus the deduplicated lint ones (AD-12, AD-17). */
+		private readonly diagnostics: () => readonly vscode.Diagnostic[],
 	) {
 		this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
 	}
@@ -87,19 +137,25 @@ class GraphPanel implements GraphPanelHandle {
 		try {
 			const msg = parseWebviewMessage(message);
 			if (msg?.type === 'ready') {
-				const state = this.state(await this.document());
+				const doc = await this.document();
+				const state = this.state(doc);
 				// While the YAML is broken the highlight stays as it was (BROKEN, SNAPSHOT).
 				const selection = state.model ? this.cursorNode(state.model) : this.sentSelection;
 				this.sentSelection = selection;
-				await this.post({
+				// While the YAML is broken, the frozen status (SNAPSHOT).
+				const status = state.model ? this.computeStatus(doc, state.model) : undefined;
+				const delivered = await this.post({
 					type: 'snapshot',
 					// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED).
 					model: state.model ?? this.lastModel,
 					...(state.parseError ? { parseError: state.parseError } : {}),
-					nodeStatus: {},
+					nodeStatus: this.status,
 					selection,
 					hostStatus: SNAPSHOT_HOST_STATUS,
 				});
+				if (delivered) {
+					this.sentStatus = status ?? JSON.stringify(this.status);
+				}
 			} else if (msg?.type === 'nodeActivated') {
 				await this.activate(msg.nodeId);
 			} else if (msg?.type === 'bannerClicked') {
@@ -123,6 +179,33 @@ class GraphPanel implements GraphPanelHandle {
 			}
 			await this.post({ type: 'model', model: state.model! });
 			await this.sendSelection(state.model!);
+			// Known, transient: Red Hat's published ranges are not shifted by an edit, so until Red Hat
+			// republishes (debounced, well under a second) one of its markers can sit one node off.
+			await this.sendStatus(doc, state.model!);
+		} catch (e) {
+			this.fail(e);
+		}
+	}
+
+	/**
+	 * The file's diagnostics changed: `nodeStatus` when the mapped status changed (SEND, SAME,
+	 * CLEAR), nothing while the YAML does not parse (FROZEN). The service creates no diagnostics,
+	 * so the only churn it could cause itself is re-sending an unchanged status, which it never does.
+	 */
+	async diagnosticsChanged(): Promise<void> {
+		try {
+			const key = this.uri.toString();
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+			if (!doc) {
+				// The document is gone: its diagnostics no longer describe anything the graph shows.
+				this.status = {};
+				await this.postStatus('{}');
+				return;
+			}
+			const state = this.state(doc);
+			if (state.model) {
+				await this.sendStatus(doc, state.model);
+			}
 		} catch (e) {
 			this.fail(e);
 		}
@@ -149,12 +232,56 @@ class GraphPanel implements GraphPanelHandle {
 		this.subscriptions.forEach((d) => d.dispose());
 	}
 
-	private async post(message: HostMessage): Promise<void> {
+	/**
+	 * Posts `message`; `true` once the post resolved, `false` if it threw (a disposed panel). A
+	 * post that resolves `false` (a webview that is not live yet) still counts as sent: such a
+	 * webview posts `ready` when it comes alive and gets the full snapshot, so re-sending would only
+	 * churn.
+	 */
+	private async post(message: HostMessage): Promise<boolean> {
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {
 			this.posted.splice(0, this.posted.length - MAX_POSTED);
 		}
-		await this.panel.webview.postMessage(message);
+		try {
+			await this.panel.webview.postMessage(message);
+			return true;
+		} catch (e) {
+			this.fail(e);
+			return false;
+		}
+	}
+
+	/**
+	 * Maps the file's diagnostics onto `model` and makes that the current status; returns its
+	 * serialisation. What was sent is recorded only once a post succeeds.
+	 */
+	private computeStatus(doc: vscode.TextDocument, model: PipelineModel): string {
+		this.status = nodeStatusOf(model, statusDiagnostics(doc, this.diagnostics()));
+		return JSON.stringify(this.status);
+	}
+
+	/** Sends `nodeStatus` for `model`, unless the webview already has (or is being sent) that status. */
+	private async sendStatus(doc: vscode.TextDocument, model: PipelineModel): Promise<void> {
+		await this.postStatus(this.computeStatus(doc, model));
+	}
+
+	/**
+	 * Posts the current status (whose serialisation is `serialised`) unless it is the one sent or
+	 * in flight; it becomes the sent one only once the post succeeded.
+	 */
+	private async postStatus(serialised: string): Promise<void> {
+		if (serialised === (this.postingStatus ?? this.sentStatus)) {
+			return;
+		}
+		this.postingStatus = serialised;
+		const ok = await this.post({ type: 'nodeStatus', byId: this.status });
+		if (this.postingStatus === serialised) {
+			this.postingStatus = undefined;
+		}
+		if (ok) {
+			this.sentStatus = serialised;
+		}
 	}
 
 	/** Sends `selection` for the cursor in `model`, unless the webview already has it. */
@@ -262,6 +389,8 @@ export interface GraphPanelsOptions {
 	readonly log: (line: string) => void;
 	/** The current transformed schema (AD-10), `undefined` while there is none. */
 	readonly schema: () => JsonObject | undefined;
+	/** The files' diagnostics for node status (AD-17): `LintDiagnostics` in production. */
+	readonly diagnostics: GraphDiagnostics;
 }
 
 /** One catalogue per schema object: derived once, dropped with the schema (AD-20). */
@@ -318,6 +447,10 @@ export class GraphPanels implements vscode.Disposable {
 					this.focused = editor;
 					this.drive(editor);
 				}
+			}),
+			// Node status (AD-17): only files with a panel.
+			options.diagnostics.onDidChangeDiagnostics((uri) => {
+				void this.panels.get(uri.toString())?.diagnosticsChanged();
 			}),
 			vscode.window.onDidChangeVisibleTextEditors((visible) => {
 				for (const [key, editor] of [...this.driving]) {
@@ -398,6 +531,7 @@ export class GraphPanels implements vscode.Disposable {
 				this.options.log,
 				() => catalogueOf(this.options.schema()),
 				() => this.editorFor(key),
+				() => this.options.diagnostics.diagnosticsFor(target),
 			);
 			this.panels.set(key, graph);
 			panel.onDidDispose(() => {
