@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { REPO_ROOT } from '../../helpers/fakeBinary';
 import { waitFor, waitForAsync } from '../helpers';
-import { api, completionLabels, completionOffers, EXTRA_INPUT, hoverText, openYaml, schemaFrom, setBinaryPath, useSchemaBinary } from '../schemaHarness';
+import { api, completionOffers, EXTRA_INPUT, hoverText, openYaml, schemaFrom, setBinaryPath, useSchemaBinary } from '../schemaHarness';
 
 suite('Schema contributor (integration)', function () {
 	this.timeout(90_000);
@@ -37,7 +37,13 @@ suite('Schema contributor (integration)', function () {
 		const doc = await openYaml('k8s.yaml', 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\n\n');
 		assert.strictEqual(api().detection.isDetected(doc.uri), false);
 		assert.strictEqual(api().schemaContributor.requestSchema(doc.uri.toString()), undefined);
-		const labels = await completionLabels(doc, new vscode.Position(4, 0));
+		// VS Code's word-based suggestions (kind Text, words from every open document) are not
+		// completions from a schema; Red Hat 1.25.0 lets them through where 1.24.0 did not.
+		const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+			'vscode.executeCompletionItemProvider', doc.uri, new vscode.Position(4, 0));
+		const labels = (list?.items ?? [])
+			.filter((i) => i.kind !== vscode.CompletionItemKind.Text)
+			.map((i) => (typeof i.label === 'string' ? i.label : i.label.label));
 		for (const key of ['input', 'pipeline', 'output', 'cache_resources']) {
 			assert.ok(!labels.includes(key), `unexpected Redpanda Connect completion "${key}": ${labels.join(', ')}`);
 		}
