@@ -2,9 +2,10 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { GraphPanels, type GraphPanelHandle } from '../../../adapters/graphPanel/panels';
-import { type ExtensionApi } from '../../../extension';
-import type { HostMessage, NodeStatusById, PipelineModel, SnapshotMessage } from '../../../shared/protocol';
+import { GraphPanels, type GraphPanelHandle, type GraphPanelsOptions } from '../../../adapters/graphPanel/panels';
+import { binaryActions, INSTALL_GUIDE_URL, type BinaryNotifier } from '../../../adapters/redpandaConnect/notify';
+import { createVsCodeNotifier, type ExtensionApi } from '../../../extension';
+import type { HostMessage, HostStatus, NodeStatusById, PipelineModel, SnapshotMessage } from '../../../shared/protocol';
 import { makeTempDir, REPO_ROOT } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
 import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../schemaHarness';
@@ -12,7 +13,7 @@ import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../sche
 // The graph panel through its host-side seam (`graphPanels.panelFor`, `receive`): the tests
 // check what the host posts and does, and don't drive the webview DOM (ticket 3.1). The model is
 // built with the schema of the fake 4.112.0 binary (ticket 3.3, AD-20).
-suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, integration)', function () {
+suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, 3.9, integration)', function () {
 	this.timeout(60_000);
 	let dir: string;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
@@ -151,16 +152,16 @@ suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, integration)', function () {
 			['mapping', 'path:pipeline.processors[1].catch'],
 		);
 		assert.strictEqual(model.edges.length, 5);
-		// The full snapshot (AD-5): no diagnostics, so no node status (3.8); host status is not
-		// reported yet (3.9); the selection is the node under the cursor (3.7), none on the comment
-		// the file starts with.
+		// The full snapshot (AD-5): no diagnostics, so no node status (3.8); the real host status
+		// (3.9); the selection is the node under the cursor (3.7), none on the comment the file
+		// starts with.
 		const snapshot = handle.posted.find((m) => m.type === 'snapshot')!;
 		assert.deepStrictEqual({ ...snapshot, model: undefined }, {
 			type: 'snapshot',
 			model: undefined,
 			nodeStatus: {},
 			selection: null,
-			hostStatus: { binary: 'unresolved', schema: 'none' },
+			hostStatus: { binary: 'ok', schema: 'ok' },
 		});
 	});
 
@@ -554,19 +555,35 @@ suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, integration)', function () {
 		assert.ok(!api().outputLines().slice(logged).some((l) => l.startsWith('Graph')), 'no error logged');
 	});
 
-	test('NO_SCHEMA: with no schema snapshot the panel answers ready with the empty model', async () => {
-		const doc = await open('no-schema.yaml', 'input:\n  stdin: {}\noutput:\n  stdout: {}\n');
-		const panels = new GraphPanels({
+	/** A GraphPanels of the test's own, on the extension's binary and schema unless overridden. */
+	function testPanels(overrides: Partial<GraphPanelsOptions> = {}): GraphPanels {
+		return new GraphPanels({
 			extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
 			log: () => undefined,
-			schema: () => undefined,
+			binary: api().redpandaConnect,
+			schema: api().schemaStore,
 			diagnostics: { diagnosticsFor: () => [], onDidChangeDiagnostics: () => ({ dispose: () => undefined }) },
+			actions: undefined,
+			...overrides,
+		});
+	}
+
+	test('NO_SCHEMA: with an ok binary and no schema the panel answers ready with no model', async () => {
+		const doc = await open('no-schema.yaml', 'input:\n  stdin: {}\noutput:\n  stdout: {}\n');
+		const panels = testPanels({
+			schema: { current: undefined, loading: false, onDidChange: () => ({ dispose: () => undefined }), settled: async () => undefined },
 		});
 		try {
 			const handle = panels.show(doc.uri);
 			assert.ok(handle, 'a graph panel for the file');
 			await handle.receive({ type: 'ready' });
-			assert.deepStrictEqual(snapshots(handle).at(-1), { nodes: [], edges: [] });
+			const snapshot = handle.posted.filter((m): m is SnapshotMessage => m.type === 'snapshot').at(-1);
+			assert.strictEqual(snapshot?.model, null);
+			assert.deepStrictEqual(snapshot.hostStatus, { binary: 'ok', schema: 'none' });
+			// An edit sends no model either.
+			await insert(doc, 0, '# x\n');
+			await settle();
+			assert.deepStrictEqual(live(handle), []);
 		} finally {
 			panels.dispose();
 		}
@@ -660,12 +677,7 @@ suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, integration)', function () {
 	function fakeDiagnostics() {
 		const emitter = new vscode.EventEmitter<vscode.Uri>();
 		let current: vscode.Diagnostic[] = [];
-		const panels = new GraphPanels({
-			extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
-			log: () => undefined,
-			schema: () => api().schemaStore.current?.json,
-			diagnostics: { diagnosticsFor: () => current, onDidChangeDiagnostics: emitter.event },
-		});
+		const panels = testPanels({ diagnostics: { diagnosticsFor: () => current, onDidChangeDiagnostics: emitter.event } });
 		return {
 			panels,
 			set(uri: vscode.Uri, diagnostics: vscode.Diagnostic[]) {
@@ -751,5 +763,190 @@ suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, integration)', function () {
 		} finally {
 			fake.dispose();
 		}
+	});
+	// Host status and empty states (3.9, AD-9, AD-20).
+	/** The `hostStatus` messages posted, in order. */
+	const hostStatuses = (handle: GraphPanelHandle): HostStatus[] =>
+		handle.posted.flatMap((m) => (m.type === 'hostStatus' ? [{ binary: m.binary, schema: m.schema }] : []));
+	const lastSnapshot = (handle: GraphPanelHandle) => handle.posted.filter((m): m is SnapshotMessage => m.type === 'snapshot').at(-1);
+	const models = (handle: GraphPanelHandle): PipelineModel[] => handle.posted.flatMap((m) => (m.type === 'model' ? [m.model] : []));
+
+	/** Points `redpandaConnect.binaryPath` at a file that is not there and waits for `missing` with no schema. */
+	async function loseBinary(name: string): Promise<string> {
+		const missing = path.join(h.dir, name);
+		fs.rmSync(missing, { force: true });
+		await setBinaryPath(missing);
+		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'missing' && api().schemaStore.current === undefined, 15_000),
+			`binaryState: ${JSON.stringify(api().redpandaConnect.state)}`);
+		return missing;
+	}
+	async function restoreBinary(): Promise<void> {
+		await setBinaryPath(h.fakeBinary);
+		await schemaFrom(h.fakeBinary, '4.112.0');
+	}
+
+	/** The binary warning's actions on the extension's binary, with a fake picker and browser (the real ones need a human). */
+	function fakeActions() {
+		const log: string[] = [];
+		const opened: string[] = [];
+		const warned: string[] = [];
+		const fake = { picked: undefined as string | undefined };
+		const notifier: BinaryNotifier = {
+			...createVsCodeNotifier((line) => log.push(line)),
+			showWarning: async (message) => { warned.push(message); return undefined; },
+			openExternal: async (url) => { opened.push(url); },
+			pickBinary: async () => fake.picked,
+		};
+		let shown = 0;
+		const actions = binaryActions(api().redpandaConnect, notifier, (line) => log.push(line), {
+			get shown() { return shown; },
+			show: (message) => { shown++; warned.push(message); },
+		});
+		return { actions, fake, opened, warned, log };
+	}
+
+	test('MISSING / SET_PATH: no binary gives no model and the no-binary status; Set path draws the graph in the same panel', async () => {
+		const doc = await open('missing.yaml', VALID);
+		await loseBinary('not-there');
+		const { actions, fake } = fakeActions();
+		const panels = testPanels({ actions });
+		try {
+			const handle = panels.show(doc.uri)!;
+			await handle.receive({ type: 'ready' });
+			const snapshot = lastSnapshot(handle);
+			assert.strictEqual(snapshot?.model, null);
+			assert.deepStrictEqual(snapshot.hostStatus, { binary: 'missing', schema: 'none' });
+			assert.deepStrictEqual(live(handle), [], 'no model while the binary is missing');
+
+			// The pick is cancelled: nothing changes.
+			const count = handle.posted.length;
+			await handle.receive({ type: 'setPathRequested' });
+			await settle();
+			assert.strictEqual(api().redpandaConnect.state.kind, 'missing');
+			assert.deepStrictEqual(handle.posted.slice(count).filter((m) => m.type !== 'snapshot'), []);
+
+			fake.picked = h.fakeBinary;
+			await handle.receive({ type: 'setPathRequested' });
+			assert.ok(await waitFor(() => models(handle).length > 0, 30_000),
+				`no model after Set path: ${JSON.stringify(handle.posted.map((m) => m.type))}\n${api().outputLines().slice(-5).join('\n')}`);
+			assert.deepStrictEqual(ids(models(handle)[0]), ['path:input', 'path:output']);
+			// hostStatus, then the model.
+			const types = handle.posted.map((m) => m.type);
+			assert.ok(types.lastIndexOf('hostStatus') < types.indexOf('model'), `${types}`);
+			assert.deepStrictEqual(hostStatuses(handle).at(-1), { binary: 'ok', schema: 'ok' });
+			assert.strictEqual(vscode.workspace.getConfiguration('redpandaConnect').inspect<string>('binaryPath')?.globalValue, h.fakeBinary);
+		} finally {
+			panels.dispose();
+			await restoreBinary();
+		}
+	});
+
+	test('RETRY: Retry with nothing fixed changes nothing; after the binary is fixed outside, the graph draws in the same panel', async () => {
+		const doc = await open('retry.yaml', VALID);
+		const missing = await loseBinary('installed-later');
+		const { actions } = fakeActions();
+		const panels = testPanels({ actions });
+		try {
+			const handle = panels.show(doc.uri)!;
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle)?.hostStatus, { binary: 'missing', schema: 'none' });
+			await handle.receive({ type: 'retryRequested' });
+			await settle();
+			assert.deepStrictEqual(hostStatuses(handle), [], 'still missing: the state stays');
+			assert.deepStrictEqual(live(handle), []);
+
+			// Installed outside VS Code: the setting does not change, so only Retry notices.
+			fs.copyFileSync(h.fakeBinary, missing);
+			fs.chmodSync(missing, 0o755);
+			await handle.receive({ type: 'retryRequested' });
+			assert.ok(await waitFor(() => models(handle).length > 0, 30_000), `no model after Retry: ${JSON.stringify(api().redpandaConnect.state)}`);
+			assert.deepStrictEqual(ids(models(handle)[0]), ['path:input', 'path:output']);
+			assert.deepStrictEqual(hostStatuses(handle).at(-1), { binary: 'ok', schema: 'ok' });
+		} finally {
+			panels.dispose();
+			await restoreBinary();
+			fs.rmSync(missing, { force: true });
+		}
+	});
+
+	test('GUIDE: installGuideRequested opens the install guide', async () => {
+		const doc = await open('guide.yaml', VALID);
+		const { actions, opened } = fakeActions();
+		const panels = testPanels({ actions });
+		try {
+			const handle = panels.show(doc.uri)!;
+			await handle.receive({ type: 'installGuideRequested' });
+			assert.deepStrictEqual(opened, [INSTALL_GUIDE_URL]);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('LATE_SCHEMA: a panel open while the schema loads gets the model when it arrives, with no ready', async () => {
+		const doc = await open('late-schema.yaml', `input:\n  ${EXTRA_INPUT}: {}\n`);
+		await loseBinary('late');
+		const panels = testPanels();
+		try {
+			const handle = panels.show(doc.uri)!;
+			await handle.receive({ type: 'ready' });
+			assert.strictEqual(lastSnapshot(handle)?.model, null);
+			await setBinaryPath(h.changedBinary);
+			assert.ok(await waitFor(() => models(handle).length > 0, 30_000), `no model: ${JSON.stringify(handle.posted.map((m) => m.type))}`);
+			assert.strictEqual(models(handle)[0].nodes[0]?.component, EXTRA_INPUT, 'built with the new schema');
+			assert.deepStrictEqual(hostStatuses(handle).at(-1), { binary: 'ok', schema: 'ok' });
+			// Any status before the last one is the loading one (timing decides whether it is seen).
+			for (const status of hostStatuses(handle).slice(0, -1)) {
+				assert.deepStrictEqual(status, { binary: 'ok', schema: 'loading' });
+			}
+		} finally {
+			panels.dispose();
+			await restoreBinary();
+		}
+	});
+
+	test('LOST: the binary going missing while a graph is shown sends hostStatus and no model', async () => {
+		const { doc, handle } = await withGraph('lost.yaml', VALID);
+		let back = 0;
+		try {
+			assert.ok(lastSnapshot(handle)?.model);
+			const count = handle.posted.length;
+			await loseBinary('lost');
+			assert.ok(await waitFor(() => hostStatuses(handle).some((s) => s.binary === 'missing'), 10_000), JSON.stringify(hostStatuses(handle)));
+			assert.deepStrictEqual(hostStatuses(handle).at(-1), { binary: 'missing', schema: 'none' });
+			// Edits send nothing while there is no schema, a broken one included.
+			await insert(doc, doc.getText().indexOf('output:'), ' ');
+			await settle();
+			assert.deepStrictEqual(handle.posted.slice(count).filter((m) => m.type === 'model' || m.type === 'parseError'), []);
+			back = handle.posted.length;
+		} finally {
+			await restoreBinary();
+		}
+		// The schema is back while the YAML does not parse: the last valid graph, then the banner (as a snapshot shows it).
+		assert.ok(await waitFor(() => handle.posted.slice(back).some((m) => m.type === 'parseError'), 10_000),
+			JSON.stringify(handle.posted.slice(back).map((m) => m.type)));
+		const after = handle.posted.slice(back).filter((m) => m.type === 'model' || m.type === 'parseError');
+		assert.deepStrictEqual(after.map((m) => m.type), ['model', 'parseError']);
+		assert.deepStrictEqual(ids(after[0].type === 'model' ? after[0].model : undefined), ['path:input', 'path:output']);
+		// Undo the inserted space: the file is valid again.
+		const broken = doc.getText().indexOf(' output:');
+		await replace(doc, broken, broken + 1, '');
+		assert.strictEqual(doc.getText(), VALID);
+	});
+
+	test('NOTHING: a valid config with no pipeline sections gives a model with no nodes; typing an input draws it', async () => {
+		const { handle } = await withGraph('nothing.yaml', 'http: {}\n');
+		assert.deepStrictEqual(lastSnapshot(handle)?.model, { nodes: [], edges: [] });
+		assert.deepStrictEqual(lastSnapshot(handle)?.hostStatus, { binary: 'ok', schema: 'ok' });
+
+		const empty = await withGraph('empty.yaml', '');
+		assert.deepStrictEqual(lastSnapshot(empty.handle)?.model, { nodes: [], edges: [] });
+		await insert(empty.doc, 0, 'input:\n  stdin: {}\n');
+		assert.ok(await waitFor(() => models(empty.handle).some((m) => m.nodes.length > 0), 10_000));
+		assert.deepStrictEqual(ids(models(empty.handle).at(-1)), ['path:input']);
+	});
+
+	test('RESOURCES_ONLY: only *_resources draws the resources', async () => {
+		const { handle } = await withGraph('resources-only.yaml', 'cache_resources:\n  - label: inmem\n    memory: {}\n');
+		assert.deepStrictEqual(ids(lastSnapshot(handle)?.model ?? undefined), ['res:cache:inmem']);
 	});
 });

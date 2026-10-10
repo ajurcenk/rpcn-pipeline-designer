@@ -103,6 +103,11 @@ export class SchemaStore implements vscode.Disposable {
 		return this.snapshot;
 	}
 
+	/** Whether a generation is in progress (read-only). */
+	get loading(): boolean {
+		return this.inFlight !== undefined;
+	}
+
 	/** Resolves once the generation in progress (if any) has finished, with `current`. */
 	async settled(): Promise<SchemaSnapshot | undefined> {
 		while (this.inFlight) {

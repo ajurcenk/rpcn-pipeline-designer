@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import {
 	formatVersion, isRpkConnectNotInstalled, meetsMinimum, MIN_VERSION, parseVersion, parseVersionOutput,
 } from '../../core/version';
-import { attachBinaryNotifications, BinaryNotifications, BinaryNotifier } from './notify';
+import { attachBinaryNotifications, BinaryActions, BinaryNotifications, BinaryNotifier } from './notify';
 import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, ProcessOutcome, readVersion } from './process';
 import { errorText, firstNonEmptyLine } from './text';
 
@@ -342,6 +342,14 @@ export class RedpandaConnect implements vscode.Disposable {
 	 */
 	showBinaryWarning(): boolean {
 		return this.notifications?.showAgain(this.current) ?? false;
+	}
+
+	/**
+	 * The binary warning's actions (Install guide, Set path, Retry), the same ones the warning
+	 * runs; `undefined` when there is no notifier.
+	 */
+	get actions(): BinaryActions | undefined {
+		return this.notifications?.actions;
 	}
 
 	get state(): BinaryState {

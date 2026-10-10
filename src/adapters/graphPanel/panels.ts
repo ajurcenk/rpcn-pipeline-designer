@@ -12,14 +12,19 @@
 // and after every model, the host sends `selection` with `nodeAt` of the cursor, only when it
 // changed, and none while the YAML does not parse; it never moves the cursor or reveals the panel
 // for a `selection`. Nothing edits the text (AD-19). The model is built with the ComponentCatalog
-// of the current schema (AD-20, ticket 3.3), derived once per schema object; with no schema the
-// model is empty. Node status (ticket 3.8, AD-17): each panel's NodeStatusService part maps the
+// of the current schema (AD-20, ticket 3.3), derived once per schema object. Node status (ticket 3.8, AD-17): each panel's NodeStatusService part maps the
 // file's diagnostics (`LintDiagnostics.diagnosticsFor`: Red Hat's plus the deduplicated lint ones)
 // to nodes with `nodeStatusOf` (through `nodeAt` only) and sends `nodeStatus` after every model and
 // whenever those diagnostics change, only when the mapped status changed; while the YAML does not
 // parse the status is frozen (nothing is sent, the snapshot carries the last one) and the next
-// valid model recomputes it. Host status is not sent yet (3.9), so the snapshot says nothing is
-// known.
+// valid model recomputes it. Host status and empty states (ticket 3.9, AD-9, AD-20): the snapshot
+// carries the real `hostStatus {binary, schema}`, and each panel gets a `hostStatus` whenever it
+// changes. With no schema (the binary is not `ok`, the schema is loading, or generation failed)
+// the host sends no model: `model: null` in the snapshot and no `model` messages, and no parse
+// error either (the webview drops both on a `hostStatus` without a schema, so a banner never
+// outlives the YAML it reports). When a schema arrives, each open panel gets `hostStatus`, then the
+// model, the selection and the node status (or the parse error), with no `ready` needed. The webview's Install guide, Set path and
+// Retry buttons post intents that run the binary warning's own actions (`BinaryActions`).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -28,6 +33,9 @@ import { buildPipelineModel, nodeAt } from '../../core/graph';
 import { nodeStatusOf, type StatusDiagnostic, type StatusSeverity } from '../../core/nodeStatus';
 import { errorSelection, parseErrorOf } from '../../core/parseError';
 import type { JsonObject } from '../../core/schema';
+import type { BinaryState } from '../redpandaConnect/binary';
+import type { BinaryActions } from '../redpandaConnect/notify';
+import type { SchemaSnapshot } from '../redpandaConnect/schema';
 import {
 	parseWebviewMessage, type HostMessage, type HostStatus, type NodeStatusById, type ParseError, type PipelineModel,
 } from '../../shared/protocol';
@@ -42,9 +50,6 @@ export const GRAPH_VIEW_TYPE = 'redpandaConnect.graph';
 export function graphTitle(uri: vscode.Uri): string {
 	return `Graph: ${path.posix.basename(uri.path)}`;
 }
-
-/** Until the host reports its status (3.9), the snapshot says nothing is known yet. */
-const SNAPSHOT_HOST_STATUS: HostStatus = { binary: 'unresolved', schema: 'none' };
 
 /** What the graph needs of the file's diagnostics (AD-17): the deduplicated set and its change event. */
 export type GraphDiagnostics = Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
@@ -119,6 +124,13 @@ class GraphPanel implements GraphPanelHandle {
 	 * diagnostics changes in a row do not both send the same status while the first post is in flight.
 	 */
 	private postingStatus: string | undefined;
+	/** The serialisation of the host status last handed to the webview (snapshot or `hostStatus`). */
+	private sentHost: string | undefined;
+	/**
+	 * The catalogue the webview's model was built with, so that a new schema sends the model once;
+	 * `undefined` while the webview has no model built with a schema it still shows.
+	 */
+	private modelCatalogue: ComponentCatalog | undefined;
 
 	constructor(
 		readonly uri: vscode.Uri,
@@ -129,6 +141,10 @@ class GraphPanel implements GraphPanelHandle {
 		private readonly editor: () => vscode.TextEditor | undefined,
 		/** The file's diagnostics: Red Hat's plus the deduplicated lint ones (AD-12, AD-17). */
 		private readonly diagnostics: () => readonly vscode.Diagnostic[],
+		/** The binary and schema status (ticket 3.9). */
+		private readonly hostStatus: () => HostStatus,
+		/** The binary warning's actions; `undefined`: the empty state's buttons do nothing. */
+		private readonly actions: () => BinaryActions | undefined,
 	) {
 		this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
 	}
@@ -138,20 +154,27 @@ class GraphPanel implements GraphPanelHandle {
 			const msg = parseWebviewMessage(message);
 			if (msg?.type === 'ready') {
 				const doc = await this.document();
+				// Read after the await, with the catalogue, so a change meanwhile is not overwritten.
+				const hostStatus = this.hostStatus();
 				const state = this.state(doc);
+				const catalogue = this.built?.catalogue;
 				// While the YAML is broken the highlight stays as it was (BROKEN, SNAPSHOT).
 				const selection = state.model ? this.cursorNode(state.model) : this.sentSelection;
 				this.sentSelection = selection;
 				// While the YAML is broken, the frozen status (SNAPSHOT).
 				const status = state.model ? this.computeStatus(doc, state.model) : undefined;
+				// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED);
+				// with no schema, none (MISSING).
+				const model = catalogue ? state.model ?? this.lastModel : null;
+				this.sentHost = JSON.stringify(hostStatus);
+				this.modelCatalogue = model ? catalogue : undefined;
 				const delivered = await this.post({
 					type: 'snapshot',
-					// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED).
-					model: state.model ?? this.lastModel,
+					model,
 					...(state.parseError ? { parseError: state.parseError } : {}),
 					nodeStatus: this.status,
 					selection,
-					hostStatus: SNAPSHOT_HOST_STATUS,
+					hostStatus,
 				});
 				if (delivered) {
 					this.sentStatus = status ?? JSON.stringify(this.status);
@@ -160,6 +183,12 @@ class GraphPanel implements GraphPanelHandle {
 				await this.activate(msg.nodeId);
 			} else if (msg?.type === 'bannerClicked') {
 				await this.selectParseError();
+			} else if (msg?.type === 'installGuideRequested') {
+				await this.actions()?.installGuide();
+			} else if (msg?.type === 'setPathRequested') {
+				await this.actions()?.setPath();
+			} else if (msg?.type === 'retryRequested') {
+				await this.actions()?.retry();
 			}
 		} catch (e) {
 			this.fail(e);
@@ -167,8 +196,8 @@ class GraphPanel implements GraphPanelHandle {
 	}
 
 	/**
-	 * The panel's document changed (AD-6): the complete model, or only the parse error. After a
-	 * model, the node under the cursor is recomputed (AFTER_EDIT).
+	 * The panel's document changed (AD-6): the complete model, or only the parse error; with no
+	 * schema, no model. After a model, the node under the cursor is recomputed (AFTER_EDIT).
 	 */
 	async changed(doc: vscode.TextDocument): Promise<void> {
 		try {
@@ -177,11 +206,51 @@ class GraphPanel implements GraphPanelHandle {
 				await this.post({ type: 'parseError', ...state.parseError });
 				return;
 			}
-			await this.post({ type: 'model', model: state.model! });
-			await this.sendSelection(state.model!);
-			// Known, transient: Red Hat's published ranges are not shifted by an edit, so until Red Hat
-			// republishes (debounced, well under a second) one of its markers can sit one node off.
-			await this.sendStatus(doc, state.model!);
+			if (state.model) {
+				await this.sendModel(doc, state.model);
+			}
+		} catch (e) {
+			this.fail(e);
+		}
+	}
+
+	/**
+	 * The binary state or the schema changed (ticket 3.9): `hostStatus` when it changed (LOST),
+	 * then, when a schema the webview's model was not built with is here, the model, the selection
+	 * and the node status (SET_PATH, RETRY, LATE_SCHEMA), or the parse error while the YAML does
+	 * not parse.
+	 */
+	async hostChanged(): Promise<void> {
+		try {
+			const hostStatus = this.hostStatus();
+			const serialised = JSON.stringify(hostStatus);
+			if (serialised !== this.sentHost) {
+				this.sentHost = serialised;
+				await this.post({ type: 'hostStatus', ...hostStatus });
+			}
+			if (hostStatus.schema !== 'ok') {
+				// The webview draws no model without a schema; the next schema sends one.
+				this.modelCatalogue = undefined;
+				return;
+			}
+			const catalogue = this.catalogue();
+			const key = this.uri.toString();
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+			if (!catalogue || catalogue === this.modelCatalogue || !doc) {
+				return;
+			}
+			const state = this.state(doc);
+			if (state.parseError) {
+				// The webview dropped its model and banner with the schema; as in a snapshot, the banner
+				// shows again over the last valid graph, if any.
+				this.modelCatalogue = catalogue;
+				if (this.lastModel) {
+					await this.post({ type: 'model', model: this.lastModel });
+				}
+				await this.post({ type: 'parseError', ...state.parseError });
+			} else if (state.model) {
+				await this.sendModel(doc, state.model);
+			}
 		} catch (e) {
 			this.fail(e);
 		}
@@ -284,6 +353,16 @@ class GraphPanel implements GraphPanelHandle {
 		}
 	}
 
+	/** Sends `model`, then the selection and the node status for it, when they changed. */
+	private async sendModel(doc: vscode.TextDocument, model: PipelineModel): Promise<void> {
+		this.modelCatalogue = this.built?.catalogue;
+		await this.post({ type: 'model', model });
+		await this.sendSelection(model);
+		// Known, transient: Red Hat's published ranges are not shifted by an edit, so until Red Hat
+		// republishes (debounced, well under a second) one of its markers can sit one node off.
+		await this.sendStatus(doc, model);
+	}
+
 	/** Sends `selection` for the cursor in `model`, unless the webview already has it. */
 	private async sendSelection(model: PipelineModel): Promise<void> {
 		const nodeId = this.cursorNode(model);
@@ -314,26 +393,31 @@ class GraphPanel implements GraphPanelHandle {
 
 	/**
 	 * The document's model, or its parse error (one parse per version, through the shared cache).
-	 * A valid model becomes the panel's last valid model.
+	 * A valid model becomes the panel's last valid model. With no schema there is neither (AD-20):
+	 * the webview shows an empty state, and the last valid model is kept.
 	 */
 	private state(doc: vscode.TextDocument): { readonly model?: PipelineModel; readonly parseError?: ParseError } {
 		const catalogue = this.catalogue();
 		if (this.built?.doc === doc && this.built.version === doc.version && this.built.catalogue === catalogue) {
 			return this.built.state;
 		}
+		const state = catalogue ? this.build(doc, catalogue) : {};
+		this.built = { doc, version: doc.version, catalogue, state };
+		return state;
+	}
+
+	/** The model with `catalogue`, which becomes the last valid model, or the parse error. */
+	private build(doc: vscode.TextDocument, catalogue: ComponentCatalog): { readonly model?: PipelineModel; readonly parseError?: ParseError } {
 		const { text, parsed } = parsedDocument(doc);
 		const parseError = parseErrorOf(parsed);
 		let state: { readonly model?: PipelineModel; readonly parseError?: ParseError };
 		if (parseError) {
 			state = { parseError };
 		} else {
-			// With no schema snapshot the catalogue is undefined and the builder gives the empty model
-			// (the no-binary empty state is ticket 3.9).
 			const model = buildPipelineModel(parsed, text, catalogue);
 			this.lastModel = model;
 			state = { model };
 		}
-		this.built = { doc, version: doc.version, catalogue, state };
 		return state;
 	}
 
@@ -387,10 +471,44 @@ class GraphPanel implements GraphPanelHandle {
 export interface GraphPanelsOptions {
 	readonly extensionUri: vscode.Uri;
 	readonly log: (line: string) => void;
-	/** The current transformed schema (AD-10), `undefined` while there is none. */
-	readonly schema: () => JsonObject | undefined;
+	/** The binary state and its changes (AD-9): `RedpandaConnect` in production. */
+	readonly binary: GraphBinary;
+	/** The current transformed schema (AD-10) and its changes: `SchemaStore` in production. */
+	readonly schema: GraphSchema;
 	/** The files' diagnostics for node status (AD-17): `LintDiagnostics` in production. */
 	readonly diagnostics: GraphDiagnostics;
+	/**
+	 * The binary warning's actions, run by the empty state's buttons (AD-9): `RedpandaConnect.actions`
+	 * in production. `undefined`: the buttons do nothing.
+	 */
+	readonly actions: BinaryActions | undefined;
+}
+
+/** What the graph needs of the binary state (ticket 3.9). */
+export interface GraphBinary {
+	readonly state: BinaryState;
+	readonly onDidChange: vscode.Event<BinaryState>;
+}
+
+/** What the graph needs of the schema store (ticket 3.9). */
+export interface GraphSchema {
+	readonly current: Pick<SchemaSnapshot, 'json'> | undefined;
+	/** Whether a generation is in progress. */
+	readonly loading: boolean;
+	readonly onDidChange: vscode.Event<unknown>;
+	/** Resolves once the generation in progress (if any) has finished. */
+	settled(): Promise<unknown>;
+}
+
+/**
+ * The host status (ticket 3.9): the binary state's kind; the schema `ok` when there is one,
+ * `loading` while the binary is `ok` and a generation is in progress, else `none`.
+ */
+export function hostStatusOf(binary: BinaryState, schema: Pick<GraphSchema, 'current' | 'loading'>): HostStatus {
+	return {
+		binary: binary.kind,
+		schema: schema.current ? 'ok' : binary.kind === 'ok' && schema.loading ? 'loading' : 'none',
+	};
 }
 
 /** One catalogue per schema object: derived once, dropped with the schema (AD-20). */
@@ -452,6 +570,16 @@ export class GraphPanels implements vscode.Disposable {
 			options.diagnostics.onDidChangeDiagnostics((uri) => {
 				void this.panels.get(uri.toString())?.diagnosticsChanged();
 			}),
+			// Host status (ticket 3.9): every panel. A binary change to `ok` starts a generation (the
+			// schema store subscribed first); the panels hear again once it settles, also when it
+			// produced no schema (which fires no schema change).
+			options.binary.onDidChange(() => {
+				this.hostChanged();
+				if (options.schema.loading) {
+					void options.schema.settled().then(() => this.hostChanged(), () => this.hostChanged());
+				}
+			}),
+			options.schema.onDidChange(() => this.hostChanged()),
 			vscode.window.onDidChangeVisibleTextEditors((visible) => {
 				for (const [key, editor] of [...this.driving]) {
 					if (!visible.includes(editor)) {
@@ -460,6 +588,13 @@ export class GraphPanels implements vscode.Disposable {
 				}
 			}),
 		];
+	}
+
+	/** Every open panel hears that the binary state or the schema changed. */
+	private hostChanged(): void {
+		for (const graph of this.panels.values()) {
+			void graph.hostChanged();
+		}
 	}
 
 	/**
@@ -529,9 +664,11 @@ export class GraphPanels implements vscode.Disposable {
 				target,
 				panel,
 				this.options.log,
-				() => catalogueOf(this.options.schema()),
+				() => catalogueOf(this.options.schema.current?.json),
 				() => this.editorFor(key),
 				() => this.options.diagnostics.diagnosticsFor(target),
+				() => hostStatusOf(this.options.binary.state, this.options.schema),
+				() => this.options.actions,
 			);
 			this.panels.set(key, graph);
 			panel.onDidDispose(() => {

@@ -167,8 +167,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const graphPanels = new GraphPanels({
 		extensionUri: context.extensionUri,
 		log,
-		schema: () => schemaStore.current?.json,
+		binary: redpandaConnect,
+		schema: schemaStore,
 		diagnostics: lintDiagnostics,
+		// The same actions as the binary warning's (built on `createVsCodeNotifier(log)`).
+		actions: redpandaConnect.actions,
 	});
 	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
 

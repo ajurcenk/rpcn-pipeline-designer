@@ -31,6 +31,8 @@ export interface BinaryNotifier {
 
 /** The subscription `attachBinaryNotifications` returns. */
 export interface BinaryNotifications {
+	/** The warning's actions, for the graph panel's empty state (one implementation, AD-9). */
+	readonly actions: BinaryActions;
 	dispose(): void;
 	/**
 	 * Shows the warning for `state` again, with the same copy and actions, outside a transition:
@@ -90,11 +92,78 @@ function pickedOutcome(state: BinaryState, picked: string): string {
 	return 'it is not a usable Redpanda Connect binary (missing, or rpk without "rpk connect install")';
 }
 
+/** The three recovery actions of the binary warning (AD-9), shared by the notification and the graph panel's empty state. */
+export interface BinaryActions {
+	/** Install guide: opens INSTALL_GUIDE_URL. */
+	installGuide(): Promise<void>;
+	/** Set path: picks a file, saves it as `redpandaConnect.binaryPath` and re-resolves. */
+	setPath(): Promise<void>;
+	/** Retry: re-resolves. */
+	retry(): Promise<void>;
+}
+
+/** What Set path needs of the warnings: how many were shown, and showing one more. */
+export interface BinaryWarnings {
+	/** How many warnings have been shown so far. */
+	readonly shown: number;
+	/** Shows the warning `message`, with the three actions. */
+	show(message: string): void;
+}
+
+/**
+ * The binary warning's actions. Set path, Flow 2 failure: if the state is still `missing` /
+ * `invalid` and no transition warning fired (the state value did not change, e.g. an invalid
+ * binary on PATH still wins), the warning is shown again for the current state and the log says
+ * what the picked path resolved to. Retry and background refreshes keep "no warning on an
+ * unchanged state". After `isDisposed()` turns true, nothing more happens.
+ */
+export function binaryActions(
+	source: Pick<BinaryStateSource, 'refresh'>,
+	notifier: BinaryNotifier,
+	log: LogLine,
+	warnings: BinaryWarnings,
+	isDisposed: () => boolean = () => false,
+): BinaryActions {
+	return {
+		async installGuide() {
+			if (isDisposed()) {
+				return;
+			}
+			await notifier.openExternal(INSTALL_GUIDE_URL);
+		},
+		async setPath() {
+			if (isDisposed()) {
+				return;
+			}
+			const picked = await notifier.pickBinary();
+			if (picked === undefined || isDisposed()) {
+				return;
+			}
+			const before = warnings.shown;
+			await notifier.setBinaryPath(picked);
+			const state = await source.refresh();
+			const message = notificationMessage(state);
+			if (isDisposed() || message === undefined || warnings.shown !== before) {
+				return;
+			}
+			log(`Set path: redpandaConnect.binaryPath is now "${picked}", but no usable binary resulted: ${pickedOutcome(state, picked)}.`);
+			warnings.show(message);
+		},
+		async retry() {
+			if (isDisposed()) {
+				return;
+			}
+			await source.refresh();
+		},
+	};
+}
+
 /**
  * Shows one warning per transition of `binaryState` into `missing` or `invalid`.
  * `onDidChange` fires only when the state value changes (including the first resolution
  * at activation), so each such event is a transition; a refresh that leaves the state
- * unchanged fires nothing and shows nothing. Returns the subscription.
+ * unchanged fires nothing and shows nothing. Returns the subscription, whose `actions` are the
+ * warning's actions (for the graph panel's empty state).
  */
 export function attachBinaryNotifications(
 	source: BinaryStateSource,
@@ -114,42 +183,16 @@ export function attachBinaryNotifications(
 			});
 	};
 
-	/**
-	 * Set path: writes the setting and re-resolves. Flow 2 failure: if the state is still
-	 * `missing` / `invalid` and no transition warning fired (the state value did not change,
-	 * e.g. an invalid binary on PATH still wins), the warning is shown again for the current
-	 * state. Retry and background refreshes keep "no warning on an unchanged state".
-	 */
-	const setPath = async (): Promise<void> => {
-		const picked = await notifier.pickBinary();
-		if (picked === undefined || disposed) {
-			return;
-		}
-		const before = shownCount;
-		await notifier.setBinaryPath(picked);
-		const state = await source.refresh();
-		const message = notificationMessage(state);
-		if (disposed || message === undefined || shownCount !== before) {
-			return;
-		}
-		log(`Set path: redpandaConnect.binaryPath is now "${picked}", but no usable binary resulted: ${pickedOutcome(state, picked)}.`);
-		show(message);
-	};
+	const actions = binaryActions(source, notifier, log, { get shown() { return shownCount; }, show }, () => disposed);
 
 	async function runAction(action: string | undefined): Promise<void> {
-		if (disposed) {
-			return;
-		}
 		switch (action) {
 			case INSTALL_GUIDE_ACTION:
-				await notifier.openExternal(INSTALL_GUIDE_URL);
-				return;
+				return actions.installGuide();
 			case SET_PATH_ACTION:
-				await setPath();
-				return;
+				return actions.setPath();
 			case RETRY_ACTION:
-				await source.refresh();
-				return;
+				return actions.retry();
 			default:
 				// Dismissed: nothing happens; the next transition notifies again.
 				return;
@@ -165,6 +208,7 @@ export function attachBinaryNotifications(
 	});
 
 	return {
+		actions,
 		dispose() {
 			disposed = true;
 			subscription.dispose();
