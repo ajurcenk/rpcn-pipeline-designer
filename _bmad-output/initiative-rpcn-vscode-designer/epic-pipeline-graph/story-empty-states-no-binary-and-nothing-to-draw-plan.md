@@ -3,7 +3,7 @@ title: 'Empty states: no binary and nothing to draw'
 type: 'feature'
 ticket: '9'
 created: '2026-10-09'
-status: 'built'
+status: 'done'
 baseline_revision: 'bcc3ef4e242124b74a38b46508f3f71ab60cefd3'
 route: 'full'
 route_source: 'auto'
@@ -149,3 +149,4 @@ Iteration 0 (quick). Verdicts: 0 high, 1 medium, 4 low, 0 false, 0 maybe-false; 
 - In the dev host:
   - set `redpandaConnect.binaryPath` to a missing file, then Show graph: the no-binary state shows; Set path to the real binary draws the graph;
   - an empty YAML file shows "Nothing to draw yet".
+- **Done by the user on 2026-10-09** in the dev host (stable), started with a PATH without `rpk` and `redpanda-connect` and no `redpandaConnect.binaryPath` (the setting is only a fallback after PATH, so a bad setting alone does not make the binary missing): the no-binary state with its three buttons, Retry with nothing fixed, Install guide, Set path to `~/.local/bin/redpanda-connect` drawing "Nothing to draw yet" in the same panel (a `buffer`-only file), and typing an `input` replacing it. Result: "tested".
