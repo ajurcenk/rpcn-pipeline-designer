@@ -172,6 +172,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		diagnostics: lintDiagnostics,
 		// The same actions as the binary warning's (built on `createVsCodeNotifier(log)`).
 		actions: redpandaConnect.actions,
+		detection,
+		memento: context.workspaceState,
+		autoOpen: () => vscode.workspace.getConfiguration('redpandaConnect').get<boolean>('autoOpenGraph', true) !== false,
 	});
 	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
 

@@ -134,7 +134,9 @@ suite('Run and Stop (integration)', function () {
 		assert.strictEqual(palette['redpandaConnect.run'], 'redpandaConnect.activeEditorDetected');
 		assert.strictEqual(palette['redpandaConnect.stop'], 'redpandaConnect.activeEditorRunning');
 		assert.strictEqual(palette['redpandaConnect.runUntitled'], 'false');
-		assert.deepStrictEqual(contributes.menus['editor/title'], [
+		// The run entries; the graph's Show / Hide toggle (3.10) is checked by the graph suite.
+		const runEntries = contributes.menus['editor/title'].filter((m: { command: string }) => m.command.startsWith('redpandaConnect.run'));
+		assert.deepStrictEqual(runEntries, [
 			{ command: 'redpandaConnect.run', when: 'resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths', group: 'navigation' },
 			{ command: 'redpandaConnect.runUntitled', when: 'resourceScheme == untitled && resourcePath in redpandaConnect.detectedPaths', group: 'navigation' },
 		]);

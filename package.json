@@ -43,7 +43,7 @@
         "redpandaConnect.autoOpenGraph": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Open the pipeline graph beside a detected Redpanda Connect config when it is first opened."
+          "markdownDescription": "Open the pipeline graph beside a detected Redpanda Connect config the first time an editor shows it in a window session. **Hide graph** turns this off for one file until **Show graph**."
         },
         "redpandaConnect.filePatterns": {
           "type": "array",
@@ -72,12 +72,14 @@
       {
         "command": "redpandaConnect.showGraph",
         "title": "Show graph",
-        "category": "Redpanda Connect"
+        "category": "Redpanda Connect",
+        "icon": "$(type-hierarchy)"
       },
       {
         "command": "redpandaConnect.hideGraph",
         "title": "Hide graph",
-        "category": "Redpanda Connect"
+        "category": "Redpanda Connect",
+        "icon": "$(eye-closed)"
       },
       {
         "command": "redpandaConnect.run",
@@ -108,11 +110,11 @@
       "commandPalette": [
         {
           "command": "redpandaConnect.showGraph",
-          "when": "redpandaConnect.activeEditorDetected"
+          "when": "redpandaConnect.activeEditorDetected && resourcePath not in redpandaConnect.graphOpenPaths"
         },
         {
           "command": "redpandaConnect.hideGraph",
-          "when": "false"
+          "when": "redpandaConnect.activeEditorDetected && resourcePath in redpandaConnect.graphOpenPaths || activeWebviewPanelId == 'redpandaConnect.graph'"
         },
         {
           "command": "redpandaConnect.run",
@@ -136,6 +138,16 @@
         {
           "command": "redpandaConnect.runUntitled",
           "when": "resourceScheme == untitled && resourcePath in redpandaConnect.detectedPaths",
+          "group": "navigation"
+        },
+        {
+          "command": "redpandaConnect.showGraph",
+          "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath not in redpandaConnect.graphOpenPaths",
+          "group": "navigation"
+        },
+        {
+          "command": "redpandaConnect.hideGraph",
+          "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath in redpandaConnect.graphOpenPaths",
           "group": "navigation"
         }
       ]
