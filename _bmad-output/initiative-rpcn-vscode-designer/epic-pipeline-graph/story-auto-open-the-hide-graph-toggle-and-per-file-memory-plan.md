@@ -3,7 +3,7 @@ title: 'Auto-open, the Hide graph toggle and per-file memory'
 type: 'feature'
 ticket: '10'
 created: '2026-10-09'
-status: 'built'
+status: 'done'
 baseline_revision: '126568a4e0785cf7345aa4ce16f2300ceb25eecf'
 route: 'full'
 route_source: 'auto'
@@ -167,3 +167,6 @@ Iteration 0 (quick). Verdicts: 0 high, 3 medium, 4 low, 0 false, 0 maybe-false; 
   - Hide graph, then Developer: Reload Window, then reopen the file: no graph;
   - Show graph: it opens;
   - close the YAML tab: the graph closes.
+- **Done by the user on 2026-10-10** in the dev host (stable), starting from a clean editor layout. Checked: auto-open of a first and a second file into one locked graph group, Hide graph, the Hide surviving a reload, Show graph, tab close, rename, and optionally the setting turned off. Result: "tested".
+  - During the check the user found that the graph auto-opens only on a file's first show in a window session ("This is working only first time"). That is R1 as written. Their decision: "keep as is now", so Show graph brings the graph back after that.
+  - Not reported: whether a reload left an empty locked group, and whether the next graph reused it. Entry 13 repeats the reload on 1.100.0.
