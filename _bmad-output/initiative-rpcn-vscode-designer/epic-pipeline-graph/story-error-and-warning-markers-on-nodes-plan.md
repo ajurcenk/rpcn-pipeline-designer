@@ -178,3 +178,4 @@ Iteration 0 (thorough: blind-hunter, edge-case-hunter, verification-gap, intent-
   - add a typo field to a processor and a deprecated field, then save: the markers appear with icons and hover text;
   - collapse the group around the typo: the header shows the error;
   - type a character: the lint markers clear.
+- **Done by the user on 2026-10-09** in the dev host (stable): on `switch-demo.yaml`, an unknown field (`nope`) on a `mapping` and the deprecated `log.fields`, saved; markers, hovers, the collapsed roll-up and the clear on the next edit checked. Result: "tested".
