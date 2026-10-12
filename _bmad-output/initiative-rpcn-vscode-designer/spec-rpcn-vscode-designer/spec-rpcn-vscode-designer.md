@@ -16,7 +16,7 @@ sources:
 
 ## Why
 
-Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounce to the docs for component fields, find mistakes only at `lint` or run time, and struggle to see the structure of long configs with brokers, `switch` and `branch`. No VS Code extension understands the config schema or shows a pipeline visually; the only visual editor (Redpanda Cloud's Visual tab, preview since August 2026) is browser- and Cloud-bound, and Benthos Studio is gone. This open-source POC improves the developer experience of building pipelines locally: a smarter, not just faster, YAML editor driven by the developer's own binary, a read-only graph beside it, and a local run loop. Primary user: Connect developers who build locally and later deploy to Redpanda Cloud BYOC. It is the foundation for later testing, AI assistance, BYOC deploy, metrics and debugging (see `research-and-cli-reference.md`).
+Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounce to the docs for component fields, find mistakes only at `lint` or run time, and struggle to see the structure of long configs with brokers, `switch` and `branch`. Bloblang mappings are checked only by `lint` on save or a full run; to see what a mapping does to a message, developers copy it into the docs-site playground, which runs its own Bloblang build, not their binary. No VS Code extension understands the config schema or shows a pipeline visually; the only visual editor (Redpanda Cloud's Visual tab, preview since August 2026) is browser- and Cloud-bound, and Benthos Studio is gone. This open-source POC improves the developer experience of building pipelines locally: a smarter, not just faster, YAML editor driven by the developer's own binary, a read-only graph beside it, and a local run loop. A second release adds checking and testing Bloblang mappings against sample messages on that binary (CAP-15–17). Primary user: Connect developers who build locally and later deploy to Redpanda Cloud BYOC. It is the foundation for later testing, AI assistance, BYOC deploy, metrics and debugging (see `research-and-cli-reference.md`).
 
 ## Capabilities
 
@@ -76,6 +76,18 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
   - **intent:** Graph accuracy and diagnostics parity are measured, not asserted, against real configs.
   - **success:** A corpus of real configs (Apache-2.0 configs from the public `redpanda-data/connect` repository, with source and license recorded per file) exists early; automated tests against the minimum supported binary (v4.100.0) and a pinned current one (v4.112.0) in CI check every corpus config for graph accuracy and for editor diagnostics matching `rpk connect lint` output.
 
+- **CAP-15 — Live Bloblang syntax diagnostics** *(second release)*
+  - **intent:** Developers see Bloblang syntax errors in `mapping` and `mutation` processors while they type, as their binary reports them.
+  - **success:** The `mapping` / `mutation` field of every `mapping` and `mutation` processor, nested ones included, is parsed by the developer's binary as the YAML changes; each parse error appears as an editor diagnostic at the matching YAML line and column with the binary's message; the diagnostic clears once the mapping parses; other Bloblang fields get none.
+
+- **CAP-16 — Bloblang test panel** *(second release)*
+  - **intent:** Developers run one `mapping` or `mutation` against a sample message beside the editor and see what it produces or why it fails.
+  - **success:** Opened from the processor (CodeLens, graph node), the panel shows the sample's input content and metadata, the output content and metadata with added or changed fields marked, and on failure the binary's parse error or mapping error with the mapping line translated to the file line and a Go to line action; a deleted message is reported as deleted, and with no binary the panel offers Install guide / Set path / Retry; output follows edits to the mapping or the input. States and layout per `../brief-rpcn-vscode-designer/bloblang-test-panel-prototype.html`.
+
+- **CAP-17 — Saved sample inputs** *(second release)*
+  - **intent:** A mapping's sample messages persist with the pipeline, so tests can be repeated and reviewed.
+  - **success:** Each mapping has named samples (content and metadata) stored as a workspace file next to the config, which can be committed and reopens with the panel; adding, editing and switching samples works from the panel, and switching re-runs the mapping.
+
 ## Constraints
 
 - The user's local binary is required: schema, lint, graph structure and Run all come from it; no bundled schema and no built-in structural table (AD-9, AD-20).
@@ -86,6 +98,9 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - `engines.vscode ^1.100.0`, stable APIs only.
 - Open source under Apache-2.0, published as `ajurcenk.rpcn-pipeline-designer` with display name "Pipeline Designer for Redpanda Connect"; name and publisher must not imply official Redpanda branding.
 - Minimum supported Redpanda Connect version is v4.100.0.
+- Bloblang checks and test runs execute only on the developer's binary; no bundled Bloblang engine (the docs playground's Wasm build is not used).
+- A test runs the mapping alone on the sample: the sample is the message as it reaches that processor; earlier processors are not applied.
+- CAP-15–17 cover `mapping` and `mutation` processors only.
 - Delivered as a CI-built `.vsix` installed by hand; nothing is published to a registry in the POC.
 - Scope unit is single-file configs plus resource files.
 - POC stakes: sized for typical configs, SemVer 0.x.
@@ -96,10 +111,13 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Any editing from the graph: add, remove, reorder, configure, schema-generated property forms; visual editing of nested structures.
 - Streams mode (multiple pipelines).
 - Bundled schema for use without a binary.
-- Unit testing, AI assistance, metrics, debugging and profiling (including groundwork such as per-processor run output), data-flow visualization, log-error node highlighting.
+- Writing or running `rpk connect test` unit tests, AI assistance, metrics, debugging and profiling (including groundwork such as per-processor run output), data-flow visualization, log-error node highlighting.
 - Large configs (thousands of lines).
 - Lint while typing.
-- A Bloblang language server or Bloblang diagnostics (completion and hover are in CAP-4).
+- A Bloblang language server, and Bloblang diagnostics outside CAP-15 (completion and hover are in CAP-4).
+- Bloblang checks or tests for anything but `mapping` / `mutation` processors: `check`, `request_map` / `result_map`, other `*_map` / `*_mapping` fields, `${! }` interpolations, `.blobl` files.
+- Capturing test messages from a run, or running a mapping after the pipeline's earlier processors.
+- A bundled Bloblang engine for use without a binary.
 - A default keybinding for Show / Hide graph.
 - Publishing to the VS Code Marketplace or Open VSX (publisher accounts, tokens, release workflow) — parked for the POC.
 - Restoring the graph panel after a window reload.
@@ -110,6 +128,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - For 100% of the reference corpus, the graph shows every component, every route (`switch` cases, brokers) and every nested group correctly, and clicking any node lands on the right YAML.
 - For every corpus config, errors shown in the editor match `rpk connect lint` output.
 - A newcomer with the binary installed goes from an empty file to a running pipeline in under 10 minutes (EXPERIENCE Flow 3).
+- Second release: for every `mapping` and `mutation` in the corpus with a sample input, the test panel's output or error equals the binary's `blobl` result on that input, and every Bloblang parse error the editor underlines is one the binary reports for that mapping.
 
 ## Assumptions
 
@@ -119,10 +138,14 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Graph keyboard model follows EXPERIENCE Interaction Primitives.
 - SemVer 0.x in `package.json`; `redpandaConnect.*` IDs are provisional until a name is chosen.
 - Extension name `rpcn-pipeline-designer` (ID `ajurcenk.rpcn-pipeline-designer`) is provisional; display name is decided.
+- `blobl server` (marked experimental) or the `blobl` command can parse mappings on every supported binary (v4.100.0 to v4.112.0); the second release's first spike checks this.
 
 ## Open Questions
 
-None open. Both questions from the first draft were answered by the 1.1 spike (`epic-foundation/spike-1-1-findings/findings.md`):
+- **Metadata in and out of a test (CAP-16).** `blobl server` ignores input metadata, returns no output metadata, and returns an empty result with no flag for `deleted()` (v4.112.0). Options: run each test as a one-message pipeline through `run` (latency unmeasured), or change `blobl server` upstream.
+- **Sample storage and linking (CAP-17).** The folder and file format for samples, and how a sample stays attached to its mapping: by the processor's `label`, by its position, or by offering to add a label.
+
+First-draft questions, answered by the 1.1 spike (`epic-foundation/spike-1-1-findings/findings.md`):
 
 - ~~Does the standalone `redpanda-connect` binary match `rpk connect` subcommands and flags?~~ Yes, for everything the extension uses (Q1).
 - ~~Do the real `lint` stderr format and `list --format jsonschema` output match the recorded facts?~~ Recorded in Q2 and Q4. Two facts differ: lint always reports column 1, and the jsonschema carries no docs (they are merged from `list --format json-full`).

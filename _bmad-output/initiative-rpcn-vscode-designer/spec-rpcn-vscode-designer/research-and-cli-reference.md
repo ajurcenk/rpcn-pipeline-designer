@@ -10,10 +10,15 @@ Load-bearing facts from the brief addendum (landscape research 2026-10-02) and a
 | `rpk connect lint [paths]` | Flags `-r` (resources), `-e` (env file), `--skip-env-var-check`, `--deprecated`. **No machine-readable output**: stderr lines `<path>(<line>,<col>) <message>`, ANSI color unless `NO_COLOR=1`, exit 1 when lints found, lines carry no severity. Stdin support unverified. |
 | `rpk connect run` | Flags `-r`, `-e`, `-s/--set`, `--log.level`, `-w` (watch). |
 | `rpk connect test [paths]` | Later testing phase. |
-| `rpk connect blobl server` | Local Bloblang playground (later). |
+| `rpk connect blobl server` | Local Bloblang playground, marked EXPERIMENTAL (`--no-open`, `--port`, `--mapping-file`, `--input-file`, `--write`). `POST /execute` with `{"mapping", "input"}` returns `{"parse_error", "mapping_error", "result"}`; a parse error carries line, column and a caret excerpt, a mapping error names the mapping line and field. Gaps (v4.112.0): input `metadata` ignored, no output metadata, `deleted()` gives an empty `result` with no flag. |
+| `rpk connect blobl` | Applies a mapping (argument or `-f`) to JSON lines from stdin or `-i`, one result per line; errors `failed to parse mapping: …` / `failed to execute map: …`; no metadata. |
 | `rpk connect mcp-server` | Experimental, `init` and `lint` subcommands; candidate for AI-assist phase. `rpk cloud mcp` (beta) also exists. |
 
 *Unverified:* standalone `redpanda-connect` has identical subcommands and flags.
+
+## Docs Bloblang playground
+
+The docs-site playground (docs-ui repo, `blobl-editor/wasm/main.go`) is a Go Wasm build of the Connect libraries pinned in its `go.mod` (connect v4.111.1 when checked, 2026-10-12). It takes a mapping, an input and optional metadata, and returns the output, its metadata, or an error; some functions are mocked for the browser (timezone conversion, strftime). Not used by the extension (CAP-15–17 run on the developer's binary); its input / metadata / output / error shape is the model for the test panel.
 
 ## Landscape
 
@@ -41,4 +46,4 @@ Load-bearing facts from the brief addendum (landscape research 2026-10-02) and a
 
 ## Vision (later phases)
 
-Author (graph editing later) → Test (`rpk connect test`, Bloblang playground) → Assist (AI generate/explain/fix, possibly via `rpk connect mcp-server`) → Deploy (BYOC) → Observe (metrics, step-through debugging).
+Author (graph editing later) → Test (Bloblang check and test in the second release, then `rpk connect test`) → Assist (AI generate/explain/fix, possibly via `rpk connect mcp-server`) → Deploy (BYOC) → Observe (metrics, step-through debugging).
