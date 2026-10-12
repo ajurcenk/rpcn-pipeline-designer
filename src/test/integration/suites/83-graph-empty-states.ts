@@ -156,12 +156,16 @@ suite('Pipeline graph: empty states (3.9, integration)', function () {
 		} finally {
 			await restoreBinary();
 		}
-		// The schema is back while the YAML does not parse: the last valid graph, then the banner (as a snapshot shows it).
-		assert.ok(await waitFor(() => handle.posted.slice(back).some((m) => m.type === 'parseError'), 10_000),
+		// The schema is back while the YAML does not parse: a snapshot with the last valid graph under
+		// the banner, which the live region does not announce again (F4_LIVE).
+		assert.ok(await waitFor(() => handle.posted.slice(back).some((m) => m.type === 'snapshot'), 10_000),
 			JSON.stringify(handle.posted.slice(back).map((m) => m.type)));
-		const after = handle.posted.slice(back).filter((m) => m.type === 'model' || m.type === 'parseError');
-		assert.deepStrictEqual(after.map((m) => m.type), ['model', 'parseError']);
-		assert.deepStrictEqual(ids(after[0].type === 'model' ? after[0].model : undefined), ['path:input', 'path:output']);
+		const after = handle.posted.slice(back).filter((m) => m.type === 'model' || m.type === 'parseError' || m.type === 'snapshot');
+		assert.deepStrictEqual(after.map((m) => m.type), ['snapshot']);
+		const back0 = after[0];
+		assert.ok(back0.type === 'snapshot' && back0.parseError, 'the snapshot carries the parse error');
+		assert.deepStrictEqual(ids(back0.model ?? undefined), ['path:input', 'path:output']);
+		assert.deepStrictEqual(back0.hostStatus, { binary: 'ok', schema: 'ok' });
 		// Undo the inserted space: the file is valid again.
 		const broken = doc.getText().indexOf(' output:');
 		await replace(doc, broken, broken + 1, '');

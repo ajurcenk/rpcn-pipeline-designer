@@ -92,6 +92,9 @@ describe('FOCUS (ticket 11, DESIGN pipeline-node-focused)', () => {
 		const block = (selector: string) => new RegExp(`${selector.replace(/[.-]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
 		expect(block('.rpcn-graph .react-flow__node:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
 		expect(block('.rpcn-graph:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
+		// F3: the no-binary empty state and the empty canvas region take focus, with the same ring.
+		expect(block('.rpcn-empty:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
+		expect(block('.rpcn-canvas-region:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
 		expect(css).not.toMatch(/outline:\s*(none|0)\b/);
 	});
 });

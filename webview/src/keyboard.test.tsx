@@ -304,3 +304,187 @@ describe('MODEL_CHANGE', () => {
 		expect(tabStops().map((el) => (el as HTMLElement).dataset.id)).toEqual([SWITCH]);
 	});
 });
+
+// Graph interaction fixes across tickets (the E3 retro, F3, F5, F8): the combined sequences.
+describe('F3_ESC: a way out in every state', () => {
+	const OK = { binary: 'ok', schema: 'ok' } as const;
+	/** The one named region takes focus, and Esc on it posts focusEditorRequested. */
+	async function escapes(what: string): Promise<void> {
+		expect(regions(), `${what}: one named region`).toHaveLength(1);
+		const region = regions()[0] as HTMLElement;
+		expect(region.tabIndex, `${what}: in the Tab order`).toBe(0);
+		region.focus();
+		expect(document.activeElement, `${what}: focusable`).toBe(region);
+		vscodeStub.posted.length = 0;
+		await press('Escape');
+		expect(vscodeStub.posted, what).toEqual([{ type: 'focusEditorRequested' }]);
+	}
+	it('before any message, and the loading or no-schema canvas', async () => {
+		await escapes('before the first snapshot');
+		await send({ type: 'snapshot', model: null, nodeStatus: {}, selection: null, hostStatus: { binary: 'ok', schema: 'loading' } });
+		await escapes('loading');
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+		await escapes('no schema');
+	});
+	it('before the first layout', async () => {
+		await send({ type: 'snapshot', model: MODEL, nodeStatus: STATUS, selection: null, hostStatus: OK });
+		expect(nodes(), 'not laid out yet').toHaveLength(0);
+		expect(container()).not.toBeNull();
+		await escapes('before the first layout');
+	});
+	it('the no-binary and nothing-to-draw states', async () => {
+		await send({ type: 'snapshot', model: null, nodeStatus: {}, selection: null, hostStatus: { binary: 'missing', schema: 'none' } });
+		await until(() => host.querySelector('.rpcn-empty') !== null, 'the empty state');
+		await escapes('no binary');
+		// Esc from one of its buttons too.
+		host.querySelector<HTMLButtonElement>('.rpcn-empty-action')!.focus();
+		vscodeStub.posted.length = 0;
+		await press('Escape');
+		expect(vscodeStub.posted).toEqual([{ type: 'focusEditorRequested' }]);
+		await send({ type: 'snapshot', model: { nodes: [], edges: [] }, nodeStatus: {}, selection: null, hostStatus: OK });
+		await until(() => host.querySelector('.rpcn-graph') !== null, 'the container');
+		await escapes('nothing to draw');
+	});
+	it('a first open on broken YAML: the banner over a named canvas', async () => {
+		await send({ type: 'snapshot', model: null, parseError: { message: 'bad indentation', range: [0, 1] }, nodeStatus: {}, selection: null, hostStatus: OK });
+		expect(host.querySelector('.rpcn-banner')).not.toBeNull();
+		await escapes('first open on broken YAML');
+		// The graph drawn later replaces it: still one region.
+		await send({ type: 'model', model: MODEL });
+		await until(() => nodes().length === MODEL.nodes.length, 'the graph draws');
+		expect(regions()).toEqual([container()]);
+	});
+});
+
+describe('F5_FOCUS: focus comes back after a remount', () => {
+	it('focus on a node → hostStatus none → ok + model: focus is on the graph\'s Tab stop again', async () => {
+		await showGraph();
+		node(INPUT)!.focus();
+		await press('ArrowRight');
+		expect(focusedId()).toBe(SWITCH);
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+		expect(nodes()).toHaveLength(0);
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'ok' });
+		await send({ type: 'model', model: MODEL });
+		await until(() => focusedId() === SWITCH, 'focus back on the switch');
+	});
+	it('the same through the no-binary state', async () => {
+		await showGraph();
+		node(INPUT)!.focus();
+		await send({ type: 'hostStatus', binary: 'missing', schema: 'none' });
+		await until(() => host.querySelector('.rpcn-empty') !== null, 'the empty state');
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'ok' });
+		await send({ type: 'model', model: MODEL });
+		await until(() => focusedId() === INPUT, 'focus back on the input');
+	});
+	it('focus elsewhere meanwhile is left alone; focus never in the graph is not pulled in', async () => {
+		const outside = document.createElement('button');
+		document.body.append(outside);
+		try {
+			await showGraph();
+			node(INPUT)!.focus();
+			await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+			outside.focus();
+			await send({ type: 'hostStatus', binary: 'ok', schema: 'ok' });
+			await send({ type: 'model', model: MODEL });
+			await until(() => nodes().length === MODEL.nodes.length, 'the graph draws');
+			await new Promise((r) => setTimeout(r, 50));
+			expect(document.activeElement).toBe(outside);
+
+			// Never focused: a schema drop and return leaves focus where it is (on the body).
+			outside.blur();
+			await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+			await send({ type: 'hostStatus', binary: 'ok', schema: 'ok' });
+			await send({ type: 'model', model: MODEL });
+			await until(() => nodes().length === MODEL.nodes.length, 'the graph draws again');
+			await new Promise((r) => setTimeout(r, 50));
+			expect(focusedId()).toBeUndefined();
+		} finally {
+			outside.remove();
+		}
+	});
+});
+
+describe('F8_BROKEN: the names say navigation is unavailable while the YAML has errors', () => {
+	it('each node\'s name ends with the note under the banner; the visible text does not change; the next model drops it', async () => {
+		await showGraph();
+		const text = nodes().map((n) => n.textContent);
+		await send({ type: 'parseError', message: 'bad indentation', range: [0, 1] });
+		await until(() => label(INPUT)?.endsWith(', navigation unavailable while the YAML has errors') === true, 'the note');
+		for (const n of nodes()) {
+			expect(n.getAttribute('aria-label')).toMatch(/, navigation unavailable while the YAML has errors$/);
+		}
+		expect(label(MAPPING)).toBe('Processor mapping, has error: field nope not recognised, navigation unavailable while the YAML has errors');
+		expect(nodes().map((n) => n.textContent)).toEqual(text);
+		await send({ type: 'model', model: MODEL });
+		await until(() => label(INPUT) === 'Input stdin', 'the note goes');
+	});
+});
+
+describe('F3_ESC / F5_FOCUS / LIVE follow-ups', () => {
+	const OK = { binary: 'ok', schema: 'ok' } as const;
+	const ERROR = { message: 'bad indentation at line 3, column 1', range: [0, 1] as const };
+	const COLUMN = { message: 'bad indentation at line 3, column 2', range: [1, 2] as const };
+	const banner = () => host.querySelector<HTMLButtonElement>('.rpcn-banner-button');
+	it('Esc on the banner\'s button posts focusEditorRequested, over the graph and over the empty canvas', async () => {
+		await showGraph();
+		await send({ type: 'parseError', ...ERROR });
+		banner()!.focus();
+		vscodeStub.posted.length = 0;
+		await press('Escape');
+		expect(vscodeStub.posted).toEqual([{ type: 'focusEditorRequested' }]);
+		await send({ type: 'snapshot', model: null, parseError: ERROR, nodeStatus: {}, selection: null, hostStatus: OK });
+		banner()!.focus();
+		vscodeStub.posted.length = 0;
+		await press('Escape');
+		expect(vscodeStub.posted).toEqual([{ type: 'focusEditorRequested' }]);
+	});
+	it('the empty canvas is busy only while the binary is unresolved or the schema loads; it is not the graph container', async () => {
+		const region = () => regions()[0] as HTMLElement;
+		expect(region().getAttribute('aria-busy')).toBe('true');
+		expect(host.querySelector('.rpcn-graph')).toBeNull();
+		await send({ type: 'snapshot', model: null, nodeStatus: {}, selection: null, hostStatus: { binary: 'ok', schema: 'loading' } });
+		expect(region().getAttribute('aria-busy')).toBe('true');
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+		expect(region().getAttribute('aria-busy')).toBeNull();
+		await send({ type: 'snapshot', model: null, parseError: ERROR, nodeStatus: {}, selection: null, hostStatus: OK });
+		expect(region().getAttribute('aria-busy')).toBeNull();
+	});
+	it('focus in the no-binary state returns to the graph when it draws', async () => {
+		await send({ type: 'snapshot', model: null, nodeStatus: {}, selection: null, hostStatus: { binary: 'missing', schema: 'none' } });
+		await until(() => host.querySelector('.rpcn-empty-action') !== null, 'the empty state');
+		host.querySelector<HTMLButtonElement>('.rpcn-empty-action')!.focus();
+		await send({ type: 'hostStatus', ...OK });
+		await send({ type: 'model', model: MODEL });
+		await until(() => focusedId() === INPUT, 'focus on the graph\'s Tab stop');
+	});
+	it('focus that left the graph for the banner is not pulled back when the graph draws again', async () => {
+		await showGraph();
+		node(INPUT)!.focus();
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+		await send({ type: 'snapshot', model: null, parseError: ERROR, nodeStatus: {}, selection: null, hostStatus: OK });
+		banner()!.focus();
+		// The file heals: the banner goes (and its focus with it), the graph draws.
+		await send({ type: 'model', model: MODEL });
+		await until(() => nodes().length === MODEL.nodes.length, 'the graph draws');
+		await new Promise((r) => setTimeout(r, 50));
+		expect(focusedId()).toBeUndefined();
+	});
+	it('LIVE: once per appearance; a schema drop and return while broken (a snapshot) says nothing; heal then break says it once', async () => {
+		await showGraph();
+		await send({ type: 'parseError', ...ERROR });
+		expect(live().textContent).toBe(BANNER_TEXT);
+		const spoken = live().firstElementChild;
+		await send({ type: 'parseError', ...COLUMN });
+		expect(live().firstElementChild).toBe(spoken);
+		await send({ type: 'hostStatus', binary: 'ok', schema: 'none' });
+		await send({ type: 'hostStatus', ...OK });
+		await send({ type: 'snapshot', model: MODEL, parseError: COLUMN, nodeStatus: STATUS, selection: null, hostStatus: OK });
+		await send({ type: 'parseError', ...ERROR });
+		expect(live().firstElementChild).toBe(spoken);
+		await send({ type: 'model', model: MODEL });
+		await send({ type: 'parseError', ...ERROR });
+		expect(live().textContent).toBe(BANNER_TEXT);
+		expect(live().firstElementChild).not.toBe(spoken);
+	});
+});

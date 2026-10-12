@@ -419,6 +419,11 @@ describe('KEYBOARD (ticket 11)', () => {
 		expect(nodeAnnouncement(model, byId.get(SW)!, true, undefined)).toBe('Processor switch, 2 cases, collapsed');
 		expect(nodeAnnouncement(model, byId.get(SW)!, false, undefined)).toBe('Processor switch, 2 cases, expanded');
 		expect(nodeAnnouncement(model, byId.get(CASE1)!, false, undefined)).toBe('Case 1');
+		// F8_BROKEN: while the YAML does not parse, every name ends with the note, after the marker.
+		expect(nodeAnnouncement(model, byId.get(MAPPING)!, false, { severity: 'error', messages: ['field x is required'] }, true))
+			.toBe('Processor mapping, has error: field x is required, navigation unavailable while the YAML has errors');
+		expect(nodeAnnouncement(model, byId.get(SW)!, true, undefined, true))
+			.toBe('Processor switch, 2 cases, collapsed, navigation unavailable while the YAML has errors');
 		expect(nodeSpokenName({ id: 'label:enrich', role: 'processor', component: 'mapping', label: 'enrich', range: [0, 1] }))
 			.toBe('Processor mapping, enrich');
 		expect(nodeSpokenName({ id: 'res:cache:seen', role: 'resource', component: 'memory', label: 'seen', range: [0, 1] }))

@@ -15,7 +15,7 @@ const B: PipelineModel = {
 };
 const ERROR = { message: 'All mapping items must start at the same column at line 3, column 1', range: [17, 18] as const };
 const HOST_STATUS = { binary: 'unresolved', schema: 'none' } as const;
-const snapshot = (model: PipelineModel | null, parseError?: typeof ERROR, selection: string | null = null): HostMessage => ({
+const snapshot = (model: PipelineModel | null, parseError?: { readonly message: string; readonly range: readonly [number, number] }, selection: string | null = null): HostMessage => ({
 	type: 'snapshot', model, ...(parseError ? { parseError } : {}), nodeStatus: {}, selection, hostStatus: HOST_STATUS,
 });
 const fold = (messages: readonly HostMessage[], from: ViewModel = INITIAL_VIEW) => messages.reduce(reduce, from);
@@ -190,7 +190,8 @@ describe('LIVE (ticket 11): what the polite live region announces', () => {
 		expect(broken.live.lines).toEqual([BANNER_TEXT]);
 		const again = reduceLive(broken, { type: 'parseError', ...ERROR });
 		expect(again.live).toBe(broken.live);
-		expect(foldLive([snapshot(A, ERROR)]).live.lines).toEqual([BANNER_TEXT]);
+		// F4: a snapshot announces nothing, a broken one included (a recreated webview).
+		expect(foldLive([snapshot(A, ERROR)]).live.lines).toEqual([]);
 	});
 	it('a node that newly gets an error; a snapshot\'s status is the baseline; the same status again says nothing', () => {
 		const shown = foldLive([{ ...snapshot(B), nodeStatus: { 'path:input': ERR } } as HostMessage]);
@@ -221,5 +222,76 @@ describe('LIVE (ticket 11): what the polite live region announces', () => {
 	it('messages that change nothing keep the state', () => {
 		const start = foldLive([snapshot(A)]);
 		expect(reduceLive(start, { type: 'selection', nodeId: null })).toBe(start);
+	});
+	// F4_LIVE (graph interaction fixes): chains across 3.6, 3.9 and 3.11, the live output asserted.
+	describe('F4_LIVE: nothing is repeated', () => {
+		const OK = { binary: 'ok', schema: 'ok' } as const;
+		const NONE = { binary: 'ok', schema: 'none' } as const;
+		const LATER = { message: 'Implicit keys need to be on a single line at line 2, column 6', range: [20, 20] as const };
+		const spoken = (state: ReturnType<typeof foldLive>) => state.live.lines;
+		/** The same parse error, at another column only (parse messages carry the line and column). */
+		const COLUMN = { message: 'All mapping items must start at the same column at line 3, column 2', range: [18, 19] as const };
+		it('a snapshot says nothing: a recreated webview\'s broken one, a first open on broken YAML', () => {
+			expect(spoken(foldLive([{ ...snapshot(A, ERROR), hostStatus: OK } as HostMessage]))).toEqual([]);
+			expect(spoken(foldLive([{ ...snapshot(null, ERROR), hostStatus: OK } as HostMessage]))).toEqual([]);
+		});
+		it('once per appearance: a message change while the banner stays up says nothing, a column-only change included', () => {
+			const shown = foldLive([{ ...snapshot(A), hostStatus: OK } as HostMessage]);
+			const broken = reduceLive(shown, { type: 'parseError', ...ERROR });
+			expect(spoken(broken)).toEqual([BANNER_TEXT]);
+			const column = reduceLive(broken, { type: 'parseError', ...COLUMN });
+			expect(column.view.parseError).toEqual(COLUMN);
+			expect(column.live).toBe(broken.live);
+			const other = reduceLive(column, { type: 'parseError', ...LATER });
+			expect(other.live).toBe(broken.live);
+			// A recreated webview's banner stays up through message changes too.
+			const recreated = foldLive([{ ...snapshot(A, ERROR), hostStatus: OK } as HostMessage, { type: 'parseError', ...LATER }]);
+			expect(spoken(recreated)).toEqual([]);
+		});
+		it('a schema drop and return while the file stays broken says nothing: hostStatus(none) → hostStatus(ok) → snapshot', () => {
+			const shown = foldLive([{ ...snapshot(A), hostStatus: OK } as HostMessage]);
+			const broken = reduceLive(shown, { type: 'parseError', ...ERROR });
+			const back = [
+				{ type: 'hostStatus', ...NONE },
+				{ type: 'hostStatus', ...OK },
+				{ ...snapshot(A, COLUMN), hostStatus: OK } as HostMessage,
+				{ type: 'parseError', ...LATER },
+			] satisfies HostMessage[];
+			const after = back.reduce(reduceLive, broken);
+			expect(after.view.parseError).toEqual(LATER);
+			expect(after.live).toBe(broken.live);
+		});
+		it('a file that heals, also while the schema is gone, and breaks again announces the banner once', () => {
+			const first = foldLive([{ ...snapshot(null, ERROR), hostStatus: OK } as HostMessage]);
+			const healed = reduceLive(first, { type: 'model', model: A });
+			const broken = reduceLive(healed, { type: 'parseError', ...ERROR });
+			expect(spoken(broken)).toEqual([BANNER_TEXT]);
+			expect(broken.live.id).toBe(1);
+			// Healed while the schema is gone: the host sends the model when it returns.
+			const healedInGap = [
+				{ type: 'hostStatus', ...NONE },
+				{ type: 'hostStatus', ...OK },
+				{ type: 'model', model: A },
+				{ type: 'parseError', ...ERROR },
+				{ type: 'parseError', ...COLUMN },
+			] satisfies HostMessage[];
+			const again = healedInGap.reduce(reduceLive, broken);
+			expect(spoken(again)).toEqual([BANNER_TEXT]);
+			expect(again.live.id).toBe(2);
+		});
+		it('a snapshot with no model still sets the error baseline: snapshot(null) → hostStatus(ok) → model → nodeStatus', () => {
+			const snapshotStatus = { 'path:input': ERR };
+			const start = foldLive([{ type: 'snapshot', model: null, nodeStatus: snapshotStatus, selection: null, hostStatus: { binary: 'ok', schema: 'loading' } }]);
+			const chain = [
+				{ type: 'hostStatus', ...OK },
+				{ type: 'model', model: B },
+				{ type: 'nodeStatus', byId: snapshotStatus },
+			] satisfies HostMessage[];
+			const after = chain.reduce(reduceLive, start);
+			expect(after.live).toBe(start.live);
+			// A really new error is still announced.
+			const added = reduceLive(after, { type: 'nodeStatus', byId: { ...snapshotStatus, 'path:output': ERR } });
+			expect(spoken(added)).toEqual(['New error: Output stdout']);
+		});
 	});
 });

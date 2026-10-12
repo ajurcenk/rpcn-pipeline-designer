@@ -95,7 +95,10 @@ export interface HostStatus {
 	readonly schema: SchemaStatus;
 }
 
-/** The complete current state, answering `ready` (AD-1). */
+/**
+ * The complete current state, answering `ready` (AD-1), and sent when a schema returns while the
+ * YAML does not parse. The webview's live region announces nothing for it (F4).
+ */
 export interface SnapshotMessage {
 	readonly type: 'snapshot';
 	readonly model: PipelineModel | null;
@@ -108,7 +111,12 @@ export interface SnapshotMessage {
 /** Messages from the host to the webview. */
 export type HostMessage =
 	| SnapshotMessage
+	/** Contract (F4): sent only while the file parses; the live region counts it as the file seen parsing. */
 	| { readonly type: 'model'; readonly model: PipelineModel }
+	/**
+	 * Contract (F4): sent only while there is a schema and the file does not parse; a schema
+	 * returning while it does not parse sends a `snapshot` instead.
+	 */
 	| ({ readonly type: 'parseError' } & ParseError)
 	| { readonly type: 'nodeStatus'; readonly byId: NodeStatusById }
 	| { readonly type: 'selection'; readonly nodeId: string | null }

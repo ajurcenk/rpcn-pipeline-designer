@@ -63,6 +63,14 @@ export class GraphPanel implements GraphPanelHandle {
 	 * diagnostics changes in a row do not both send the same status while the first post is in flight.
 	 */
 	private postingStatus: string | undefined;
+	/**
+	 * Counts the posts that carry a node status (a snapshot or a `nodeStatus`), so that only the
+	 * latest one, once it resolves, decides what was sent: an older post resolving later must not
+	 * overwrite it (F1).
+	 */
+	private statusPosts = 0;
+	/** Set once the panel is disposed: nothing is posted after that (F6). */
+	private disposed = false;
 	/** The serialisation of the host status last handed to the webview (snapshot or `hostStatus`). */
 	private sentHost: string | undefined;
 	/**
@@ -93,32 +101,7 @@ export class GraphPanel implements GraphPanelHandle {
 		try {
 			const msg = parseWebviewMessage(message);
 			if (msg?.type === 'ready') {
-				const doc = await this.document();
-				// Read after the await, with the catalogue, so a change meanwhile is not overwritten.
-				const hostStatus = this.hostStatus();
-				const state = this.state(doc);
-				const catalogue = this.built?.catalogue;
-				// While the YAML is broken the highlight stays as it was (BROKEN, SNAPSHOT).
-				const selection = state.model ? this.cursorNode(state.model) : this.sentSelection;
-				this.sentSelection = selection;
-				// While the YAML is broken, the frozen status (SNAPSHOT).
-				const status = state.model ? this.computeStatus(doc, state.model) : undefined;
-				// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED);
-				// with no schema, none (MISSING).
-				const model = catalogue ? state.model ?? this.lastModel : null;
-				this.sentHost = JSON.stringify(hostStatus);
-				this.modelCatalogue = model ? catalogue : undefined;
-				const delivered = await this.post({
-					type: 'snapshot',
-					model,
-					...(state.parseError ? { parseError: state.parseError } : {}),
-					nodeStatus: this.status,
-					selection,
-					hostStatus,
-				});
-				if (delivered) {
-					this.sentStatus = status ?? JSON.stringify(this.status);
-				}
+				await this.postSnapshot(await this.document());
 			} else if (msg?.type === 'nodeActivated') {
 				await this.activate(msg.nodeId);
 			} else if (msg?.type === 'bannerClicked') {
@@ -135,6 +118,40 @@ export class GraphPanel implements GraphPanelHandle {
 		} catch (e) {
 			this.fail(e);
 		}
+	}
+
+	/**
+	 * The webview's complete state, `snapshot`, for `doc` (`ready`, and a schema back while the
+	 * YAML does not parse). A snapshot sets the live region's baseline and announces nothing (F4).
+	 */
+	private async postSnapshot(doc: vscode.TextDocument): Promise<void> {
+		// Read after any await, with the catalogue, so a change meanwhile is not overwritten.
+		const hostStatus = this.hostStatus();
+		const state = this.state(doc);
+		const catalogue = this.built?.catalogue;
+		// While the YAML is broken the highlight stays as it was (BROKEN, SNAPSHOT).
+		const selection = state.model ? this.cursorNode(state.model) : this.sentSelection;
+		this.sentSelection = selection;
+		// While the YAML is broken, the frozen status (SNAPSHOT).
+		const status = state.model ? this.computeStatus(doc, state.model) : undefined;
+		// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED);
+		// with no schema, none (MISSING).
+		const model = catalogue ? state.model ?? this.lastModel : null;
+		this.sentHost = JSON.stringify(hostStatus);
+		this.modelCatalogue = model ? catalogue : undefined;
+		// The snapshot's status supersedes any status post still in flight (F1_RACE).
+		const serialised = status ?? JSON.stringify(this.status);
+		const seq = ++this.statusPosts;
+		this.postingStatus = serialised;
+		const delivered = await this.post({
+			type: 'snapshot',
+			model,
+			...(state.parseError ? { parseError: state.parseError } : {}),
+			nodeStatus: this.status,
+			selection,
+			hostStatus,
+		});
+		this.statusPosted(seq, serialised, delivered);
 	}
 
 	/**
@@ -159,8 +176,8 @@ export class GraphPanel implements GraphPanelHandle {
 	/**
 	 * The binary state or the schema changed (ticket 3.9): `hostStatus` when it changed (LOST),
 	 * then, when a schema the webview's model was not built with is here, the model, the selection
-	 * and the node status (SET_PATH, RETRY, LATE_SCHEMA), or the parse error while the YAML does
-	 * not parse.
+	 * and the node status (SET_PATH, RETRY, LATE_SCHEMA), or, while the YAML does not parse, a
+	 * snapshot (the last valid graph under the banner, which a snapshot does not announce, F4).
 	 */
 	async hostChanged(): Promise<void> {
 		try {
@@ -183,13 +200,10 @@ export class GraphPanel implements GraphPanelHandle {
 			}
 			const state = this.state(doc);
 			if (state.parseError) {
-				// The webview dropped its model and banner with the schema; as in a snapshot, the banner
-				// shows again over the last valid graph, if any.
+				// The webview dropped its model and banner with the schema; a snapshot shows the banner
+				// again over the last valid graph, if any, without announcing it again (F4_LIVE).
+				await this.postSnapshot(doc);
 				this.modelCatalogue = catalogue;
-				if (this.lastModel) {
-					await this.post({ type: 'model', model: this.lastModel });
-				}
-				await this.post({ type: 'parseError', ...state.parseError });
 			} else if (state.model) {
 				await this.sendModel(doc, state.model);
 			}
@@ -239,7 +253,13 @@ export class GraphPanel implements GraphPanelHandle {
 		}
 	}
 
+	/** Whether the panel was disposed (F6): the lock sequence stops then. */
+	get isDisposed(): boolean {
+		return this.disposed;
+	}
+
 	dispose(): void {
+		this.disposed = true;
 		this.subscriptions.forEach((d) => d.dispose());
 	}
 
@@ -247,9 +267,13 @@ export class GraphPanel implements GraphPanelHandle {
 	 * Posts `message`; `true` once the post resolved, `false` if it threw (a disposed panel). A
 	 * post that resolves `false` (a webview that is not live yet) still counts as sent: such a
 	 * webview posts `ready` when it comes alive and gets the full snapshot, so re-sending would only
-	 * churn.
+	 * churn. After the panel is disposed nothing is posted (`false`), and a post the disposal
+	 * interrupted logs nothing (F6).
 	 */
 	private async post(message: HostMessage): Promise<boolean> {
+		if (this.disposed) {
+			return false;
+		}
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {
 			this.posted.splice(0, this.posted.length - MAX_POSTED);
@@ -285,12 +309,22 @@ export class GraphPanel implements GraphPanelHandle {
 		if (serialised === (this.postingStatus ?? this.sentStatus)) {
 			return;
 		}
+		const seq = ++this.statusPosts;
 		this.postingStatus = serialised;
 		const ok = await this.post({ type: 'nodeStatus', byId: this.status });
-		if (this.postingStatus === serialised) {
-			this.postingStatus = undefined;
+		this.statusPosted(seq, serialised, ok);
+	}
+
+	/**
+	 * A status post (number `seq`, of `serialised`) resolved: only the latest one decides what was
+	 * sent, since the webview applies the posts in order and keeps the last (F1).
+	 */
+	private statusPosted(seq: number, serialised: string, delivered: boolean): void {
+		if (seq !== this.statusPosts) {
+			return;
 		}
-		if (ok) {
+		this.postingStatus = undefined;
+		if (delivered) {
 			this.sentStatus = serialised;
 		}
 	}
@@ -364,7 +398,11 @@ export class GraphPanel implements GraphPanelHandle {
 		return state;
 	}
 
+	/** Logs `e`; nothing once the panel is disposed: what fails then is only the disposal (F6). */
 	private fail(e: unknown): void {
+		if (this.disposed) {
+			return;
+		}
 		this.log(`Graph ${path.posix.basename(this.uri.path)}: ${e instanceof Error ? e.message : String(e)}`);
 	}
 

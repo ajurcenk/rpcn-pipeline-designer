@@ -341,6 +341,20 @@ body {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
+/* With no model to draw, an empty canvas region is the named one (F3). */
+.rpcn-canvas-region {
+	position: absolute;
+	inset: 0;
+}
+/* The no-binary empty state and the empty canvas are the named region then, and take focus for Esc (F3). */
+.rpcn-canvas-region:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-empty:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
 .rpcn-graph .react-flow__node:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: 2px;

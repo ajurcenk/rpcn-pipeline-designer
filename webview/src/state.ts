@@ -10,8 +10,11 @@
 // error, again). A `snapshot` replaces all five: it is the host's complete state. `emptyStateOf`
 // picks the empty state the view shows from these alone (the webview does no binary work, AD-3).
 // The polite live region (ticket 3.11, LIVE): `reduceLive` adds what to announce to each change:
-// the banner text when a parse error appears, and "New error: …" for each node a `nodeStatus` newly
-// gives an error (a snapshot's status is the baseline, so a recreated webview repeats nothing).
+// the banner text once per appearance (F4: when it appears in a webview that has seen the file
+// parse, never while it stays up, whatever its message), and "New error: …" for each node a
+// `nodeStatus` newly gives an error. A snapshot announces nothing and is the baseline of both (a
+// recreated webview repeats nothing); the host sends one when the schema returns while the YAML
+// does not parse, so a schema drop and return repeats nothing either.
 // Pure: no DOM, no React (vitest runs it in plain Node).
 
 import type { HostMessage, HostStatus, NodeStatusById, ParseError, PipelineModel, WebviewMessage } from '../../src/shared/protocol';
@@ -152,22 +155,35 @@ export interface LiveView {
 	 * back on save are not announced again.
 	 */
 	readonly errors: ReadonlySet<string>;
+	/**
+	 * Set by a snapshot with no model: its node status becomes the error baseline once a model
+	 * arrives to map it with (F4).
+	 */
+	readonly baselinePending: boolean;
+	/**
+	 * Whether this webview has seen the file parse: a snapshot with a model and no parse error, or
+	 * any `model` message (the host sends one only while the file parses).
+	 */
+	readonly validSeen: boolean;
 }
 
-export const INITIAL_LIVE_VIEW: LiveView = { view: INITIAL_VIEW, live: { id: 0, lines: [] }, errors: new Set() };
+export const INITIAL_LIVE_VIEW: LiveView = {
+	view: INITIAL_VIEW, live: { id: 0, lines: [] }, errors: new Set(), baselinePending: false, validSeen: false,
+};
 
 /**
- * What a change from `previous` to `next` (by `message`) announces: the banner text when a parse
- * error appears; for a `nodeStatus`, "New error: {name}" for each node with an error not in
- * `baseline`.
+ * What `message` announces, from `state` to `next`: the banner text for a `parseError` that makes
+ * the banner appear, once the webview has seen the file parse (F4: once per appearance; a new
+ * message while the banner stays up says nothing); for a `nodeStatus`, "New error: {name}" for each
+ * node with an error not in the baseline. A snapshot announces nothing.
  */
-export function liveAnnouncements(previous: ViewModel, next: ViewModel, message: HostMessage, baseline: ReadonlySet<string>): string[] {
+export function liveAnnouncements(state: LiveView, next: ViewModel, message: HostMessage): string[] {
 	const lines: string[] = [];
-	if (next.parseError && !previous.parseError) {
+	if (message.type === 'parseError' && !state.view.parseError && state.validSeen) {
 		lines.push(BANNER_TEXT);
 	}
 	if (message.type === 'nodeStatus' && next.model) {
-		lines.push(...newErrorAnnouncements(next.model, baseline, next.nodeStatus));
+		lines.push(...newErrorAnnouncements(next.model, state.errors, next.nodeStatus));
 	}
 	return lines;
 }
@@ -178,10 +194,21 @@ export function reduceLive(state: LiveView, message: HostMessage): LiveView {
 	if (view === state.view) {
 		return state;
 	}
-	const lines = liveAnnouncements(state.view, view, message, state.errors);
-	const current = (message.type === 'nodeStatus' || message.type === 'snapshot') && view.model
-		? errorKeys(view.model, view.nodeStatus)
-		: undefined;
+	const lines = liveAnnouncements(state, view, message);
+	// The error baseline: a snapshot's or a node status's errors, or, after a snapshot with no
+	// model, the snapshot's status mapped with the first model that arrives (F4).
+	const sets = message.type === 'nodeStatus' || message.type === 'snapshot' || (message.type === 'model' && state.baselinePending);
+	const current = sets && view.model ? errorKeys(view.model, view.nodeStatus) : undefined;
 	const errors = current && current.size > 0 ? current : state.errors;
-	return { view, live: lines.length === 0 ? state.live : { id: state.live.id + 1, lines }, errors };
+	const baselinePending = message.type === 'snapshot' ? view.model === null : state.baselinePending && !view.model;
+	const validSeen = message.type === 'snapshot'
+		? state.validSeen || (view.model !== null && !view.parseError)
+		: state.validSeen || message.type === 'model';
+	return {
+		view,
+		live: lines.length === 0 ? state.live : { id: state.live.id + 1, lines },
+		errors,
+		baselinePending,
+		validSeen,
+	};
 }

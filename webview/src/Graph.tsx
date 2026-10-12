@@ -19,7 +19,7 @@
 // ancestor (`focusTarget`). A host `selection` never moves focus.
 
 import { Background, ReactFlow, type AriaLabelConfig, type Edge, type ReactFlowInstance } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MutableRefObject } from 'react';
 import type { ActivationVia, NodeStatusById, PipelineModel } from '../../src/shared/protocol';
 import { loadViewState, saveViewState } from './host';
 import {
@@ -74,7 +74,7 @@ function fitReadable(instance: ReactFlowInstance<ViewNode, Edge>, width: number)
 	});
 }
 
-export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor, describedBy }: {
+export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor, describedBy, broken = false, focusReturn }: {
 	readonly model: PipelineModel;
 	/** The node under the cursor in the driving editor (`null`: none). */
 	readonly selection: string | null;
@@ -85,6 +85,13 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	readonly onFocusEditor: () => void;
 	/** The id of an element describing the container (the nothing-to-draw text). */
 	readonly describedBy?: string;
+	/** The YAML does not parse (the banner shows): each node's name says a click does nothing (F8). */
+	readonly broken?: boolean;
+	/**
+	 * Whether keyboard focus was in the graph when it last unmounted (the view mounts it again when
+	 * it draws again): it is set on unmount and read on mount, so focus comes back (F5_FOCUS).
+	 */
+	readonly focusReturn?: MutableRefObject<boolean>;
 }) {
 	const [collapsedState, setCollapsedState] = useState<Collapsed>(() => new Set(loadViewState().collapsed ?? []));
 	// Only groups the current model still has (COLLAPSE_KEPT / COLLAPSE_GONE).
@@ -139,15 +146,28 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 			saveViewState({ focused: [...focused] });
 		}
 	}, [focused]);
-	/** Whether keyboard focus is in the graph, so a focused node that goes passes focus on. */
-	const hasFocus = useRef(false);
+	/**
+	 * Whether keyboard focus is in the graph, so a focused node that goes passes focus on; at mount,
+	 * whether it was when the graph last unmounted (F5_FOCUS).
+	 */
+	const hasFocus = useRef(focusReturn?.current ?? false);
+	useEffect(() => {
+		if (!focusReturn) {
+			return undefined;
+		}
+		focusReturn.current = false;
+		const focus = hasFocus;
+		return () => {
+			focusReturn.current = focus.current;
+		};
+	}, [focusReturn]);
 	/** The drawn node holding the Tab stop (TAB_IN, MODEL_CHANGE). */
 	const roving = useMemo(() => (laidOut ? focusTarget(laidOut.model, laidOut.collapsed, focused) : undefined), [laidOut, focused]);
 	const named = useMemo(() => highlighted.map((n): ViewNode => ({
 		...n,
-		ariaLabel: nodeAnnouncement(laidOut!.model, n.data.node, n.data.collapsed === true, n.data.marker),
+		ariaLabel: nodeAnnouncement(laidOut!.model, n.data.node, n.data.collapsed === true, n.data.marker, broken),
 		domAttributes: { tabIndex: n.id === roving ? 0 : -1 },
-	})), [highlighted, laidOut, roving]);
+	})), [highlighted, laidOut, roving, broken]);
 
 	/** Keeps the node in view, at the current zoom, when focus lands on it off screen. */
 	const reveal = useCallback((id: string) => {
@@ -190,7 +210,14 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 			const active = document.activeElement;
 			const activeNode = nodeIdOf(container.current, active);
 			const lost = active === null || active === document.body || (activeNode !== undefined && !drawn.has(activeNode));
-			if (!document.hasFocus() || !lost) {
+			if (!document.hasFocus()) {
+				return;
+			}
+			if (!lost) {
+				// Focus moved elsewhere while the graph was not mounted (F5_FOCUS): it is no longer ours.
+				if (!(active instanceof Node && container.current?.contains(active))) {
+					hasFocus.current = false;
+				}
 				return;
 			}
 			if (nodeElement(container.current, roving)) {
@@ -218,15 +245,18 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 		}
 	};
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (!laidOut || event.altKey || event.ctrlKey || event.metaKey) {
+		if (event.altKey || event.ctrlKey || event.metaKey) {
 			return;
 		}
 		if (event.target === container.current) {
-			// ESC, second step: the host focuses the driving editor.
+			// ESC, second step: the host focuses the driving editor; also before the first layout (F3_ESC).
 			if (event.key === 'Escape') {
 				event.preventDefault();
 				onFocusEditor();
 			}
+			return;
+		}
+		if (!laidOut) {
 			return;
 		}
 		// A button (the chevron, focused by a click) keeps its own Enter and Space.

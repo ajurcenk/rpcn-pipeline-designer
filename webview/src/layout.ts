@@ -352,18 +352,26 @@ function markerSpoken(marker: Marker): string {
 	return `${kind}: ${first}${rest.length > 0 ? `, and ${rest.length} more` : ''}`;
 }
 
+/** What a node's name ends with while the YAML does not parse: a click or Enter does nothing then (F8). */
+export const NAVIGATION_UNAVAILABLE = 'navigation unavailable while the YAML has errors';
+
 /**
  * A drawn node's accessible name (NAMES, EXPERIENCE Accessibility Floor):
  * "{role} {type}{, label}{, summary, expanded|collapsed}{, has error: message}{, has warning: message}".
  * A component group adds what it holds and its state; the marker is the one drawn on the box.
+ * While the YAML does not parse (`broken`, the banner over the last valid graph), the name ends
+ * with ", navigation unavailable while the YAML has errors" (F8).
  */
-export function nodeAnnouncement(model: PipelineModel, node: PipelineNode, collapsed: boolean, marker: Marker | undefined): string {
+export function nodeAnnouncement(model: PipelineModel, node: PipelineNode, collapsed: boolean, marker: Marker | undefined, broken = false): string {
 	const parts = [nodeSpokenName(node)];
 	if (node.group === true) {
 		parts.push(collapsedSummary(model, node), collapsed ? 'collapsed' : 'expanded');
 	}
 	if (marker) {
 		parts.push(markerSpoken(marker));
+	}
+	if (broken) {
+		parts.push(NAVIGATION_UNAVAILABLE);
 	}
 	return parts.join(', ');
 }

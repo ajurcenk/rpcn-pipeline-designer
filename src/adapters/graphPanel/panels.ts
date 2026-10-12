@@ -36,11 +36,11 @@ import type { LintDiagnostics } from '../vscode/diagnostics';
 import { GraphPanel, type GraphPanelHandle } from './graphPanel';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
-import { hasTextTab, isTextTabOf, openDocument, renamedKey, until, within, type Rename } from './tabs';
+import { hasTextTab, isTextTabOf, openDocument, renamedThrough, until, within, type Rename } from './tabs';
 
 export { MAX_POSTED, type GraphPanelHandle } from './graphPanel';
 export { hostStatusOf, statusDiagnostics, type GraphBinary, type GraphSchema } from './status';
-export { renamedKey, type Rename } from './tabs';
+export { renamedKey, renamedThrough, type Rename } from './tabs';
 
 export const SHOW_GRAPH_COMMAND = 'redpandaConnect.showGraph';
 export const HIDE_GRAPH_COMMAND = 'redpandaConnect.hideGraph';
@@ -117,6 +117,13 @@ export class GraphPanels implements vscode.Disposable {
 	private readonly hidden: Set<string>;
 	/** Renames announced by `onWillRenameFiles` and not done yet: their files' tabs closing is no close. */
 	private pendingRenames: Rename[] = [];
+	/**
+	 * Renamed files whose driving editor was in a column, by new `uri.toString()`: the editor of the
+	 * new URI in that column becomes the driving one once it is visible (F7_RENAME), and again when
+	 * the rename is reported (`reported`), over an editor VS Code reported active while it reopened
+	 * the file's editors.
+	 */
+	private readonly renamedDriving = new Map<string, { readonly column: vscode.ViewColumn; reported: boolean }>();
 	/** Panel creations (and their lock sequences) run one at a time: the lock acts on the active group. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private disposed = false;
@@ -166,9 +173,16 @@ export class GraphPanels implements vscode.Disposable {
 			}),
 			options.schema.onDidChange(() => this.hostChanged()),
 			vscode.window.onDidChangeVisibleTextEditors((visible) => {
+				this.adoptRenamedDriving(visible);
 				for (const [key, editor] of [...this.driving]) {
 					if (!visible.includes(editor)) {
 						this.driving.delete(key);
+						// VS Code closes a renaming file's editors before it reports the rename: its column
+						// is kept for the new URI's editor (F7_RENAME).
+						const to = renamedThrough(key, this.pendingRenames);
+						if (to !== undefined && editor.viewColumn !== undefined) {
+							this.renamedDriving.set(to, { column: editor.viewColumn, reported: false });
+						}
 					}
 				}
 				this.shown(visible);
@@ -274,53 +288,86 @@ export class GraphPanels implements vscode.Disposable {
 		}
 	}
 
-	/** RENAME: every map holding a renamed URI re-keys together; panels get their new title. */
+	/**
+	 * RENAME: every map holding a renamed URI re-keys together; panels get their new title. The
+	 * batch is applied as a whole (F7_RENAME): each key goes through the renames in their order,
+	 * and each map is rebuilt from the old keys at once, so a chain (`b→c, a→b`) or a swap
+	 * (`a→t, b→a, t→b`) moves every entry to its own file instead of onto another's.
+	 */
 	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
 		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
 		this.pendingRenames = this.pendingRenames.filter((p) => !renames.some((r) => r.from === p.from && r.to === p.to));
-		for (const [key, graph] of [...this.panels]) {
-			const to = renamedKey(key, renames);
+		const moved = (key: string) => renamedThrough(key, renames);
+		const panels = [...this.panels];
+		this.panels.clear();
+		// The files not renamed keep their panels; a renamed one landing on an open graph of its new
+		// name closes (one panel per file).
+		for (const [key, graph] of panels) {
+			if (moved(key) === undefined) {
+				this.panels.set(key, graph);
+			}
+		}
+		const collided: string[] = [];
+		for (const [key, graph] of panels) {
+			const to = moved(key);
 			if (to === undefined) {
 				continue;
 			}
-			this.panels.delete(key);
 			if (this.panels.has(to)) {
-				// A graph of the new name is open already: one panel per file.
 				graph.panel.dispose();
+				collided.push(to);
 				continue;
 			}
 			graph.uri = vscode.Uri.parse(to);
 			graph.panel.title = graphTitle(graph.uri);
 			this.panels.set(to, graph);
 		}
-		for (const [key, editor] of [...this.driving]) {
-			const to = renamedKey(key, renames);
-			if (to !== undefined) {
-				this.driving.delete(key);
-				this.driving.set(to, editor);
+		// The driving editor of a renamed file is the visible editor of its new URI in the old one's
+		// column (the old editor object is closed with the old name); until VS Code shows it, the
+		// column is remembered.
+		const driving = [...this.driving];
+		this.driving.clear();
+		for (const [key, editor] of driving) {
+			// An entry adopted for this batch is under its new key already: it is not moved again.
+			const to = this.renamedDriving.has(key) ? undefined : moved(key);
+			if (to === undefined) {
+				this.driving.set(key, editor);
+			} else if (editor.viewColumn !== undefined) {
+				this.renamedDriving.set(to, { column: editor.viewColumn, reported: true });
 			}
 		}
-		for (const key of [...this.seen]) {
-			const to = renamedKey(key, renames);
-			if (to !== undefined) {
-				this.seen.delete(key);
-				this.seen.add(to);
+		for (const [key, entry] of this.renamedDriving) {
+			if (renames.some((r) => r.to === key || within(key, r.to))) {
+				entry.reported = true;
 			}
 		}
-		let hiddenChanged = false;
-		for (const key of [...this.hidden]) {
-			const to = renamedKey(key, renames);
-			if (to !== undefined) {
-				this.hidden.delete(key);
-				this.hidden.add(to);
-				hiddenChanged = true;
-			}
-		}
+		collided.forEach((key) => this.renamedDriving.delete(key));
+		this.adoptRenamedDriving(vscode.window.visibleTextEditors);
+		const seen = [...this.seen];
+		this.seen.clear();
+		seen.forEach((key) => this.seen.add(moved(key) ?? key));
+		const hidden = [...this.hidden];
+		const hiddenChanged = hidden.some((key) => moved(key) !== undefined);
 		if (hiddenChanged) {
+			this.hidden.clear();
+			hidden.forEach((key) => this.hidden.add(moved(key) ?? key));
 			void this.storeHidden();
 		}
 		this.updateContext();
 		this.tabsChanged();
+	}
+
+	/** The renamed files whose new editor is visible now get it as their driving editor (F7_RENAME). */
+	private adoptRenamedDriving(visible: readonly vscode.TextEditor[]): void {
+		for (const [key, { column, reported }] of [...this.renamedDriving]) {
+			const editor = visible.find((e) => e.viewColumn === column && e.document.uri.toString() === key);
+			if (editor) {
+				this.driving.set(key, editor);
+				if (reported) {
+					this.renamedDriving.delete(key);
+				}
+			}
+		}
 	}
 
 	registerCommands(): vscode.Disposable[] {
@@ -430,8 +477,9 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			return open;
 		}
-		// A queued auto-open whose file's tab closed meanwhile opens nothing.
-		if (this.disposed || (auto && (!shownIn || !this.shouldAutoOpen(shownIn.doc) || !hasTextTab(key)))) {
+		// A queued auto-open whose file's tab closed meanwhile opens nothing, and nothing opens for a
+		// file hidden while its open was queued (F2_HIDE_QUEUED: Hide graph after a queued Show graph).
+		if (this.disposed || this.hidden.has(key) || (auto && (!shownIn || !this.shouldAutoOpen(shownIn.doc) || !hasTextTab(key)))) {
 			return undefined;
 		}
 		const yamlColumn = shownIn?.column ?? this.columnOf(key);
@@ -462,6 +510,7 @@ export class GraphPanels implements vscode.Disposable {
 		panel.onDidDispose(() => {
 			graph.dispose();
 			const current = graph.uri.toString();
+			this.renamedDriving.delete(current);
 			if (this.panels.get(current) === graph) {
 				this.panels.delete(current);
 				this.updateContext();
@@ -518,11 +567,18 @@ export class GraphPanels implements vscode.Disposable {
 	private async lock(graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined): Promise<void> {
 		const name = path.posix.basename(graph.uri.path);
 		try {
+			if (graph.isDisposed) {
+				return;
+			}
 			graph.panel.reveal(undefined, false);
+			// A panel disposed meanwhile (Hide graph, its tab closed) ends the sequence (F6_DISPOSE).
 			const active = await until(
-				() => graph.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn,
+				() => graph.isDisposed || (graph.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn),
 				LOCK_WAIT_MS,
 			);
+			if (graph.isDisposed) {
+				return;
+			}
 			// Only a group holding nothing but graphs is locked, never one of the user's editor groups.
 			const onlyGraphs = vscode.window.tabGroups.activeTabGroup.tabs.every((t) =>
 				t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith(GRAPH_VIEW_TYPE));
@@ -541,7 +597,7 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		try {
 			// Only while focus is where the sequence put it: never over an editor the user opened since.
-			if (!graph.panel.active) {
+			if (graph.isDisposed || !graph.panel.active) {
 				return;
 			}
 			await vscode.window.showTextDocument(doc, { viewColumn: yamlColumn, preserveFocus: false });
@@ -577,6 +633,7 @@ export class GraphPanels implements vscode.Disposable {
 		this.disposed = true;
 		this.subscriptions.forEach((d) => d.dispose());
 		this.driving.clear();
+		this.renamedDriving.clear();
 		for (const graph of [...this.panels.values()]) {
 			graph.panel.dispose();
 		}
