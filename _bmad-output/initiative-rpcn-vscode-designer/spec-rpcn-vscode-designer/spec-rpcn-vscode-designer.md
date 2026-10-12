@@ -128,7 +128,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - For 100% of the reference corpus, the graph shows every component, every route (`switch` cases, brokers) and every nested group correctly, and clicking any node lands on the right YAML.
 - For every corpus config, errors shown in the editor match `rpk connect lint` output.
 - A newcomer with the binary installed goes from an empty file to a running pipeline in under 10 minutes (EXPERIENCE Flow 3).
-- Second release: for every `mapping` and `mutation` in the corpus with a sample input, the test panel's output or error equals the binary's `blobl` result on that input, and every Bloblang parse error the editor underlines is one the binary reports for that mapping.
+- Second release: for every `mapping` and `mutation` in the corpus with a sample input, the test panel's output, error or deletion equals the binary's own run of that mapping on that input (AD-21's one-message pipeline), and every Bloblang parse error the editor underlines is one the binary's `blobl` reports for that mapping.
 
 ## Assumptions
 
@@ -138,11 +138,9 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Graph keyboard model follows EXPERIENCE Interaction Primitives.
 - SemVer 0.x in `package.json`; `redpandaConnect.*` IDs are provisional until a name is chosen.
 - Extension name `rpcn-pipeline-designer` (ID `ajurcenk.rpcn-pipeline-designer`) is provisional; display name is decided.
-- `blobl server` (marked experimental) or the `blobl` command can parse mappings on every supported binary (v4.100.0 to v4.112.0); the second release's first spike checks this.
 
 ## Open Questions
 
-- **Metadata in and out of a test (CAP-16).** `blobl server` ignores input metadata, returns no output metadata, and returns an empty result with no flag for `deleted()` (v4.112.0). Options: run each test as a one-message pipeline through `run` (latency unmeasured), or change `blobl server` upstream.
 - **Sample storage and linking (CAP-17).** The folder and file format for samples, and how a sample stays attached to its mapping: by the processor's `label`, by its position, or by offering to add a label.
 
 First-draft questions, answered by the 1.1 spike (`epic-foundation/spike-1-1-findings/findings.md`):

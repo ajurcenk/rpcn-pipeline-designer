@@ -1,0 +1,6 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/meta-out.blobl
+--- mapping file ---
+meta out = "x"
+root = this
+--- stdin ---
+{"a":1}

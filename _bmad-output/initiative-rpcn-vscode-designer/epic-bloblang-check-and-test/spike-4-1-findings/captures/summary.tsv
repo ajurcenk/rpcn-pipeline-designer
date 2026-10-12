@@ -1,0 +1,103 @@
+flavor	route	scenario	exit	first_output_line
+rpk-4.112.0	A	bad-input	http=200	{"parse_error":"","mapping_error":"unable to reference message as structured (with 'this'): parse as json: invalid ch...
+rpk-4.112.0	A	deleted	http=200	{"parse_error":"","mapping_error":"","result":""}
+rpk-4.112.0	A	empty-string	http=200	{"parse_error":"","mapping_error":"","result":""}
+rpk-4.112.0	A	map-error	http=200	{"parse_error":"","mapping_error":"failed assignment (line 2): expected number value, got null from field `this.nope`...
+rpk-4.112.0	A	meta-in	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"k\": null\n}"}
+rpk-4.112.0	A	meta-out	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1\n}"}
+rpk-4.112.0	A	multi-line	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1,\n  \"b\": 2\n}"}
+rpk-4.112.0	A	ok	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 2,\n  \"b\": \"set\"\n}"}
+rpk-4.112.0	A	parse-error	http=200	{"parse_error":"failed to parse mapping: line 3 char 8: required: expected comma or closing bracket\n  |\n3 | root.c ...
+rpk-4.112.0	A	raw-input	http=200	{"parse_error":"","mapping_error":"","result":"HELLO RAW"}
+rpk-4.112.0	A	server-missing	0	available
+rpk-4.112.0	B	bad-input	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character 'o' ...
+rpk-4.112.0	B	deleted	0	stderr: 
+rpk-4.112.0	B	empty-string	0	stderr: 
+rpk-4.112.0	B	map-error	0	stderr: failed to execute map: failed assignment (line 2): expected number value, got null from field `this.nope`
+rpk-4.112.0	B	map-error (parse-only)	0	stderr: 
+rpk-4.112.0	B	meta-in	0	{"k":null}
+rpk-4.112.0	B	meta-out	0	{"a":1}
+rpk-4.112.0	B	multi-line	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: unexpected EOF
+rpk-4.112.0	B	ok	0	{"a":2,"b":"set"}
+rpk-4.112.0	B	ok (parse-only)	0	stderr: 
+rpk-4.112.0	B	parse-error	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+rpk-4.112.0	B	parse-error (parse-only)	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+rpk-4.112.0	B	raw-input	0	HELLO RAW
+rpk-4.112.0	C	bad-input	0	{"error":"failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid...
+rpk-4.112.0	C	deleted	0	stderr: 
+rpk-4.112.0	C	empty-string	0	{"content":"","meta":{}}
+rpk-4.112.0	C	map-error	0	{"error":"failed assignment (line 2): expected number value, got null from field `this.nope`"}
+rpk-4.112.0	C	meta-in	0	{"content":"{\"k\":\"k1\"}","meta":{"key":"k1"}}
+rpk-4.112.0	C	meta-out	0	{"content":"{\"a\":1}","meta":{"out":"x"}}
+rpk-4.112.0	C	multi-line	0	{"content":"{\"a\":1,\"b\":2}","meta":{}}
+rpk-4.112.0	C	ok	0	{"content":"{\"a\":2,\"b\":\"set\"}","meta":{}}
+rpk-4.112.0	C	parse-error	1	stderr: time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="<ROOT>/.cache/blobl-probe/parse-error...
+rpk-4.112.0	C	raw-input	0	{"content":"HELLO RAW","meta":{}}
+standalone-4.100.0	A	bad-input	http=200	{"parse_error":"","mapping_error":"unable to reference message as structured (with 'this'): parse as json: invalid ch...
+standalone-4.100.0	A	deleted	http=200	{"parse_error":"","mapping_error":"","result":""}
+standalone-4.100.0	A	empty-string	http=200	{"parse_error":"","mapping_error":"","result":""}
+standalone-4.100.0	A	map-error	http=200	{"parse_error":"","mapping_error":"failed assignment (line 2): expected number value, got null from field `this.nope`...
+standalone-4.100.0	A	meta-in	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"k\": null\n}"}
+standalone-4.100.0	A	meta-out	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1\n}"}
+standalone-4.100.0	A	multi-line	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1,\n  \"b\": 2\n}"}
+standalone-4.100.0	A	ok	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 2,\n  \"b\": \"set\"\n}"}
+standalone-4.100.0	A	parse-error	http=200	{"parse_error":"failed to parse mapping: line 3 char 8: required: expected comma or closing bracket\n  |\n3 | root.c ...
+standalone-4.100.0	A	raw-input	http=200	{"parse_error":"","mapping_error":"","result":"HELLO RAW"}
+standalone-4.100.0	A	server-missing	0	available
+standalone-4.100.0	B	bad-input	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character 'o' ...
+standalone-4.100.0	B	deleted	0	stderr: 
+standalone-4.100.0	B	empty-string	0	stderr: 
+standalone-4.100.0	B	map-error	0	stderr: failed to execute map: failed assignment (line 2): expected number value, got null from field `this.nope`
+standalone-4.100.0	B	map-error (parse-only)	0	stderr: 
+standalone-4.100.0	B	meta-in	0	{"k":null}
+standalone-4.100.0	B	meta-out	0	{"a":1}
+standalone-4.100.0	B	multi-line	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: unexpected EOF
+standalone-4.100.0	B	ok	0	{"a":2,"b":"set"}
+standalone-4.100.0	B	ok (parse-only)	0	stderr: 
+standalone-4.100.0	B	parse-error	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+standalone-4.100.0	B	parse-error (parse-only)	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+standalone-4.100.0	B	raw-input	0	HELLO RAW
+standalone-4.100.0	C	bad-input	0	{"error":"failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid...
+standalone-4.100.0	C	deleted	0	stderr: 
+standalone-4.100.0	C	empty-string	0	{"content":"","meta":{}}
+standalone-4.100.0	C	map-error	0	{"error":"failed assignment (line 2): expected number value, got null from field `this.nope`"}
+standalone-4.100.0	C	meta-in	0	{"content":"{\"k\":\"k1\"}","meta":{"key":"k1"}}
+standalone-4.100.0	C	meta-out	0	{"content":"{\"a\":1}","meta":{"out":"x"}}
+standalone-4.100.0	C	multi-line	0	{"content":"{\"a\":1,\"b\":2}","meta":{}}
+standalone-4.100.0	C	ok	0	{"content":"{\"a\":2,\"b\":\"set\"}","meta":{}}
+standalone-4.100.0	C	parse-error	1	stderr: time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="<ROOT>/.cache/blobl-probe/parse-error...
+standalone-4.100.0	C	raw-input	0	{"content":"HELLO RAW","meta":{}}
+standalone-4.112.0	A	bad-input	http=200	{"parse_error":"","mapping_error":"unable to reference message as structured (with 'this'): parse as json: invalid ch...
+standalone-4.112.0	A	deleted	http=200	{"parse_error":"","mapping_error":"","result":""}
+standalone-4.112.0	A	empty-string	http=200	{"parse_error":"","mapping_error":"","result":""}
+standalone-4.112.0	A	map-error	http=200	{"parse_error":"","mapping_error":"failed assignment (line 2): expected number value, got null from field `this.nope`...
+standalone-4.112.0	A	meta-in	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"k\": null\n}"}
+standalone-4.112.0	A	meta-out	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1\n}"}
+standalone-4.112.0	A	multi-line	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 1,\n  \"b\": 2\n}"}
+standalone-4.112.0	A	ok	http=200	{"parse_error":"","mapping_error":"","result":"{\n  \"a\": 2,\n  \"b\": \"set\"\n}"}
+standalone-4.112.0	A	parse-error	http=200	{"parse_error":"failed to parse mapping: line 3 char 8: required: expected comma or closing bracket\n  |\n3 | root.c ...
+standalone-4.112.0	A	raw-input	http=200	{"parse_error":"","mapping_error":"","result":"HELLO RAW"}
+standalone-4.112.0	A	server-missing	0	available
+standalone-4.112.0	B	bad-input	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character 'o' ...
+standalone-4.112.0	B	deleted	0	stderr: 
+standalone-4.112.0	B	empty-string	0	stderr: 
+standalone-4.112.0	B	map-error	0	stderr: failed to execute map: failed assignment (line 2): expected number value, got null from field `this.nope`
+standalone-4.112.0	B	map-error (parse-only)	0	stderr: 
+standalone-4.112.0	B	meta-in	0	{"k":null}
+standalone-4.112.0	B	meta-out	0	{"a":1}
+standalone-4.112.0	B	multi-line	0	stderr: failed to execute map: unable to reference message as structured (with 'this'): parse as json: unexpected EOF
+standalone-4.112.0	B	ok	0	{"a":2,"b":"set"}
+standalone-4.112.0	B	ok (parse-only)	0	stderr: 
+standalone-4.112.0	B	parse-error	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+standalone-4.112.0	B	parse-error (parse-only)	1	stderr: failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+standalone-4.112.0	B	raw-input	0	HELLO RAW
+standalone-4.112.0	C	bad-input	0	{"error":"failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid...
+standalone-4.112.0	C	deleted	0	stderr: 
+standalone-4.112.0	C	empty-string	0	{"content":"","meta":{}}
+standalone-4.112.0	C	map-error	0	{"error":"failed assignment (line 2): expected number value, got null from field `this.nope`"}
+standalone-4.112.0	C	meta-in	0	{"content":"{\"k\":\"k1\"}","meta":{"key":"k1"}}
+standalone-4.112.0	C	meta-out	0	{"content":"{\"a\":1}","meta":{"out":"x"}}
+standalone-4.112.0	C	multi-line	0	{"content":"{\"a\":1,\"b\":2}","meta":{}}
+standalone-4.112.0	C	ok	0	{"content":"{\"a\":2,\"b\":\"set\"}","meta":{}}
+standalone-4.112.0	C	parse-error	1	stderr: time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="<ROOT>/.cache/blobl-probe/parse-error...
+standalone-4.112.0	C	raw-input	0	{"content":"HELLO RAW","meta":{}}

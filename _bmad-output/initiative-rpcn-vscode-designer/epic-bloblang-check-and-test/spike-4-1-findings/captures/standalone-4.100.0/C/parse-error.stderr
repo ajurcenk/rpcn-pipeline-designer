@@ -1,0 +1,2 @@
+time="<TS>" level=error msg="Config lint error" @service=redpanda-connect lint="<ROOT>/.cache/blobl-probe/parse-error.yaml(16,24) required: expected comma or closing bracket, got: = 3\n"
+time="<TS>" level=error msg="shutting down due to linter errors, to prevent shutdown run Redpanda Connect with --chilled" @service=redpanda-connect

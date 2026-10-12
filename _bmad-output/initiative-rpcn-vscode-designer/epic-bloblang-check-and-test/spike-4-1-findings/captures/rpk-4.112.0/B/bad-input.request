@@ -1,0 +1,5 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/bad-input.blobl
+--- mapping file ---
+root = this
+--- stdin ---
+not json

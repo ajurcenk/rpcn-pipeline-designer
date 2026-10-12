@@ -1,0 +1,21 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/bad-input.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "not json"
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

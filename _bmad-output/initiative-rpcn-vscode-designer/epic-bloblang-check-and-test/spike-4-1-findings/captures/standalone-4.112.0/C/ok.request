@@ -1,0 +1,22 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/ok.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "{\"x\":1}"
+pipeline:
+  processors:
+    - mapping: |
+        root.a = this.x + 1
+        root.b = "set"
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

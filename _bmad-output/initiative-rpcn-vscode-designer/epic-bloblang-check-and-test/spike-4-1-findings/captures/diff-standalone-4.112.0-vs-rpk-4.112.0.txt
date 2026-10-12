@@ -1,0 +1,5 @@
+diff -r standalone-4.112.0/invocation.txt rpk-4.112.0/invocation.txt
+1c1
+< <BIN> = <ROOT>/.cache/redpanda-connect/4.112.0/redpanda-connect
+---
+> <BIN> = rpk connect

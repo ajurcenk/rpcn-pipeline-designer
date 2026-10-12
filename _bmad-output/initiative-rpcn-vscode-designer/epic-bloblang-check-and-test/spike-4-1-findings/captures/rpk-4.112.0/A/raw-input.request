@@ -1,0 +1,6 @@
+POST /execute
+{
+  "mapping": "root = content().uppercase()",
+  "input": "hello raw",
+  "metadata": {}
+}

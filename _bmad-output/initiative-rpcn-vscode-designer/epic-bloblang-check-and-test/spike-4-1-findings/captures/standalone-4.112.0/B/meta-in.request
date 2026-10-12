@@ -1,0 +1,6 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/meta-in.blobl
+# metadata {"key":"k1"}: not expressible on this route
+--- mapping file ---
+root.k = @key
+--- stdin ---
+{}

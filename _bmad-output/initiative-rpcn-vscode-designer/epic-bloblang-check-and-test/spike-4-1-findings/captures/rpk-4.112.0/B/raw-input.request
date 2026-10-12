@@ -1,0 +1,5 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/raw-input.blobl
+--- mapping file ---
+root = content().uppercase()
+--- stdin ---
+hello raw

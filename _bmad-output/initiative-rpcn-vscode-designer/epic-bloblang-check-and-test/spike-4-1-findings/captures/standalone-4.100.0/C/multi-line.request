@@ -1,0 +1,21 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/multi-line.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "{\n  \"a\": 1,\n  \"b\": 2\n}"
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

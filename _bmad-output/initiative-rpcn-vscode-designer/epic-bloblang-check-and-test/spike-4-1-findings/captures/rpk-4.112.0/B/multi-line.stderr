@@ -1,0 +1,4 @@
+failed to execute map: unable to reference message as structured (with 'this'): parse as json: unexpected EOF
+failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character ':' looking for beginning of value
+failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character ':' looking for beginning of value
+failed to execute map: unable to reference message as structured (with 'this'): parse as json: invalid character '}' looking for beginning of value

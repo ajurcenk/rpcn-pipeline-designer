@@ -1,0 +1,21 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/empty-string.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "{\"a\":1}"
+pipeline:
+  processors:
+    - mapping: |
+        root = ""
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

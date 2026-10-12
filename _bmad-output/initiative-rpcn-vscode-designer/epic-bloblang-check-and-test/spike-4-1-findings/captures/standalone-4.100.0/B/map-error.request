@@ -1,0 +1,6 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/map-error.blobl
+--- mapping file ---
+root.a = 1
+root.b = this.nope.number()
+--- stdin ---
+{}

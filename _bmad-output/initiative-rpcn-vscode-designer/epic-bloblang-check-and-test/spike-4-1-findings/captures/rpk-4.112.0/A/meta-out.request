@@ -1,0 +1,6 @@
+POST /execute
+{
+  "mapping": "meta out = \"x\"\nroot = this",
+  "input": "{\"a\":1}",
+  "metadata": {}
+}

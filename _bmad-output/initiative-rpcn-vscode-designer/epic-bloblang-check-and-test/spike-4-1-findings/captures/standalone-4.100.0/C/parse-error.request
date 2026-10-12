@@ -1,0 +1,23 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/parse-error.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "{}"
+pipeline:
+  processors:
+    - mapping: |
+        root.a = 1
+        root.b = this.foo.bar(
+        root.c = 3
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

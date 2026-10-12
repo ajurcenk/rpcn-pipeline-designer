@@ -1,0 +1,4 @@
+failed to parse mapping: line 3 char 8: required: expected comma or closing bracket
+  |
+3 | root.c = 3
+  |        ^---

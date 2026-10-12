@@ -1,0 +1,6 @@
+POST /execute
+{
+  "mapping": "root = deleted()",
+  "input": "{\"a\":1}",
+  "metadata": {}
+}

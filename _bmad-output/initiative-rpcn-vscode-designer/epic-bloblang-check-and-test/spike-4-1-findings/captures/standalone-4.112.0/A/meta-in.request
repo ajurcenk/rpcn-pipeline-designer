@@ -1,0 +1,8 @@
+POST /execute
+{
+  "mapping": "root.k = @key",
+  "input": "{}",
+  "metadata": {
+    "key": "k1"
+  }
+}

@@ -1,0 +1,7 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/parse-error.blobl
+--- mapping file ---
+root.a = 1
+root.b = this.foo.bar(
+root.c = 3
+--- stdin ---
+{}

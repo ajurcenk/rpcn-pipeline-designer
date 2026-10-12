@@ -1,0 +1,21 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/raw-input.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "hello raw"
+pipeline:
+  processors:
+    - mapping: |
+        root = content().uppercase()
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

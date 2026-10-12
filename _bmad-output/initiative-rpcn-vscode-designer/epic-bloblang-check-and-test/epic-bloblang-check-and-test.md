@@ -30,14 +30,14 @@ A developer checks and tests a mapping next to its YAML instead of copying it in
 - E4 (R8) → CAP-16: A panel follows its processor through edits (shifted ranges, a changed label), says so when the processor is removed, closes with the file's last tab and follows a file rename.
 - E4 (R9) → CAP-17: Each mapping has named samples (content and metadata) in a workspace file next to the config; the panel adds, renames, deletes and switches samples and saves edits; samples link to their mapping by `label`, with the processor's path as a fallback and an offer to add a label; the file reloads on outside edits; the CodeLens shows the sample count.
 - E4 (R10) → CAP-16: Every panel control is reachable and operable by keyboard; the panel and its regions have accessible names; run results and errors are announced in a polite live region; colours come from the VS Code theme, high contrast included (EXPERIENCE Accessibility Floor, DESIGN tokens).
-- E4 (R11) → CAP-14: Corpus configs with a `mapping` or `mutation` get sample inputs; for each, on v4.100.0 and v4.112.0, the harness compares the extension's run result and its parse diagnostics with recorded `blobl` output.
+- E4 (R11) → CAP-14: Corpus configs with a `mapping` or `mutation` get sample inputs; for each, on v4.100.0 and v4.112.0, the harness compares the extension's run result with the recorded run of the AD-21 one-message pipeline, and its parse diagnostics with recorded `blobl` output.
 - E4 (R12) → CAP-13: esbuild builds the panel's webview bundle and the CI `.vsix` carries it.
 - E4 (R13) → architecture, UX: AD-21 (how Bloblang runs on the binary) and AD-22 (sample storage and linking) are added; AD-12, AD-14 and AD-17 are amended; EXPERIENCE gains the panel's states, flow and accessibility rules and DESIGN its tokens. Each change lands in the ticket that makes the decision.
 
 ## Done when
 
 1. Typing a syntax error in any `mapping` or `mutation` processor shows the binary's message at the right YAML line and column within about a second and marks the processor's graph node; fixing it clears both (VS Code integration tests with a fake binary, plus the corpus parse check).
-2. Test mapping opens that mapping's panel, and for 100% of corpus mappings with a sample on v4.100.0 and v4.112.0 the panel's output, error or "deleted" matches the binary's `blobl` result (corpus harness in CI).
+2. Test mapping opens that mapping's panel, and for 100% of corpus mappings with a sample on v4.100.0 and v4.112.0 the panel's output, error or "deleted" matches the binary's recorded run of the AD-21 one-message pipeline, and every parse error matches `blobl` (corpus harness in CI).
 3. Samples are saved next to the config, are there after a window reload, and stay attached to their mapping when processors are reordered.
 4. With no binary the panel shows Install guide, Set path and Retry, and runs after Set path without reopening the file.
 5. The panel works by keyboard and screen reader, the CI `.vsix` carries it, and the user passes a hands-on check on VS Code 1.141 and 1.100 in light, dark and high-contrast themes.
@@ -73,3 +73,5 @@ Capability boundary: Bloblang check (CAP-15) and test (CAP-16, CAP-17) for `mapp
 - Decision (user, 2026-10-12): 14 entries, above the typical 8–12, kept as one epic (mostly one lane, one owner).
 - Decision (E3 retro AI-7, 2026-10-12): each entry's plan names the earlier tickets its code meets (its `after` and the epics it reuses) and adds at least one combined-sequence test for each such boundary; its review weights them.
 - Decision (E3 retro AI-8, 2026-10-12): an entry that adds a protocol message, a setting, a context key, an architecture rule or a user decision updates the AD, EXPERIENCE or DESIGN line in the same commit.
+- Decision (user, 2026-10-12, spike 4.1): AD-21 adopted. Live parse: one-shot `blobl -f`, stdin closed; test runs: one-shot `run` on a generated one-message config (metadata in and out, deleted = no output); no `blobl server`. Parity (Done when 2, R11) compares the panel with the recorded run of that pipeline, and parse errors with `blobl`, because `run` and `blobl` differ on multi-line input, `deleted()` and invalid input.
+- Note: the open question on metadata in and out is answered by AD-21 (spike 4.1); the `blobl server` unknown is answered (it exists on v4.100.0 but is not used).

@@ -1,0 +1,5 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/deleted.blobl
+--- mapping file ---
+root = deleted()
+--- stdin ---
+{"a":1}

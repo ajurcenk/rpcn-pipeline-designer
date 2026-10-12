@@ -1,0 +1,1 @@
+<BIN> = <ROOT>/.cache/redpanda-connect/4.100.0/redpanda-connect

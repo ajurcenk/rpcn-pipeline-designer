@@ -1,0 +1,22 @@
+argv: <BIN> run <ROOT>/.cache/blobl-probe/meta-in.yaml
+--- config ---
+http:
+  enabled: false
+logger:
+  level: warn
+input:
+  generate:
+    count: 1
+    interval: ""
+    mapping: |
+      root = "{}"
+      meta key = "k1"
+pipeline:
+  processors:
+    - mapping: |
+        root.k = @key
+    - mapping: |
+        root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }
+output:
+  stdout:
+    codec: lines

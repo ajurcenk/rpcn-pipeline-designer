@@ -1,0 +1,2 @@
+<TS> Serving at: http://localhost:<PORT>
+<TS> WARNING: This server is intended for local debugging and experimentation purposes, bloblang has the ability to expose environment variables and file contents, do not expose this server to the internet

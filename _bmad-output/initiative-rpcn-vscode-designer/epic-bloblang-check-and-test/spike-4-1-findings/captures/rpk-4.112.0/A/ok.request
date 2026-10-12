@@ -1,0 +1,6 @@
+POST /execute
+{
+  "mapping": "root.a = this.x + 1\nroot.b = \"set\"",
+  "input": "{\"x\":1}",
+  "metadata": {}
+}

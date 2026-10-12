@@ -1,0 +1,6 @@
+POST /execute
+{
+  "mapping": "root = this",
+  "input": "{\n  \"a\": 1,\n  \"b\": 2\n}",
+  "metadata": {}
+}

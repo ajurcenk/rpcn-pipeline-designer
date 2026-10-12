@@ -1,0 +1,6 @@
+argv: <BIN> blobl -f <ROOT>/.cache/blobl-probe/ok.blobl
+--- mapping file ---
+root.a = this.x + 1
+root.b = "set"
+--- stdin ---
+{"x":1}

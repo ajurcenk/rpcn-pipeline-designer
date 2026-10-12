@@ -1,0 +1,1 @@
+time="<TS>" level=error msg="failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid character 'o' in literal null (expecting 'u')" @service=redpanda-connect label="" path=root.pipeline.processors.0
