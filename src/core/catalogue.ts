@@ -107,7 +107,11 @@ function slotsIn(node: JsonValue): Slot[] {
 	const seen = new Set<string>();
 	return found.filter((slot) => {
 		const key = `${slot.category}:${formatSlot(slot)}`;
-		return !seen.has(key) && seen.add(key) !== undefined;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
 	});
 }
 
