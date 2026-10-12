@@ -10,7 +10,12 @@ import './suites/40-snippets';
 import './suites/50-lint';
 import './suites/60-run';
 import './suites/70-feedback';
-import './suites/80-graph';
+import './suites/80-graph-panel';
+import './suites/81-graph-navigation';
+import './suites/82-graph-markers';
+import './suites/83-graph-empty-states';
+import './suites/84-graph-auto-open';
+import './suites/85-graph-keyboard';
 
 // Root hook (ticket 3.10): auto-open defaults to on, and the suites open detected YAML, so every
 // suite runs with it off; the 3.10 tests turn it on. A setting write does not activate the extension.
