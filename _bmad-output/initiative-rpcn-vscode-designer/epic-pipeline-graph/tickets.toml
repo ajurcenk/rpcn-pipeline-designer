@@ -159,3 +159,14 @@ covers = []
 after = [12]
 hitl = true
 risk = "low"
+
+[[entry]]
+id = 15
+type = "story"
+title = "Graph interaction fixes across tickets"
+description = "Retro action AI-1 (epic-pipeline-graph-retrospective.md, F1–F8 and F11): fixes where earlier tickets meet. F1: a nodeStatus post still in flight during ready must not overwrite what the snapshot sent. F2: a Hide during a queued Show keeps the file hidden and opens nothing. F3: Esc returns to the editor, and a named, focusable 'Pipeline graph, read-only' region exists, in every state (before the first layout, the empty states, the loading or no-schema canvas). F4: the live region repeats nothing (not the banner on a recreated webview or after a schema drop and return; not the existing errors after a snapshot with no model). F5: keyboard focus comes back to the graph after it remounts. F6: no post after dispose and no lock on a disposed panel. F7: rename chains and swaps in one batch re-key every map correctly, and the driving editor follows the rename. F8 (user decision 2026-10-12, 'a'): while the YAML does not parse, clicks and Enter stay no-ops and each node's accessible name says navigation is unavailable. Behaviour elsewhere is unchanged."
+verify = "Combined-sequence tests (F11): host-side scenarios through the posted seam and idle() (status in flight during ready; Hide during a queued Show; a rename with auto-open on; a folder rename and a swap; Hide with no argument while the graph tab is active; graphOpenPaths after a rename; selection and nodeStatus after a late schema), plus happy-dom and reducer chains (snapshot → hostStatus none → hostStatus ok → model → parseError) asserting the live text, the Esc path and focus; the suites pass on stable and 1.100.0."
+covers = ["R2", "R8", "R9", "R11"]
+after = [13]
+hitl = false
+risk = "medium"
