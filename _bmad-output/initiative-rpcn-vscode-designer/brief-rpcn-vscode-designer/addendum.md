@@ -33,7 +33,13 @@ Docs version 26.2; Connect v4.112.0.
 - `rpk connect lint [paths]`: flags `-r` (resources), `-e` (env file), `--skip-env-var-check`, `--deprecated`. Exits with code 1 on errors. **Has no JSON output**, so diagnostics must be parsed from text, which is a technical risk.
 - `rpk connect run`: flags `-r`, `-e`, `-s/--set`, `--log.level`, and `-w` for watch mode.
 - `rpk connect test [paths]`: for the later testing phase.
-- `rpk connect blobl server`: a local Bloblang playground.
+- `rpk connect blobl server`: a local Bloblang playground (marked EXPERIMENTAL; `--no-open`, `--port`, `--mapping-file`, `--input-file`, `--write`).
+- **Bloblang execution, checked 2026-10-12 on v4.112.0** (for the second release):
+  - `blobl server` serves `POST /execute` with `{"mapping", "input"}` and answers `{"parse_error", "mapping_error", "result"}`. A parse error carries line, column and a caret excerpt; a mapping error names the line and the field (`` failed assignment (line 1): expected number value, got null from field `this.nope` ``).
+  - It has gaps: input `metadata` is ignored (`@key` reads null), output metadata is not returned, and `root = deleted()` returns an empty `result` with no flag.
+  - `blobl` (no subcommand) applies a mapping (argument or `-f`) to JSON lines from stdin or `-i`, prints one result per line, and reports `failed to parse mapping: …` or `failed to execute map: …`. It has no metadata support either.
+  - Options for metadata: run a one-message pipeline through `run` (an input that sets the sample's content and metadata, the mapping under test, and a final mapping that writes `{"content", "meta"}` to stdout), or contribute metadata support to `blobl server` upstream.
+- **The docs playground** (source in the docs-ui repo, `blobl-editor/wasm/main.go`) is a Go Wasm module built from the Connect libraries, pinned in its `go.mod` (connect v4.111.1 at the time of writing). It takes a mapping, an input and optional metadata, and returns the output, its metadata, or an error. Some functions are replaced by mock or simplified versions for the browser (for example timezone conversion and strftime formatting). It is not used by this extension (decision 2026-10-12: the developer's binary only), but its input / metadata / output / error shape is the model for the test panel.
 - *Unverified:* that the standalone `redpanda-connect` binary has identical subcommands.
 
 ## Technical notes for architecture
