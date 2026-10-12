@@ -4,7 +4,7 @@
 // `parseHostMessage` is ignored. It holds no domain state and parses no YAML (AD-2, AD-3). The empty
 // states (3.9) come from `emptyStateOf`: no binary, with Install guide, Set path and Retry, which
 // post the intents the host runs as the binary warning's actions; and nothing to draw.
-// Screen readers (ticket 11): one always-mounted polite live region says the banner text when it
+// Screen readers (ticket 3.11): one always-mounted polite live region says the banner text when it
 // appears and each node that newly gets an error (`reduceLive`); the banner itself is not a live
 // region, so nothing is said twice. Esc on the graph container posts `focusEditorRequested`.
 

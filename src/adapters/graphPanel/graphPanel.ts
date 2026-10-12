@@ -1,4 +1,4 @@
-// One file's graph panel (tickets 3.1, 3.6, 3.7, 3.8, 3.9, ticket 11; split out of panels.ts in
+// One file's graph panel (tickets 3.1, 3.6, 3.7, 3.8, 3.9, 3.11; split out of panels.ts in
 // ticket 3.12): the webview's messages, the model, the selection, the node status and the host
 // status of one file. See panels.ts for the whole picture.
 
@@ -381,7 +381,7 @@ export class GraphPanel implements GraphPanelHandle {
 	}
 
 	/**
-	 * Esc on the graph container (ticket 11, ESC): focuses the file's driving editor, else a
+	 * Esc on the graph container (ticket 3.11, ESC): focuses the file's driving editor, else a
 	 * visible editor for it, leaving its cursor and selection as they are (no `selection` is
 	 * passed). With no editor for the file nothing happens, and nothing is logged.
 	 */

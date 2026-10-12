@@ -274,7 +274,7 @@ export function visibleNodes(model: PipelineModel, collapsed: Collapsed): Pipeli
 }
 
 // ---------------------------------------------------------------------------------------------
-// Keyboard and screen reader (ticket 11): pure, so vitest runs them in plain Node.
+// Keyboard and screen reader (ticket 3.11): pure, so vitest runs them in plain Node.
 // ---------------------------------------------------------------------------------------------
 
 /** The arrow keys the graph moves focus with. */
@@ -533,7 +533,7 @@ export function toFlow(model: PipelineModel, laidOut: ElkNode, collapsed: Collap
 		source: e.source,
 		target: e.target,
 		focusable: false,
-		// Hidden from assistive tech (ticket 11): React Flow would otherwise expose each edge as an
+		// Hidden from assistive tech (ticket 3.11): React Flow would otherwise expose each edge as an
 		// image named "Edge from <id> to <id>", reading internal ids.
 		ariaRole: 'presentation' as const,
 		domAttributes: { 'aria-hidden': true },

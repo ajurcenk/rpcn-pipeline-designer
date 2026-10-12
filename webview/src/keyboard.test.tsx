@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The keyboard and screen-reader model (ticket 11), on the real view: App (main.tsx) renders the
+// The keyboard and screen-reader model (ticket 3.11), on the real view: App (main.tsx) renders the
 // Graph with React Flow in happy-dom, fed host messages as the webview would get them, over the
 // switch-processor fixture with node status. Every row of the plan's I/O matrix. ELK runs for real.
 

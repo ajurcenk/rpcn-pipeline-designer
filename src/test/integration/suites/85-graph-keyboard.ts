@@ -6,8 +6,8 @@ import { REPO_ROOT } from '../../helpers/fakeBinary';
 import { waitFor } from '../helpers';
 import { snapshots, VALID, settle, SWITCH, withGraph, open, showGraph, useGraphSuite } from '../graphHelpers';
 
-// The keyboard model, host side (11): activation by keyboard and Esc back to the editor.
-suite('Pipeline graph: keyboard host side (11, integration)', function () {
+// The keyboard model, host side (3.11): activation by keyboard and Esc back to the editor.
+suite('Pipeline graph: keyboard host side (3.11, integration)', function () {
 	this.timeout(60_000);
 	useGraphSuite();
 

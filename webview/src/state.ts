@@ -9,7 +9,7 @@
 // since the host sends neither until a schema arrives (it then sends the model, or the parse
 // error, again). A `snapshot` replaces all five: it is the host's complete state. `emptyStateOf`
 // picks the empty state the view shows from these alone (the webview does no binary work, AD-3).
-// The polite live region (ticket 11, LIVE): `reduceLive` adds what to announce to each change:
+// The polite live region (ticket 3.11, LIVE): `reduceLive` adds what to announce to each change:
 // the banner text when a parse error appears, and "New error: …" for each node a `nodeStatus` newly
 // gives an error (a snapshot's status is the baseline, so a recreated webview repeats nothing).
 // Pure: no DOM, no React (vitest runs it in plain Node).

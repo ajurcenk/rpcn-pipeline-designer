@@ -128,7 +128,7 @@ export type WebviewMessage =
 	| { readonly type: 'installGuideRequested' }
 	| { readonly type: 'setPathRequested' }
 	| { readonly type: 'retryRequested' }
-	/** Esc on the graph container (ticket 11): focus the file's driving editor, cursor unchanged. */
+	/** Esc on the graph container (ticket 3.11): focus the file's driving editor, cursor unchanged. */
 	| { readonly type: 'focusEditorRequested' };
 
 // ---------------------------------------------------------------------------------------------

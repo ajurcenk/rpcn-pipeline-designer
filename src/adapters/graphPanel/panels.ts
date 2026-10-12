@@ -25,7 +25,7 @@
 // outlives the YAML it reports). When a schema arrives, each open panel gets `hostStatus`, then the
 // model, the selection and the node status (or the parse error), with no `ready` needed. The webview's Install guide, Set path and
 // Retry buttons post intents that run the binary warning's own actions (`BinaryActions`).
-// Keyboard (ticket 11): Esc on the graph container posts `focusEditorRequested`, which focuses the
+// Keyboard (ticket 3.11): Esc on the graph container posts `focusEditorRequested`, which focuses the
 // file's driving editor without touching its cursor or selection; with no editor, nothing happens.
 
 import * as path from 'path';

@@ -10,7 +10,7 @@
 // Later models keep the user's pan and zoom. Node status (ticket 3.8): each drawn box gets its
 // error or warning marker from the host's `nodeStatus` (`markStatus`: a leaf and a collapsed group
 // by the roll-up, an expanded group or route by its own severity); the webview maps no ranges.
-// Keyboard and screen reader (ticket 11): the graph container ("Pipeline graph, read-only") holds
+// Keyboard and screen reader (ticket 3.11): the graph container ("Pipeline graph, read-only") holds
 // one roving Tab stop, the last focused drawn node (else the first); the arrows move it
 // (`nextFocus`), Enter activates the node (`via: 'keyboard'`), Space toggles a group, Esc on a node
 // focuses the container and Esc on the container asks the host to focus the YAML editor. Each node
@@ -81,7 +81,7 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	/** The error and warning markers by node id (3.8). */
 	readonly nodeStatus: NodeStatusById;
 	readonly onActivate: (nodeId: string, via: ActivationVia) => void;
-	/** Esc on the graph container (ticket 11): the host focuses the YAML editor. */
+	/** Esc on the graph container (ticket 3.11): the host focuses the YAML editor. */
 	readonly onFocusEditor: () => void;
 	/** The id of an element describing the container (the nothing-to-draw text). */
 	readonly describedBy?: string;
@@ -131,7 +131,7 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	const marked = useMemo(() => (laidOut ? markStatus(laidOut, nodeStatus) : []), [laidOut, nodeStatus]);
 	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection, marked) : []), [laidOut, selection, marked]);
 
-	// Keyboard focus (ticket 11): the last focused node and its ancestors, nearest first.
+	// Keyboard focus (ticket 3.11): the last focused node and its ancestors, nearest first.
 	const container = useRef<HTMLDivElement>(null);
 	const [focused, setFocused] = useState<readonly string[] | undefined>(() => loadViewState().focused);
 	useEffect(() => {

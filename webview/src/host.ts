@@ -10,7 +10,7 @@ export interface ViewState {
 	readonly collapsed?: readonly string[];
 	/** The pan and zoom at the end of the last move. */
 	readonly viewport?: Viewport;
-	/** The node holding the graph's Tab stop, then its ancestors, nearest first (ticket 11). */
+	/** The node holding the graph's Tab stop, then its ancestors, nearest first (ticket 3.11). */
 	readonly focused?: readonly string[];
 }
 

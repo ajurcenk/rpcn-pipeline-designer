@@ -330,7 +330,7 @@ body {
 	outline-offset: 1px;
 }
 
-/* Keyboard focus (ticket 11, DESIGN pipeline-node-focused, EXPERIENCE Accessibility Floor): the
+/* Keyboard focus (ticket 3.11, DESIGN pipeline-node-focused, EXPERIENCE Accessibility Floor): the
    graph container fills the canvas; a focused node, and the container after Esc, get the
    1px {colors.focus} ring. Never removed. */
 .rpcn-graph {
@@ -346,7 +346,7 @@ body {
 	outline-offset: 2px;
 }
 
-/* The polite live region (ticket 11): read by screen readers, never drawn. */
+/* The polite live region (ticket 3.11): read by screen readers, never drawn. */
 .rpcn-sr-only {
 	position: absolute;
 	width: 1px;

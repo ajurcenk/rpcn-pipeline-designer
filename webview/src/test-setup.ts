@@ -1,4 +1,4 @@
-// Test setup for webview/ vitest files (ticket 11). The files that run in plain Node get nothing.
+// Test setup for webview/ vitest files (ticket 3.11). The files that run in plain Node get nothing.
 // A file that opts in to happy-dom (`// @vitest-environment happy-dom`) gets a fake VS Code webview
 // API (`acquireVsCodeApi`, which host.ts calls on import) that records what the view posts and
 // keeps its `setState`, plus stubs of browser APIs React Flow uses that happy-dom lacks. Tests only.
