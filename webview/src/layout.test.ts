@@ -357,7 +357,7 @@ describe('VIEW_MARKERS (ticket 3.8): border and icon per node status', () => {
 	});
 });
 
-// Ticket 11: the keyboard and screen-reader helpers, on the switch-processor fixture.
+// Ticket 3.11: the keyboard and screen-reader helpers, on the switch-processor fixture.
 describe('KEYBOARD (ticket 11)', () => {
 	const model = fixture('switch-processor');
 	const SW = BRANCH;
