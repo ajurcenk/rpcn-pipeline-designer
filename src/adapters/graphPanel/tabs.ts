@@ -1,4 +1,4 @@
-// Tab and rename helpers of the graph registry (ticket 3.10; split out of panels.ts in ticket 3.12).
+// Tab, document and rename helpers of the graph registry (ticket 3.10; split out of panels.ts in ticket 3.12).
 
 import * as vscode from 'vscode';
 
@@ -48,4 +48,9 @@ export function hasTextTab(key: string): boolean {
 
 export function isTextTabOf(tab: vscode.Tab | undefined, key: string): boolean {
 	return tab?.input instanceof vscode.TabInputText && tab.input.uri.toString() === key;
+}
+
+/** The open text document of `key` (a `uri.toString()`), if any. */
+export function openDocument(key: string): vscode.TextDocument | undefined {
+	return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
 }

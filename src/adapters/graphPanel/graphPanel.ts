@@ -14,6 +14,7 @@ import {
 } from '../../shared/protocol';
 import { parsedDocument } from '../vscode/parseCache';
 import { statusDiagnostics } from './status';
+import { openDocument } from './tabs';
 
 /** How many of a panel's posted messages `posted` keeps (test seam; a bound, not a log). */
 export const MAX_POSTED = 50;
@@ -176,7 +177,7 @@ export class GraphPanel implements GraphPanelHandle {
 			}
 			const catalogue = this.catalogue();
 			const key = this.uri.toString();
-			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+			const doc = openDocument(key);
 			if (!catalogue || catalogue === this.modelCatalogue || !doc) {
 				return;
 			}
@@ -205,7 +206,7 @@ export class GraphPanel implements GraphPanelHandle {
 	async diagnosticsChanged(): Promise<void> {
 		try {
 			const key = this.uri.toString();
-			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+			const doc = openDocument(key);
 			if (!doc) {
 				// The document is gone: its diagnostics no longer describe anything the graph shows.
 				this.status = {};
@@ -328,7 +329,7 @@ export class GraphPanel implements GraphPanelHandle {
 
 	private async document(): Promise<vscode.TextDocument> {
 		const key = this.uri.toString();
-		return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key)
+		return openDocument(key)
 			?? vscode.workspace.openTextDocument(this.uri);
 	}
 

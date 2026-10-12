@@ -36,7 +36,7 @@ import type { LintDiagnostics } from '../vscode/diagnostics';
 import { GraphPanel, type GraphPanelHandle } from './graphPanel';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
-import { hasTextTab, isTextTabOf, renamedKey, until, within, type Rename } from './tabs';
+import { hasTextTab, isTextTabOf, openDocument, renamedKey, until, within, type Rename } from './tabs';
 
 export { MAX_POSTED, type GraphPanelHandle } from './graphPanel';
 export { hostStatusOf, statusDiagnostics, type GraphBinary, type GraphSchema } from './status';
@@ -469,7 +469,7 @@ export class GraphPanels implements vscode.Disposable {
 		});
 		panel.webview.html = graphHtml(panel.webview, this.options.extensionUri, title);
 		this.updateContext();
-		const doc = shownIn?.doc ?? vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+		const doc = shownIn?.doc ?? openDocument(key);
 		await this.lock(graph, yamlColumn, doc);
 		return graph;
 	}
