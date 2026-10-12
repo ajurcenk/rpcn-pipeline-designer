@@ -1,0 +1,473 @@
+<title>Bloblang Test Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a page header with the state switcher, then a VS Code window (YAML editor | Bloblang test panel), then numbered design notes keyed to badges in the window. */
+:root {
+  --page: #eef0f3; --page-fg: #1f2329; --page-muted: #5d6573; --page-line: #d5d9e0;
+  --win: #ffffff; --chrome: #f3f3f3; --chrome-2: #e8e8e8; --line: #e1e3e7;
+  --fg: #1f1f1f; --muted: #6b6f76; --faint: #9a9ea6;
+  --accent: #005fb8; --accent-soft: #e2edf8; --focus: #0090f1;
+  --ok: #2f8a3e; --ok-soft: #e4f3e6; --err: #c72e2e; --err-soft: #fbe9e9; --warn: #a86800; --warn-soft: #fbf1dd;
+  --sel: #add6ff80; --lens: #919191; --gutter: #237893;
+  --t-key: #0451a5; --t-str: #a31515; --t-num: #098658; --t-kw: #0000ff; --t-fn: #795e26; --t-var: #001080; --t-com: #008000; --t-punct: #3b3b3b;
+  --ui: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --pin: #b2410f;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #121418; --page-fg: #e4e6ea; --page-muted: #9aa1ad; --page-line: #2a2e35;
+  --win: #1f1f1f; --chrome: #181818; --chrome-2: #2b2b2b; --line: #2b2b2b;
+  --fg: #cccccc; --muted: #9d9d9d; --faint: #6e7681;
+  --accent: #4daafc; --accent-soft: #0e3a5c; --focus: #0078d4;
+  --ok: #6cc47a; --ok-soft: #173b20; --err: #f48771; --err-soft: #4b1d1a; --warn: #e2b341; --warn-soft: #43350f;
+  --sel: #264f78; --lens: #8a8a8a; --gutter: #6e7681;
+  --t-key: #569cd6; --t-str: #ce9178; --t-num: #b5cea8; --t-kw: #c586c0; --t-fn: #dcdcaa; --t-var: #9cdcfe; --t-com: #6a9955; --t-punct: #d4d4d4;
+  --pin: #ff8a4c; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --page: #121418; --page-fg: #e4e6ea; --page-muted: #9aa1ad; --page-line: #2a2e35;
+  --win: #1f1f1f; --chrome: #181818; --chrome-2: #2b2b2b; --line: #2b2b2b;
+  --fg: #cccccc; --muted: #9d9d9d; --faint: #6e7681;
+  --accent: #4daafc; --accent-soft: #0e3a5c; --focus: #0078d4;
+  --ok: #6cc47a; --ok-soft: #173b20; --err: #f48771; --err-soft: #4b1d1a; --warn: #e2b341; --warn-soft: #43350f;
+  --sel: #264f78; --lens: #8a8a8a; --gutter: #6e7681;
+  --t-key: #569cd6; --t-str: #ce9178; --t-num: #b5cea8; --t-kw: #c586c0; --t-fn: #dcdcaa; --t-var: #9cdcfe; --t-com: #6a9955; --t-punct: #d4d4d4;
+  --pin: #ff8a4c; color-scheme: dark; }
+
+* { box-sizing: border-box; font-variant-ligatures: none; }
+body { background: var(--page); color: var(--page-fg); font: 14px/1.5 var(--ui); padding: 28px 20px 48px; }
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 22px; }
+h1 { font-size: 26px; font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.eyebrow { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--page-muted); }
+.lede { color: var(--page-muted); max-width: 68ch; margin: 6px 0 0; }
+header.top { display: grid; gap: 14px; }
+.states { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.states .lbl { font-size: 12px; color: var(--page-muted); margin-right: 4px; }
+.chip { font: 500 13px var(--ui); border: 1px solid var(--page-line); background: transparent; color: var(--page-fg); padding: 6px 12px; border-radius: 999px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.chip:hover { border-color: var(--page-muted); }
+.chip[aria-pressed="true"] { background: var(--page-fg); color: var(--page); border-color: var(--page-fg); }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.state-note { font-size: 13px; color: var(--page-muted); min-height: 1.5em; }
+
+/* VS Code window */
+.window { background: var(--win); color: var(--fg); border: 1px solid var(--page-line); border-radius: 8px; overflow: hidden; box-shadow: 0 18px 50px -24px rgba(0,0,0,.35); display: grid; grid-template-rows: auto 1fr auto; min-height: 640px; }
+.titlebar { background: var(--chrome); border-bottom: 1px solid var(--line); height: 34px; display: flex; align-items: center; padding: 0 12px; gap: 8px; font-size: 12px; color: var(--muted); }
+.titlebar .lights { display: flex; gap: 6px; }
+.titlebar .lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--chrome-2); display: block; }
+.titlebar .ttl { flex: 1; text-align: center; }
+.groups { display: grid; grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); min-height: 0; }
+.group { display: grid; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; }
+.group + .group { border-left: 1px solid var(--line); }
+.tabs { background: var(--chrome); display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tab { font-size: 13px; padding: 7px 14px; color: var(--muted); border-right: 1px solid var(--line); white-space: nowrap; display: flex; gap: 8px; align-items: center; }
+.tab.active { background: var(--win); color: var(--fg); box-shadow: inset 0 1px 0 var(--accent); }
+.tab .ico { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.tab .x { color: var(--faint); }
+
+/* Editor */
+.editor { font: 13px/20px var(--mono); padding: 8px 0 16px; overflow: auto; min-width: 0; }
+.ln { display: grid; grid-template-columns: 44px 1fr; white-space: pre; position: relative; }
+.ln .no { color: var(--gutter); text-align: right; padding-right: 16px; user-select: none; opacity: .8; }
+.ln.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { 0%, 40% { background: var(--sel); } 100% { background: transparent; } }
+.ln.cur { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.lens { display: grid; grid-template-columns: 44px 1fr; font: 12px/18px var(--ui); color: var(--lens); }
+.lens button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.lens button:hover { color: var(--accent); text-decoration: underline; }
+.k { color: var(--t-key); } .s { color: var(--t-str); } .n { color: var(--t-num); } .kw { color: var(--t-kw); } .fn { color: var(--t-fn); } .v { color: var(--t-var); } .c { color: var(--t-com); } .p { color: var(--t-punct); }
+.squig { text-decoration: underline wavy var(--err); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.ghost { color: var(--err); opacity: .85; font-style: italic; font-family: var(--ui); font-size: 12px; }
+.hoverbox { position: absolute; left: 160px; top: 22px; z-index: 3; background: var(--chrome); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 4px; padding: 8px 10px; font: 12px/1.45 var(--ui); white-space: normal; width: min(380px, 80%); color: var(--fg); }
+.hoverbox code { font-family: var(--mono); font-size: 11.5px; }
+.hoverbox .src { color: var(--muted); }
+
+/* Panel */
+.panel { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; min-width: 0; font-size: 13px; }
+.phead { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; }
+.phead .where { min-width: 0; }
+.phead .name { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+.phead .crumb { color: var(--muted); font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 500; white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); } .pill.err { background: var(--err-soft); color: var(--err); } .pill.warn { background: var(--warn-soft); color: var(--warn); } .pill.idle { background: var(--chrome-2); color: var(--muted); }
+.pill .sym { font-weight: 600; }
+.toolbar { padding: 8px 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.toolbar label { color: var(--muted); font-size: 12px; }
+select, .btn { font: 13px var(--ui); color: var(--fg); background: var(--chrome); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; }
+select { min-width: 0; max-width: 100%; }
+.btn { cursor: pointer; }
+.btn:hover { background: var(--chrome-2); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.primary:hover { filter: brightness(1.08); }
+.saved { font-size: 12px; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.spacer { flex: 1; }
+.io { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); min-height: 0; }
+.col { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
+.col + .col { border-left: 1px solid var(--line); }
+.colhead { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); min-height: 34px; }
+.colhead h3 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; margin: 0 10px 0 0; color: var(--muted); font-weight: 600; }
+.ptab { font: 12px var(--ui); background: none; border: 0; color: var(--muted); padding: 8px 8px 7px; cursor: pointer; border-bottom: 2px solid transparent; }
+.ptab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.badge { font-size: 10.5px; background: var(--chrome-2); color: var(--muted); border-radius: 8px; padding: 0 6px; margin-left: 4px; }
+textarea { width: 100%; height: 100%; min-height: 300px; resize: none; border: 0; background: transparent; color: var(--fg); font: 12.5px/19px var(--mono); padding: 12px 16px; outline: none; }
+textarea:focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
+.out { font: 12.5px/19px var(--mono); padding: 12px 16px; white-space: pre; overflow: auto; min-height: 300px; }
+.out .add { background: color-mix(in srgb, var(--ok) 14%, transparent); box-shadow: inset 2px 0 0 var(--ok); display: inline-block; min-width: 100%; }
+.out.stale { opacity: .38; }
+.meta { width: 100%; border-collapse: collapse; font: 12.5px var(--mono); }
+.meta th { text-align: left; font: 600 11px var(--ui); color: var(--muted); letter-spacing: .05em; text-transform: uppercase; padding: 10px 16px 6px; }
+.meta td { padding: 4px 16px; border-top: 1px solid var(--line); }
+.meta td input { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent; padding: 2px 4px; width: 100%; }
+.meta td input:hover, .meta td input:focus { border-color: var(--line); }
+.meta tr.add td { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.metawrap { overflow: auto; min-height: 300px; }
+.addrow { padding: 8px 16px; }
+.linkbtn { font: 12px var(--ui); color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
+.foot { border-top: 1px solid var(--line); padding: 8px 16px; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.foot .tag { font-family: var(--mono); color: var(--ok); }
+.errcard { margin: 12px 16px; border: 1px solid color-mix(in srgb, var(--err) 45%, transparent); background: var(--err-soft); border-radius: 4px; padding: 10px 12px; display: grid; gap: 6px; }
+.errcard .t { font-weight: 600; color: var(--err); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.errcard .t small { font-weight: 400; color: var(--muted); }
+.errcard pre { margin: 0; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.errcard .acts { display: flex; gap: 12px; flex-wrap: wrap; }
+.infocard { margin: 12px 16px; border: 1px dashed var(--line); border-radius: 4px; padding: 14px; color: var(--muted); display: grid; gap: 4px; }
+.infocard b { color: var(--fg); font-weight: 600; }
+.empty { display: grid; place-content: center; text-align: center; gap: 12px; padding: 40px 24px; color: var(--muted); grid-column: 1 / -1; }
+.empty b { color: var(--fg); font-size: 14px; }
+.empty .acts { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.statusbar { background: var(--accent); color: #fff; font-size: 12px; display: flex; gap: 16px; padding: 3px 12px; flex-wrap: wrap; }
+:root[data-theme="dark"] .statusbar { background: #181818; color: var(--muted); border-top: 1px solid var(--line); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .statusbar { background: #181818; color: var(--muted); border-top: 1px solid var(--line); } }
+.statusbar .sp { flex: 1; }
+
+/* Pins and notes */
+.pin { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--pin); color: #fff; font: 600 10.5px/1 var(--ui); flex: none; vertical-align: middle; }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px 28px; }
+.note { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; }
+.note p { margin: 2px 0 0; color: var(--page-muted); font-size: 13.5px; }
+.note b { font-weight: 600; color: var(--page-fg); }
+.open { border-top: 1px solid var(--page-line); padding-top: 16px; display: grid; gap: 8px; }
+.open ul { margin: 0; padding-left: 18px; color: var(--page-muted); display: grid; gap: 4px; max-width: 90ch; }
+.open code, .note code { font-family: var(--mono); font-size: 12.5px; }
+
+@media (max-width: 980px) {
+  .groups { grid-template-columns: minmax(0,1fr); }
+  .group + .group { border-left: 0; border-top: 1px solid var(--line); }
+  .editor { max-height: 420px; }
+}
+@media (max-width: 640px) {
+  body { padding: 20px 16px 40px; }
+  .io { grid-template-columns: minmax(0,1fr); }
+  .col + .col { border-left: 0; border-top: 1px solid var(--line); }
+  textarea, .out, .metawrap { min-height: 200px; }
+  .hoverbox { left: 50px; }
+}
+@media (prefers-reduced-motion: reduce) { .ln.flash { animation: none; background: var(--sel); } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="eyebrow">Pipeline Designer for Redpanda Connect · second release · UI prototype</div>
+      <h1>Bloblang test panel</h1>
+      <p class="lede">Test a <code>mapping</code> or <code>mutation</code> processor against a saved sample message, next to the YAML. The mapping runs on your own Redpanda Connect binary. Edit the input on the left to re-run it; the outputs and errors below are the real ones from <code>redpanda-connect blobl</code> 4.112.0.</p>
+    </div>
+    <div class="states" role="group" aria-label="Panel state">
+      <span class="lbl">Show state</span>
+      <button class="chip" id="st-ok" data-state="ok" aria-pressed="true"><span class="dot" style="background:var(--ok)"></span>Mapping runs</button>
+      <button class="chip" id="st-fail" data-state="fail" aria-pressed="false"><span class="dot" style="background:var(--err)"></span>Fails on this input</button>
+      <button class="chip" id="st-parse" data-state="parse" aria-pressed="false"><span class="dot" style="background:var(--err)"></span>Syntax error</button>
+      <button class="chip" id="st-del" data-state="del" aria-pressed="false"><span class="dot" style="background:var(--warn)"></span>Message deleted</button>
+      <button class="chip" id="st-nobin" data-state="nobin" aria-pressed="false"><span class="dot" style="background:var(--faint)"></span>No binary</button>
+    </div>
+    <div class="state-note" id="stateNote" aria-live="polite"></div>
+  </header>
+
+  <section class="window" aria-label="VS Code window prototype">
+    <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><span class="ttl">orders.yaml — order-service</span><span style="width:45px"></span></div>
+    <div class="groups">
+      <div class="group">
+        <div class="tabs"><div class="tab active"><span class="ico">!</span>orders.yaml<span class="x">×</span></div><div class="tab"><span class="ico">⎔</span>Graph: orders.yaml</div></div>
+        <div class="editor" id="editor" aria-label="YAML editor"></div>
+      </div>
+      <div class="group">
+        <div class="tabs"><div class="tab active"><span class="ico">ƒ</span>Bloblang: enrich_order<span class="x">×</span></div></div>
+        <div class="panel" id="panel">
+          <div class="phead">
+            <div class="where">
+              <div class="name"><span class="pin">2</span>enrich_order <span style="font-weight:400;color:var(--muted)">mapping</span></div>
+              <div class="crumb">orders.yaml › pipeline.processors[0] · lines 11–16</div>
+            </div>
+            <span id="status"></span>
+          </div>
+          <div class="toolbar" id="toolbar">
+            <span class="pin">3</span>
+            <label for="sample">Sample</label>
+            <select id="sample"></select>
+            <button class="btn" id="newSample" type="button">New sample</button>
+            <span class="spacer"></span>
+            <label class="chk"><input type="checkbox" id="auto" checked> Run on change</label>
+            <button class="btn primary" id="run" type="button">Run</button>
+            <div class="saved" style="flex-basis:100%">Saved in .rpcn/samples/orders/enrich_order.json</div>
+          </div>
+          <div class="io" id="io"></div>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar"><span id="sbProblems">⊗ 0  ⚠ 0</span><span class="sp"></span><span>Ln 12, Col 9</span><span>Spaces: 2</span><span>YAML</span><span id="sbBin">redpanda-connect 4.112.0</span></div>
+  </section>
+
+  <section aria-label="Design notes" style="display:grid;gap:14px">
+    <h2>Design notes</h2>
+    <div class="notes">
+      <div class="note"><span class="pin">1</span><div><b>Entry point in the editor.</b><p>A CodeLens above each <code>mapping:</code> and <code>mutation:</code> opens the panel for that processor and shows how many samples it has. The graph node gets the same action. Syntax errors are underlined as you type, with the binary's message on hover.</p></div></div>
+      <div class="note"><span class="pin">2</span><div><b>One panel per mapping.</b><p>The header names the processor by its <code>label</code> and its position, and follows the mapping while you edit. The status pill always says what the last run did and which binary ran it.</p></div></div>
+      <div class="note"><span class="pin">3</span><div><b>Samples live in the workspace.</b><p>Each mapping has a list of named samples (content and metadata) in one JSON file under <code>.rpcn/samples/</code>, so they can be committed with the pipeline. Switching samples re-runs the mapping.</p></div></div>
+      <div class="note"><span class="pin">4</span><div><b>Input: content and metadata.</b><p>The content is any text (JSON for most mappings); metadata is a key/value table. Both are editable, and with <i>Run on change</i> the output follows each edit.</p></div></div>
+      <div class="note"><span class="pin">5</span><div><b>Output shows what changed.</b><p>Added or changed fields and metadata keys are marked, and the footer lists them. When the mapping fails, the last output stays dimmed under the error so the change is easy to compare.</p></div></div>
+      <div class="note"><span class="pin">6</span><div><b>Errors point at the YAML.</b><p>A mapping line is translated to the file line (mapping line 2 is <code>orders.yaml</code> line 12), and <i>Go to line</i> selects it in the editor. A failure that only happens on one sample is also shown at the end of that line.</p></div></div>
+    </div>
+    <div class="open">
+      <h2>Open questions this prototype doesn't settle</h2>
+      <ul>
+        <li><b>Metadata on today's binaries:</b> <code>blobl server</code> ignores input metadata and returns none, so the panel would run each test as a one-message pipeline through <code>run</code>. A spike measures how long a run takes.</li>
+        <li><b>Linking samples to mappings:</b> by the processor's <code>label</code> (shown here), with an offer to add a label when a mapping has none.</li>
+        <li><b>Mapping that reads earlier steps:</b> the sample is the message as it reaches this processor; running the earlier processors first is out of the second release.</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  const SAMPLES = [
+    { name: 'order with two items', content: { order_id: 'o-1042', user: { name: 'ana' }, items: [{ sku: 'A1', price: 12.5, qty: 2 }, { sku: 'B7', price: 80, qty: 1 }] }, meta: [['kafka_topic', 'orders'], ['kafka_partition', '3']] },
+    { name: 'order without user', content: { order_id: 'o-1043', items: [{ sku: 'A1', price: 12.5, qty: 2 }] }, meta: [['kafka_topic', 'orders'], ['kafka_partition', '1']] },
+    { name: 'empty order', content: { order_id: 'o-1044', user: { name: 'bo' }, items: [] }, meta: [['kafka_topic', 'orders'], ['kafka_partition', '0']] },
+  ];
+  const NOTES = {
+    ok: 'The mapping ran on the sample. New fields and the new metadata key are marked green.',
+    fail: 'The mapping parses, but fails on this sample: it has no user, so this.user.name is null.',
+    parse: 'A closing bracket is missing on line 13. The editor underlines it while you type, and the panel shows the same message.',
+    del: 'The mapping drops empty orders with deleted(). The panel says so instead of showing an empty output.',
+    nobin: 'No Redpanda Connect binary was found. The panel offers the same actions as the graph.',
+  };
+
+  let state = 'ok', sampleIx = 0, inTab = 'content', outTab = 'content', lastGood = null;
+  const inputs = SAMPLES.map((s) => ({ text: JSON.stringify(s.content, null, 2), meta: s.meta.map((r) => r.slice()) }));
+
+  /* ---------- the mapping, emulated (outputs and messages copied from redpanda-connect blobl 4.112.0) ---------- */
+  function sortKeys(v) {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v && typeof v === 'object') return Object.keys(v).sort().reduce((o, k) => (o[k] = sortKeys(v[k]), o), {});
+    return v;
+  }
+  function typeName(v) { return v === null || v === undefined ? 'null' : Array.isArray(v) ? 'array' : typeof v === 'number' ? 'number' : typeof v === 'object' ? 'object' : typeof v; }
+  function execute(text, meta) {
+    let msg;
+    try { msg = JSON.parse(text); } catch (e) {
+      return { kind: 'fail', line: 1, bare: true, msg: "unable to reference message as structured (with 'this'): parse as json: " + (e.message.replace(/^JSON\.parse: /, '').toLowerCase()) };
+    }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return { kind: 'fail', line: 2, msg: 'unable to set target path customer as the value of the root was a non-object type (' + typeName(msg) + ')' };
+    const out = JSON.parse(JSON.stringify(msg));
+    const name = msg.user && msg.user.name;
+    if (typeof name !== 'string') return { kind: 'fail', line: 2, msg: 'expected string value, got ' + typeName(name) + ' from field `this.user.name`' };
+    out.customer = name.toUpperCase();
+    if (!Array.isArray(msg.items)) return { kind: 'fail', line: 3, msg: 'expected array value, got ' + typeName(msg.items) + ' from field `this.items`' };
+    let total = 0;
+    for (const it of msg.items) {
+      const p = it && it.price, q = it && it.qty;
+      if (typeof p !== 'number' || typeof q !== 'number') return { kind: 'fail', line: 3, msg: 'expected number value, got ' + typeName(typeof p !== 'number' ? p : q) + ' from field `i.' + (typeof p !== 'number' ? 'price' : 'qty') + '`' };
+      total += p * q;
+    }
+    out.total = total;
+    out.status = 'accepted';
+    const outMeta = meta.filter((r) => r[0]).map((r) => r.slice());
+    const added = ['customer', 'status', 'total'].filter((k) => !(k in msg) || JSON.stringify(msg[k]) !== JSON.stringify(out[k]));
+    if (msg.order_id !== undefined && msg.order_id !== null) {
+      const i = outMeta.findIndex((r) => r[0] === 'kafka_key');
+      if (i >= 0) outMeta[i][1] = String(msg.order_id); else outMeta.push(['kafka_key', String(msg.order_id)]);
+    }
+    if (msg.items.length === 0) return { kind: 'del' };
+    return { kind: 'ok', out: sortKeys(out), meta: outMeta, added, metaAdded: ['kafka_key'] };
+  }
+
+  /* ---------- editor ---------- */
+  function yaml(parse, failLine) {
+    const L = [];
+    const kv = (ind, k, rest) => ' '.repeat(ind) + '<span class="k">' + k + '</span><span class="p">:</span>' + (rest || '');
+    L.push(kv(0, 'input'));
+    L.push(kv(2, 'kafka_franz'));
+    L.push(kv(4, 'seed_brokers', ' <span class="p">[</span> <span class="s">"localhost:9092"</span> <span class="p">]</span>'));
+    L.push(kv(4, 'topics', ' <span class="p">[</span> <span class="s">orders</span> <span class="p">]</span>'));
+    L.push(kv(4, 'consumer_group', ' <span class="s">order-enricher</span>'));
+    L.push('');
+    L.push(kv(0, 'pipeline'));
+    L.push(kv(2, 'processors'));
+    L.push('    <span class="p">-</span> ' + '<span class="k">label</span><span class="p">:</span> <span class="s">enrich_order</span>');
+    L.push(kv(6, 'mapping', ' <span class="p">|</span>'));
+    const b = '        ';
+    const ghost = (n, f) => f === n ? '<span class="ghost">    ✕ fails on sample “' + esc(SAMPLES[sampleIx].name) + '”</span>' : '';
+    L.push(b + '<span class="kw">root</span> = <span class="v">this</span>' + ghost(1, failLine));
+    L.push(b + '<span class="kw">root</span>.customer = <span class="v">this</span>.user.name.<span class="fn">uppercase</span>()' + ghost(2, failLine));
+    L.push(b + '<span class="kw">root</span>.total = <span class="v">this</span>.items.<span class="fn">map_each</span>(i -&gt; i.price * i.qty).<span class="fn">sum</span>(' + (parse ? '' : ')') + ghost(3, failLine));
+    L.push(b + '<span class="kw">root</span>.status ' + (parse ? '<span class="squig">= <span class="s">"accepted"</span></span>' : '= <span class="s">"accepted"</span>'));
+    L.push(b + '<span class="kw">meta</span> kafka_key = <span class="v">this</span>.order_id');
+    L.push(b + '<span class="kw">root</span> = <span class="kw">if</span> <span class="v">this</span>.items.<span class="fn">length</span>() == <span class="n">0</span> { <span class="fn">deleted</span>() }');
+    L.push('    <span class="p">-</span> ' + '<span class="k">log</span><span class="p">:</span>');
+    L.push(kv(8, 'message', ' <span class="s">\'enriched ${! this.order_id }\'</span>'));
+    L.push('');
+    L.push(kv(0, 'output'));
+    L.push(kv(2, 'kafka_franz'));
+    L.push(kv(4, 'seed_brokers', ' <span class="p">[</span> <span class="s">"localhost:9092"</span> <span class="p">]</span>'));
+    L.push(kv(4, 'topic', ' <span class="s">orders-enriched</span>'));
+    return L;
+  }
+  function renderEditor() {
+    let failLine = 0;
+    if (state === 'fail') { const r = execute(inputs[sampleIx].text, inputs[sampleIx].meta); failLine = r.kind === 'fail' ? r.line : 0; }
+    const lines = yaml(state === 'parse', failLine);
+    let h = '';
+    lines.forEach((html, i) => {
+      const n = i + 1;
+      if (n === 10) h += '<div class="lens"><span></span><span><span class="pin" style="width:15px;height:15px;font-size:9px;margin-right:6px">1</span><button type="button" id="lensBtn">▷ Test mapping</button> · ' + SAMPLES.length + ' samples</span></div>';
+      h += '<div class="ln' + (n === 12 ? ' cur' : '') + '" id="L' + n + '"><span class="no">' + n + '</span><span>' + (html || ' ') + (n === 14 && state === 'parse' ? '<div class="hoverbox" role="tooltip"><code>required: expected comma or closing bracket</code><br><span class="src">Bloblang (redpanda-connect 4.112.0) · mapping line 4, char 13</span></div>' : '') + '</span></div>';
+    });
+    $('editor').innerHTML = h;
+    $('lensBtn').addEventListener('click', () => { $('panel').animate([{ boxShadow: 'inset 0 0 0 2px var(--accent)' }, { boxShadow: 'inset 0 0 0 0 transparent' }], { duration: 900 }); });
+    $('sbProblems').textContent = state === 'parse' ? '⊗ 1  ⚠ 0' : '⊗ 0  ⚠ 0';
+  }
+  function goLine(n) {
+    const el = $('L' + n); if (!el) return;
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+    el.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }
+
+  /* ---------- panel ---------- */
+  function pill(cls, sym, text) { return '<span class="pill ' + cls + '"><span class="sym">' + sym + '</span>' + text + '</span>'; }
+  function outJson(o, added) {
+    const lines = JSON.stringify(o, null, 2).split('\n');
+    return lines.map((l) => { const m = /^  "([^"]+)":/.exec(l); return m && added.includes(m[1]) ? '<span class="add">' + esc(l) + '</span>' : esc(l); }).join('\n');
+  }
+  function metaTable(rows, editable, addedKeys) {
+    let h = '<table class="meta"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+    rows.forEach((r, i) => {
+      const cls = addedKeys && addedKeys.includes(r[0]) ? ' class="add"' : '';
+      h += editable
+        ? '<tr><td><input id="mk' + i + '" data-i="' + i + '" data-c="0" value="' + esc(r[0]) + '" aria-label="Metadata key"></td><td><input id="mv' + i + '" data-i="' + i + '" data-c="1" value="' + esc(r[1]) + '" aria-label="Metadata value"></td></tr>'
+        : '<tr' + cls + '><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    if (editable) h += '<div class="addrow"><button class="linkbtn" type="button" id="addMeta">+ Add metadata</button></div>';
+    return h;
+  }
+
+  function render() {
+    renderEditor();
+    document.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.state === state)));
+    $('stateNote').textContent = NOTES[state];
+    const io = $('io');
+    $('toolbar').hidden = state === 'nobin';
+    $('sbBin').textContent = state === 'nobin' ? 'Redpanda Connect: not found' : 'redpanda-connect 4.112.0';
+
+    if (state === 'nobin') {
+      $('status').innerHTML = pill('idle', '○', 'Not run');
+      io.innerHTML = '<div class="empty"><b>No Redpanda Connect binary</b><span>The test panel runs mappings with your own binary, so results match the version you deploy.</span><div class="acts"><button class="btn primary" type="button">Install guide</button><button class="btn" type="button">Set path</button><button class="btn" type="button">Retry</button></div></div>';
+      return;
+    }
+    const inp = inputs[sampleIx];
+    const r = state === 'parse' ? { kind: 'parse' } : execute(inp.text, inp.meta);
+    if (r.kind === 'ok') lastGood = r;
+
+    const inCount = inp.meta.length;
+    let left = '<div class="col"><div class="colhead"><span class="pin" style="margin-right:6px">4</span><h3>Input</h3>'
+      + '<button class="ptab" role="tab" id="inC" aria-selected="' + (inTab === 'content') + '">Content</button>'
+      + '<button class="ptab" role="tab" id="inM" aria-selected="' + (inTab === 'meta') + '">Metadata<span class="badge">' + inCount + '</span></button></div>';
+    left += inTab === 'content'
+      ? '<textarea id="inText" spellcheck="false" aria-label="Sample input content">' + esc(inp.text) + '</textarea>'
+      : '<div class="metawrap">' + metaTable(inp.meta, true) + '</div>';
+    left += '<div class="foot"><span>Sample “' + esc(SAMPLES[sampleIx].name) + '”</span><span>' + inp.text.split('\n').length + ' lines · JSON</span></div></div>';
+
+    let right = '<div class="col"><div class="colhead"><span class="pin" style="margin-right:6px">5</span><h3>Output</h3>'
+      + '<button class="ptab" role="tab" id="outC" aria-selected="' + (outTab === 'content') + '">Content</button>'
+      + '<button class="ptab" role="tab" id="outM" aria-selected="' + (outTab === 'meta') + '">Metadata<span class="badge">' + (r.kind === 'ok' ? r.meta.length : '–') + '</span></button></div><div style="overflow:auto;min-height:0">';
+    let foot = '';
+    if (r.kind === 'ok') {
+      $('status').innerHTML = pill('ok', '✓', 'Ran in 41 ms · redpanda-connect 4.112.0');
+      right += outTab === 'content' ? '<div class="out">' + outJson(r.out, r.added) + '</div>' : '<div class="metawrap">' + metaTable(r.meta, false, r.metaAdded) + '</div>';
+      foot = '<span>Changed:</span>' + r.added.map((k) => '<span class="tag">+' + k + '</span>').join('') + '<span class="tag">+@kafka_key</span>';
+    } else if (r.kind === 'fail') {
+      $('status').innerHTML = pill('err', '✕', 'Mapping failed on this sample');
+      const yl = 10 + r.line;
+      right += '<div class="errcard" role="alert"><div class="t"><span class="pin">6</span>Failed on mapping line ' + r.line + ' <small>orders.yaml line ' + yl + '</small></div><pre>' + (r.bare ? '' : 'failed assignment (line ' + r.line + '): ') + esc(r.msg) + '</pre><div class="acts"><button class="linkbtn" type="button" id="goto" data-line="' + yl + '">Go to line ' + yl + '</button><button class="linkbtn" type="button" id="copyErr">Copy error</button></div></div>';
+      if (lastGood) right += '<div class="out stale" aria-label="Last successful output">' + outJson(lastGood.out, []) + '</div>';
+      foot = '<span>Showing the last successful output, dimmed.</span>';
+    } else if (r.kind === 'parse') {
+      $('status').innerHTML = pill('err', '✕', 'Syntax error · not run');
+      right += '<div class="errcard" role="alert"><div class="t"><span class="pin">6</span>Mapping doesn’t parse <small>mapping line 4, char 13 · orders.yaml line 14</small></div><pre>required: expected comma or closing bracket\n  |\n4 | root.status = "accepted"\n  |             ^---</pre><div class="acts"><button class="linkbtn" type="button" id="goto" data-line="13">Go to line 13</button><span style="color:var(--muted);font-size:12px">The bracket opened on line 13 is never closed.</span></div></div>';
+      if (lastGood) right += '<div class="out stale">' + outJson(lastGood.out, []) + '</div>';
+      foot = '<span>Fix the mapping to run it again.</span>';
+    } else if (r.kind === 'del') {
+      $('status').innerHTML = pill('warn', '⊘', 'Message deleted · 38 ms');
+      right += '<div class="infocard"><b>The mapping deleted this message</b><span>Line 6, <code>root = if this.items.length() == 0 { deleted() }</code>, matched: the order has no items, so nothing reaches the next processor.</span><button class="linkbtn" type="button" id="goto" data-line="16" style="justify-self:start">Go to line 16</button></div>';
+      foot = '<span>No output and no metadata.</span>';
+    }
+    right += '</div><div class="foot">' + foot + '</div></div>';
+    io.innerHTML = left + right;
+    wire();
+  }
+
+  function wire() {
+    const t = $('inText');
+    if (t) t.addEventListener('input', () => { inputs[sampleIx].text = t.value; if ($('auto').checked) rerun(); });
+    document.querySelectorAll('.meta input').forEach((el) => el.addEventListener('input', () => { inputs[sampleIx].meta[+el.dataset.i][+el.dataset.c] = el.value; if ($('auto').checked) rerun(true); }));
+    const add = $('addMeta'); if (add) add.addEventListener('click', () => { inputs[sampleIx].meta.push(['', '']); render(); const k = $('mk' + (inputs[sampleIx].meta.length - 1)); if (k) k.focus(); });
+    [['inC', () => inTab = 'content'], ['inM', () => inTab = 'meta'], ['outC', () => outTab = 'content'], ['outM', () => outTab = 'meta']].forEach(([id, f]) => { const b = $(id); if (b) b.addEventListener('click', () => { f(); render(); }); });
+    const g = $('goto'); if (g) g.addEventListener('click', () => goLine(+g.dataset.line));
+    const c = $('copyErr'); if (c) c.addEventListener('click', () => { const txt = c.closest('.errcard').querySelector('pre').textContent; try { navigator.clipboard.writeText(txt).then(() => { c.textContent = 'Copied'; }, () => {}); } catch (e) {} });
+  }
+
+  /* Re-run while typing: keep the caret by patching only the output column. */
+  function rerun() {
+    const r = execute(inputs[sampleIx].text, inputs[sampleIx].meta);
+    const derived = r.kind === 'ok' ? 'ok' : r.kind === 'del' ? 'del' : 'fail';
+    const active = document.activeElement && document.activeElement.id;
+    const pos = active && document.activeElement.selectionStart;
+    state = derived;
+    render();
+    const el = active && $(active);
+    if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} }
+  }
+
+  const sel = $('sample');
+  sel.innerHTML = SAMPLES.map((s, i) => '<option value="' + i + '">' + esc(s.name) + '</option>').join('');
+  sel.addEventListener('change', () => { sampleIx = +sel.value; const r = execute(inputs[sampleIx].text, inputs[sampleIx].meta); state = r.kind === 'ok' ? 'ok' : r.kind === 'del' ? 'del' : 'fail'; render(); });
+  $('run').addEventListener('click', () => { if (state !== 'parse' && state !== 'nobin') rerun(); });
+  $('newSample').addEventListener('click', () => {
+    SAMPLES.push({ name: 'sample ' + (SAMPLES.length + 1), content: {}, meta: [] });
+    inputs.push({ text: '{\n  "order_id": "o-2001",\n  "user": { "name": "cy" },\n  "items": [ { "sku": "C3", "price": 5, "qty": 4 } ]\n}', meta: [['kafka_topic', 'orders']] });
+    sel.innerHTML = SAMPLES.map((s, i) => '<option value="' + i + '">' + esc(s.name) + '</option>').join('');
+    sampleIx = SAMPLES.length - 1; sel.value = String(sampleIx); state = 'ok'; inTab = 'content'; render();
+    const t = $('inText'); if (t) t.focus();
+  });
+  document.querySelectorAll('.chip').forEach((c) => c.addEventListener('click', () => {
+    state = c.dataset.state;
+    if (state === 'ok') { sampleIx = 0; inputs[0].text = JSON.stringify(SAMPLES[0].content, null, 2); }
+    if (state === 'fail') sampleIx = 1;
+    if (state === 'del') sampleIx = 2;
+    if (state === 'parse') sampleIx = 0;
+    sel.value = String(sampleIx);
+    if (state === 'fail' || state === 'parse') lastGood = execute(inputs[0].text, inputs[0].meta);
+    render();
+  }));
+  lastGood = execute(inputs[0].text, inputs[0].meta);
+  render();
+})();
+</script>

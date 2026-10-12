@@ -46,6 +46,7 @@ The Designer is a VS Code custom editor for Redpanda Connect config files, where
   - A mapping opens in a **Bloblang test panel** beside the editor, with the sample **input** (and its metadata), the **output** the mapping produces, and the **error** when the mapping fails: a parse error, or a failure while mapping that input (for example "expected number value, got null from field `this.user.id`"). The output updates as the mapping or the input is edited.
   - The mapping runs on the developer's own binary, so the result matches the version, edition and plugins they run, unlike the docs playground.
   - The sample input is saved in a file next to the config in the workspace, so it can be committed with the pipeline and is there the next time the panel opens.
+  - UI prototype: `bloblang-test-panel-prototype.html` beside this brief (open it in a browser). It shows the panel's five states: the mapping runs, fails on this input, a syntax error, the message is deleted, and no binary.
 
 ## What Makes This Different
 
