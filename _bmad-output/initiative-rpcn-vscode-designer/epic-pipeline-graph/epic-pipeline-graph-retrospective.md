@@ -1,7 +1,7 @@
 ---
 epic: epic-pipeline-graph
 date: 2026-10-12
-verdict: accepted-with-open-items
+verdict: rejected
 criteria: declared
 headless: false
 ---
@@ -67,7 +67,7 @@ Dispositions: **fix now** (an action item), **defer** (a backlog story), **accep
 | F5 | Focus lost on remount (3.11 × 3.9): when the schema goes, Graph unmounts, focus drops to `body` and is not restored when the graph returns (the `hasFocus` ref is new). | `main.tsx:281`; `Graph.tsx:143,179-181`; ADV-13, EDGE-8 | fix now (AI-1) |
 | F6 | Disposal races (3.10): a post after dispose (Hide, tab close or rename during an awaited update) logs spurious errors, and `lock()` keeps polling a disposed panel and can run `lockEditorGroup` on whichever group is active. | `graphPanel.ts:242-244`; `panels.ts:521,544`; EDGE-10, ADV-9 | fix now (AI-1) |
 | F7 | Rename chains and swaps in one batch (`a→b, b→c`) dispose a panel or collapse `seen`/`hidden`/`driving`, because keys are moved one at a time. The driving editor re-keyed on rename is the old editor object, so it is dropped as invisible. | `panels.ts:281-318`, `:169-174`; EDGE-6, ADV-18 | fix now (AI-1) |
-| F8 | Clicking or pressing Enter on the last valid graph under the banner does nothing, silently (3.6 × 3.7 × 3.11). | `graphPanel.ts:375-381`; ADV-10, EDGE-9 | open question (Q1) |
+| F8 | Clicking or pressing Enter on the last valid graph under the banner does nothing, silently (3.6 × 3.7 × 3.11). | `graphPanel.ts:375-381`; ADV-10, EDGE-9 | fix now (AI-1, per Q1 "a": say so in the node names) |
 | F9 | Minor, at boundaries: `lastModel` built with the old catalogue is sent as current after a schema change while broken (ADV-14); `hostChanged` skips a document that is not loaded (EDGE-1); the binary listener depends on the schema store subscribing first (ADV-15); queued auto-opens can delay an explicit Show by about 1 s each (ADV-8); `hidden` is never pruned on delete (ADV-16); the webview `<title>` keeps the old name after a rename (ADV-6); a failed `openTextDocument` on `ready` leaves the view on `INITIAL_VIEW` (ADV-17). | as cited | defer (AI-2) |
 | F10 | `pendingRenames` leak on an aborted rename. | `panels.ts:179-181`; ADV-4, EDGE-5 | already deferred (backlog 14) |
 
@@ -144,7 +144,7 @@ All of these are proposed. The human decides what to run, and nothing here was a
 
 | # | Action | Owner | Covers |
 |---|---|---|---|
-| AI-1 | **New story: "Graph interaction fixes across tickets".** Fix F1–F7 and add the combined-sequence tests of F11 (host-side scenarios through the `posted` seam and `idle()`; reducer chains such as snapshot → hostStatus(none) → hostStatus(ok) → model → parseError, with the live output asserted). Thorough review. | next build (bmad-build) | F1–F7, F11 |
+| AI-1 | **New story, before the next epic: "Graph interaction fixes across tickets".** Fix F1–F8 (F8 per Q1 "a") and add the combined-sequence tests of F11 (host-side scenarios through the `posted` seam and `idle()`; reducer chains such as snapshot → hostStatus(none) → hostStatus(ok) → model → parseError, with the live output asserted). Thorough review. | next build (bmad-build) | F1–F7, F11 |
 | AI-2 | **Backlog stories** for the minor boundary items in F9. One grouped story is enough. | bmad-ticket | F9 |
 | AI-3 | **Reconcile spec, architecture and UX to the build** (F19), as A3 did for E2: amend AD-1 and AD-5, DESIGN :100, CAP-1, the EXPERIENCE markers, the Fit to view line and the Flow 3 scope. Add a memlog line in each. | user approves, then agent | F19 |
 | AI-4 | **Close the manual-check gaps:** the user runs 3.7's navigation check (click → YAML selected and centred; cursor → node highlighted, focus stays in the editor), and 3.2 and 3.3 are recorded as covered by 3.4's check. Then mark 3.1–3.7 and 3.14 done. | user + bmad-ticket | F13 |
@@ -155,7 +155,7 @@ All of these are proposed. The human decides what to run, and nothing here was a
 
 ## Acceptance verdict
 
-**Machine verdict: accepted-with-open-items.** The criteria were declared (Done when 1–5).
+**Machine verdict: accepted-with-open-items. Overridden by the human decision below: not accepted until AI-1 and AI-4.** The criteria were declared (Done when 1–5).
 
 | Done when | Status | Evidence |
 |---|---|---|
@@ -173,10 +173,10 @@ All of these are proposed. The human decides what to run, and nothing here was a
 
 There are no unfinished tickets; eight are at `built`.
 
-**Human decision:** _pending_.
+**Human decision (user, 2026-10-12):** "accept only after AI-1 and AI-4". The epic is therefore **not accepted yet**. The frontmatter says `rejected`, so a gate holds the next epic until AI-1 (the interaction-fix story) and AI-4 (3.7's navigation check, plus the records for 3.2 and 3.3) land. After that, the verdict is re-rendered as `accepted`.
 
 ## Open questions
 
-- **Q1 (F8):** what should a click or Enter on a node do while the YAML is broken? (a) Nothing, as now, but say so (the node names gain "navigation unavailable while the YAML has errors"); (b) select the parse error, as the banner does; (c) reveal the node's last known range. The answer changes AI-1's scope.
-- **Q2:** should AI-1 be done before the next epic starts, or alongside it?
-- **Q3:** does the user accept the verdict **accepted-with-open-items**, or want **accepted** once AI-1 and AI-4 land?
+- **Q1 (F8), answered 2026-10-12, "a":** keep clicks and Enter as no-ops while the YAML is broken, but say so: the node names gain "navigation unavailable while the YAML has errors". This joins AI-1's scope. The question was: what should a click or Enter on a node do while the YAML is broken? (a) Nothing, as now, but say so (the node names gain "navigation unavailable while the YAML has errors"); (b) select the parse error, as the banner does; (c) reveal the node's last known range. The answer changes AI-1's scope.
+- **Q2, answered 2026-10-12, "before next epic":** should AI-1 be done before the next epic starts, or alongside it?
+- **Q3, answered 2026-10-12, "accept only after AI-1 and AI-4":** does the user accept the verdict **accepted-with-open-items**, or want **accepted** once AI-1 and AI-4 land?
