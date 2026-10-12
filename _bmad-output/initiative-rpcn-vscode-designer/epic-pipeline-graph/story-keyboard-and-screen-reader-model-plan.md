@@ -3,7 +3,7 @@ title: 'Keyboard and screen-reader model'
 type: 'feature'
 ticket: '11'
 created: '2026-10-10'
-status: 'built'
+status: 'done'
 baseline_revision: 'c4ce8cec2daf96e9920f0aa913ebbfbb88807d29'
 route: 'full'
 route_source: 'auto'
@@ -159,6 +159,8 @@ Iteration 0 (quick). Verdicts: 0 high, 3 medium, 1 low, 1 false, 0 maybe-false.
 
 **After the review patches (2026-10-12):** compile and lint exit 0; `npm test` 627 passing on stable and on 1.100.0; `npm run test:webview` 128 passing; `npm run test:corpus` 123 passing.
 
-**Manual checks:** (not yet run)
+**Manual checks:**
 - In the dev host, keyboard only: Tab into the graph, use the arrows, Space and Enter, and see the ring.
 - With a screen reader, if one is available (Orca on Linux): node names, and the banner announced.
+- **Done by the user on 2026-10-12** in the dev host on VS Code **1.141.0** (the user updated their `code` from 1.103.2). Checked with the keyboard only: Tab in and Tab out, the arrows, Space, Enter to the YAML, Esc in two steps, and no focus ring after a mouse click. Result: "tested". Orca was optional and not reported.
+- **The same day, every integration suite also passed on 1.140.0** (627), in a one-off run with a temporary config, besides 1.141.0 and 1.100.0.
