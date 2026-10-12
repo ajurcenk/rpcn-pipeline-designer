@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import type { HostMessage, PipelineModel } from '../../src/shared/protocol';
 import {
-	BANNER_TEXT, emptyStateOf, firstView, INITIAL_VIEW, NO_BINARY_ACTIONS, NO_BINARY_TEXT, NOTHING_TO_DRAW_TEXT, parseViewport, reduce, type ViewModel,
+	BANNER_TEXT, emptyStateOf, firstView, INITIAL_LIVE_VIEW, INITIAL_VIEW, NO_BINARY_ACTIONS, NO_BINARY_TEXT, NOTHING_TO_DRAW_TEXT, parseViewport,
+	reduce, reduceLive, type ViewModel,
 } from './state';
 
 const A: PipelineModel = { nodes: [{ id: 'path:input', role: 'input', component: 'stdin', range: [0, 16] }], edges: [] };
@@ -178,5 +179,47 @@ describe('parseViewport', () => {
 		for (const bad of [undefined, null, 3, 'x', [], {}, { x: 1, y: 2 }, { x: 1, y: 2, zoom: 0 }, { x: Number.NaN, y: 0, zoom: 1 }, { x: '1', y: 0, zoom: 1 }]) {
 			expect(parseViewport(bad)).toBeUndefined();
 		}
+	});
+});
+
+describe('LIVE (ticket 11): what the polite live region announces', () => {
+	const ERR = { severity: 'error', messages: ['field x is required'] } as const;
+	const foldLive = (messages: readonly HostMessage[]) => messages.reduce(reduceLive, INITIAL_LIVE_VIEW);
+	it('the banner text when a parse error appears, once', () => {
+		const broken = foldLive([snapshot(A), { type: 'parseError', ...ERROR }]);
+		expect(broken.live.lines).toEqual([BANNER_TEXT]);
+		const again = reduceLive(broken, { type: 'parseError', ...ERROR });
+		expect(again.live).toBe(broken.live);
+		expect(foldLive([snapshot(A, ERROR)]).live.lines).toEqual([BANNER_TEXT]);
+	});
+	it('a node that newly gets an error; a snapshot\'s status is the baseline; the same status again says nothing', () => {
+		const shown = foldLive([{ ...snapshot(B), nodeStatus: { 'path:input': ERR } } as HostMessage]);
+		expect(shown.live.lines).toEqual([]);
+		const added = reduceLive(shown, { type: 'nodeStatus', byId: { 'path:input': ERR, 'path:output': ERR } });
+		expect(added.live).toEqual({ id: 1, lines: ['New error: Output stdout'] });
+		const same = reduceLive(added, { type: 'nodeStatus', byId: { 'path:input': ERR, 'path:output': ERR } });
+		expect(same.live).toBe(added.live);
+		expect(same.view.nodeStatus).toEqual(added.view.nodeStatus);
+	});
+	it('errors that clear on an edit and come back on save say nothing; a genuinely new message does', () => {
+		const shown = foldLive([snapshot(B)]);
+		const saved = reduceLive(shown, { type: 'nodeStatus', byId: { 'path:output': ERR } });
+		expect(saved.live.lines).toEqual(['New error: Output stdout']);
+		const edited = reduceLive(saved, { type: 'nodeStatus', byId: {} });
+		const again = reduceLive(edited, { type: 'nodeStatus', byId: { 'path:output': ERR } });
+		expect(again.live).toBe(saved.live);
+		const other = reduceLive(again, { type: 'nodeStatus', byId: { 'path:output': { severity: 'error', messages: ['field topic is required'] } } });
+		expect(other.live.lines).toEqual(['New error: Output stdout']);
+		expect(other.live.id).toBe(saved.live.id + 1);
+	});
+	it('an id shift (a component inserted above an unlabelled erroring node) says nothing', () => {
+		const shown = foldLive([snapshot(B), { type: 'nodeStatus', byId: { 'path:output': ERR } }]);
+		const shiftedModel: PipelineModel = { nodes: B.nodes.map((n) => (n.id === 'path:output' ? { ...n, id: 'path:output2' } : n)), edges: [] };
+		const moved = reduceLive(reduceLive(shown, { type: 'model', model: shiftedModel }), { type: 'nodeStatus', byId: { 'path:output2': ERR } });
+		expect(moved.live).toBe(shown.live);
+	});
+	it('messages that change nothing keep the state', () => {
+		const start = foldLive([snapshot(A)]);
+		expect(reduceLive(start, { type: 'selection', nodeId: null })).toBe(start);
 	});
 });

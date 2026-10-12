@@ -25,6 +25,8 @@
 // outlives the YAML it reports). When a schema arrives, each open panel gets `hostStatus`, then the
 // model, the selection and the node status (or the parse error), with no `ready` needed. The webview's Install guide, Set path and
 // Retry buttons post intents that run the binary warning's own actions (`BinaryActions`).
+// Keyboard (ticket 11): Esc on the graph container posts `focusEditorRequested`, which focuses the
+// file's driving editor without touching its cursor or selection; with no editor, nothing happens.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -200,6 +202,8 @@ class GraphPanel implements GraphPanelHandle {
 				await this.actions()?.setPath();
 			} else if (msg?.type === 'retryRequested') {
 				await this.actions()?.retry();
+			} else if (msg?.type === 'focusEditorRequested') {
+				await this.focusEditor();
 			}
 		} catch (e) {
 			this.fail(e);
@@ -447,6 +451,19 @@ class GraphPanel implements GraphPanelHandle {
 			return;
 		}
 		await this.select(doc, new vscode.Range(doc.positionAt(node.range[0]), doc.positionAt(node.range[1])));
+	}
+
+	/**
+	 * Esc on the graph container (ticket 11, ESC): focuses the file's driving editor, else a
+	 * visible editor for it, leaving its cursor and selection as they are (no `selection` is
+	 * passed). With no editor for the file nothing happens, and nothing is logged.
+	 */
+	private async focusEditor(): Promise<void> {
+		const editor = this.editor();
+		if (!editor) {
+			return;
+		}
+		await vscode.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
 	}
 
 	/**

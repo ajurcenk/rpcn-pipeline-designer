@@ -329,3 +329,32 @@ body {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: 1px;
 }
+
+/* Keyboard focus (ticket 11, DESIGN pipeline-node-focused, EXPERIENCE Accessibility Floor): the
+   graph container fills the canvas; a focused node, and the container after Esc, get the
+   1px {colors.focus} ring. Never removed. */
+.rpcn-graph {
+	position: absolute;
+	inset: 0;
+}
+.rpcn-graph:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-graph .react-flow__node:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+/* The polite live region (ticket 11): read by screen readers, never drawn. */
+.rpcn-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}

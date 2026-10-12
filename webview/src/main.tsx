@@ -4,6 +4,9 @@
 // `parseHostMessage` is ignored. It holds no domain state and parses no YAML (AD-2, AD-3). The empty
 // states (3.9) come from `emptyStateOf`: no binary, with Install guide, Set path and Retry, which
 // post the intents the host runs as the binary warning's actions; and nothing to draw.
+// Screen readers (ticket 11): one always-mounted polite live region says the banner text when it
+// appears and each node that newly gets an error (`reduceLive`); the banner itself is not a live
+// region, so nothing is said twice. Esc on the graph container posts `focusEditorRequested`.
 
 import '@vscode/codicons/dist/codicon.css';
 import '@xyflow/react/dist/style.css';
@@ -13,12 +16,15 @@ import { createRoot } from 'react-dom/client';
 import { parseHostMessage, type ParseError } from '../../src/shared/protocol';
 import { Graph } from './Graph';
 import { post } from './host';
-import { BANNER_TEXT, emptyStateOf, INITIAL_VIEW, NO_BINARY_ACTIONS, NO_BINARY_TEXT, NOTHING_TO_DRAW_TEXT, reduce, type EmptyState } from './state';
+import {
+	BANNER_TEXT, emptyStateOf, GRAPH_NAME, INITIAL_LIVE_VIEW, NO_BINARY_ACTIONS, NO_BINARY_TEXT, NOTHING_TO_DRAW_TEXT, reduceLive,
+	type EmptyState, type LiveMessage,
+} from './state';
 
-/** DESIGN invalid-yaml-banner: full width over the top of the canvas, clickable, not dismissible, a polite live region. */
+/** DESIGN invalid-yaml-banner: full width over the top of the canvas, clickable, not dismissible; `LiveRegion` announces it. */
 function Banner({ error }: { readonly error: ParseError }) {
 	return (
-		<div className="rpcn-banner" role="status">
+		<div className="rpcn-banner">
 			<button type="button" className="rpcn-banner-button" onClick={() => post({ type: 'bannerClicked' })}>
 				<span className="codicon codicon-warning rpcn-banner-icon" aria-hidden="true" />
 				<span className="rpcn-banner-text">{BANNER_TEXT}</span>
@@ -28,30 +34,47 @@ function Banner({ error }: { readonly error: ParseError }) {
 	);
 }
 
-/** DESIGN graph-empty-state: fills the panel, muted text, link-styled real buttons. */
+/** The nothing-to-draw text's id: the graph container, shown with it, is described by it. */
+const NOTHING_TO_DRAW_ID = 'rpcn-nothing-to-draw';
+
+/**
+ * DESIGN graph-empty-state: fills the panel, muted text, link-styled real buttons. With no binary
+ * (no graph is drawn) it is the named region itself; nothing to draw describes the graph
+ * container, the one region with that name.
+ */
 function EmptyStateView({ state }: { readonly state: Exclude<EmptyState, null> }) {
-	return (
-		<div className="rpcn-empty" role="region" aria-label="Pipeline graph, read-only">
-			{state === 'noBinary' ? (
-				<>
-					<p className="rpcn-empty-text">{NO_BINARY_TEXT}</p>
-					<div className="rpcn-empty-actions">
-						{NO_BINARY_ACTIONS.map(({ label, message }) => (
-							<button key={label} type="button" className="rpcn-empty-action" onClick={() => post(message)}>{label}</button>
-						))}
-					</div>
-				</>
-			) : (
-				<p className="rpcn-empty-text">
+	if (state === 'nothingToDraw') {
+		return (
+			<div className="rpcn-empty">
+				<p className="rpcn-empty-text" id={NOTHING_TO_DRAW_ID}>
 					{NOTHING_TO_DRAW_TEXT.map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}
 				</p>
-			)}
+			</div>
+		);
+	}
+	return (
+		<div className="rpcn-empty" role="region" aria-label={GRAPH_NAME}>
+			<p className="rpcn-empty-text">{NO_BINARY_TEXT}</p>
+			<div className="rpcn-empty-actions">
+				{NO_BINARY_ACTIONS.map(({ label, message }) => (
+					<button key={label} type="button" className="rpcn-empty-action" onClick={() => post(message)}>{label}</button>
+				))}
+			</div>
 		</div>
 	);
 }
 
-function App() {
-	const [view, dispatch] = useReducer(reduce, INITIAL_VIEW);
+/** The polite live region (LIVE): always mounted, visually hidden; each announcement replaces the last. */
+function LiveRegion({ live }: { readonly live: LiveMessage }) {
+	return (
+		<div className="rpcn-sr-only" role="status" aria-live="polite" aria-atomic="true">
+			{live.lines.map((line, i) => <p key={`${live.id}:${i}`}>{line}</p>)}
+		</div>
+	);
+}
+
+export function App() {
+	const [{ view, live }, dispatch] = useReducer(reduceLive, INITIAL_LIVE_VIEW);
 	useEffect(() => {
 		const onMessage = (event: MessageEvent<unknown>) => {
 			const message = parseHostMessage(event.data);
@@ -73,11 +96,14 @@ function App() {
 					model={view.model}
 					selection={view.selection}
 					nodeStatus={view.nodeStatus}
-					onActivate={(nodeId) => post({ type: 'nodeActivated', nodeId, via: 'click' })}
+					onActivate={(nodeId, via) => post({ type: 'nodeActivated', nodeId, via })}
+					onFocusEditor={() => post({ type: 'focusEditorRequested' })}
+					{...(empty === 'nothingToDraw' ? { describedBy: NOTHING_TO_DRAW_ID } : {})}
 				/>
 			)}
 			{empty && <EmptyStateView state={empty} />}
 			{view.parseError && <Banner error={view.parseError} />}
+			<LiveRegion live={live} />
 		</div>
 	);
 }

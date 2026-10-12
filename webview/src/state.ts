@@ -9,9 +9,13 @@
 // since the host sends neither until a schema arrives (it then sends the model, or the parse
 // error, again). A `snapshot` replaces all five: it is the host's complete state. `emptyStateOf`
 // picks the empty state the view shows from these alone (the webview does no binary work, AD-3).
+// The polite live region (ticket 11, LIVE): `reduceLive` adds what to announce to each change:
+// the banner text when a parse error appears, and "New error: …" for each node a `nodeStatus` newly
+// gives an error (a snapshot's status is the baseline, so a recreated webview repeats nothing).
 // Pure: no DOM, no React (vitest runs it in plain Node).
 
 import type { HostMessage, HostStatus, NodeStatusById, ParseError, PipelineModel, WebviewMessage } from '../../src/shared/protocol';
+import { errorKeys, newErrorAnnouncements } from './layout';
 
 export interface ViewModel {
 	/** The model to draw; `null` until a valid one arrives (a first open on a broken file). */
@@ -29,6 +33,9 @@ export interface ViewModel {
 export const INITIAL_VIEW: ViewModel = {
 	model: null, parseError: null, selection: null, nodeStatus: {}, hostStatus: { binary: 'unresolved', schema: 'none' },
 };
+
+/** The graph container's accessible name (EXPERIENCE Accessibility Floor). */
+export const GRAPH_NAME = 'Pipeline graph, read-only';
 
 /** The banner's text (EXPERIENCE, invalid-YAML banner). */
 export const BANNER_TEXT = 'YAML has errors — showing last valid graph.';
@@ -127,4 +134,54 @@ export function firstView(placed: boolean, nodeCount: number, saved: Viewport | 
 		return 'none';
 	}
 	return saved ? 'restore' : 'fit';
+}
+
+/** What the polite live region says (LIVE); `id` changes with every announcement, so a repeat is spoken again. */
+export interface LiveMessage {
+	readonly id: number;
+	readonly lines: readonly string[];
+}
+
+/** The view plus the live region's latest announcement and its error baseline. */
+export interface LiveView {
+	readonly view: ViewModel;
+	readonly live: LiveMessage;
+	/**
+	 * The errors, as (type, message) keys, of the last node status that had any (a snapshot's
+	 * included); a status with none in between keeps it, so errors that clear on an edit and come
+	 * back on save are not announced again.
+	 */
+	readonly errors: ReadonlySet<string>;
+}
+
+export const INITIAL_LIVE_VIEW: LiveView = { view: INITIAL_VIEW, live: { id: 0, lines: [] }, errors: new Set() };
+
+/**
+ * What a change from `previous` to `next` (by `message`) announces: the banner text when a parse
+ * error appears; for a `nodeStatus`, "New error: {name}" for each node with an error not in
+ * `baseline`.
+ */
+export function liveAnnouncements(previous: ViewModel, next: ViewModel, message: HostMessage, baseline: ReadonlySet<string>): string[] {
+	const lines: string[] = [];
+	if (next.parseError && !previous.parseError) {
+		lines.push(BANNER_TEXT);
+	}
+	if (message.type === 'nodeStatus' && next.model) {
+		lines.push(...newErrorAnnouncements(next.model, baseline, next.nodeStatus));
+	}
+	return lines;
+}
+
+/** `reduce`, plus the announcement the change makes; the live message is kept when it makes none. */
+export function reduceLive(state: LiveView, message: HostMessage): LiveView {
+	const view = reduce(state.view, message);
+	if (view === state.view) {
+		return state;
+	}
+	const lines = liveAnnouncements(state.view, view, message, state.errors);
+	const current = (message.type === 'nodeStatus' || message.type === 'snapshot') && view.model
+		? errorKeys(view.model, view.nodeStatus)
+		: undefined;
+	const errors = current && current.size > 0 ? current : state.errors;
+	return { view, live: lines.length === 0 ? state.live : { id: state.live.id + 1, lines }, errors };
 }

@@ -6,9 +6,9 @@ import type { ElkNode } from 'elkjs/lib/elk-api';
 import { describe, expect, it } from 'vitest';
 import type { PipelineModel } from '../../src/shared/protocol';
 import {
-	collapsedSummary, highlightDrawn, isContainer, layout, MAX_TITLE_MESSAGES, markerClass, markerIcon, markerOf, markSelected, markStatus,
-	motionDuration, nodeTitle, pruneCollapsed,
-	toElkGraph, toggleCollapsed, visibleAncestor,
+	collapsedSummary, focusChain, focusTarget, highlightDrawn, isContainer, layout, MAX_TITLE_MESSAGES, markerClass, markerIcon, markerOf,
+	errorKeys, markSelected, markStatus, motionDuration, newErrorAnnouncements, nextFocus, nodeAnnouncement, nodeSpokenName, nodeTitle, pruneCollapsed,
+	toElkGraph, toggleCollapsed, visibleAncestor, visibleNodes,
 } from './layout';
 
 const FIXTURES = new URL('../../src/test/fixtures/models/', import.meta.url);
@@ -354,5 +354,95 @@ describe('VIEW_MARKERS (ticket 3.8): border and icon per node status', () => {
 		expect(markerIcon({ severity: 'error', messages: [] })).toBe('codicon-error');
 		expect(markerIcon({ severity: 'warning', messages: [] })).toBe('codicon-warning');
 		expect(markerIcon(undefined)).toBeUndefined();
+	});
+});
+
+// Ticket 11: the keyboard and screen-reader helpers, on the switch-processor fixture.
+describe('KEYBOARD (ticket 11)', () => {
+	const model = fixture('switch-processor');
+	const SW = BRANCH;
+	const CASE0 = `${SW}.switch[0]`;
+	const CASE1 = `${SW}.switch[1]`;
+	const MAPPING = `${CASE0}.processors[0]`;
+	const LOG = `${CASE0}.processors[1]`;
+	const none = new Set<string>();
+
+	it('EDGES_HIDDEN: no edge is focusable or exposes a role or name (React Flow would name it by raw ids)', async () => {
+		const { edges } = await layout(model);
+		expect(edges.length).toBe(model.edges.length);
+		for (const edge of edges) {
+			expect(edge.focusable).toBe(false);
+			expect(edge.ariaRole).toBe('presentation');
+			expect(edge.domAttributes).toEqual({ 'aria-hidden': true });
+		}
+	});
+	it('ARROWS: siblings in model order, Down into a group or route, Up to the parent, no move at an end', () => {
+		expect(nextFocus(model, none, 'path:input', 'ArrowRight')).toBe(SW);
+		expect(nextFocus(model, none, SW, 'ArrowRight')).toBe('path:output');
+		expect(nextFocus(model, none, 'path:output', 'ArrowRight')).toBeUndefined();
+		expect(nextFocus(model, none, 'path:input', 'ArrowLeft')).toBeUndefined();
+		expect(nextFocus(model, none, SW, 'ArrowDown')).toBe(CASE0);
+		expect(nextFocus(model, none, CASE0, 'ArrowDown')).toBe(MAPPING);
+		expect(nextFocus(model, none, MAPPING, 'ArrowRight')).toBe(LOG);
+		expect(nextFocus(model, none, LOG, 'ArrowLeft')).toBe(MAPPING);
+		expect(nextFocus(model, none, LOG, 'ArrowDown')).toBeUndefined();
+		expect(nextFocus(model, none, LOG, 'ArrowUp')).toBe(CASE0);
+		expect(nextFocus(model, none, CASE0, 'ArrowRight')).toBe(CASE1);
+		expect(nextFocus(model, none, CASE1, 'ArrowUp')).toBe(SW);
+		expect(nextFocus(model, none, SW, 'ArrowUp')).toBeUndefined();
+		expect(nextFocus(model, none, 'path:nope', 'ArrowRight')).toBeUndefined();
+	});
+	it('COLLAPSED: a collapsed group is one stop; its hidden children are never reached', () => {
+		const collapsed = new Set([SW]);
+		expect(nextFocus(model, collapsed, SW, 'ArrowDown')).toBeUndefined();
+		expect(nextFocus(model, collapsed, SW, 'ArrowRight')).toBe('path:output');
+		expect(nextFocus(model, collapsed, MAPPING, 'ArrowRight')).toBeUndefined();
+		expect(visibleNodes(model, collapsed).map((n) => n.id)).toEqual(['path:input', SW, 'path:output']);
+	});
+	it('TAB_IN / MODEL_CHANGE: the focused node, else its nearest kept or visible ancestor, else the first node', () => {
+		expect(focusTarget(model, none, undefined)).toBe('path:input');
+		expect(focusTarget(model, none, [LOG, CASE0, SW])).toBe(LOG);
+		expect(focusTarget(model, new Set([SW]), [LOG, CASE0, SW])).toBe(SW);
+		expect(focusTarget(model, none, ['path:gone', CASE0, SW])).toBe(CASE0);
+		expect(focusTarget(model, none, ['path:gone'])).toBe('path:input');
+		expect(focusTarget({ nodes: [], edges: [] }, none, [LOG])).toBeUndefined();
+		expect(focusChain(model, LOG)).toEqual([LOG, CASE0, SW]);
+		expect(focusChain(model, 'path:gone')).toEqual(['path:gone']);
+	});
+	it('NAMES: "{role} {type}{, label}", a group\'s summary and state, the first message with a count', () => {
+		const byId = new Map(model.nodes.map((n) => [n.id, n]));
+		expect(nodeAnnouncement(model, byId.get('path:input')!, false, undefined)).toBe('Input stdin');
+		expect(nodeAnnouncement(model, byId.get(MAPPING)!, false, { severity: 'error', messages: ['field x is required'] }))
+			.toBe('Processor mapping, has error: field x is required');
+		expect(nodeAnnouncement(model, byId.get(MAPPING)!, false, { severity: 'warning', messages: ['a', 'b', 'c'] }))
+			.toBe('Processor mapping, has warning: a, and 2 more');
+		expect(nodeAnnouncement(model, byId.get(SW)!, true, undefined)).toBe('Processor switch, 2 cases, collapsed');
+		expect(nodeAnnouncement(model, byId.get(SW)!, false, undefined)).toBe('Processor switch, 2 cases, expanded');
+		expect(nodeAnnouncement(model, byId.get(CASE1)!, false, undefined)).toBe('Case 1');
+		expect(nodeSpokenName({ id: 'label:enrich', role: 'processor', component: 'mapping', label: 'enrich', range: [0, 1] }))
+			.toBe('Processor mapping, enrich');
+		expect(nodeSpokenName({ id: 'res:cache:seen', role: 'resource', component: 'memory', label: 'seen', range: [0, 1] }))
+			.toBe('Resource memory, seen');
+		expect(nodeSpokenName({ id: 'path:output', role: 'output', component: 'stdout', range: [0, 1] })).toBe('Output stdout');
+	});
+	it('LIVE: each node that newly has an error of its own, in model order; the same status again says nothing', () => {
+		const err = (own?: 'error') => ({ severity: 'error' as const, messages: ['m'], ...(own ? { own, ownMessages: ['m'] } : {}) });
+		const before = { [MAPPING]: err(), [CASE0]: err(), [SW]: err() };
+		const after = { ...before, [LOG]: err(), [SW]: err('error') };
+		const none = new Set<string>();
+		expect(newErrorAnnouncements(model, none, before)).toEqual(['New error: Processor mapping']);
+		expect(newErrorAnnouncements(model, errorKeys(model, before), after)).toEqual(['New error: Processor switch', 'New error: Processor log']);
+		expect(newErrorAnnouncements(model, errorKeys(model, after), after)).toEqual([]);
+		expect(newErrorAnnouncements(model, none, { [MAPPING]: { severity: 'warning', messages: ['w'] } })).toEqual([]);
+		expect(errorKeys(model, { [MAPPING]: { severity: 'warning', messages: ['w'] } }).size).toBe(0);
+	});
+	it('LIVE: the baseline is (type, message), not the id: an id shift says nothing, a new message does', () => {
+		const status = { [MAPPING]: { severity: 'error' as const, messages: ['field x is required'] } };
+		// The same mapping error, now under another id (a component inserted above it).
+		const shifted: typeof model = { ...model, nodes: model.nodes.map((n) => (n.id === MAPPING ? { ...n, id: 'path:shifted' } : n)) };
+		const moved = { 'path:shifted': status[MAPPING] };
+		expect(newErrorAnnouncements(shifted, errorKeys(model, status), moved)).toEqual([]);
+		const another = { 'path:shifted': { severity: 'error' as const, messages: ['field x is required', 'field y is required'] } };
+		expect(newErrorAnnouncements(shifted, errorKeys(model, status), another)).toEqual(['New error: Processor mapping']);
 	});
 });

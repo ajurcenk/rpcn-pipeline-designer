@@ -85,3 +85,13 @@ describe('MARKERS (ticket 3.8, DESIGN pipeline-node-error / -warning)', () => {
 		expect(rule('.pipeline-node-warning > .rpcn-group-summary')).toMatch(/margin:\s*0 -1px/);
 	});
 });
+
+describe('FOCUS (ticket 11, DESIGN pipeline-node-focused)', () => {
+	const css = readFileSync(new URL('graph.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	it('a focused node and the container get the 1px focusBorder ring, and nothing removes it', () => {
+		const block = (selector: string) => new RegExp(`${selector.replace(/[.-]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+		expect(block('.rpcn-graph .react-flow__node:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
+		expect(block('.rpcn-graph:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
+		expect(css).not.toMatch(/outline:\s*(none|0)\b/);
+	});
+});

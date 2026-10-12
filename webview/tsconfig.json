@@ -14,5 +14,5 @@
     },
     "include": ["src", "../src/shared"],
     // The vitest files run in Node: webview/tsconfig.test.json checks them.
-    "exclude": ["src/**/*.test.ts"]
+    "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-setup.ts"]
 }

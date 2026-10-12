@@ -13,7 +13,7 @@ import { EXTRA_INPUT, schemaFrom, setBinaryPath, useSchemaBinary } from '../sche
 // The graph panel through its host-side seam (`graphPanels.panelFor`, `receive`): the tests
 // check what the host posts and does, and don't drive the webview DOM (ticket 3.1). The model is
 // built with the schema of the fake 4.112.0 binary (ticket 3.3, AD-20).
-suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, 3.9, 3.10, integration)', function () {
+suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, 3.9, 3.10, 11, integration)', function () {
 	this.timeout(60_000);
 	let dir: string;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
@@ -439,6 +439,32 @@ suite('Pipeline graph (3.1, 3.3, 3.6, 3.7, 3.8, 3.9, 3.10, integration)', functi
 		const editor = vscode.window.activeTextEditor!;
 		assert.strictEqual(editor.document.uri.toString(), doc.uri.toString());
 		assert.strictEqual(doc.getText(editor.selection), '- unarchive:\n        format: json_array');
+	});
+
+	test('ESC (ticket 11): focusEditorRequested focuses the driving editor with its cursor unchanged; with no editor nothing happens', async () => {
+		const { doc, editor, handle } = await withGraph('esc.yaml', SWITCH);
+		const at = SWITCH.indexOf('this.a');
+		editor.selection = new vscode.Selection(doc.positionAt(at), doc.positionAt(at + 'this.a'.length));
+		const before = editor.selection;
+		// The graph has focus, as after Esc on its container.
+		handle.panel.reveal(handle.panel.viewColumn, false);
+		assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the graph panel is focused');
+
+		await handle.receive({ type: 'focusEditorRequested' });
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor === editor, 10_000), 'the driving editor is focused');
+		assert.ok(editor.selection.isEqual(before), 'the cursor and selection are unchanged');
+		assert.strictEqual(vscode.window.visibleTextEditors.filter((e) => e.document === doc).length, 1, 'no new editor');
+		assert.ok(!doc.isDirty, 'nothing edits the text');
+
+		// No editor for the file is visible: nothing happens.
+		const other = await open('esc-other.yaml', VALID);
+		assert.ok(await waitFor(() => !vscode.window.visibleTextEditors.some((e) => e.document === doc), 10_000), 'the file hidden');
+		const active = vscode.window.activeTextEditor;
+		assert.strictEqual(active?.document, other);
+		await handle.receive({ type: 'focusEditorRequested' });
+		await settle();
+		assert.strictEqual(vscode.window.activeTextEditor, active, 'focus stays where it was');
+		assert.ok(!vscode.window.visibleTextEditors.some((e) => e.document === doc), 'no editor opens for the file');
 	});
 
 	test('AGAIN: Show graph twice on one file keeps one panel', async () => {

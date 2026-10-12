@@ -257,8 +257,8 @@ export function motionDuration(prefersReducedMotion: boolean): number {
 	return prefersReducedMotion ? 0 : 200;
 }
 
-/** The nodes that are drawn: every node with no collapsed group above it. */
-function visibleNodes(model: PipelineModel, collapsed: Collapsed): PipelineNode[] {
+/** The nodes that are drawn, in model order: every node with no collapsed group above it. */
+export function visibleNodes(model: PipelineModel, collapsed: Collapsed): PipelineNode[] {
 	const byId = new Map(model.nodes.map((n) => [n.id, n]));
 	const hidden = (node: PipelineNode): boolean => {
 		const seen = new Set<string>();
@@ -271,6 +271,134 @@ function visibleNodes(model: PipelineModel, collapsed: Collapsed): PipelineNode[
 		return false;
 	};
 	return model.nodes.filter((n) => !hidden(n));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Keyboard and screen reader (ticket 11): pure, so vitest runs them in plain Node.
+// ---------------------------------------------------------------------------------------------
+
+/** The arrow keys the graph moves focus with. */
+export type ArrowKey = 'ArrowRight' | 'ArrowLeft' | 'ArrowDown' | 'ArrowUp';
+
+/**
+ * Where an arrow moves focus from the drawn node `current` (ARROWS): Right / Left the next /
+ * previous drawn sibling (same parent, model order); Down the first drawn child of an expanded
+ * group or a route (a collapsed group is one stop: COLLAPSED); Up its parent. `undefined`: no move
+ * (an end, a leaf, the root, or a `current` that is not drawn).
+ */
+export function nextFocus(model: PipelineModel, collapsed: Collapsed, current: string, key: ArrowKey): string | undefined {
+	const drawn = visibleNodes(model, collapsed);
+	const node = drawn.find((n) => n.id === current);
+	if (!node) {
+		return undefined;
+	}
+	switch (key) {
+		case 'ArrowRight':
+		case 'ArrowLeft': {
+			const siblings = drawn.filter((n) => n.parent === node.parent);
+			const at = siblings.indexOf(node);
+			return siblings[key === 'ArrowRight' ? at + 1 : at - 1]?.id;
+		}
+		case 'ArrowDown':
+			return isContainer(node) && !collapsed.has(node.id) ? drawn.find((n) => n.parent === node.id)?.id : undefined;
+		case 'ArrowUp':
+			return node.parent !== undefined && drawn.some((n) => n.id === node.parent) ? node.parent : undefined;
+	}
+}
+
+/** A node and its ancestors, nearest first (what focus falls back to when the node goes: MODEL_CHANGE). */
+export function focusChain(model: PipelineModel, id: string): string[] {
+	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const chain: string[] = [];
+	for (let n = byId.get(id); n !== undefined && !chain.includes(n.id); n = n.parent === undefined ? undefined : byId.get(n.parent)) {
+		chain.push(n.id);
+	}
+	return chain.length === 0 ? [id] : chain;
+}
+
+/**
+ * The drawn node that holds the graph's Tab stop (TAB_IN, MODEL_CHANGE): the first node of
+ * `chain` (the last focused node, then its old ancestors) that the model still has, or the
+ * collapsed group hiding it; else the first drawn node; `undefined` with nothing drawn.
+ */
+export function focusTarget(model: PipelineModel, collapsed: Collapsed, chain: readonly string[] | undefined): string | undefined {
+	const ids = new Set(model.nodes.map((n) => n.id));
+	const kept = chain?.find((id) => ids.has(id));
+	return visibleAncestor(model, collapsed, kept ?? null) ?? visibleNodes(model, collapsed)[0]?.id;
+}
+
+const ROLE_NAMES: Readonly<Record<PipelineNode['role'], string>> = {
+	input: 'Input', processor: 'Processor', output: 'Output', resource: 'Resource', route: 'Case',
+};
+
+/** A node's short spoken name: "{role} {type}{, label}", for example "Processor mapping, enrich" or "Case 1". */
+export function nodeSpokenName(node: PipelineNode): string {
+	if (node.role === 'route') {
+		const caption = node.caption ?? '';
+		const numbered = /^case (\d+)$/.exec(caption);
+		return numbered ? `Case ${numbered[1]}` : caption === '' ? 'Case' : `Case ${caption}`;
+	}
+	const head = `${ROLE_NAMES[node.role]} ${node.component ?? ''}`.trimEnd();
+	return node.label === undefined ? head : `${head}, ${node.label}`;
+}
+
+/** The marker's spoken part: "has error: {first message}", plus ", and N more" when there are more. */
+function markerSpoken(marker: Marker): string {
+	const [first, ...rest] = marker.messages;
+	const kind = marker.severity === 'error' ? 'has error' : 'has warning';
+	if (first === undefined) {
+		return kind;
+	}
+	return `${kind}: ${first}${rest.length > 0 ? `, and ${rest.length} more` : ''}`;
+}
+
+/**
+ * A drawn node's accessible name (NAMES, EXPERIENCE Accessibility Floor):
+ * "{role} {type}{, label}{, summary, expanded|collapsed}{, has error: message}{, has warning: message}".
+ * A component group adds what it holds and its state; the marker is the one drawn on the box.
+ */
+export function nodeAnnouncement(model: PipelineModel, node: PipelineNode, collapsed: boolean, marker: Marker | undefined): string {
+	const parts = [nodeSpokenName(node)];
+	if (node.group === true) {
+		parts.push(collapsedSummary(model, node), collapsed ? 'collapsed' : 'expanded');
+	}
+	if (marker) {
+		parts.push(markerSpoken(marker));
+	}
+	return parts.join(', ');
+}
+
+/** A node's own messages when it has an error of its own (a leaf's severity, a container's `own`); else none. */
+function ownErrorMessages(node: PipelineNode, status: NodeStatus | undefined): readonly string[] {
+	if (!status) {
+		return [];
+	}
+	if (isContainer(node)) {
+		return status.own === 'error' ? status.ownMessages ?? status.messages : [];
+	}
+	return status.severity === 'error' ? status.messages : [];
+}
+
+/** What identifies an error across edits: the node's type (component, or a route's caption) and the message, not the node id. */
+function errorKey(node: PipelineNode, message: string): string {
+	return `${node.role}\u0000${node.component ?? node.caption ?? ''}\u0000${message}`;
+}
+
+/** The errors of `status` as (type, message) keys (LIVE's baseline); empty when it has none. */
+export function errorKeys(model: PipelineModel, status: NodeStatusById): ReadonlySet<string> {
+	return new Set(model.nodes.flatMap((n) => ownErrorMessages(n, status[n.id]).map((m) => errorKey(n, m))));
+}
+
+/**
+ * The live announcements for a node status (LIVE): "New error: {name}" for each node of `model`,
+ * in model order, with an error of its own whose (type, message) is not in `baseline`, the errors
+ * of the last status that had any. Comparing by type and message, not id, keeps an id shift (a
+ * component inserted above) and lint errors coming back on save from being announced again.
+ */
+export function newErrorAnnouncements(model: PipelineModel, baseline: ReadonlySet<string>, next: NodeStatusById): string[] {
+	return model.nodes
+		.filter((n) => ownErrorMessages(n, next[n.id]).some((m) => !baseline.has(errorKey(n, m))))
+		.map((n) => `New error: ${nodeSpokenName(n)}`);
 }
 
 function padding(top: number): string {
@@ -405,6 +533,10 @@ export function toFlow(model: PipelineModel, laidOut: ElkNode, collapsed: Collap
 		source: e.source,
 		target: e.target,
 		focusable: false,
+		// Hidden from assistive tech (ticket 11): React Flow would otherwise expose each edge as an
+		// image named "Edge from <id> to <id>", reading internal ids.
+		ariaRole: 'presentation' as const,
+		domAttributes: { 'aria-hidden': true },
 		...(e.label === undefined ? {} : { label: e.label }),
 	}));
 	return { nodes, edges };

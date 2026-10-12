@@ -77,10 +77,10 @@ const nonNormalizedImport = {
 // A relative import out of webview/ may only go into src/shared: from `webview/<depth dirs>/x.tsx`,
 // any `../` chain that climbs above webview/ must continue with `src/shared/`.
 const MAX_WEBVIEW_DEPTH = 6;
-// The vitest files (`*.test.ts`, ticket 3.4) run in Node, not the browser: they may read fixtures
+// The vitest files (`*.test.ts`, ticket 3.4; `*.test.tsx` under happy-dom, ticket 11) run in Node, not the browser: they may read fixtures
 // with Node built-ins, and keep every other webview/ rule.
 const webviewBlocks = [false, true].flatMap((test) => Array.from({ length: MAX_WEBVIEW_DEPTH }, (_, depth) => ({
-    files: [`webview/${"*/".repeat(depth)}*.${test ? "test.ts" : "{ts,tsx}"}`],
+    files: [`webview/${"*/".repeat(depth)}*.${test ? "test.{ts,tsx}" : "{ts,tsx}"}`],
     rules: {
         "no-restricted-imports": ["error", {
             patterns: [vscodeImport, childProcessImport, yamlImport, ...(test ? [] : [nodeBuiltinImport]), nonNormalizedImport, {

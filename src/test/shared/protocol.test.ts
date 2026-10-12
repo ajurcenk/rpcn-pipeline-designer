@@ -59,6 +59,7 @@ const WEBVIEW_MESSAGES: readonly WebviewMessage[] = [
 	{ type: 'installGuideRequested' },
 	{ type: 'setPathRequested' },
 	{ type: 'retryRequested' },
+	{ type: 'focusEditorRequested' },
 ];
 
 /** Every message, as the other side receives it: a structured-clone-like copy. */
@@ -139,6 +140,7 @@ suite('shared/protocol (3.2)', () => {
 			{ type: 'nodeActivated', nodeId: 42, via: 'click' },
 			{ type: 'nodeActivated', via: 'keyboard' },
 			{ type: 'Ready' },
+			{ type: 'focusEditor' },
 		];
 		for (const message of webviewBad) {
 			assert.strictEqual(parseWebviewMessage(message), undefined, JSON.stringify(message));

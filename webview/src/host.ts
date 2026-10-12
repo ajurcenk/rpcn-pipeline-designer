@@ -1,5 +1,5 @@
 // The webview's only channel to the host (AD-3, AD-5): it posts user intents and nothing else,
-// and keeps its view state (collapsed groups, viewport) with `setState` so it survives a reload.
+// and keeps its view state (collapsed groups, viewport, the focused node) with `setState` so it survives a reload.
 
 import type { WebviewMessage } from '../../src/shared/protocol';
 import { parseViewport, type Viewport } from './state';
@@ -10,6 +10,8 @@ export interface ViewState {
 	readonly collapsed?: readonly string[];
 	/** The pan and zoom at the end of the last move. */
 	readonly viewport?: Viewport;
+	/** The node holding the graph's Tab stop, then its ancestors, nearest first (ticket 11). */
+	readonly focused?: readonly string[];
 }
 
 interface VsCodeApi {
@@ -33,11 +35,13 @@ export function loadViewState(): ViewState {
 	if (typeof state !== 'object' || state === null) {
 		return {};
 	}
-	const { collapsed, viewport } = state as Record<string, unknown>;
+	const { collapsed, viewport, focused } = state as Record<string, unknown>;
 	const saved = parseViewport(viewport);
+	const strings = (value: unknown[]) => value.filter((id): id is string => typeof id === 'string');
 	return {
-		...(Array.isArray(collapsed) ? { collapsed: collapsed.filter((id): id is string => typeof id === 'string') } : {}),
+		...(Array.isArray(collapsed) ? { collapsed: strings(collapsed) } : {}),
 		...(saved ? { viewport: saved } : {}),
+		...(Array.isArray(focused) ? { focused: strings(focused) } : {}),
 	};
 }
 
