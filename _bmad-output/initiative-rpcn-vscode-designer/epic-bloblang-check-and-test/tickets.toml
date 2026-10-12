@@ -1,0 +1,162 @@
+# tickets.toml — epic-bloblang-check-and-test's agreed children. The order of the tables is the build order; `id` names a child for good.
+# Lanes: panel (2 → 7 → 8 → 9 → 10 → 11, serialised: shared panel adapter, panel webview, src/extension.ts), core (3), diagnostics (5 → 6), corpus (12).
+# Every entry names the earlier tickets its code meets and adds a combined-sequence test for each boundary (E3 retro AI-7), and updates the AD / EXPERIENCE / DESIGN line it decides in the same commit (AI-8).
+
+[[entry]]
+id = 1
+type = "spike"
+title = "Probe Bloblang execution on the binary"
+description = "Compares three routes on v4.100.0, v4.112.0 and the user's `rpk connect` (`blobl server` POST /execute, `blobl` with input on stdin, and a one-message pipeline through `run`) for input and output metadata, deleted messages, parse and mapping error text and positions, and the time per test and per keystroke parse, then writes the findings and a proposed AD-21 (which route serves the live parse and which serves the test panel) for the user to approve."
+verify = "The findings file holds a measured table per route and version, and AD-21 is in the architecture spine marked approved by the user."
+covers = ["R13"]
+after = ["1.1", "1.7"]
+hitl = true
+risk = "low"
+unknown = "Whether `blobl server` exists and answers the same on v4.100.0; whether a one-message `run` is fast enough to re-run on each edit."
+references = ["_bmad-output/initiative-rpcn-vscode-designer/spec-rpcn-vscode-designer/research-and-cli-reference.md#cli-facts-docs-262-connect-v41120"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Tracer: Test mapping opens a panel that runs the mapping on typed JSON"
+description = "The thinnest path through every layer: a \"▷ Test mapping\" CodeLens above `mapping:` / `mutation:` fields and the \"Redpanda Connect: Test mapping\" command, a stdin option on the AD-9 spawn site and a Bloblang execution module on the route AD-21 chose (content only), a minimal core function returning one processor's Bloblang text, a second esbuild webview bundle with `html.ts` parameterised and a minimal protocol (ready, run request, result), and one panel per mapping beside the editor that shows the output of typed JSON input."
+verify = "An integration test with a fake binary (a new `blobl` branch in `connectScript`) runs Test mapping on a `mapping` processor, posts an input, and receives the fake's output in a result message; the user sees the panel run a real mapping in the dev host."
+covers = ["R4", "R5", "R12"]
+after = [1, "1.3", "2.3", "2.9", "3.1"]
+hitl = false
+risk = "medium"
+unknown = "Which editor group the panel opens in beside the graph's locked group; this entry picks one and entry 10 settles it."
+
+[[entry]]
+id = 3
+type = "story"
+title = "Bloblang text and position map for mapping and mutation processors"
+description = "Completes the core function from entry 2: for every `mapping` and `mutation` processor (nested, and under `processor_resources`), the decoded Bloblang text of block, folded, plain, single- and double-quoted scalars and a map from Bloblang line and column to a UTF-16 document offset, keyed by the processor's AD-7 node id."
+verify = "Unit tests round-trip every scalar style (each Bloblang position maps to the document character it came from), and the corpus harness checks the map on every corpus mapping."
+covers = ["R1"]
+after = [2, "2.19", "3.3"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "Full test-panel protocol and result types with fixtures"
+description = "Completes the panel's protocol in `src/shared` (host → webview: snapshot, result {ok with content and metadata and changes, failed, parse error, deleted, invalid input}, samples, host status; webview → host: ready, input edited, run, sample added, renamed, deleted, switched, go to line, install guide, set path, retry) with hand-written validators as in `protocol.ts`, plus fixture results the webview lane renders before the host sends them."
+verify = "Type-checked unit tests pin every message's shape and reject malformed ones, and every fixture passes the validators."
+covers = ["R5", "R6", "R7", "R9"]
+after = [2]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Live Bloblang syntax diagnostics"
+description = "A parse service in the adapters parses each changed `mapping` / `mutation` (entry 3's text) on the binary by AD-21's route, debounced and single-flight per mapping with stale results dropped, and publishes the errors in a new \"Bloblang\" diagnostics collection at entry 3's mapped positions; AD-14 and AD-12 are amended in the same commit."
+verify = "Integration tests with a fake binary show a parse error at the expected line and column after typing, clear it after the fix, keep lint's findings untouched, and send one parse per mapping for a burst of keystrokes."
+covers = ["R2", "R13"]
+after = [3, "2.4"]
+hitl = false
+risk = "medium"
+unknown = "What the Bloblang diagnostics do while the YAML itself does not parse (keep the last ones, or clear them); this entry decides it with the user."
+
+[[entry]]
+id = 6
+type = "story"
+title = "Bloblang errors on graph nodes"
+description = "Feeds the \"Bloblang\" collection into the graph's node status alongside Red Hat's and lint's diagnostics, so a parse error marks its processor's node (error border and icon, rolled up to collapsed groups, message on hover); AD-17 is amended."
+verify = "Integration tests show the error marker on the processor's node after a Bloblang parse error and its removal after the fix, including combined sequences with the 3.6 banner (markers frozen) and a 3.8 lint finding on the same node."
+covers = ["R3", "R13"]
+after = [5, "3.8"]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Panel input and output: content, metadata and changes"
+description = "The panel's input editor (content and a metadata table) and output (content and metadata) with added or changed fields and keys marked, the status with duration and binary version, \"Run on change\" (debounced re-run on mapping or input edits) and Run, carrying metadata in and out by AD-21's route."
+verify = "Integration tests run a mapping that sets a field and a metadata key and check the result message's content, metadata and changes; webview tests render the fixtures and the changes markers."
+covers = ["R5"]
+after = [4, 5]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 8
+type = "story"
+title = "Errors and states in the test panel"
+description = "Parse-error and mapping-error cards with the binary's message and caret excerpt, the mapping line translated to the file line through entry 3's map and Go to line, the end-of-line hint in the editor for a failure on the current sample, the last successful output dimmed, and the deleted, invalid-input and no-binary (Install guide, Set path, Retry, recovery without reopening) states; EXPERIENCE gains the panel's states."
+verify = "Integration tests drive each state with a fake binary (including Set path recovery and Go to line selecting the right file line), and webview tests render every state from the fixtures."
+covers = ["R6", "R7", "R13"]
+after = [3, 7]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 9
+type = "story"
+title = "Saved samples"
+description = "Named samples per mapping stored in one workspace file next to the config (location and format in AD-22), with add, rename, delete and switch in the panel, edits saved, linking by `label` with the processor's path as a fallback and an offer to add a label, reload on outside edits, and the sample count in the CodeLens."
+verify = "Integration tests save samples, reload them in a new panel, keep them attached after processors are reordered, pick up an outside edit to the file, and show the count in the CodeLens."
+covers = ["R9", "R13"]
+after = [8]
+hitl = false
+risk = "medium"
+unknown = "Where the file lives (beside the config or under `.rpcn/samples/`) and its format; AD-22 decides it with the user."
+
+[[entry]]
+id = 10
+type = "story"
+title = "Test panel lifecycle"
+description = "One panel per mapping keyed by file and processor: it follows its processor through edits and a changed label, says so when the processor is removed, closes with the file's last tab, follows a file rename, and opens in a settled editor group beside the YAML and the graph's locked group."
+verify = "Integration tests cover editing above the mapping, renaming its label, deleting the processor, closing the file, renaming it, and opening two panels, each in combination with an open graph."
+covers = ["R8"]
+after = [9]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 11
+type = "story"
+title = "Keyboard and screen-reader model for the test panel"
+description = "Every panel control reachable and operable by keyboard with a visible focus ring, accessible names for the panel and its regions, run results and errors announced in a polite live region, theme tokens and high-contrast borders; EXPERIENCE's Accessibility Floor and DESIGN gain the panel."
+verify = "happy-dom webview tests walk the controls by keyboard and check the accessible names and live-region announcements for a result and an error."
+covers = ["R10", "R13"]
+after = [10]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 12
+type = "story"
+title = "Bloblang parity in the corpus harness"
+description = "Sample inputs for every corpus config with a `mapping` or `mutation`, recorded `blobl` results per pinned version (v4.100.0, v4.112.0), and harness checks that the extension's run result and its parse diagnostics match the records."
+verify = "`npm run test:corpus` passes with the new records on both versions, and a deliberately wrong record makes it fail."
+covers = ["R11"]
+after = [5, 7, "1.7", "3.5"]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 13
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during the epic; new scope becomes backlog stories."
+verify = "The suites, the corpus harness and CI pass with at least as many tests as before, and each deferred finding is fixed or moved to a named ticket."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 14
+type = "story"
+title = "Test panel checks by hand"
+description = "The user tests a mapping from an empty sample to a passing and a failing run, checks live syntax errors and the graph marker, and checks the panel on VS Code 1.141 and 1.100 in light, dark and high-contrast themes; findings become backlog stories."
+verify = "The plan records each check with the date, VS Code version and the user's result."
+covers = ["R10"]
+after = [13]
+hitl = true
+risk = "low"

@@ -2,7 +2,7 @@
 type: initiative
 title: "Pipeline Designer for Redpanda Connect"
 parent: none
-covers: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12, CAP-13, CAP-14]
+covers: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12, CAP-13, CAP-14, CAP-15, CAP-16, CAP-17]
 after: []
 assignee: ""
 risk: medium
@@ -24,7 +24,7 @@ Redpanda Connect developers author, check and run pipelines locally in VS Code w
 1. A CI-built `ajurcenk.rpcn-pipeline-designer` `.vsix` installs in VS Code and pulls in `redhat.vscode-yaml` (registry publishing parked, see Notes).
 2. For 100% of the reference corpus the graph is accurate and editor diagnostics match `rpk connect lint`, checked in CI against v4.100.0 and v4.112.0.
 3. A newcomer with a binary installed builds and runs a first working pipeline in under 10 minutes (EXPERIENCE Flow 3).
-4. Every capability CAP-1–CAP-14 works in a released build, not only on a branch.
+4. Every capability CAP-1–CAP-17 works in a released build, not only on a branch (CAP-15–CAP-17 in the second release, epic 4).
 
 ## Boundaries
 
@@ -47,3 +47,4 @@ Capability boundary: one solo owner with agent lanes; epics are cut by separatel
 - Parked: CAP-13 registry publishing (Marketplace and Open VSX) is skipped for the POC; CI packages a `.vsix` instead (user, 2026-10-06).
 - Decision: "production" for every epic means a green CI build whose `.vsix` installs in VS Code (user, 2026-10-06).
 - Decision: repo ticket store in the project repo github.com/ajurcenk/rpcn-pipeline-designer (user, 2026-10-06).
+- Decision: a second release, "Bloblang check and test" (CAP-15–CAP-17), is epic 4 after the three first-release epics; brief and spec amended 2026-10-12 (user, 2026-10-12).

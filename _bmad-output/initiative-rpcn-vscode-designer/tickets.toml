@@ -19,3 +19,10 @@ slug = "epic-pipeline-graph"
 title = "Read-only pipeline graph"
 covers = ["CAP-1", "CAP-6", "CAP-7", "CAP-8", "CAP-9", "CAP-10", "CAP-12", "CAP-14"]
 after = [{ epic = 1, needs = "cached transformed schema for the ComponentCatalog, binaryState / hostStatus" }, { epic = 2, needs = "DetectionRegistry (onDidChangeDetection, session mark hook) and the deduped per-URI diagnostics accessor" }]
+
+[[epic]]
+id = 4
+slug = "epic-bloblang-check-and-test"
+title = "Bloblang check and test"
+covers = ["CAP-1", "CAP-13", "CAP-14", "CAP-15", "CAP-16", "CAP-17"]   # second release
+after = [{ epic = 1, needs = "RedpandaConnect adapter (binaryState, spawn site, arg builder), corpus harness with pinned v4.100.0 and v4.112.0" }, { epic = 2, needs = "Bloblang regions and field list (AD-14), parse cache, deduped diagnostics and the diagnostics adapter" }, { epic = 3, needs = "PipelineModel ids and ranges, NodeStatusService and its diagnostics input (AD-17), webview bundle, html/CSP and panel group logic to reuse" }]
