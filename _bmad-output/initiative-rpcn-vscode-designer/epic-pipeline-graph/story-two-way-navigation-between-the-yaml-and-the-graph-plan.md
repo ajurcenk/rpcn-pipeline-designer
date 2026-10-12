@@ -3,7 +3,7 @@ title: 'Two-way navigation between the YAML and the graph'
 type: 'feature'
 ticket: '7'
 created: '2026-10-09'
-status: 'built'
+status: done
 baseline_revision: 'feecd297378ffefd4e0d69fb48f6fd964a4f7d9a'
 route: 'full'
 route_source: 'auto'
@@ -133,6 +133,8 @@ context:
 ## Verification
 
 **Re-verification after the review patches (parent, 2026-10-09):** `npm run compile` clean; `npm run test:webview` 83 passed; `npm test` 596 passing on stable and 1.100.0; `npm run test:corpus` 123 passed. **Manual check:** the dev host was started with the checklist (2026-10-09); the user moved on ("continue") without reporting a result, so the check is not recorded as passed. Entry 13's hands-on pass covers navigation again.
+
+**Manual check, done by the user on 2026-10-12 (E3 retro AI-4)** in the dev host on VS Code 1.141.0, `graph-demo.yaml`, with the 3.15 build (f3242f4): click → the component's YAML selected and centred (including inside a `switch` case); a group header selects the whole block; moving the cursor highlights the innermost node, or the collapsed group hiding it, while focus stays in the editor; with the YAML broken the highlight holds and clicks do nothing, and both work again once fixed. Result: "tested, no issues".
 
 **Commands:**
 - `npm run compile`: exit 0.

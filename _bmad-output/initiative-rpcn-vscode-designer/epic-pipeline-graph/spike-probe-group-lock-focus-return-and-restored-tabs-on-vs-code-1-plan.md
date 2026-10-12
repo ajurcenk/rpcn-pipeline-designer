@@ -3,7 +3,7 @@ title: 'Probe: group lock, focus return and restored tabs on VS Code 1.100'
 type: 'chore'
 ticket: '14'
 created: '2026-10-09'
-status: 'built'
+status: done
 baseline_revision: '3f0356e3037e4590640114faca0a18ead91533b1'
 route: 'oneshot'
 route_source: 'auto'

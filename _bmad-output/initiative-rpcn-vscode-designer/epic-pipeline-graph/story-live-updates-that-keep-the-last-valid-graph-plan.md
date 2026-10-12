@@ -3,7 +3,7 @@ title: 'Live updates that keep the last valid graph'
 type: 'feature'
 ticket: '6'
 created: '2026-10-09'
-status: 'built'
+status: done
 baseline_revision: '67c55cdf8916f729e9c8865e7dab1bef00c2f305'
 route: 'full'
 route_source: 'auto'

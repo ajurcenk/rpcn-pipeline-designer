@@ -1,7 +1,7 @@
 ---
 epic: epic-pipeline-graph
 date: 2026-10-12
-verdict: rejected
+verdict: accepted
 criteria: declared
 headless: false
 ---
@@ -105,7 +105,7 @@ Dispositions: **fix now** (an action item), **defer** (a backlog story), **accep
 | Groups, routes, resources, theme tokens | 1.103.2 | passed | 3.4 plan; 3f0356e |
 | Lock, focus return and reload probe | 1.141.0 and 1.100.0 (automated probe); 1.103.2 and 1.100.0 (reload by hand) | answered | `spike-3-14-findings/findings.md` |
 | Live updates and the banner, including a locked group | 1.103.2 | passed | 3.6 plan; feecd29 |
-| **Two-way navigation (3.7)** | 1.103.2 | **not confirmed**: the user said "continue" without a result | 3.7 plan; 564d517 |
+| **Two-way navigation (3.7)** | 1.103.2; 1.141.0 | not confirmed on 1.103.2 (the user said "continue" without a result); **passed on 1.141.0, 2026-10-12** (AI-4, "tested, no issues") | 3.7 plan; 564d517; f3242f4 |
 | Error and warning markers, the roll-up, clear on edit | 1.103.2 | passed | 3.8 plan; bcc3ef4 |
 | The no-binary state, Set path, Retry, nothing to draw (with PATH stripped) | 1.103.2 | passed | 3.9 plan; 126568a |
 | Auto-open, one graph group, Hide across a reload, tab close, rename | 1.103.2 | passed (auto-open is on the first show only; the user decided to keep that) | 3.10 plan; c4ce8ce |
@@ -174,6 +174,12 @@ All of these are proposed. The human decides what to run, and nothing here was a
 There are no unfinished tickets; eight are at `built`.
 
 **Human decision (user, 2026-10-12):** "accept only after AI-1 and AI-4". The epic is therefore **not accepted yet**. The frontmatter says `rejected`, so a gate holds the next epic until AI-1 (the interaction-fix story) and AI-4 (3.7's navigation check, plus the records for 3.2 and 3.3) land. After that, the verdict is re-rendered as `accepted`.
+
+**Re-rendered 2026-10-12: accepted.** Both conditions landed:
+- **AI-1:** entry 3.15 "Graph interaction fixes across tickets" (f3242f4) fixed F1–F8 with the combined-sequence tests of F11. 645 integration tests pass on 1.141.0 and 1.100.0, 146 webview, 123 corpus; CI green (one 1.100.0 flake in the 3.7 CURSOR test passed on rerun, noted in `deferred-work.md`).
+- **AI-4:** the user passed 3.7's navigation check on 1.141.0 ("tested, no issues"). 3.2 and 3.3 are recorded as covered by 3.4's check. 3.1–3.7, 3.14 and 3.15 are marked done.
+
+The frontmatter now says `accepted`. AI-2, AI-3 and AI-5 to AI-8 stay open as follow-ups and do not hold the epic.
 
 ## Open questions
 

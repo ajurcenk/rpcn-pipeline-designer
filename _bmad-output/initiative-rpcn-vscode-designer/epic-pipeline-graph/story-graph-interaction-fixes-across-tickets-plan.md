@@ -3,7 +3,7 @@ title: 'Graph interaction fixes across tickets'
 type: 'bugfix'
 ticket: '15'
 created: '2026-10-12'
-status: 'built'
+status: done
 baseline_revision: '0bd42ac1097ffa6a86b1e3d1469e27bda10f271c'
 route: 'full'
 route_source: 'auto'

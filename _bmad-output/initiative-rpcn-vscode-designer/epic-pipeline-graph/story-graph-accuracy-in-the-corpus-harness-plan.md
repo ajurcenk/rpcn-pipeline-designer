@@ -3,7 +3,7 @@ title: 'Graph accuracy in the corpus harness'
 type: 'feature'
 ticket: '5'
 created: '2026-10-09'
-status: 'built'
+status: done
 baseline_revision: 'd79038132eb8684128d85122f784b09f152080ab'
 route: 'full'
 route_source: 'auto'

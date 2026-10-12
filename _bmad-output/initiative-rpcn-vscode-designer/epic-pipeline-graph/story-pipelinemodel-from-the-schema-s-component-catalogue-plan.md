@@ -3,7 +3,7 @@ title: 'PipelineModel from the schema''s component catalogue'
 type: 'feature'
 ticket: '3'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'd2ef642e06cc7850c54c9941d659a1c93083cf8f'
 route: 'full'
 route_source: 'auto'
@@ -182,7 +182,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean; `npm test` 572 passing on stable and 1.100.0; `npm run test:corpus` 89 passed. Manual check pending (the user): the main chain still draws as in 3.1, plus top-level resources as standalone boxes.
+**Re-verification after the review patches (parent, 2026-10-08):** `npm run compile` clean; `npm test` 572 passing on stable and 1.100.0; `npm run test:corpus` 89 passed. Manual check pending (the user): the main chain still draws as in 3.1, plus top-level resources as standalone boxes. **Recorded 2026-10-12 (E3 retro AI-4):** covered by 3.4's manual check (user, 2026-10-09, "tested, looks good"), which drew the main chain and the top-level resources, and selected on click with this ticket's code in place.
 
 **Commands:**
 - `npm run compile`: exit 0.

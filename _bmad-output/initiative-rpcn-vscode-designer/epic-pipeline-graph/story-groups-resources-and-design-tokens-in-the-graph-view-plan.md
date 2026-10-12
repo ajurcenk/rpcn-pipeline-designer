@@ -3,7 +3,7 @@ title: 'Groups, resources and design tokens in the graph view'
 type: 'feature'
 ticket: '4'
 created: '2026-10-09'
-status: 'built'
+status: done
 baseline_revision: '61d6c64c5a90eab0fc323cc29eddcbe327406937'
 route: 'full'
 route_source: 'auto'

@@ -3,7 +3,7 @@ title: 'Tracer: Show graph draws a pipeline and a click selects its YAML'
 type: 'feature'
 ticket: '1'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: 'b787266596e6768c6ad414a1e68e7102cb88b584'
 route: 'full'
 route_source: 'auto'

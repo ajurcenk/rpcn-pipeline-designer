@@ -6,6 +6,7 @@ covers: [CAP-1, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-12, CAP-14]
 after: []
 assignee: ""
 risk: high
+status: done
 ---
 
 # Read-only pipeline graph

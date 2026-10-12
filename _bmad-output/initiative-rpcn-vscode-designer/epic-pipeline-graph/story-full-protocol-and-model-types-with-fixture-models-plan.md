@@ -3,7 +3,7 @@ title: 'Full protocol and model types with fixture models'
 type: 'feature'
 ticket: '2'
 created: '2026-10-08'
-status: 'built'
+status: done
 baseline_revision: '616ab491267267a8b772a7a1167517c7114a956d'
 route: 'full'
 route_source: 'auto'
@@ -140,7 +140,7 @@ context:
 
 ## Verification
 
-**Re-verification after the review patches (parent, 2026-10-08):** see the commit; `npm run compile` clean, `npm test` and `npm run test:corpus` green: 552 passing on stable and 1.100.0, corpus 89. The manual Show graph check on `graph-demo.yaml` is pending (the user).
+**Re-verification after the review patches (parent, 2026-10-08):** see the commit; `npm run compile` clean, `npm test` and `npm run test:corpus` green: 552 passing on stable and 1.100.0, corpus 89. The manual Show graph check on `graph-demo.yaml` was pending (the user). **Recorded 2026-10-12 (E3 retro AI-4):** covered by 3.4's manual check (user, 2026-10-09, "tested, looks good"), which drew `graph-demo.yaml` and selected on click with this ticket's code in place.
 
 **Commands:**
 - `npm run compile`: exit 0.
