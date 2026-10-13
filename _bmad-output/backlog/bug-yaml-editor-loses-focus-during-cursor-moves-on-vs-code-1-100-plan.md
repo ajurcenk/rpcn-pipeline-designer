@@ -141,3 +141,5 @@ A user who clicks the graph within 5 s of it opening, while the delayed reveal i
 - `npm test` -- expected: all pass on stable and floor (645 or more).
 - `npm run test:webview` and `npm run test:corpus` -- expected: unchanged counts (146, 123), all pass.
 - After the push: CI green on the push and on two reruns (`gh run rerun`).
+
+**Follow-up (2026-10-13):** on 376c2cc the CURSOR test failed again on 1.100.0 in 1 of 3 CI attempts (1.141.0 3/3 green). The fix reduces the 1.100 failure but does not remove it; by the user's decision only 1.141.0 is worked on now (deferred-work.md).
