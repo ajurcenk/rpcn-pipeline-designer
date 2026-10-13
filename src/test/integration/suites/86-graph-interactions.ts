@@ -456,7 +456,8 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 		await settle();
 		assert.ok(editor.selection.isEqual(before), 'no selection change');
 		assert.strictEqual(vscode.window.visibleTextEditors.filter((e) => e.document === doc).length, 1, 'no editor opens');
-		assert.deepStrictEqual(handle.posted.slice(count), [], 'nothing posted');
+		// (The real webview's own `ready` may still be answered with a snapshot meanwhile, LATE_SNAPSHOT.)
+		assert.deepStrictEqual(handle.posted.slice(count).filter((m) => m.type !== 'snapshot'), [], 'nothing posted');
 	});
 
 	test('F11_LATE: a late schema with the cursor in the input and a lint finding: the model, then selection and nodeStatus', async () => {

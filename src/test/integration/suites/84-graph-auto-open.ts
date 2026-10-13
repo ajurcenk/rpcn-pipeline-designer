@@ -78,6 +78,144 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 		});
 	});
 
+	// The lock sequence past its wait (bug 15): `lockWaitMs: 0` forces the late path on any machine.
+	/** A registry whose lock wait always times out, and its log lines. */
+	const latePanels = () => {
+		const lines: string[] = [];
+		return { lines, panels: testPanels({ lockWaitMs: 0, log: (l) => lines.push(l) }) };
+	};
+	const lockFailure = /not locked|could not (lock|return focus)|did not become active/;
+
+	test('LATE_ACTIVE: the panel active past the wait: its group is locked and focus returns to the YAML', async () => {
+		const { lines, panels } = latePanels();
+		let listener: vscode.Disposable | undefined;
+		try {
+			const doc = await open('late-active.yaml', VALID);
+			const handle = (await panels.show(doc.uri))!;
+			assert.ok(handle);
+			// `show` resolved at the timed-out wait, before the delayed reveal is reported.
+			let wasActive = handle.panel.active;
+			listener = handle.panel.onDidChangeViewState((e) => {
+				wasActive ||= e.webviewPanel.active;
+			});
+			assert.ok(await waitFor(() => handle.panel.viewColumn === vscode.ViewColumn.Two, 10_000), `beside: ${handle.panel.viewColumn}`);
+			// The delayed reveal made the graph active, and the late sequence gave focus back.
+			const back = () => wasActive && !handle.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === vscode.ViewColumn.One;
+			assert.ok(await waitFor(back, 10_000), `the graph became active, then focus came back: ${lines.join(' | ')}`);
+			await settle();
+			assert.strictEqual(vscode.window.activeTextEditor?.document, doc, 'the YAML editor stays active');
+			assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.One);
+			assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.One);
+			// The graph's group is locked: with it active, a file opened with no column goes elsewhere.
+			handle.panel.reveal(undefined, false);
+			assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the graph is active');
+			const more = vscode.Uri.file(path.join(dir, 'late-active-more.txt'));
+			fs.writeFileSync(more.fsPath, 'more\n');
+			await vscode.commands.executeCommand('vscode.open', more);
+			assert.ok(await waitFor(() => tabColumn(more) !== undefined, 10_000));
+			assert.notStrictEqual(tabColumn(more), handle.panel.viewColumn, 'not in the graph group');
+			assert.strictEqual(vscode.window.tabGroups.all.length, 2, 'no new group');
+			assert.ok(!lines.some((l) => lockFailure.test(l)), `the lock sequence logged no failure: ${lines.join(' | ')}`);
+		} finally {
+			listener?.dispose();
+			panels.dispose();
+		}
+	});
+
+	test('LATE_USER_EDITOR: another text editor made active past the wait: the late sequence moves no focus to the YAML', async () => {
+		const { lines, panels } = latePanels();
+		try {
+			const doc = await open('late-user.yaml', VALID);
+			const file = path.join(dir, 'late-user-notes.txt');
+			fs.writeFileSync(file, 'notes\n');
+			const notes = await vscode.workspace.openTextDocument(file);
+			const handle = (await panels.show(doc.uri))!;
+			assert.ok(handle);
+			// The user shows another file right as the wait ends, before the delayed reveal is
+			// reported, so the late lock races it; then the panel becomes active (the test reveals it
+			// again). Focus is never taken from the user, and the lock never stays on their group.
+			await vscode.window.showTextDocument(notes, { viewColumn: vscode.ViewColumn.One, preview: false });
+			assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === notes, 10_000), 'the other editor is active');
+			await settle();
+			handle.panel.reveal(undefined, false);
+			assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the graph is active');
+			await settle();
+			await settle();
+			// Focus stays on the graph: nothing moved it to the YAML. (Not `activeTextEditor`, which
+			// 1.100 leaves wrong while a webview has focus.)
+			assert.ok(handle.panel.active, `the graph keeps focus: ${lines.join(' | ')}`);
+			assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, handle.panel.viewColumn);
+			assert.ok(vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputWebview, 'the graph tab is the active one');
+			// The lock never landed on the user's group: with it active, a file opened with no column stays in it.
+			await vscode.window.showTextDocument(notes, { viewColumn: vscode.ViewColumn.One, preview: false });
+			assert.ok(await waitFor(() => vscode.window.tabGroups.activeTabGroup.viewColumn === vscode.ViewColumn.One, 10_000));
+			const more = vscode.Uri.file(path.join(dir, 'late-user-more.txt'));
+			fs.writeFileSync(more.fsPath, 'more\n');
+			await vscode.commands.executeCommand('vscode.open', more);
+			assert.ok(await waitFor(() => tabColumn(more) !== undefined, 10_000));
+			assert.strictEqual(tabColumn(more), vscode.ViewColumn.One, `the YAML group is not locked: ${lines.join(' | ')}`);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('LATE_NEVER: the panel not active within the late window: one log line, no lock, no focus move, nothing watched after', async () => {
+		const lines: string[] = [];
+		const panels = testPanels({ lockWaitMs: 0, lockLateWindowMs: 0, log: (l) => lines.push(l) });
+		try {
+			const doc = await open('late-never.yaml', VALID);
+			const handle = (await panels.show(doc.uri))!;
+			assert.ok(handle);
+			const never = 'Graph late-never.yaml: its group did not become active, so it was not locked.';
+			assert.deepStrictEqual(lines, [never], 'logged once, as the window ended');
+			// The delayed reveal lands after the window: the late sequence is gone, so nothing locks
+			// the group or gives focus back.
+			assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the graph became active');
+			await settle();
+			await settle();
+			assert.ok(handle.panel.active, 'no focus moved back to the YAML');
+			// A later activation is not watched either.
+			await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+			handle.panel.reveal(undefined, false);
+			assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the graph is active again');
+			await settle();
+			assert.ok(handle.panel.active, 'still no focus move');
+			assert.deepStrictEqual(lines, [never], 'nothing more logged');
+			// Not locked: with the graph active, a file opened with no column lands in its group.
+			const more = vscode.Uri.file(path.join(dir, 'late-never-more.txt'));
+			fs.writeFileSync(more.fsPath, 'more\n');
+			await vscode.commands.executeCommand('vscode.open', more);
+			assert.ok(await waitFor(() => tabColumn(more) !== undefined, 10_000));
+			assert.strictEqual(tabColumn(more), handle.panel.viewColumn, 'the graph group is not locked');
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('LATE_DISPOSED: the panel disposed past the wait ends the sequence: no lock, no focus move, no log line', async () => {
+		const { lines, panels } = latePanels();
+		try {
+			const doc = await open('late-disposed.yaml', VALID);
+			const handle = (await panels.show(doc.uri))!;
+			assert.ok(handle);
+			handle.panel.dispose();
+			assert.strictEqual(panels.panelFor(doc.uri), undefined);
+			// Past the whole late window: its timer was cleared with the panel.
+			await new Promise((r) => setTimeout(r, 5_500));
+			assert.deepStrictEqual(lines, []);
+			assert.strictEqual(vscode.window.activeTextEditor?.document, doc, 'focus stays in the YAML');
+			// No lock: the YAML group, active, still takes a file opened with no column.
+			const more = vscode.Uri.file(path.join(dir, 'late-disposed-more.txt'));
+			fs.writeFileSync(more.fsPath, 'more\n');
+			await vscode.commands.executeCommand('vscode.open', more);
+			assert.ok(await waitFor(() => tabColumn(more) !== undefined, 10_000));
+			assert.strictEqual(tabColumn(more), vscode.ViewColumn.One, 'the YAML group is not locked');
+			assert.strictEqual(vscode.window.tabGroups.all.length, 1, 'no group locked or left behind');
+		} finally {
+			panels.dispose();
+		}
+	});
+
 	test('AUTO_ONCE: the same file closed and shown again in the session gets no second auto-open', async () => {
 		await withAutoOpen(async () => {
 			const doc = await open('auto-once.yaml', VALID);

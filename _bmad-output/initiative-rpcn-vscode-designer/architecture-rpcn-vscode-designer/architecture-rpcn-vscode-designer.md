@@ -42,7 +42,7 @@ companions: []
   - Every per-file registry (graph panel, terminal, detection) is keyed by `uri.toString()` and re-keyed on rename / Save As.
   - The **driving editor** is the last-focused text editor for that URI. It is the cursor-highlight source and the `revealRange` target.
   - The panel closes when `window.tabGroups` holds no tab for that URI's YAML.
-  - Group lock (best-effort): on first open, reveal the panel with focus, run `workbench.action.lockEditorGroup`, then refocus the text editor.
+  - Group lock (best-effort): on first open, reveal the panel with focus, run `workbench.action.lockEditorGroup`, then refocus the text editor. When the panel's group is not active within the 1 s wait, opening resolves and the sequence finishes late (amended 2026-10-12, bug 15): for up to 5 s more it watches the panel, and once it is active in its group it locks the group and refocuses the text editor, unless the user made another text editor active since; a disposed panel ends it.
   - The host sends a full `snapshot` when the webview posts `ready`.
   - `retainContextWhenHidden: false`; the webview restores view state via `setState` (AD-3). `[ASSUMPTION]`
   - Auto-open beside a detected file (AD-18) unless the setting disables it. A Show graph / Hide graph command and editor-title button toggle the panel; no default keybinding. An explicit Hide is persisted per URI in `workspaceState` (survives reload) and suppresses auto-open until Show graph.

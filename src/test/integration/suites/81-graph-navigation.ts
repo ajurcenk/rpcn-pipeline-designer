@@ -253,7 +253,8 @@ suite('Pipeline graph: navigation (3.7, integration)', function () {
 		moveTo(editor, SWITCH.indexOf('output:'));
 		await settle();
 		assert.strictEqual(api().graphPanels.panelFor(b.uri), undefined);
-		assert.deepStrictEqual(handle.posted.slice(count), [], 'nothing posted for the other file');
+		// (The real webview's own `ready` may still be answered with a snapshot meanwhile, LATE_SNAPSHOT.)
+		assert.deepStrictEqual(handle.posted.slice(count).filter((m) => m.type !== 'snapshot'), [], 'nothing posted for the other file');
 	});
 
 	test('BANNER_CLICK: bannerClicked selects the parse error in the file\'s editor; ignored when the YAML parses', async () => {

@@ -48,9 +48,26 @@ export const HIDE_GRAPH_COMMAND = 'redpandaConnect.hideGraph';
 export const GRAPH_OPEN_PATHS_KEY = 'redpandaConnect.graphOpenPaths';
 /** The `workspaceState` key of the hidden files (`uri.toString()`s): Hide graph, until Show graph. */
 export const HIDDEN_GRAPHS_STATE = 'redpandaConnect.hiddenGraphs';
-/** How long the lock sequence waits for the panel's group to become active before it skips the lock. */
+/**
+ * How long the lock sequence waits for the panel's group to become active; past it `open` resolves
+ * and the sequence finishes late, if at all (bug 15).
+ */
 const LOCK_WAIT_MS = 1_000;
+/** How long, after `LOCK_WAIT_MS`, the lock sequence keeps watching for the panel to become active (bug 15). */
+const LATE_LOCK_WINDOW_MS = 5_000;
+/** How long the late sequence lets pending focus changes arrive before it re-checks and locks. */
+const LATE_SETTLE_MS = 100;
 export const GRAPH_VIEW_TYPE = 'redpandaConnect.graph';
+
+/** Whether `graph`'s panel is active and its group is the active one: the lock acts on the active group. */
+function inItsGroup(graph: GraphPanel): boolean {
+	return graph.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn;
+}
+
+/** Whether `group` holds nothing but graph panels. */
+function onlyGraphs(group: vscode.TabGroup): boolean {
+	return group.tabs.every((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith(GRAPH_VIEW_TYPE));
+}
 
 /** The tab title of a file's graph panel. */
 export function graphTitle(uri: vscode.Uri): string {
@@ -85,6 +102,16 @@ export interface GraphPanelsOptions {
 	readonly autoOpen?: () => boolean;
 	/** Sets a context key (`setContext`); `undefined`: VS Code's `setContext` command. */
 	readonly setContext?: (key: string, value: unknown) => void;
+	/**
+	 * Test seam (bug 15): how long the lock sequence waits for the panel's group before it goes on
+	 * late (`0` forces the late path). `undefined`: `LOCK_WAIT_MS`.
+	 */
+	readonly lockWaitMs?: number;
+	/**
+	 * Test seam (bug 15, LATE_NEVER): how long the late lock sequence watches the panel past the
+	 * wait (`0` ends it at once). `undefined`: `LATE_LOCK_WINDOW_MS`.
+	 */
+	readonly lockLateWindowMs?: number;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -562,7 +589,9 @@ export class GraphPanels implements vscode.Disposable {
 	 * The lock sequence (spike 3.14 rec. 1): the panel's group is made active (`reveal` with
 	 * focus) and locked, then focus goes back to the YAML editor in its column, from the held
 	 * document. Best effort: a failure is logged and the panel stays. The lock runs only once the
-	 * panel's group is active, so that it never locks the YAML's group instead.
+	 * panel's group is active, so that it never locks the YAML's group instead. When the group is
+	 * not active within the wait, the sequence resolves and finishes late (bug 15): the delayed
+	 * reveal of a slow machine would otherwise take focus with nothing giving it back.
 	 */
 	private async lock(graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined): Promise<void> {
 		const name = path.posix.basename(graph.uri.path);
@@ -572,22 +601,104 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			graph.panel.reveal(undefined, false);
 			// A panel disposed meanwhile (Hide graph, its tab closed) ends the sequence (F6_DISPOSE).
-			const active = await until(
-				() => graph.isDisposed || (graph.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn),
-				LOCK_WAIT_MS,
-			);
+			const active = await until(() => graph.isDisposed || inItsGroup(graph), this.options.lockWaitMs ?? LOCK_WAIT_MS);
 			if (graph.isDisposed) {
 				return;
 			}
+			if (!active) {
+				// `lockSettled` resolves when the late path ends.
+				this.lockLate(graph, yamlColumn, doc, name);
+				return;
+			}
+		} catch (e) {
+			this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
+			graph.settleLock();
+			return;
+		}
+		try {
+			await this.lockAndReturn(graph, yamlColumn, doc, name, () => false);
+		} finally {
+			graph.settleLock();
+		}
+	}
+
+	/**
+	 * The lock sequence past its wait (bug 15, LATE_*): for `LATE_LOCK_WINDOW_MS` (`lockLateWindowMs`)
+	 * it polls the panel, and once it is active in its group, locks the group and returns focus to the YAML,
+	 * unless another text editor became active since the wait ended (LATE_USER_EDITOR). A disposed
+	 * panel ends it silently (LATE_DISPOSED); its listeners are disposed on every path.
+	 */
+	private lockLate(graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined, name: string): void {
+		const atTimeout = vscode.window.activeTextEditor;
+		let userEditor = false;
+		/** Set once the sequence ends: it finished, or the panel (or the registry) was disposed. */
+		let done = false;
+		const editorListener = vscode.window.onDidChangeActiveTextEditor((e) => {
+			if (e && e !== atTimeout && !(e.document === doc && e.viewColumn === yamlColumn)) {
+				userEditor = true;
+			}
+		});
+		const end = () => {
+			done = true;
+			editorListener.dispose();
+		};
+		// Disposed with the panel (LATE_DISPOSED), and with the registry, which disposes its panels.
+		graph.own({ dispose: end });
+		void (async () => {
+			try {
+				// One bounded poll over the whole window: a panel already active whose group becomes
+				// active later is caught too.
+				const active = await until(() => done || graph.isDisposed || inItsGroup(graph), this.options.lockLateWindowMs ?? LATE_LOCK_WINDOW_MS);
+				if (done || graph.isDisposed) {
+					return;
+				}
+				if (!active) {
+					this.options.log(`Graph ${name}: its group did not become active, so it was not locked.`);
+					return;
+				}
+				// A focus change already on its way (the user's editor) is reported before the re-check
+				// in `lockAndReturn`, so that the lock does not land on the user's group.
+				await new Promise((r) => setTimeout(r, LATE_SETTLE_MS));
+				if (done || graph.isDisposed) {
+					return;
+				}
+				await this.lockAndReturn(graph, yamlColumn, doc, name, () => userEditor);
+			} catch (e) {
+				this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
+			} finally {
+				end();
+				graph.settleLock();
+			}
+		})();
+	}
+
+	/**
+	 * Locks the active group, which is the panel's, when it holds nothing but graphs, then gives
+	 * focus back to the YAML in its column while the panel is still active. When `userEditor()`
+	 * (the late path: another text editor became active since the wait ended), or the panel's group
+	 * is no longer the active one, neither happens: the lock acts on the active group.
+	 */
+	private async lockAndReturn(
+		graph: GraphPanel,
+		yamlColumn: vscode.ViewColumn | undefined,
+		doc: vscode.TextDocument | undefined,
+		name: string,
+		userEditor: () => boolean,
+	): Promise<void> {
+		try {
+			if (userEditor()) {
+				this.options.log(`Graph ${name}: another editor became active, so its group was not locked.`);
+				return;
+			}
+			if (!inItsGroup(graph)) {
+				this.options.log(`Graph ${name}: its group is no longer active, so it was not locked.`);
+				return;
+			}
 			// Only a group holding nothing but graphs is locked, never one of the user's editor groups.
-			const onlyGraphs = vscode.window.tabGroups.activeTabGroup.tabs.every((t) =>
-				t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith(GRAPH_VIEW_TYPE));
-			if (active && onlyGraphs) {
+			if (onlyGraphs(vscode.window.tabGroups.activeTabGroup)) {
 				await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
-			} else if (active) {
-				this.options.log(`Graph ${name}: its group holds other editors, so it was not locked.`);
 			} else {
-				this.options.log(`Graph ${name}: its group did not become active, so it was not locked.`);
+				this.options.log(`Graph ${name}: its group holds other editors, so it was not locked.`);
 			}
 		} catch (e) {
 			this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
@@ -597,7 +708,7 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		try {
 			// Only while focus is where the sequence put it: never over an editor the user opened since.
-			if (graph.isDisposed || !graph.panel.active) {
+			if (graph.isDisposed || !graph.panel.active || userEditor()) {
 				return;
 			}
 			await vscode.window.showTextDocument(doc, { viewColumn: yamlColumn, preserveFocus: false });

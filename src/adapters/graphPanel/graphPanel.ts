@@ -30,10 +30,31 @@ export interface GraphPanelHandle {
 	readonly posted: readonly HostMessage[];
 	/** Handles `message` as if the webview had posted it. */
 	receive(message: unknown): Promise<void>;
+	/**
+	 * Test seam (bug 15): resolves once the panel's whole lock sequence has ended (in time or
+	 * late, by lock, skip, expiry or disposal). `open` resolves earlier; production never awaits it.
+	 */
+	readonly lockSettled: Promise<void>;
+	/**
+	 * Test seam (bug 15): resolves once the real webview's first `ready` (from
+	 * `webview.onDidReceiveMessage`, not a direct `receive`) has been answered, or on dispose.
+	 * Production never awaits it.
+	 */
+	readonly webviewReady: Promise<void>;
 }
 
 export class GraphPanel implements GraphPanelHandle {
 	readonly posted: HostMessage[] = [];
+	private settle!: () => void;
+	readonly lockSettled = new Promise<void>((resolve) => {
+		this.settle = resolve;
+	});
+	private ready!: () => void;
+	/** Whether the real webview posted `ready`: its snapshot, once recorded, resolves `webviewReady`. */
+	private realReady = false;
+	readonly webviewReady = new Promise<void>((resolve) => {
+		this.ready = resolve;
+	});
 	/** Whether a text tab of the file has been open since the panel opened (TAB_CLOSE). */
 	hadTab = false;
 	private readonly subscriptions: vscode.Disposable[] = [];
@@ -94,7 +115,14 @@ export class GraphPanel implements GraphPanelHandle {
 		/** The binary warning's actions; `undefined`: the empty state's buttons do nothing. */
 		private readonly actions: () => BinaryActions | undefined,
 	) {
-		this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
+		this.subscriptions.push(panel.webview.onDidReceiveMessage(async (m) => {
+			const ready = parseWebviewMessage(m)?.type === 'ready';
+			this.realReady ||= ready;
+			await this.receive(m);
+			if (ready) {
+				this.ready();
+			}
+		}));
 	}
 
 	async receive(message: unknown): Promise<void> {
@@ -258,8 +286,27 @@ export class GraphPanel implements GraphPanelHandle {
 		return this.disposed;
 	}
 
+	/**
+	 * Ties `disposable` to the panel: it is disposed with it (the late lock sequence's listeners,
+	 * bug 15), or at once when the panel is already disposed.
+	 */
+	own(disposable: vscode.Disposable): void {
+		if (this.disposed) {
+			disposable.dispose();
+		} else {
+			this.subscriptions.push(disposable);
+		}
+	}
+
+	/** Marks the lock sequence ended (`lockSettled`); later calls do nothing. */
+	settleLock(): void {
+		this.settle();
+	}
+
 	dispose(): void {
 		this.disposed = true;
+		this.settle();
+		this.ready();
 		this.subscriptions.forEach((d) => d.dispose());
 	}
 
@@ -277,6 +324,9 @@ export class GraphPanel implements GraphPanelHandle {
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {
 			this.posted.splice(0, this.posted.length - MAX_POSTED);
+		}
+		if (message.type === 'snapshot' && this.realReady) {
+			this.ready();
 		}
 		try {
 			await this.panel.webview.postMessage(message);
