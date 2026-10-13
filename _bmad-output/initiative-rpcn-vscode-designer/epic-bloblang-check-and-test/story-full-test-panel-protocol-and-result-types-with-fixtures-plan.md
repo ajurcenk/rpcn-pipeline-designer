@@ -3,7 +3,7 @@ title: 'Full test-panel protocol and result types with fixtures'
 type: 'feature'
 ticket: '4'
 created: '2026-10-13'
-status: 'built'
+status: done
 baseline_revision: '7ac8f9a0a59cf32d34a596445f317a30a1ecb9b5'
 route: 'full'
 route_source: 'auto'
