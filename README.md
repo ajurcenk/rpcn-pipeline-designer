@@ -4,6 +4,21 @@ A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-co
 
 > **Status: early proof of concept (0.0.1).** This build finds the Redpanda Connect binary and builds the config schema from it, and adds schema-backed completion and hover, lint on save with Quick Fixes, Bloblang highlighting and completion, pipeline snippets, and Run and Stop, and a first read-only pipeline graph. Details go to the **Redpanda Connect** output channel.
 
+## Installing
+
+The extension is not on the VS Code Marketplace or Open VSX yet; install it from a `.vsix` file.
+
+1. Get the `.vsix`, either way:
+   - **From CI:** every green build on `main` uploads it as the `rpcn-pipeline-designer-vsix` artifact. Download it from the run's page under **Actions** (it comes zipped), or with the GitHub CLI:
+
+     ```sh
+     gh run download --repo ajurcenk/rpcn-pipeline-designer -n rpcn-pipeline-designer-vsix
+     ```
+   - **Built locally:** `npm ci`, then `npx vsce package --no-dependencies`.
+2. Install it: `code --install-extension rpcn-pipeline-designer-0.0.1.vsix`, or in VS Code open the Extensions view, then **…** → **Install from VSIX…** and pick the file.
+
+VS Code installs [YAML by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml), which the extension depends on, from the Marketplace (internet access is needed the first time). The extension also needs your Redpanda Connect binary; see [Requirements](#requirements) and [Finding the binary](#finding-the-binary). The version stays 0.0.1 for now, so to update, install the newer `.vsix` with `code --install-extension <file> --force` (or uninstall first) and reload the window.
+
 ## Finding the binary
 
 When the extension activates (the first time a YAML file opens), it looks for Redpanda Connect in this order:
