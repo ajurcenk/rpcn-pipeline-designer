@@ -3,7 +3,7 @@ title: 'Bloblang text and position map for mapping and mutation processors'
 type: 'feature'
 ticket: '3'
 created: '2026-10-13'
-status: 'built'
+status: done
 baseline_revision: '023c426ad2897136ff08bedfcf89c1f44dc0aa68'
 route: 'full'
 route_source: 'auto'
