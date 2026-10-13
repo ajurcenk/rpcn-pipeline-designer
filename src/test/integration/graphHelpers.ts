@@ -111,7 +111,6 @@ export async function showGraph(doc: vscode.TextDocument): Promise<GraphPanelHan
 	assert.ok(handle, 'a graph panel for the file');
 	// The command resolves when the timed lock wait ends; a late lock sequence may still be running (bug 15).
 	await handle.lockSettled;
-	await webviewReady(handle);
 	return handle;
 }
 
@@ -210,20 +209,5 @@ export async function autoOpened(doc: vscode.TextDocument, panels: GraphPanels =
 	const handle = panels.panelFor(doc.uri)!;
 	// `idle` resolves when the timed lock wait ends; a late lock sequence may still be running (bug 15).
 	await handle.lockSettled;
-	await webviewReady(handle);
 	return handle;
-}
-
-/**
- * Waits until the real webview's first `ready` was answered (bug 15, LATE_SNAPSHOT), so that its
- * snapshot is posted before a test's own `ready` and assertions start.
- */
-async function webviewReady(handle: GraphPanelHandle): Promise<void> {
-	let timer: NodeJS.Timeout | undefined;
-	const timeout = new Promise<'timeout'>((r) => {
-		timer = setTimeout(() => r('timeout'), 30_000);
-	});
-	const result = await Promise.race([handle.webviewReady.then(() => 'ready' as const), timeout]);
-	clearTimeout(timer);
-	assert.strictEqual(result, 'ready', `the webview of ${handle.uri.path} posted no ready within 30 s (visible ${handle.panel.visible}, active ${handle.panel.active}, column ${handle.panel.viewColumn})`);
 }

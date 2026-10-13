@@ -35,12 +35,6 @@ export interface GraphPanelHandle {
 	 * late, by lock, skip, expiry or disposal). `open` resolves earlier; production never awaits it.
 	 */
 	readonly lockSettled: Promise<void>;
-	/**
-	 * Test seam (bug 15): resolves once the real webview's first `ready` (from
-	 * `webview.onDidReceiveMessage`, not a direct `receive`) has been answered, or on dispose.
-	 * Production never awaits it.
-	 */
-	readonly webviewReady: Promise<void>;
 }
 
 export class GraphPanel implements GraphPanelHandle {
@@ -48,12 +42,6 @@ export class GraphPanel implements GraphPanelHandle {
 	private settle!: () => void;
 	readonly lockSettled = new Promise<void>((resolve) => {
 		this.settle = resolve;
-	});
-	private ready!: () => void;
-	/** Whether the real webview posted `ready`: its snapshot, once recorded, resolves `webviewReady`. */
-	private realReady = false;
-	readonly webviewReady = new Promise<void>((resolve) => {
-		this.ready = resolve;
 	});
 	/** Whether a text tab of the file has been open since the panel opened (TAB_CLOSE). */
 	hadTab = false;
@@ -114,15 +102,12 @@ export class GraphPanel implements GraphPanelHandle {
 		private readonly hostStatus: () => HostStatus,
 		/** The binary warning's actions; `undefined`: the empty state's buttons do nothing. */
 		private readonly actions: () => BinaryActions | undefined,
+		/** Test seam (`GraphPanelsOptions.ignoreWebviewMessages`): the webview's own messages are not handled. */
+		ignoreWebviewMessages = false,
 	) {
-		this.subscriptions.push(panel.webview.onDidReceiveMessage(async (m) => {
-			const ready = parseWebviewMessage(m)?.type === 'ready';
-			this.realReady ||= ready;
-			await this.receive(m);
-			if (ready) {
-				this.ready();
-			}
-		}));
+		if (!ignoreWebviewMessages) {
+			this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
+		}
 	}
 
 	async receive(message: unknown): Promise<void> {
@@ -306,7 +291,6 @@ export class GraphPanel implements GraphPanelHandle {
 	dispose(): void {
 		this.disposed = true;
 		this.settle();
-		this.ready();
 		this.subscriptions.forEach((d) => d.dispose());
 	}
 
@@ -324,9 +308,6 @@ export class GraphPanel implements GraphPanelHandle {
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {
 			this.posted.splice(0, this.posted.length - MAX_POSTED);
-		}
-		if (message.type === 'snapshot' && this.realReady) {
-			this.ready();
 		}
 		try {
 			await this.panel.webview.postMessage(message);

@@ -105,6 +105,7 @@ A second CI failure, F8_BROKEN's "nothing posted", is the same slowness: the rea
 - 2026-10-12 (review): the event-driven late check became one bounded poll; the unlock guard became a re-check of `userEditor` and `inItsGroup` before the lock, after a 100 ms settle delay; LATE_DISPOSED now asserts that nothing was locked.
 - 2026-10-12 (floor run): the tests waited only for `open`, not for the late sequence, so on 1.100 the CURSOR test asserted while the graph still held focus. They now await `lockSettled`, a test seam on `GraphPanelHandle` that resolves once the panel's whole lock sequence has ended. `showGraph` (and so `withGraph`) and `autoOpened` await it.
 - 2026-10-12 (stable run): F1_RACE and F11_LATE caught the real webview's late `snapshot` inside their windows. The helpers now also await `webviewReady`, a second test seam that resolves once the real webview's first `ready` has been answered or the panel is disposed. The helpers wait at most 30 s and then fail with a clear message. With 10 s, floor failed in about half of the combined 81/84/86 runs: the real webview's `ready` can take 10 to 30 s on 1.100 (AUTO once took 29 s). The seam also resolves as soon as the real webview's snapshot is recorded in `posted`, without waiting for `postMessage` to settle.
+- 2026-10-13 (CI on 535afaf): the `webviewReady` wait is removed, because on CI 1.100 the real webview often never posts `ready`. In its place is a test seam, `GraphPanelsOptions.ignoreWebviewMessages`: the panel does not subscribe to `webview.onDidReceiveMessage`, so only the test's `receive()` drives the protocol. 86's `ownDiagnostics` (F1_RACE in both orders, F11_LATE) passes it. Strict tests on the production registry filter out `snapshot`, per LATE_SNAPSHOT; F8_BROKEN and 81's OTHER_FILE already did.
 
 ## Review Triage Log
 
@@ -129,7 +130,9 @@ A user who clicks the graph within 5 s of it opening, while the delayed reveal i
 
 ## Verification
 
-**Results (2026-10-13):** `npm run compile` exit 0; `npm test` twice, 649 passing on stable (1.141.0) and 649 on floor (1.100.0) both times (floor 3–4 min, up from 2, from the `webviewReady` waits); `npm run test:webview` 146; `npm run test:corpus` 123. CI: see the commit's runs.
+**Results after removing `webviewReady` (2026-10-13):** `npm run compile` exit 0; `npm test` 649 passing on stable and on floor; webview 146; corpus 123. CI on 535afaf: stable green 3/3, floor red 3/3 from the `webviewReady` wait, hence its removal.
+
+**Earlier results (2026-10-13):** `npm run compile` exit 0; `npm test` twice, 649 passing on stable (1.141.0) and 649 on floor (1.100.0) both times (floor 3–4 min, up from 2, from the `webviewReady` waits); `npm run test:webview` 146; `npm run test:corpus` 123. CI: see the commit's runs.
 
 **Commands:**
 - `npm run compile` -- expected: exit 0.

@@ -112,6 +112,11 @@ export interface GraphPanelsOptions {
 	 * wait (`0` ends it at once). `undefined`: `LATE_LOCK_WINDOW_MS`.
 	 */
 	readonly lockLateWindowMs?: number;
+	/**
+	 * Test seam: when true, panels do not handle their webview's own messages, so only a test's
+	 * `receive()` drives the protocol (no late `snapshot` for the real webview's `ready`). Default false.
+	 */
+	readonly ignoreWebviewMessages?: boolean;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -531,6 +536,7 @@ export class GraphPanels implements vscode.Disposable {
 			() => this.options.diagnostics.diagnosticsFor(graph.uri),
 			() => hostStatusOf(this.options.binary.state, this.options.schema),
 			() => this.options.actions,
+			this.options.ignoreWebviewMessages,
 		);
 		graph.hadTab = hasTextTab(key);
 		this.panels.set(key, graph);

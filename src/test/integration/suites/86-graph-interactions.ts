@@ -55,7 +55,12 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 	function ownDiagnostics() {
 		const emitter = new vscode.EventEmitter<vscode.Uri>();
 		const state = { current: [] as vscode.Diagnostic[] };
-		const panels = testPanels({ diagnostics: { diagnosticsFor: () => state.current, onDidChangeDiagnostics: emitter.event } });
+		// Only the test's `receive()` drives the protocol: the real webview's `ready` (late on 1.100)
+		// would post a snapshot inside the exact counts of F1_RACE and F11_LATE (LATE_SNAPSHOT).
+		const panels = testPanels({
+			diagnostics: { diagnosticsFor: () => state.current, onDidChangeDiagnostics: emitter.event },
+			ignoreWebviewMessages: true,
+		});
 		return {
 			panels,
 			state,
