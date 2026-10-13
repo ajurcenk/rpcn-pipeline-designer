@@ -24,6 +24,8 @@ export interface ParsedYaml {
 	readonly docs: readonly Document.Parsed[];
 	readonly lineCounter: LineCounter;
 	readonly length: number;
+	/** The parsed text (raw scalar sources: the Bloblang position map, ticket 4.3). */
+	readonly text: string;
 }
 
 /** The top-level mapping keys of every document (snippets, ticket 2.10). */
@@ -38,7 +40,7 @@ export function parseYaml(text: string): ParsedYaml | undefined {
 	try {
 		const lineCounter = new LineCounter();
 		const parsed = parseAllDocuments(text, { lineCounter });
-		return { docs: Array.isArray(parsed) ? parsed : [], lineCounter, length: text.length };
+		return { docs: Array.isArray(parsed) ? parsed : [], lineCounter, length: text.length, text };
 	} catch {
 		return undefined;
 	}

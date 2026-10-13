@@ -17,9 +17,10 @@
 // input -> its processors -> `pipeline.processors` -> the output's processors -> output.
 // DISPLAY_HINTS says how three components are shown, never which fields hold children.
 
-import { isMap, isPair, isScalar, isSeq, type Node, type Pair, type Scalar, type YAMLMap } from 'yaml';
+import { isMap, isSeq, type Node, type Pair, type YAMLMap } from 'yaml';
 import { EMPTY_MODEL, type PipelineEdge, type PipelineModel, type PipelineNode, type PipelineNodeRole, type TextRange } from '../shared/protocol';
 import { slotsOf, type CategoryCatalog, type ComponentCatalog, type Slot, type SlotStep } from './catalogue';
+import { componentId, labelOf, pairOf, scalarText, segment } from './componentId';
 import type { ParsedYaml } from './yamlPath';
 
 export { nodeAt } from './nodeAt';
@@ -219,10 +220,7 @@ class Builder {
 			return undefined;
 		}
 		const label = labelOf(value);
-		const preferred = label === undefined ? undefined : place.resource !== undefined ? `res:${place.resource}:${label}` : `label:${label}`;
-		const duplicateLabel = preferred !== undefined && this.used.has(preferred);
-		const id = preferred !== undefined && !duplicateLabel ? preferred : `path:${path}`;
-		this.used.add(id);
+		const { id, duplicateLabel } = componentId(label, place.resource, path, this.used);
 		const node: MutableNode = {
 			id,
 			role: place.role,
@@ -468,16 +466,6 @@ function chainEdges(ids: readonly string[]): PipelineEdge[] {
 	return ids.slice(1).map((target, i) => edge(ids[i], target));
 }
 
-/** `.key`, or `["key"]` (JSON string escaping) when the key is not `[A-Za-z0-9_-]+` (AD-7). */
-function segment(key: string): string {
-	return /^[A-Za-z0-9_-]+$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
-}
-
-/** The pair with scalar key `key` in `map`, if any. */
-function pairOf(map: YAMLMap, key: string): Pair | undefined {
-	return map.items.find((p) => isPair(p) && isScalar(p.key) && p.key.value === key);
-}
-
 /** A scalar key as text; none for a null, empty or merge (`<<`) key. */
 function keyText(pair: Pair): string | undefined {
 	const key = scalarText(pair.key);
@@ -496,28 +484,6 @@ function componentPair(value: YAMLMap, entry: CategoryCatalog | undefined): Pair
 }
 
 const DEFAULT_SHARED_FIELDS: ReadonlySet<string> = new Set(['label']);
-
-/**
- * A scalar's text: a string as is; a number or boolean as its source text (`label: 123` is
- * `"123"`, as Redpanda Connect reads it). None for anything else.
- */
-function scalarText(node: unknown): string | undefined {
-	if (!isScalar(node)) {
-		return undefined;
-	}
-	const scalar = node as Scalar;
-	const raw = scalar.value;
-	return typeof raw === 'string' ? raw
-		: typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint'
-			? (typeof scalar.source === 'string' ? scalar.source : String(raw))
-			: undefined;
-}
-
-/** The component's `label`, when it is a non-empty scalar. */
-function labelOf(value: YAMLMap): string | undefined {
-	const label = scalarText(pairOf(value, 'label')?.value);
-	return label !== undefined && label !== '' ? label : undefined;
-}
 
 /** A block collection's value end includes its line break; the node ends at its last character. */
 function valueEnd(text: string, end: number): number {

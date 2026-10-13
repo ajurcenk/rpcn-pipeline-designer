@@ -38,6 +38,11 @@
 //     node or a descendant.
 // Both pinned versions currently record identical graphs (their catalogue slots match).
 // Needs no binary either. The layout checks cover both record kinds.
+//
+// Bloblang positions and ids (ticket 4.3): every corpus `mapping` / `mutation` processor's
+// position map round-trips (each decoded character maps to an offset holding it, or the start of
+// its escape or fold) and, given the PipelineModel of each version's catalogue, it has an id, its
+// node's (through nodeAt). Needs no binary and no records.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -47,6 +52,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLintArgs } from '../../src/core/args';
 import { componentCatalogue, type ComponentCatalog } from '../../src/core/catalogue';
 import { buildPipelineModel, nodeAt } from '../../src/core/graph';
+import { bloblangProcessors } from '../../src/core/bloblangProcessors';
 import { detect } from '../../src/core/detection';
 import { parseYaml } from '../../src/core/yamlPath';
 import type { PipelineModel } from '../../src/shared/protocol';
@@ -55,6 +61,7 @@ import { PIPELINE_SNIPPETS, PipelineSnippet, renderSnippet } from '../../src/cor
 import { parseVersionOutput } from '../../src/core/version';
 import { SCHEMA_FIXTURES } from '../../src/test/helpers/fakeBinary';
 import { servedSchema, type PinnedVersion } from '../../src/test/helpers/schemas';
+import { positionProblems } from '../../src/test/helpers/bloblangPositions';
 import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/process';
 
 /** Pinned versions; must equal VERSIONS in scripts/spike/fetch-binaries.sh (checked below). */
@@ -483,6 +490,36 @@ describe('graph accuracy (corpus config → extension PipelineModel, R12)', () =
 			'  edge a->x: x is not in the model',
 		]);
 	});
+});
+
+describe('Bloblang positions and ids (corpus config → mapping / mutation processors, 4.3)', () => {
+	const withBloblang = configs.filter((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8'))).length > 0);
+
+	it('the corpus has mapping and mutation processors to check', () => {
+		expect(withBloblang.length).toBeGreaterThan(0);
+	});
+
+	for (const config of withBloblang) {
+		it(`${config}: every mapping / mutation round-trips, and its id is its graph node's`, () => {
+			const text = fs.readFileSync(path.join(CORPUS, config), 'utf8');
+			const parsed = parseYaml(text);
+			const found = bloblangProcessors(parsed);
+			const problems = found.flatMap((p) => positionProblems(text, p));
+			expect(problems, [`${config}: a Bloblang position does not map back to its character:`, ...problems].join('\n')).toEqual([]);
+			for (const ver of VERSIONS) {
+				const model = buildPipelineModel(parsed, text, catalogueOf(ver));
+				const withIds = bloblangProcessors(parsed, model).filter((f) => !f.path.startsWith('documents['));
+				expect(withIds.map((p) => p.path), `${config} @ ${ver}: the processors differ with a model`).toEqual(
+					found.filter((f) => !f.path.startsWith('documents[')).map((p) => p.path));
+				for (const p of withIds) {
+					expect(p.id, `${config} @ ${ver}: ${p.path} has no graph node id`).toBeDefined();
+					const node = model.nodes.find((n) => n.id === p.id);
+					expect(node?.component, `${config} @ ${ver}: ${p.path} has id ${p.id}, which is not a ${p.kind} node of the graph`).toBe(p.kind);
+					expect(nodeAt(model, p.keyRange[0]), `${config} @ ${ver}: ${p.path}'s key is in another graph node than ${p.id}`).toBe(p.id);
+				}
+			}
+		});
+	}
 });
 
 /**

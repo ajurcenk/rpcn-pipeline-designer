@@ -1,10 +1,15 @@
 // The `mapping` and `mutation` processors of a document (epic 4, ticket 4.2). Pure: from a parsed
 // text, every map item of a `processors` or `processor_resources` list, at any depth, whose
 // component is `mapping` or `mutation`, with its path, its label, the range of the component key
-// and its decoded Bloblang (`Scalar.value`). Entry 4.3 adds the Bloblang-to-document position map.
+// and its decoded Bloblang (`Scalar.value`). Since ticket 4.3 each also carries its
+// Bloblang-to-document position map (src/core/bloblangPositions.ts) and, given the document's
+// PipelineModel, its graph node's AD-7 id (through `nodeAt`, never a copied rule).
 
 import { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { BloblangProcessorKind } from '../shared/bloblangProtocol';
+import type { PipelineModel } from '../shared/protocol';
+import { bloblangPositions, type BloblangPositions } from './bloblangPositions';
+import { nodeAt } from './nodeAt';
 import type { PathStep, ParsedYaml } from './yamlPath';
 
 /** The processor kinds a test run supports (AD-21): a `mutation` keeps the input's fields. */
@@ -30,16 +35,27 @@ export interface BloblangProcessor {
 	readonly range: readonly [number, number];
 	/** The Bloblang, decoded from its YAML scalar (an empty or non-scalar value gives `''`). */
 	readonly source: string;
+	/**
+	 * The AD-7 id of the processor's PipelineModel node: the node `nodeAt` gives at the key, when
+	 * it is a node of the processor's kind. None with no model, or when the graph has no such node.
+	 */
+	readonly id?: string;
+	/** From the binary's mapping-relative `line L char C` to UTF-16 document offsets (AD-21). */
+	readonly positions: BloblangPositions;
 }
 
-/** Every `mapping` / `mutation` processor of `parsed`, in document order. Never throws. */
-export function bloblangProcessors(parsed: ParsedYaml | undefined): BloblangProcessor[] {
+/**
+ * Every `mapping` / `mutation` processor of `parsed`, in document order; `model` (the first
+ * document's PipelineModel) gives their ids. Never throws.
+ */
+export function bloblangProcessors(parsed: ParsedYaml | undefined, model?: PipelineModel): BloblangProcessor[] {
 	const out: BloblangProcessor[] = [];
 	if (!parsed) {
 		return out;
 	}
 	try {
-		parsed.docs.forEach((doc, i) => visit(doc.contents, i > 0 ? [`documents[${i}]`] : [], false, out));
+		const context: Context = { text: parsed.text, ...(model ? { model } : {}) };
+		parsed.docs.forEach((doc, i) => visit(doc.contents, i > 0 ? [`documents[${i}]`] : [], false, out, context));
 	} catch {
 		return out;
 	}
@@ -67,10 +83,16 @@ function pathText(steps: readonly PathStep[]): string {
 	return steps.reduce<string>((text, step) => (typeof step === 'number' ? `${text}[${step}]` : text ? `${text}.${step}` : step), '');
 }
 
-function visit(node: unknown, steps: readonly PathStep[], processorItem: boolean, out: BloblangProcessor[]): void {
+interface Context {
+	readonly text: string;
+	/** The first document's PipelineModel, when the caller has one: the source of `id`. */
+	readonly model?: PipelineModel;
+}
+
+function visit(node: unknown, steps: readonly PathStep[], processorItem: boolean, out: BloblangProcessor[], context: Context): void {
 	if (isMap(node)) {
 		if (processorItem) {
-			const found = processorOf(node, pathText(steps));
+			const found = processorOf(node, steps, context);
 			if (found) {
 				out.push(found);
 			}
@@ -81,18 +103,19 @@ function visit(node: unknown, steps: readonly PathStep[], processorItem: boolean
 			}
 			const key = String(pair.key.value);
 			if (PROCESSOR_LISTS.has(key) && isSeq(pair.value)) {
-				pair.value.items.forEach((item, i) => visit(item, [...steps, key, i], true, out));
+				pair.value.items.forEach((item, i) => visit(item, [...steps, key, i], true, out, context));
 			} else {
-				visit(pair.value, [...steps, key], false, out);
+				visit(pair.value, [...steps, key], false, out, context);
 			}
 		}
 	} else if (isSeq(node) && !processorItem) {
-		node.items.forEach((item, i) => visit(item, [...steps, i], false, out));
+		node.items.forEach((item, i) => visit(item, [...steps, i], false, out, context));
 	}
 }
 
 /** A processor item's `mapping` / `mutation`: the first such key of the map. */
-function processorOf(map: YAMLMap, path: string): BloblangProcessor | undefined {
+function processorOf(map: YAMLMap, steps: readonly PathStep[], context: Context): BloblangProcessor | undefined {
+	const path = pathText(steps);
 	const range = map.range;
 	if (!range) {
 		return undefined;
@@ -108,13 +131,18 @@ function processorOf(map: YAMLMap, path: string): BloblangProcessor | undefined 
 		const label = labelPair && isScalar(labelPair.value) && typeof labelPair.value.value === 'string' && labelPair.value.value !== ''
 			? labelPair.value.value
 			: undefined;
+		const kind = String(key.value) as BloblangKind;
+		const nodeId = context.model ? nodeAt(context.model, key.range[0]) : undefined;
+		const node = nodeId === undefined ? undefined : context.model?.nodes.find((n) => n.id === nodeId);
 		return {
 			path,
-			kind: String(key.value) as BloblangKind,
+			kind,
 			...(label !== undefined ? { label } : {}),
 			keyRange: [key.range[0], key.range[1]],
 			range: [range[0], range[1]],
 			source,
+			...(node?.component === kind ? { id: node.id } : {}),
+			positions: bloblangPositions(context.text, value, key.range[0], source),
 		};
 	}
 	return undefined;
