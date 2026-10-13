@@ -3,7 +3,7 @@ title: 'Tracer: Test mapping opens a panel that runs the mapping on typed JSON'
 type: 'feature'
 ticket: '2'
 created: '2026-10-13'
-status: 'built'
+status: done
 baseline_revision: '59c31aa0eb4e28582a59c0dd01459f72129e56c4'
 route: 'full'
 route_source: 'auto'
