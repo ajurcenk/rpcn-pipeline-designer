@@ -1,0 +1,109 @@
+/* The Bloblang test panel inherits the VS Code theme (DESIGN.md): every colour is a theme variable. */
+html, body, #root {
+	margin: 0;
+	padding: 0;
+}
+body {
+	background: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+	font-weight: var(--vscode-font-weight);
+}
+.rpcn-bl {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 16px;
+}
+.rpcn-bl-header {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+.rpcn-bl-title {
+	margin: 0;
+	font-size: 1.1em;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+.rpcn-bl-kind {
+	padding: 0 6px;
+	border-radius: 4px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+.rpcn-bl-source, .rpcn-bl-output, .rpcn-bl-message {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 6px 8px;
+	max-width: 100%;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+	background: var(--vscode-textCodeBlock-background);
+	border-radius: 4px;
+}
+.rpcn-bl-source {
+	color: var(--vscode-descriptionForeground);
+	max-height: 12em;
+}
+.rpcn-bl-label {
+	font-weight: 600;
+}
+.rpcn-bl-input {
+	box-sizing: border-box;
+	width: 100%;
+	resize: vertical;
+	padding: 6px 8px;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, transparent));
+	border-radius: 2px;
+}
+.rpcn-bl-input:focus-visible, .rpcn-bl-run:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-bl-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.rpcn-bl-run {
+	padding: 4px 12px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 2px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-family: inherit;
+	cursor: pointer;
+}
+.rpcn-bl-run:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+.rpcn-bl-running, .rpcn-bl-note, .rpcn-bl-meta {
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-result {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.rpcn-bl-problem {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding-left: 8px;
+	border-left: 2px solid var(--vscode-inputValidation-errorBorder);
+}
+.rpcn-bl-problem-title {
+	margin: 0;
+	color: var(--vscode-errorForeground);
+}

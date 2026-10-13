@@ -1,6 +1,6 @@
-// The graph webview's HTML (ticket 3.1): one script with a nonce and the bundle's stylesheet,
-// under a strict CSP. @xyflow/react sets inline style attributes, hence `'unsafe-inline'` for
-// styles only.
+// The webviews' HTML (ticket 3.1; parameterised by bundle in ticket 4.2): one script with a nonce
+// and the bundle's stylesheet, under a strict CSP, the same for the graph and the Bloblang panel.
+// @xyflow/react sets inline style attributes, hence `'unsafe-inline'` for styles only.
 
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
@@ -10,7 +10,7 @@ export function makeNonce(): string {
 	return randomBytes(16).toString('base64');
 }
 
-/** The Content-Security-Policy for the graph webview. */
+/** The Content-Security-Policy for the extension's webviews. */
 export function contentSecurityPolicy(cspSource: string, nonce: string): string {
 	return [
 		`default-src 'none'`,
@@ -21,11 +21,16 @@ export function contentSecurityPolicy(cspSource: string, nonce: string): string 
 	].join('; ');
 }
 
-/** The page that loads `dist/webview.js` and `dist/webview.css`. */
+/** The graph's page: `dist/webview.js` and `dist/webview.css`. */
 export function graphHtml(webview: vscode.Webview, extensionUri: vscode.Uri, title: string): string {
+	return webviewHtml(webview, extensionUri, 'webview', title);
+}
+
+/** The page that loads `dist/<bundle>.js` and `dist/<bundle>.css`. */
+export function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, bundle: string, title: string): string {
 	const nonce = makeNonce();
-	const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.js'));
-	const style = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.css'));
+	const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', `${bundle}.js`));
+	const style = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', `${bundle}.css`));
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>

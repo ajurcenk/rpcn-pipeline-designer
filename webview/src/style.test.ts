@@ -1,11 +1,14 @@
-// TOKENS (ticket 3.4, DESIGN Colors): every colour in webview/src/*.css is a VS Code theme
-// variable. No hex, rgb(), hsl() or named colour outside `var(--vscode-…)`.
+// TOKENS (ticket 3.4, DESIGN Colors): every colour in webview/src/*.css (and the Bloblang panel's
+// webview/src/bloblang/*.css, ticket 4.2) is a VS Code theme variable. No hex, rgb(), hsl() or named colour outside `var(--vscode-…)`.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const DIR = new URL('./', import.meta.url);
-const SHEETS = readdirSync(DIR).filter((f) => f.endsWith('.css'));
+const SHEETS = [
+	...readdirSync(DIR).filter((f) => f.endsWith('.css')),
+	...readdirSync(new URL('bloblang/', DIR)).filter((f) => f.endsWith('.css')).map((f) => `bloblang/${f}`),
+];
 
 // CSS named colours (CSS Color 4), plus the system colours that would bypass the theme.
 const NAMED = `aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown
@@ -44,6 +47,7 @@ function rawColours(value: string): string[] {
 describe('TOKENS', () => {
 	it('finds the stylesheets', () => {
 		expect(SHEETS).toContain('graph.css');
+		expect(SHEETS).toContain('bloblang/bloblang.css');
 	});
 	it('catches raw colours', () => {
 		expect(rawColours('1px solid #fff')).toEqual(['#fff']);

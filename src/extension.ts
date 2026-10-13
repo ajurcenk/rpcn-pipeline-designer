@@ -16,6 +16,8 @@ import { forgetDocument } from './adapters/vscode/parseCache';
 import { RunController } from './adapters/vscode/run';
 import { lintFile } from './adapters/redpandaConnect/lint';
 import { GraphPanels } from './adapters/graphPanel/panels';
+import { BloblangPanels } from './adapters/bloblangPanel/panels';
+import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import type { JsonObject } from './core/schema';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -57,6 +59,8 @@ export interface ExtensionApi {
 	readonly run: RunController;
 	/** The pipeline graph panels, one per file (3.1); tests use `panelFor` as their seam. */
 	readonly graphPanels: GraphPanels;
+	/** The Bloblang test panels, one per mapping (4.2); tests use `panelFor` as their seam. */
+	readonly bloblangPanels: BloblangPanels;
 	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
@@ -178,6 +182,22 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	});
 	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
 
+	// Test mapping (4.2, AD-21): a CodeLens per mapping / mutation processor and one panel per mapping.
+	const bloblangPanels = new BloblangPanels({
+		extensionUri: context.extensionUri,
+		log,
+		binary: redpandaConnect,
+		storageDir: context.globalStorageUri.fsPath,
+		detection,
+	});
+	const bloblangLens = new BloblangLensProvider(detection);
+	context.subscriptions.push(
+		bloblangPanels,
+		...bloblangPanels.registerCommands(),
+		bloblangLens,
+		vscode.languages.registerCodeLensProvider({ language: 'yaml' }, bloblangLens),
+	);
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
@@ -186,6 +206,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		lintDiagnostics,
 		run,
 		graphPanels,
+		bloblangPanels,
 		schemaContributor,
 		contributorRegistered,
 		outputLines: () => [...lines],

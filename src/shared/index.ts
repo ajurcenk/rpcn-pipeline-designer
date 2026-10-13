@@ -2,3 +2,4 @@
 // This layer imports nothing from `src/core`, `src/adapters` or `vscode`.
 
 export * from './protocol';
+export * from './bloblangProtocol';

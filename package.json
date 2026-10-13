@@ -104,6 +104,11 @@
         "command": "redpandaConnect.refreshSchema",
         "title": "Refresh Schema",
         "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.testMapping",
+        "title": "Test mapping",
+        "category": "Redpanda Connect"
       }
     ],
     "menus": {
@@ -127,6 +132,10 @@
         {
           "command": "redpandaConnect.runUntitled",
           "when": "false"
+        },
+        {
+          "command": "redpandaConnect.testMapping",
+          "when": "editorLangId == yaml"
         }
       ],
       "editor/title": [

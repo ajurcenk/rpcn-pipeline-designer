@@ -17,6 +17,7 @@ import './suites/83-graph-empty-states';
 import './suites/84-graph-auto-open';
 import './suites/85-graph-keyboard';
 import './suites/86-graph-interactions';
+import './suites/90-bloblang-panel';
 
 // Root hook (ticket 3.10): auto-open defaults to on, and the suites open detected YAML, so every
 // suite runs with it off; the 3.10 tests turn it on. A setting write does not activate the extension.

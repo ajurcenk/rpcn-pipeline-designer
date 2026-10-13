@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { graphHtml } from '../../../adapters/graphPanel/html';
+import { graphHtml, webviewHtml } from '../../../adapters/graphPanel/html';
 
 const CSP_SOURCE = 'https://csp.example';
 const webview = {
@@ -39,5 +39,15 @@ suite('adapters/graphPanel html (3.1)', () => {
 		const html = graphHtml(webview, extensionUri, `Graph: <b>"x" & 'y'</b>.yaml`);
 		assert.ok(html.includes('<title>Graph: &#60;b&#62;&#34;x&#34; &#38; &#39;y&#39;&#60;/b&#62;.yaml</title>'));
 		assert.ok(!html.includes('<b>'));
+	});
+
+	test('the Bloblang panel (4.2): its own bundle under the same CSP', () => {
+		const html = webviewHtml(webview, extensionUri, 'bloblang', 'Bloblang: first');
+		const nonce = /<script nonce="([^"]+)" src="https:\/\/csp\.example\/ext\/dist\/bloblang\.js"><\/script>/.exec(html)?.[1];
+		assert.ok(nonce, 'the script tag loads dist/bloblang.js with a nonce');
+		assert.deepStrictEqual(cspOf(html)?.split('; '), cspOf(graphHtml(webview, extensionUri, 't'))?.split('; ').map((d) => d.replace(/nonce-[^']+/, `nonce-${nonce}`)));
+		assert.ok(html.includes('<link rel="stylesheet" href="https://csp.example/ext/dist/bloblang.css">'));
+		assert.ok(!html.includes('webview.js'));
+		assert.ok(html.includes('<title>Bloblang: first</title>'));
 	});
 });

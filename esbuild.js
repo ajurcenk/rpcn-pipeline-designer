@@ -3,9 +3,9 @@ const esbuild = require("esbuild");
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
-// Builds in flight across both contexts: "[watch] build started" prints when the first one starts
+// Builds in flight across all contexts: "[watch] build started" prints when the first one starts
 // and "[watch] build finished" only when the last one ends, so a background task's problem
-// matcher sees one build that ends after both dist/extension.js and dist/webview.js are written.
+// matcher sees one build that ends after dist/extension.js, dist/webview.js and dist/bloblang.js are written.
 let inFlight = 0;
 
 /**
@@ -75,7 +75,22 @@ async function main() {
 			'process.env.NODE_ENV': production ? '"production"' : '"development"',
 		},
 	});
-	const contexts = [extension, webview];
+	// The Bloblang test panel's webview bundle (browser, one IIFE script; ticket 4.2, AD-15).
+	const bloblang = await esbuild.context({
+		...shared,
+		entryPoints: [
+			'webview/src/bloblang/main.tsx'
+		],
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2022',
+		jsx: 'automatic',
+		outfile: 'dist/bloblang.js',
+		define: {
+			'process.env.NODE_ENV': production ? '"production"' : '"development"',
+		},
+	});
+	const contexts = [extension, webview, bloblang];
 	if (watch) {
 		await Promise.all(contexts.map((ctx) => ctx.watch()));
 	} else {

@@ -132,6 +132,26 @@ export function connectScript(options: ConnectScriptOptions): string {
 }
 
 /**
+ * A `run` body (for `connectScript({ run })`) standing in for the AD-21 test run (ticket 4.2): it
+ * copies the config (`$last`) to `<capture>/config.yaml` and appends its argv to `<capture>/argv`,
+ * then answers from the config's Bloblang as the real run would print: no line for `deleted()`,
+ * `{error}` for a mapping containing `FAIL_ME`, a lint error on stderr and exit 1 for `BROKEN`, else
+ * the content of `root.b = this.a + 1` on `{"a":1}` (`mutation` keeps `a`). Call before hiding PATH entries.
+ */
+export function mappingTestRunBody(capture: string): string {
+	const grep = toolPath('grep');
+	const cp = toolPath('cp');
+	return [
+		`'${cp}' "$last" '${path.join(capture, 'config.yaml')}'`,
+		`printf '%s\\n' "$*" >> '${path.join(capture, 'argv')}'`,
+		`if '${grep}' -q 'deleted()' "$last"; then exit 0; fi`,
+		`if '${grep}' -q 'FAIL_ME' "$last"; then echo '{"error":"failed assignment (line 1): fake failure"}'; exit 0; fi`,
+		`if '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
+		`if '${grep}' -q -- '- mutation:' "$last"; then echo '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}'; else echo '{"content":"{\\"b\\":2}","meta":{}}'; fi`,
+	].join('\n');
+}
+
+/**
  * The absolute path of `tool` on the current `PATH` (bare `tool` when not found). Fakes call
  * tools by absolute path, so they keep working when a test hides PATH directories that hold a
  * real `rpk` or `redpanda-connect` (often `/usr/bin`, where `cat` and `gzip` live too).

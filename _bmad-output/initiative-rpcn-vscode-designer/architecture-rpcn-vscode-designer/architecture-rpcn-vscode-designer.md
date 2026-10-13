@@ -46,6 +46,7 @@ companions: []
   - The host sends a full `snapshot` when the webview posts `ready`.
   - `retainContextWhenHidden: false`; the webview restores view state via `setState` (AD-3). `[ASSUMPTION]`
   - Auto-open beside a detected file (AD-18) unless the setting disables it. A Show graph / Hide graph command and editor-title button toggle the panel; no default keybinding. An explicit Hide is persisted per URI in `workspaceState` (survives reload) and suppresses auto-open until Show graph.
+  - A second panel kind (amended 2026-10-13, ticket 4.2): the Bloblang test panel, one `WebviewPanel` per `mapping` / `mutation` processor, keyed `uri.toString()` plus the processor path, opened `ViewColumn.Beside` with `preserveFocus` (never into the graph's locked group; entry 4.10 settles its group), with its own bundle (`dist/bloblang.js`) under the graph's CSP (`html.ts` takes the bundle name).
 
 ### AD-2 — TextDocument is the single source of truth; only the host parses YAML [ADOPTED]
 
@@ -75,6 +76,8 @@ companions: []
 | --- | --- |
 | host→webview | `snapshot` / `model` {PipelineModel}, `parseError` {message, range}, `nodeStatus` {byId}, `selection` {nodeId \| null}, `hostStatus` {binary, schema} |
 | webview→host | `ready`, `nodeActivated` {nodeId, via: 'click' \| 'keyboard'}, `bannerClicked`, `installGuideRequested`, `setPathRequested` |
+
+The Bloblang test panel (amended 2026-10-13, ticket 4.2) has its own union in `src/shared/bloblangProtocol.ts`, with hand-written validators as in `protocol.ts`: host→webview `snapshot` {title, kind, source}, `result` {result: ok {content} \| failed {message} \| deleted \| error {message}, durationMs, binary}; webview→host `ready`, `run` {input}.
 
 ### AD-6 — Send the complete model on every change; a parse error keeps the last valid model [ADOPTED]
 
