@@ -60,6 +60,30 @@ export function buildRunArgs(input: ArgvInput): ArgvResult {
 	return build('run', RUN_FLAGS, input);
 }
 
+export interface BloblArgvInput {
+	/** The argv prefix from `binaryState.ok.invocation`. */
+	readonly invocation: readonly string[];
+	/** Absolute path of the file holding the mapping. */
+	readonly mappingFile: string;
+	/** Absolute env file path, if any. */
+	readonly envFile?: string;
+}
+
+/**
+ * `[...invocation, 'blobl', --env-file <path>?, --file <mappingFile>]`: the AD-21 live parse. With
+ * stdin closed (the spawn site's), `blobl` only parses (spike 4.1, B parse-only). `blobl` takes no
+ * `--resources`.
+ */
+export function buildBloblArgs(input: BloblArgvInput): ArgvResult {
+	if (input.invocation.length === 0) {
+		return { kind: 'emptyInvocation' };
+	}
+	return {
+		kind: 'ok',
+		argv: [...input.invocation, 'blobl', ...fileFlags([], input.envFile), '--file', input.mappingFile],
+	};
+}
+
 /** `--resources <path>` per unique resource file (first occurrence wins), then `--env-file <path>`. */
 export function fileFlags(resourceFiles: readonly string[], envFile: string | undefined): string[] {
 	const flags: string[] = [];

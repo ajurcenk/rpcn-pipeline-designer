@@ -1,6 +1,6 @@
 // RedpandaConnect adapter: the shared lint/run argument builder (AD-9). Lint (AD-12) and Run
 // (AD-13) both get their `{ command, args, env }` here, so they pass identical `--resources` and
-// `--env-file` arguments. Resource files come from the `redpandaConnect.resourceFiles` setting
+// `--env-file` arguments; the live Bloblang parse (AD-21, `blobl`) gets the same `--env-file`. Resource files come from the `redpandaConnect.resourceFiles` setting
 // only; nothing detects them (AD-9, AD-18). The flags themselves live in `src/core/args`. This
 // module spawns nothing and never checks whether resource or env files exist (lint and run
 // report missing files). Run a result as `runProcess([command], args, …, { env })`.
@@ -8,7 +8,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ArgvInput, ArgvResult, buildLintArgs, buildRunArgs } from '../../core/args';
+import { ArgvInput, ArgvResult, buildBloblArgs, buildLintArgs, buildRunArgs } from '../../core/args';
 import { BinaryState, firstWorkspaceFolderPath, resolveSettingPath } from './binary';
 
 export const RESOURCE_FILES_SETTING = 'redpandaConnect.resourceFiles';
@@ -65,6 +65,25 @@ export function buildLintCommand(state: BinaryState, request: ArgsRequest, env: 
 /** Builds the `run` command line. Never throws. */
 export function buildRunCommand(state: BinaryState, request: ArgsRequest, env: ArgsEnvironment = defaultArgsEnvironment()): ArgsResult {
 	return buildCommand(buildRunArgs, state, request, env);
+}
+
+/**
+ * Builds the `blobl --file <mappingFile>` command line of the live parse (AD-21, ticket 4.5), with
+ * the same `--env-file` and `NO_COLOR` as lint and run. Never throws.
+ */
+export function buildBloblCommand(state: BinaryState, mappingFile: string, env: ArgsEnvironment = defaultArgsEnvironment()): ArgsResult {
+	if (state.kind !== 'ok') {
+		return { kind: 'binaryUnavailable', state: state.kind };
+	}
+	if (!path.isAbsolute(mappingFile)) {
+		return { kind: 'relativePath', role: 'target', path: mappingFile };
+	}
+	const envFile = resolveEnvFile(env);
+	if (envFile.kind !== 'ok') {
+		return envFile;
+	}
+	const result = buildBloblArgs({ invocation: state.invocation, mappingFile, envFile: envFile.path });
+	return result.kind === 'ok' ? commandLine(result.argv, env) : result;
 }
 
 /** The output-channel line for a failure. */
@@ -137,26 +156,38 @@ function buildCommand(
 		resourceFiles.push(path.normalize(resolved.path));
 	}
 
-	let envFile: string | undefined;
-	const envSetting = typeof env.envFileSetting === 'string' ? env.envFileSetting.trim() : '';
-	if (envSetting) {
-		const resolved = resolveFileSettingPath(envSetting, env.homeDir, env.workspaceFolder);
-		if (resolved.kind === 'relativeWithoutWorkspace') {
-			return { kind: 'unusableSetting', setting: ENV_FILE_SETTING, value: envSetting, reason: 'relativePathWithoutWorkspace' };
-		}
-		envFile = resolved.path;
+	const envFile = resolveEnvFile(env);
+	if (envFile.kind !== 'ok') {
+		return envFile;
 	}
 
-	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile, platform: process.platform });
+	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile: envFile.path, platform: process.platform });
 	switch (result.kind) {
 		case 'targetCount':
 		case 'emptyInvocation':
 			return result;
-		case 'ok': {
-			const [command, ...args] = result.argv;
-			return { kind: 'ok', command, args, env: { ...env.processEnv, NO_COLOR: '1' } };
-		}
+		case 'ok':
+			return commandLine(result.argv, env);
 	}
+}
+
+/** The `redpandaConnect.envFile` setting as an absolute path (`undefined` when unset). */
+function resolveEnvFile(env: ArgsEnvironment): { readonly kind: 'ok'; readonly path: string | undefined } | ArgsFailure {
+	const envSetting = typeof env.envFileSetting === 'string' ? env.envFileSetting.trim() : '';
+	if (!envSetting) {
+		return { kind: 'ok', path: undefined };
+	}
+	const resolved = resolveFileSettingPath(envSetting, env.homeDir, env.workspaceFolder);
+	if (resolved.kind === 'relativeWithoutWorkspace') {
+		return { kind: 'unusableSetting', setting: ENV_FILE_SETTING, value: envSetting, reason: 'relativePathWithoutWorkspace' };
+	}
+	return { kind: 'ok', path: resolved.path };
+}
+
+/** A built argv as a command line whose child env carries `NO_COLOR=1`. */
+function commandLine(argv: readonly string[], env: ArgsEnvironment): ArgsResult {
+	const [command, ...args] = argv;
+	return { kind: 'ok', command, args, env: { ...env.processEnv, NO_COLOR: '1' } };
 }
 
 /** The trimmed, non-empty strings of a `string[]` setting; anything else is ignored. */

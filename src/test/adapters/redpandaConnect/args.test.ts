@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import {
-	ArgsEnvironment, ArgsResult, buildLintCommand, buildRunCommand, describeArgsFailure,
+	ArgsEnvironment, ArgsResult, buildBloblCommand, buildLintCommand, buildRunCommand, describeArgsFailure,
 } from '../../../adapters/redpandaConnect/args';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import { FORBIDDEN_ARGS } from '../../../core/args';
@@ -211,6 +211,36 @@ suite('adapters/redpandaConnect args', () => {
 				for (const forbidden of FORBIDDEN_ARGS) {
 					assert.ok(![result.command, ...result.args].includes(forbidden), forbidden);
 				}
+			}
+		}
+	});
+
+	test('BLOBL (4.5): blobl --file <mapping>, NO_COLOR, under standalone and rpk', () => {
+		const file = path.join(WS, 'm.blobl');
+		const result = ok(buildBloblCommand(standalone, file, environment()));
+		assert.deepStrictEqual([result.command, ...result.args], [BIN, 'blobl', '--file', file]);
+		assert.deepStrictEqual(result.env, { PATH: '/usr/bin', FOO: 'bar', NO_COLOR: '1' });
+		const viaRpk = ok(buildBloblCommand(rpk, file, environment()));
+		assert.deepStrictEqual([viaRpk.command, ...viaRpk.args], [RPK, 'connect', 'blobl', '--file', file]);
+	});
+
+	test('BLOBL (4.5): the env file as for lint and run; no --resources', () => {
+		const file = path.join(WS, 'm.blobl');
+		const env = environment({ resourceFilesSetting: ['r.yaml'], envFileSetting: '.env' });
+		const result = ok(buildBloblCommand(standalone, file, env));
+		assert.deepStrictEqual(result.args, ['blobl', '--env-file', path.join(WS, '.env'), '--file', file]);
+		assert.ok(ok(buildRunCommand(standalone, { targets: [A] }, env)).args.join(' ').includes(`--env-file ${path.join(WS, '.env')}`));
+	});
+
+	test('BLOBL (4.5): failures as for lint and run; never a forbidden argument', () => {
+		assert.deepStrictEqual(buildBloblCommand({ kind: 'missing' }, path.join(WS, 'm.blobl'), environment()), { kind: 'binaryUnavailable', state: 'missing' });
+		assert.deepStrictEqual(buildBloblCommand(standalone, 'm.blobl', environment()), { kind: 'relativePath', role: 'target', path: 'm.blobl' });
+		assert.deepStrictEqual(buildBloblCommand(standalone, path.join(WS, 'm.blobl'), environment({ envFileSetting: '.env', workspaceFolder: undefined })),
+			{ kind: 'unusableSetting', setting: 'redpandaConnect.envFile', value: '.env', reason: 'relativePathWithoutWorkspace' });
+		for (const state of [standalone, rpk]) {
+			const result = ok(buildBloblCommand(state, path.join(WS, 'm.blobl'), environment({ envFileSetting: '.env' })));
+			for (const forbidden of FORBIDDEN_ARGS) {
+				assert.ok(![result.command, ...result.args].includes(forbidden), forbidden);
 			}
 		}
 	});

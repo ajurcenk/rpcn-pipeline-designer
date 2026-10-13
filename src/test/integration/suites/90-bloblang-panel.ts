@@ -52,7 +52,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
 	const runs = () => readCounter(counter).filter((l) => l === 'run').length;
-	const argvLines = () => (fs.existsSync(path.join(capture, 'argv')) ? fs.readFileSync(path.join(capture, 'argv'), 'utf8').split('\n').filter(Boolean) : []);
+	/** The argv of each test `run`, in order (only `run …` lines: 4.5's live `blobl` parses may also spawn). */
+	const argvLines = () => (fs.existsSync(path.join(capture, 'argv')) ? fs.readFileSync(path.join(capture, 'argv'), 'utf8').split('\n').filter((l) => l.startsWith('run ')) : []);
+	const lastRunArgv = () => {
+		const lines = argvLines();
+		assert.ok(lines.length > 0, 'no `run` argv was recorded');
+		return lines[lines.length - 1];
+	};
 	const results = (handle: BloblangPanelHandle) =>
 		handle.posted.filter((m): m is Extract<BloblangHostMessage, { type: 'result' }> => m.type === 'result');
 
@@ -82,8 +88,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 
 	/** The test config the fake last ran, and whether the file is gone. */
 	function lastRun(): { config: string; target: string } {
-		const argv = argvLines();
-		const target = argv[argv.length - 1].split(' ').pop()!;
+		const target = lastRunArgv().split(' ').pop()!;
 		return { config: fs.readFileSync(path.join(capture, 'config.yaml'), 'utf8'), target };
 	}
 
@@ -309,7 +314,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		try {
 			const doc = (await open('env.yaml', CONFIG)).document;
 			await run(await show(doc.uri, FIRST), '{"a":1}');
-			const argv = argvLines()[argvLines().length - 1];
+			const argv = lastRunArgv();
 			assert.ok(argv.startsWith('run --set http.enabled=false --env-file '), argv);
 			assert.ok(argv.includes(`--env-file ${envFile} `), argv);
 		} finally {

@@ -8,6 +8,8 @@ import { SchemaStore } from './adapters/redpandaConnect/schema';
 import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
 import { DetectionRegistry } from './adapters/vscode/detection';
 import { LintDiagnostics } from './adapters/vscode/diagnostics';
+import { BloblangDiagnostics } from './adapters/vscode/bloblangDiagnostics';
+import { parseMapping } from './adapters/redpandaConnect/bloblang';
 import { LintQuickFix } from './adapters/vscode/quickFix';
 import { GapCompletionProvider } from './adapters/vscode/completion';
 import { BloblangProvider } from './adapters/vscode/bloblang';
@@ -55,6 +57,8 @@ export interface ExtensionApi {
 	readonly detection: DetectionRegistry;
 	/** Lint on save (2.4); epic 3 reads `diagnosticsFor` / `onDidChangeDiagnostics`. */
 	readonly lintDiagnostics: Pick<LintDiagnostics, 'diagnosticsFor' | 'onDidChangeDiagnostics'>;
+	/** Live Bloblang syntax diagnostics (4.5); tests read its diagnostics and count its parses. */
+	readonly bloblangDiagnostics: Pick<BloblangDiagnostics, 'diagnostics' | 'parseCount' | 'inFlight' | 'onDidParse' | 'onDidChangeDiagnostics'>;
 	/** Run and Stop (2.7). */
 	readonly run: RunController;
 	/** The pipeline graph panels, one per file (3.1); tests use `panelFor` as their seam. */
@@ -157,12 +161,20 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const schemaContributor = new SchemaContributor(schemaStore, detection);
 	const contributorRegistered = registerSchemaContributor({ contributor: schemaContributor, log });
 
+	// Live Bloblang parse errors (4.5, AD-21): their own collection; lint hides its duplicate.
+	const bloblangDiagnostics = new BloblangDiagnostics({
+		detection,
+		binary: redpandaConnect,
+		parse: (source) => parseMapping(redpandaConnect.state, source, context.globalStorageUri.fsPath),
+		log,
+	});
 	const lintDiagnostics = new LintDiagnostics({
 		detection,
 		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
 		log,
+		bloblangErrors: bloblangDiagnostics,
 	});
-	context.subscriptions.push(lintDiagnostics);
+	context.subscriptions.push(lintDiagnostics, bloblangDiagnostics);
 	context.subscriptions.push(...registerEditorProviders(() => schemaStore.current?.json, detection));
 
 	const run = new RunController({ binary: redpandaConnect, detection, log });
@@ -204,6 +216,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		schemaStore,
 		detection,
 		lintDiagnostics,
+		bloblangDiagnostics,
 		run,
 		graphPanels,
 		bloblangPanels,

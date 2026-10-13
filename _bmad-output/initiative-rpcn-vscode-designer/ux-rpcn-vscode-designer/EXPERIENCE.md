@@ -107,6 +107,7 @@ Behavioral only. Visual specs are in `DESIGN.md.Components`.
 | Running | Terminal + status bar | Logs stream in the file's terminal. The status-bar Stop item is visible. Mock: [mockups/key-run.html](mockups/key-run.html) |
 | Run exited / failed | Terminal + status bar | Terminal stays open with the exit output. The Stop item is replaced by the exit status. |
 | Untitled file | Editor title | Run is disabled with the tooltip "Save the file to run it." Spine-only, no mock. |
+| Bloblang syntax error while typing | YAML editor | About 300 ms after typing stops, a Bloblang syntax error in a `mapping` / `mutation` processor is underlined (Error, source `Bloblang`) at the binary's line and column with the binary's message; it clears once the mapping parses. None while the YAML does not parse, without a usable binary, or in untitled files. An unset `${VAR}` shows nothing (one output-channel line). On save, lint's duplicate of the same error is hidden. Spine-only, no mock. |
 
 ## Interaction Primitives
 

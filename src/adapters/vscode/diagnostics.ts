@@ -6,12 +6,17 @@
 // file stopping being detected (which includes close). One lint per URI runs at a time: a save
 // during a run queues one rerun, and a result is dropped if the file was edited, saved again,
 // closed or undetected since its save (a generation per URI). `diagnosticsFor` is epic 3's
-// deduped view: Red Hat's diagnostics plus the published lint ones.
+// deduped view: Red Hat's diagnostics plus the published lint ones. Lint's duplicate of a live
+// Bloblang error (ticket 4.5, `bloblangErrors`) is hidden too: a finding on a line of that
+// processor (its key line through the line after its value) whose message starts with the live
+// error's. The live error wins over lint's duplicate, whose position is unreliable. The Bloblang collection is its
+// own, so the first edit after a save leaves it alone.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { documentLine, LintFinding, suppressFlaggedLines } from '../../core/lint';
 import type { LintResult } from '../redpandaConnect/lint';
+import type { LiveBloblangError } from './bloblangDiagnostics';
 
 export const LINT_SOURCE = 'Redpanda Connect';
 const COLLECTION_NAME = 'redpanda-connect-lint';
@@ -43,6 +48,11 @@ export interface LintDiagnosticsOptions {
 	readonly lint: (doc: vscode.TextDocument) => Promise<LintResult>;
 	readonly log: (line: string) => void;
 	readonly source?: DiagnosticsSource;
+	/** The live Bloblang errors (4.5); lint's duplicate of one is hidden. */
+	readonly bloblangErrors?: {
+		liveErrorsFor(uri: vscode.Uri): readonly LiveBloblangError[];
+		readonly onDidChangeDiagnostics: vscode.Event<vscode.Uri>;
+	};
 }
 
 interface UriState {
@@ -101,6 +111,9 @@ export class LintDiagnostics implements vscode.Disposable {
 			this.source.onDidCloseTextDocument((doc) => this.invalidate(doc.uri)),
 			this.source.onDidChangeDiagnostics((e) => e.uris.forEach((uri) => this.refresh(uri))),
 		);
+		if (options.bloblangErrors) {
+			this.subscriptions.push(options.bloblangErrors.onDidChangeDiagnostics((uri) => this.refresh(uri)));
+		}
 	}
 
 	/** Red Hat's diagnostics for the URI plus the published (deduped) lint ones. */
@@ -201,8 +214,11 @@ export class LintDiagnostics implements vscode.Disposable {
 		const doc = this.document(uri);
 		const redHat = this.redHat(uri);
 		const flagged = new Set(redHat.flatMap((d) => linesOf(d.range)));
+		const live = this.options.bloblangErrors?.liveErrorsFor(uri) ?? [];
+		const raw = live.length === 0 ? state.raw : state.raw.filter((f) => !live.some((e) =>
+			e.firstLine <= f.line && f.line <= e.lastLine && f.message.startsWith(e.message)));
 		const redHatSyntax = redHat.some((d) => d.source === 'YAML');
-		const published = doc ? suppressFlaggedLines(state.raw, flagged, redHatSyntax).map((f) => toDiagnostic(doc, f)) : [];
+		const published = doc ? suppressFlaggedLines(raw, flagged, redHatSyntax).map((f) => toDiagnostic(doc, f)) : [];
 		if (signatureOf(published) !== signatureOf(this.collection.get(uri) ?? [])) {
 			if (published.length > 0) {
 				this.collection.set(uri, published);

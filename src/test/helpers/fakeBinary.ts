@@ -93,6 +93,8 @@ export interface ConnectScriptOptions {
 	readonly lint?: string;
 	/** Shell body run for `run …` (the target is `$last`). Default: exit 0. */
 	readonly run?: string;
+	/** Shell body run for `blobl …` (the `--file` mapping is the last argument, `$last`). Default: exit 0 (it parses). */
+	readonly blobl?: string;
 }
 
 /** A fake `redpanda-connect` answering `--version` and `list --format jsonschema|json-full`, only with NO_COLOR=1. */
@@ -126,6 +128,11 @@ export function connectScript(options: ConnectScriptOptions): string {
 		'for last in "$@"; do :; done',
 		options.run ?? 'exit 0',
 		';;',
+		'"blobl "*)',
+		count('blobl'),
+		'for last in "$@"; do :; done',
+		options.blobl ?? 'exit 0',
+		';;',
 		'*) echo "unexpected args: $*" >&2; exit 2 ;;',
 		'esac',
 	].join('\n');
@@ -148,6 +155,34 @@ export function mappingTestRunBody(capture: string): string {
 		`if '${grep}' -q 'FAIL_ME' "$last"; then echo '{"error":"failed assignment (line 1): fake failure"}'; exit 0; fi`,
 		`if '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
 		`if '${grep}' -q -- '- mutation:' "$last"; then echo '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}'; else echo '{"content":"{\\"b\\":2}","meta":{}}'; fi`,
+	].join('\n');
+}
+
+/**
+ * A `blobl` body (for `connectScript({ blobl })`) standing in for the AD-21 live parse (ticket
+ * 4.5): it appends its argv to `<capture>/blobl-argv`, then answers from the mapping file
+ * (`$last`) as `blobl --file` with stdin closed would: `SLOW` sleeps 1 s first; `UNSET` fails as an
+ * unset `${UNSET}` does (exit 1); `ERR@<line>:<char>` is a parse error at that mapping-relative
+ * position, with a caret excerpt (exit 1); anything else parses (exit 0, no output). Call before
+ * hiding PATH entries.
+ */
+export function bloblParseBody(capture: string): string {
+	const grep = toolPath('grep');
+	const sed = toolPath('sed');
+	const sleep = toolPath('sleep');
+	return [
+		`printf '%s\\n' "$*" >> '${path.join(capture, 'blobl-argv')}'`,
+		`if '${grep}' -q 'SLOW' "$last"; then '${sleep}' 1; fi`,
+		`if '${grep}' -q 'UNSET' "$last"; then echo 'failed to replace env vars: required environment variables were not set: [UNSET]' >&2; exit 1; fi`,
+		`at=$('${sed}' -n 's/.*ERR@\\([0-9][0-9]*\\):\\([0-9][0-9]*\\).*/\\1 char \\2/p' "$last" | '${sed}' -n 1p)`,
+		'if [ -n "$at" ]; then',
+		'  echo "failed to parse mapping: line $at: expected fake thing" >&2',
+		`  echo '  |' >&2`,
+		`  echo '1 | fake excerpt' >&2`,
+		`  echo '  |  ^---' >&2`,
+		'  exit 1',
+		'fi',
+		'exit 0',
 	].join('\n');
 }
 

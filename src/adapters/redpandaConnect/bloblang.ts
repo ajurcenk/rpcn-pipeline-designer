@@ -2,19 +2,24 @@
 // from `src/core/bloblangRun` to a temporary file under the extension's global storage, runs it
 // with `run` through the shared builder (AD-9: the same `--resources` and `--env-file` as Run) and
 // the one-shot spawn site with a timeout, deletes the file once the child exited, and reads the
-// output with `parseRunOutput`. Never throws or rejects.
+// output with `parseRunOutput`. Never throws or rejects. Beside it, the live parse (ticket 4.5):
+// `parseMapping` writes the Bloblang to a temporary file the same way and runs `blobl --file` on
+// it, stdin closed (parse only), read with `parseBloblParseOutput`.
 
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { BloblParseOutcome, parseBloblParseOutput } from '../../core/bloblangParse';
 import { parseRunOutput, testConfig } from '../../core/bloblangRun';
 import type { BloblangProcessorKind, BloblangResult } from '../../shared/bloblangProtocol';
-import { ArgsEnvironment, buildRunCommand, describeArgsFailure } from './args';
+import { ArgsEnvironment, buildBloblCommand, buildRunCommand, describeArgsFailure } from './args';
 import { BinaryState } from './binary';
 import { ProcessOutcome, runProcess, SpawnOptions } from './process';
 import { errorText } from './text';
 
 export const MAPPING_TEST_TIMEOUT_MS = 10_000;
+/** The live parse's timeout (4.5): one launch takes ~0.2 s, ~0.42 s through rpk (spike 4.1). */
+export const MAPPING_PARSE_TIMEOUT_MS = 5_000;
 /** The message of a test run with no usable binary; nothing is spawned (4.8 adds the real state). */
 export const NO_BINARY_MESSAGE = 'No Redpanda Connect binary.';
 
@@ -91,6 +96,57 @@ export async function runMappingTest(
 		}
 	} catch (err) {
 		return done({ kind: 'error', message: errorText(err) });
+	} finally {
+		await remove(file);
+	}
+}
+
+export interface MappingParseDependencies {
+	readonly argsEnvironment?: ArgsEnvironment;
+	readonly timeoutMs?: number;
+	readonly cwd?: string;
+	readonly run?: (invocation: readonly string[], args: readonly string[], timeoutMs: number, options: SpawnOptions) => Promise<ProcessOutcome>;
+}
+
+/**
+ * Parses `source` with the current binary's `blobl --file` (AD-21), stdin closed, so nothing is
+ * mapped. The temporary file lives in `storageDir` (created when missing) and is removed on every
+ * path. With no usable binary nothing is spawned (`other`); callers do not call it then.
+ */
+export async function parseMapping(
+	state: BinaryState,
+	source: string,
+	storageDir: string,
+	deps: MappingParseDependencies = {},
+): Promise<BloblParseOutcome> {
+	if (state.kind !== 'ok') {
+		return { kind: 'other', message: NO_BINARY_MESSAGE };
+	}
+	const file = path.join(storageDir, `bloblang-parse-${randomBytes(8).toString('hex')}.blobl`);
+	try {
+		await fs.promises.mkdir(storageDir, { recursive: true });
+		await fs.promises.writeFile(file, source, 'utf8');
+		const built = buildBloblCommand(state, file, deps.argsEnvironment);
+		if (built.kind !== 'ok') {
+			return { kind: 'other', message: describeArgsFailure(built) };
+		}
+		const timeoutMs = deps.timeoutMs ?? MAPPING_PARSE_TIMEOUT_MS;
+		const outcome = await (deps.run ?? runProcess)([built.command], built.args, timeoutMs, {
+			env: built.env,
+			...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+		});
+		switch (outcome.kind) {
+			case 'notFound':
+				return { kind: 'other', message: 'The Redpanda Connect binary was not found.' };
+			case 'spawnError':
+				return { kind: 'other', message: `Could not start Redpanda Connect: ${outcome.message}` };
+			case 'timeout':
+				return { kind: 'other', message: `blobl gave no result after ${outcome.timeoutMs / 1000} s; stopped.` };
+			case 'exited':
+				return parseBloblParseOutput(outcome.exitCode, outcome.stderr);
+		}
+	} catch (err) {
+		return { kind: 'other', message: `Could not parse the mapping: ${errorText(err)}` };
 	} finally {
 		await remove(file);
 	}

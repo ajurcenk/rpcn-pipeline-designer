@@ -4,7 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { ArgsEnvironment } from '../../../adapters/redpandaConnect/args';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
-import { binaryLabel, MAPPING_TEST_TIMEOUT_MS, NO_BINARY_MESSAGE, runMappingTest } from '../../../adapters/redpandaConnect/bloblang';
+import {
+	binaryLabel, MAPPING_PARSE_TIMEOUT_MS, MAPPING_TEST_TIMEOUT_MS, NO_BINARY_MESSAGE, parseMapping, runMappingTest,
+} from '../../../adapters/redpandaConnect/bloblang';
 import { ProcessOutcome, SpawnOptions } from '../../../adapters/redpandaConnect/process';
 
 const WS = path.resolve('/ws');
@@ -116,5 +118,71 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 		assert.strictEqual(binaryLabel(OK), 'rpk connect 4.112.0');
 		assert.strictEqual(binaryLabel({ kind: 'ok', path: '/x/redpanda-connect', version: '4.100.0', invocation: ['/x/redpanda-connect'] }), 'redpanda-connect 4.100.0');
 		assert.strictEqual(binaryLabel({ kind: 'missing' }), null);
+	});
+});
+
+suite('adapters/redpandaConnect parseMapping (4.5, AD-21)', () => {
+	let dir: string;
+	setup(() => {
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpcn-blobl-parse-'));
+	});
+	teardown(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	interface ParseCall { args: readonly string[]; timeoutMs: number; options: SpawnOptions; text: string }
+	function fakeRun(outcome: ProcessOutcome, calls: ParseCall[]) {
+		return async (_invocation: readonly string[], args: readonly string[], timeoutMs: number, options: SpawnOptions) => {
+			calls.push({ args, timeoutMs, options, text: fs.readFileSync(args[args.length - 1], 'utf8') });
+			return outcome;
+		};
+	}
+
+	test('writes the decoded Bloblang to a temp file, runs blobl --file with the env file and a 5 s timeout, removes the file', async () => {
+		const calls: ParseCall[] = [];
+		const storage = path.join(dir, 'storage');
+		const stderr = 'failed to parse mapping: line 1 char 10: expected query\n  |\n1 | root.a = \n  |          ^---\n';
+		const outcome = await parseMapping(OK, 'root.a = 😀\n', storage, {
+			argsEnvironment: ENV,
+			run: fakeRun({ kind: 'exited', exitCode: 1, stdout: '', stderr }, calls),
+		});
+		assert.deepStrictEqual(outcome, { kind: 'parseError', message: 'expected query', line: 1, char: 10, excerpt: '  |\n1 | root.a = \n  |          ^---' });
+		assert.strictEqual(calls.length, 1);
+		const file = calls[0].args[calls[0].args.length - 1];
+		assert.deepStrictEqual(calls[0].args, ['connect', 'blobl', '--env-file', path.join(WS, '.env'), '--file', file]);
+		assert.ok(path.basename(file).startsWith('bloblang-parse-') && path.dirname(file) === storage);
+		assert.strictEqual(calls[0].text, 'root.a = 😀\n');
+		assert.strictEqual(calls[0].timeoutMs, MAPPING_PARSE_TIMEOUT_MS);
+		assert.strictEqual(MAPPING_PARSE_TIMEOUT_MS, 5_000);
+		assert.strictEqual(calls[0].options.env?.NO_COLOR, '1');
+		assert.deepStrictEqual(fs.readdirSync(storage), []);
+	});
+
+	test('exit 0 parses; timeout, not found and spawn errors are other; the file is removed on every path', async () => {
+		const cases: [ProcessOutcome, unknown][] = [
+			[{ kind: 'exited', exitCode: 0, stdout: '', stderr: '' }, { kind: 'ok' }],
+			[{ kind: 'timeout', timeoutMs: 5_000, stderr: '' }, { kind: 'other', message: 'blobl gave no result after 5 s; stopped.' }],
+			[{ kind: 'notFound' }, { kind: 'other', message: 'The Redpanda Connect binary was not found.' }],
+			[{ kind: 'spawnError', message: 'EACCES' }, { kind: 'other', message: 'Could not start Redpanda Connect: EACCES' }],
+		];
+		for (const [processOutcome, expected] of cases) {
+			const calls: ParseCall[] = [];
+			assert.deepStrictEqual(await parseMapping(OK, 'root = this', dir, { argsEnvironment: ENV, run: fakeRun(processOutcome, calls) }), expected);
+			assert.strictEqual(calls.length, 1);
+			assert.deepStrictEqual(fs.readdirSync(dir), []);
+		}
+		const thrown = await parseMapping(OK, 'root = this', dir, { argsEnvironment: ENV, run: async () => { throw new Error('boom'); } });
+		assert.deepStrictEqual(thrown, { kind: 'other', message: 'Could not parse the mapping: boom' });
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
+	});
+
+	test('NO_BINARY and a builder failure: no spawn, no file', async () => {
+		const calls: ParseCall[] = [];
+		assert.deepStrictEqual(await parseMapping({ kind: 'missing' }, 'root = this', dir, { run: fakeRun({ kind: 'notFound' }, calls) }),
+			{ kind: 'other', message: NO_BINARY_MESSAGE });
+		const failed = await parseMapping(OK, 'root = this', dir, {
+			argsEnvironment: { ...ENV, workspaceFolder: undefined }, run: fakeRun({ kind: 'notFound' }, calls),
+		});
+		assert.deepStrictEqual(failed, { kind: 'other', message: 'redpandaConnect.envFile ".env" is a relative path, but no workspace folder is open.' });
+		assert.strictEqual(calls.length, 0);
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
 	});
 });
