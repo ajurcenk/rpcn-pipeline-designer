@@ -130,6 +130,8 @@ A user who clicks the graph within 5 s of it opening, while the delayed reveal i
 
 ## Verification
 
+**CI (2026-10-13):** run 38345523607 on c3617aa green on all 3 attempts (the push plus two reruns), stable and floor.
+
 **Results after removing `webviewReady` (2026-10-13):** `npm run compile` exit 0; `npm test` 649 passing on stable and on floor; webview 146; corpus 123. CI on 535afaf: stable green 3/3, floor red 3/3 from the `webviewReady` wait, hence its removal.
 
 **Earlier results (2026-10-13):** `npm run compile` exit 0; `npm test` twice, 649 passing on stable (1.141.0) and 649 on floor (1.100.0) both times (floor 3–4 min, up from 2, from the `webviewReady` waits); `npm run test:webview` 146; `npm run test:corpus` 123. CI: see the commit's runs.
