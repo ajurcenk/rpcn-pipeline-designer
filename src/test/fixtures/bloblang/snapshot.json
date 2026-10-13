@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: normalise order",
+  "kind": "mapping",
+  "source": "root = this\nroot.price = this.price.number()\nroot.currency = this.currency | \"USD\"",
+  "binary": "ok",
+  "samples": [
+    { "name": "order", "content": "{\"id\":17,\"price\":12.5,\"currency\":\"EUR\"}", "meta": { "kafka_key": "order-17" } }
+  ],
+  "selected": "order"
+}

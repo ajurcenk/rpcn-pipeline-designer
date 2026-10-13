@@ -1,0 +1,6 @@
+{
+  "type": "result",
+  "result": { "kind": "invalidInput", "message": "The input is not valid JSON: unexpected end of input at line 1, column 8." },
+  "durationMs": 0,
+  "binary": "rpk connect 4.112.0"
+}

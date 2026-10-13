@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 // The Bloblang test panel's view (ticket 4.2) in happy-dom: it posts `ready`, shows the snapshot,
-// posts `run {input}` when the user types (after the pause) or presses Run, and shows each result.
+// posts `run {content, meta: {}}` when the user types (after the pause) or presses Run, and shows each result.
 
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,8 +36,20 @@ async function type(text: string): Promise<void> {
 	});
 }
 
+const OK_B2 = {
+	kind: 'ok', content: '{"b":2}', meta: {},
+	changes: { fields: { added: ['b'], changed: [], removed: ['a'] }, meta: { added: [], changed: [], removed: [] } },
+} as const;
+
+// happy-dom's import.meta.url is not a file URL: the fixtures resolve from the vitest root (the repository).
+const FIXTURES = resolve(process.cwd(), 'src/test/fixtures/bloblang');
+const FIXTURE_NAMES = readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort();
+const fixture = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8')) as Record<string, unknown>;
+
 const runs = () => posted.filter((m) => m.type === 'run');
-const SNAPSHOT: BloblangHostMessage = { type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1' };
+const SNAPSHOT: BloblangHostMessage = {
+	type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1', binary: 'ok', samples: [], selected: null,
+};
 
 describe('Bloblang test panel (4.2)', () => {
 	beforeEach(() => {
@@ -72,9 +86,9 @@ describe('Bloblang test panel (4.2)', () => {
 		await act(async () => {
 			vi.advanceTimersByTime(RUN_DEBOUNCE_MS);
 		});
-		expect(runs()).toEqual([{ type: 'run', input: '{"a":1}' }]);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
 		expect(host.textContent).toContain('Running…');
-		await send({ type: 'result', result: { kind: 'ok', content: '{"b":2}' }, durationMs: 212.4, binary: 'rpk connect 4.112.0' });
+		await send({ type: 'result', result: OK_B2, durationMs: 212.4, binary: 'rpk connect 4.112.0' });
 		expect(host.querySelector('.rpcn-bl-output')?.textContent).toBe('{"b":2}');
 		expect(host.querySelector('.rpcn-bl-meta')?.textContent).toBe('212 ms · rpk connect 4.112.0');
 		expect(host.textContent).not.toContain('Running…');
@@ -88,13 +102,13 @@ describe('Bloblang test panel (4.2)', () => {
 		await act(async () => {
 			vi.advanceTimersByTime(RUN_DEBOUNCE_MS);
 		});
-		await send({ type: 'result', result: { kind: 'ok', content: '{"b":2}' }, durationMs: 1, binary: null });
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
 		await type('{"a":2}');
 		await type('');
 		await act(async () => {
 			vi.advanceTimersByTime(RUN_DEBOUNCE_MS * 2);
 		});
-		expect(runs()).toEqual([{ type: 'run', input: '{"a":1}' }]);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
 		expect(host.querySelector('.rpcn-bl-output')).toBeNull();
 		expect(host.textContent).toContain(EMPTY_TEXT);
 		expect(host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.disabled).toBe(true);
@@ -113,14 +127,14 @@ describe('Bloblang test panel (4.2)', () => {
 	it('the Run button runs at once', async () => {
 		await render('{"a":1}');
 		await act(async () => host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.click());
-		expect(runs()).toEqual([{ type: 'run', input: '{"a":1}' }]);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
 	});
 
 	it('a restored input runs once on the first snapshot', async () => {
 		await render('{"a":2}');
 		await send(SNAPSHOT);
 		await send(SNAPSHOT);
-		expect(runs()).toEqual([{ type: 'run', input: '{"a":2}' }]);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":2}', meta: {} }]);
 		expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('{"a":2}');
 	});
 
@@ -138,5 +152,56 @@ describe('Bloblang test panel (4.2)', () => {
 		expect(host.querySelector('.rpcn-bl-meta')?.textContent).toBe('0 ms');
 		await send({ type: 'result', result: { kind: 'ok' }, durationMs: 1, binary: null });
 		expect(host.textContent).toContain(ERROR_TEXT);
+	});
+
+	it('until 4.8: a parse error and an invalid input show in the could-not-run block; samples and binary messages change nothing', async () => {
+		await render('{"a":1}');
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: { kind: 'parseError', message: 'expected end of input', excerpt: 'root = (', mappingLine: 1, mappingChar: 8, fileLine: 7, fileChar: 20 }, durationMs: 1, binary: null });
+		expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
+		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('expected end of input');
+		await send({ type: 'result', result: { kind: 'invalidInput', message: 'The input is not valid JSON.' }, durationMs: 1, binary: null });
+		expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
+		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('The input is not valid JSON.');
+		const before = host.innerHTML;
+		const postedBefore = posted.length;
+		await send({ type: 'samples', samples: [{ name: 's', content: '{"x":1}', meta: { k: 'v' } }], selected: 's' });
+		await send({ type: 'binary', status: 'missing' });
+		expect(host.innerHTML).toBe(before);
+		expect(posted.length).toBe(postedBefore);
+	});
+
+	it.each(FIXTURE_NAMES)('FIXTURES: %s renders after a snapshot as the panel shows it today', async (name) => {
+		const message = fixture(name);
+		await render('{"a":1}');
+		await send(SNAPSHOT);
+		const before = host.innerHTML;
+		await send(message);
+		const result = message.result as { kind: string; content?: string; message?: string } | undefined;
+		if (message.type !== 'result' || !result) {
+			// snapshot replaces the header; samples and binary change nothing yet.
+			if (message.type === 'snapshot') {
+				expect(host.querySelector('h1')?.textContent).toBe(message.title);
+				expect(host.querySelector('.rpcn-bl-source')?.textContent).toBe(message.source);
+			} else {
+				expect(host.innerHTML).toBe(before);
+			}
+			return;
+		}
+		switch (result.kind) {
+			case 'ok':
+				expect(host.querySelector('.rpcn-bl-output')?.textContent).toBe(result.content);
+				break;
+			case 'deleted':
+				expect(host.textContent).toContain(DELETED_TEXT);
+				break;
+			case 'failed':
+				expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(FAILED_TEXT);
+				expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe(result.message);
+				break;
+			default:
+				expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
+				expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe(result.message);
+		}
 	});
 });

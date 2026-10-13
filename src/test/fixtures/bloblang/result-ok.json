@@ -1,0 +1,14 @@
+{
+  "type": "result",
+  "result": {
+    "kind": "ok",
+    "content": "{\"a\":1,\"b\":3,\"c\":4}",
+    "meta": { "kafka_key": "order-17", "kafka_partition": 3, "tags": ["new", "eu"], "source": { "region": "eu-west-1" } },
+    "changes": {
+      "fields": { "added": ["c"], "changed": ["b"], "removed": [] },
+      "meta": { "added": ["kafka_partition", "tags", "source"], "changed": [], "removed": ["trace"] }
+    }
+  },
+  "durationMs": 212.4,
+  "binary": "rpk connect 4.112.0"
+}

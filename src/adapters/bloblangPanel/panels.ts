@@ -3,18 +3,19 @@
 // path>`. It opens beside the YAML without taking focus (entry 10 settles the group); a second Test
 // mapping on the same processor reveals it. The webview posts `ready` (again whenever it is
 // recreated, since `retainContextWhenHidden` is off) and gets a `snapshot` of the processor, and
-// a new snapshot whenever an edit changes the processor's kind or Bloblang. Each `run {input}` runs
-// the processor's current Bloblang, read from the open document then, on the input through the
+// a new snapshot whenever an edit changes the processor's kind or Bloblang. Each `run {content, meta}`
+// runs the processor's current Bloblang, read from the open document then, on the content through the
 // AD-21 test run, and the panel gets the `result`. Runs are single flight per panel: an input that
 // arrives during a run waits (only the latest one), and only the latest input's result is posted.
-// Untitled files never run. Content only: metadata, samples and the live parse
-// come later (4.5, 4.7–4.9).
+// Untitled files never run. Content only (ticket 4.4 settles the full protocol): the snapshot carries
+// the binary's status and no samples; the run's metadata, the other webview messages, samples and
+// the live parse come later (4.5, 4.7–4.9).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
 import {
-	parseBloblangWebviewMessage, type BloblangHostMessage, type BloblangProcessorKind,
+	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind,
 } from '../../shared/bloblangProtocol';
 import { webviewHtml } from '../graphPanel/html';
 import type { BinaryState } from '../redpandaConnect/binary';
@@ -100,7 +101,8 @@ class BloblangPanel implements BloblangPanelHandle {
 			if (msg?.type === 'ready') {
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
-				await this.run(msg.input);
+				// The panel sets no metadata yet (4.7): the run uses the content only.
+				await this.run(msg.content);
 			}
 		} catch (e) {
 			this.fail(e);
@@ -124,7 +126,9 @@ class BloblangPanel implements BloblangPanelHandle {
 		const kind = processor?.kind ?? 'mapping';
 		const source = processor?.source ?? '';
 		this.sentSource = JSON.stringify([kind, source]);
-		await this.post({ type: 'snapshot', title: this.panel.title, kind, source });
+		await this.post({
+			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), samples: [], selected: null,
+		});
 	}
 
 	/**
@@ -210,6 +214,11 @@ export class BloblangPanels implements vscode.Disposable {
 				}
 			}
 		});
+	}
+
+	/** The binary's status, as the panel shows it. */
+	binaryStatus(): BinaryStatus {
+		return this.options.binary.state.kind;
 	}
 
 	/** Writes `line` to the output channel. */

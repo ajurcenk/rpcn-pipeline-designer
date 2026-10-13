@@ -77,7 +77,7 @@ companions: []
 | host→webview | `snapshot` / `model` {PipelineModel}, `parseError` {message, range}, `nodeStatus` {byId}, `selection` {nodeId \| null}, `hostStatus` {binary, schema} |
 | webview→host | `ready`, `nodeActivated` {nodeId, via: 'click' \| 'keyboard'}, `bannerClicked`, `installGuideRequested`, `setPathRequested` |
 
-The Bloblang test panel (amended 2026-10-13, ticket 4.2) has its own union in `src/shared/bloblangProtocol.ts`, with hand-written validators as in `protocol.ts`: host→webview `snapshot` {title, kind, source}, `result` {result: ok {content} \| failed {message} \| deleted \| error {message}, durationMs, binary}; webview→host `ready`, `run` {input}.
+The Bloblang test panel (amended 2026-10-13, tickets 4.2 and 4.4) has its own union in `src/shared/bloblangProtocol.ts`, with hand-written validators as in `protocol.ts` (host messages checked and returned unchanged, webview messages copied with only their own fields, malformed input `undefined`, never a throw): host→webview `snapshot` {title, kind, source, binary, samples, selected}, `result` {result, durationMs, binary}, `samples` {samples, selected}, `binary` {status}, where `binary`/`status` is the graph's `BinaryStatus` and a sample is {name (1–100 chars), content, meta: key→string}; `result` is ok {content, meta: key→JSON, changes {fields: {added, changed, removed} \| null, meta: {added, changed, removed}}} \| failed {message, mappingLine?, fileLine?} \| parseError {message, excerpt, mappingLine, mappingChar, fileLine, fileChar} \| invalidInput {message} \| deleted \| error {message}, lines and chars 1-based, file positions the YAML document's; webview→host `ready`, `run` {content, meta}, `inputEdited` {content, meta}, `sampleAdded` {name}, `sampleRenamed` {from, to}, `sampleDeleted` {name}, `sampleSwitched` {name}, `goToLine` {line}, `installGuideRequested`, `setPathRequested`, `retryRequested`. Fixtures for every result kind and the `samples`, `binary` and `snapshot` messages are in `src/test/fixtures/bloblang/`.
 
 ### AD-6 — Send the complete model on every change; a parse error keeps the last valid model [ADOPTED]
 
@@ -144,7 +144,7 @@ The Bloblang test panel (amended 2026-10-13, ticket 4.2) has its own union in `s
 
 - **Binds:** all
 - **Prevents:** `vscode` leaking into the testable core; the webview coupling to host code
-- **Rule:** `src/core` imports nothing from `src/adapters` or `vscode`. `webview/` imports only `src/shared/`. `src/shared/` imports nothing internal. Only `src/extension.ts` wires the adapters together.
+- **Rule:** `src/core` imports nothing from `src/adapters` or `vscode`. `webview/` imports only `src/shared/`. `src/shared/` imports nothing internal, except type-only imports between `src/shared/` modules (amended 2026-10-13, ticket 4.4: `bloblangProtocol.ts` imports the `BinaryStatus` type from `protocol.ts`); nothing outside `src/shared/`. Only `src/extension.ts` wires the adapters together.
 
 ```mermaid
 graph LR

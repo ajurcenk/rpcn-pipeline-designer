@@ -1,7 +1,8 @@
 // The Bloblang test panel's view (ticket 4.2): the processor's Bloblang (read-only), an input box
 // for the message content, and the result of the latest run. Typing runs the mapping after a short
-// pause, and the Run button at once (an empty input runs nothing); each run posts `run {input}` and the host answers with
-// `result`. Anything that fails `parseBloblangHostMessage` is ignored. It holds no domain state and
+// pause, and the Run button at once (an empty input runs nothing); each run posts `run {content, meta: {}}` (no metadata
+// yet, 4.7) and the host answers with `result`, of which only `ok.content` shows (4.7–4.9 show the rest). The `samples` and
+// `binary` messages are ignored for now, and anything that fails `parseBloblangHostMessage` is ignored. It holds no domain state and
 // runs nothing itself (AD-3): the typed input is view state, kept by the host page across reloads.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -41,6 +42,9 @@ function ResultView({ result }: { readonly result: BloblangResult }) {
 					<pre className="rpcn-bl-message">{result.message}</pre>
 				</div>
 			);
+		// Until 4.8 renders them, a parse error and an invalid input show as a run that could not happen.
+		case 'parseError':
+		case 'invalidInput':
 		case 'error':
 			return (
 				<div className="rpcn-bl-problem">
@@ -66,7 +70,7 @@ export function TestPanel({ post, initialInput, saveInput }: TestPanelProps) {
 		clearTimeout(timer.current);
 		timer.current = undefined;
 		setRunning(true);
-		post({ type: 'run', input: text });
+		post({ type: 'run', content: text, meta: {} });
 	}, [post]);
 
 	useEffect(() => {

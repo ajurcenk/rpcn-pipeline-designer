@@ -11,7 +11,9 @@
 // `${VAR}` substitution, which runs on the raw config text, never touches it; the code under test
 // keeps its `${VAR}`s, which are substituted as in Run.
 
-import type { BloblangProcessorKind, BloblangResult } from '../shared/bloblangProtocol';
+import type {
+	BloblangChanges, BloblangProcessorKind, BloblangResult, InputMeta, JsonValue, KeyChanges, ResultMeta,
+} from '../shared/bloblangProtocol';
 
 /** The last step: one JSON line per message, its content and metadata, or the mapping's error. */
 export const RESULT_MAPPING = 'root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }';
@@ -81,12 +83,19 @@ function hex(code: number, width: number): string {
 	return code.toString(16).toUpperCase().padStart(width, '0');
 }
 
+/** The input a run was given: the message content and the metadata the `generate` input set. */
+export interface RunInput {
+	readonly content: string;
+	readonly meta: InputMeta;
+}
+
 /**
- * What a run's exit and output mean (AD-21): exit 0 with a JSON line is `ok` (its content) or
- * `failed` (the mapping's error); exit 0 with no line is `deleted`; any other exit (or a signal,
- * `null`) is `error`, with the first stderr lines verbatim.
+ * What a run's exit and output mean (AD-21): exit 0 with a JSON line is `ok` (its content and
+ * metadata, and what changed from `input`) or `failed` (the mapping's error); exit 0 with no line
+ * is `deleted`; any other exit (or a signal, `null`) is `error`, with the first stderr lines
+ * verbatim. Classifying `parseError` and `invalidInput` is 4.8's.
  */
-export function parseRunOutput(exitCode: number | null, stdout: string, stderr: string): BloblangResult {
+export function parseRunOutput(exitCode: number | null, stdout: string, stderr: string, input: RunInput): BloblangResult {
 	if (exitCode !== 0) {
 		const lines = stderr.split(/\r?\n/).filter((l) => l.trim() !== '');
 		if (lines.length > 0) {
@@ -104,14 +113,74 @@ export function parseRunOutput(exitCode: number | null, stdout: string, stderr: 
 	} catch {
 		return { kind: 'error', message: `Unexpected output: ${line}` };
 	}
-	if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-		const record = parsed as Record<string, unknown>;
-		if (typeof record.error === 'string') {
-			return { kind: 'failed', message: record.error };
+	if (isJsonObject(parsed)) {
+		if (typeof parsed.error === 'string') {
+			return { kind: 'failed', message: parsed.error };
 		}
-		if (typeof record.content === 'string') {
-			return { kind: 'ok', content: record.content };
+		if (typeof parsed.content === 'string') {
+			// An empty key is not metadata the panel can show or set; it is dropped.
+			const meta: ResultMeta = isJsonObject(parsed.meta)
+				? Object.fromEntries(Object.entries(parsed.meta).filter(([key]) => key !== ''))
+				: {};
+			return { kind: 'ok', content: parsed.content, meta, changes: changesOf(input.content, parsed.content, input.meta, meta) };
 		}
 	}
 	return { kind: 'error', message: `Unexpected output: ${line}` };
+}
+
+/**
+ * What a run changed, top-level keys only: the content's fields when the input and the output both
+ * parse as JSON objects (else `null`), and the metadata. `added` and `changed` follow the output's
+ * key order, `removed` the input's; a key whose value is deeply equal is unchanged.
+ */
+export function changesOf(input: string, outputContent: string, inputMeta: Readonly<Record<string, JsonValue>>, outputMeta: ResultMeta): BloblangChanges {
+	const before = jsonObjectOf(input);
+	const after = jsonObjectOf(outputContent);
+	return {
+		fields: before && after ? keyChanges(before, after) : null,
+		meta: keyChanges(inputMeta, outputMeta),
+	};
+}
+
+function keyChanges(before: Readonly<Record<string, unknown>>, after: Readonly<Record<string, unknown>>): KeyChanges {
+	const has = (o: Readonly<Record<string, unknown>>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+	const added: string[] = [];
+	const changed: string[] = [];
+	for (const key of Object.keys(after)) {
+		if (!has(before, key)) {
+			added.push(key);
+		} else if (!jsonEqual(before[key], after[key])) {
+			changed.push(key);
+		}
+	}
+	return { added, changed, removed: Object.keys(before).filter((key) => !has(after, key)) };
+}
+
+function isJsonObject(v: unknown): v is Record<string, JsonValue> {
+	return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function jsonObjectOf(text: string): Record<string, JsonValue> | undefined {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return isJsonObject(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Deep equality of two values parsed from JSON (object key order does not matter). */
+function jsonEqual(a: unknown, b: unknown): boolean {
+	if (a === b) {
+		return true;
+	}
+	if (Array.isArray(a) || Array.isArray(b)) {
+		return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]));
+	}
+	if (!isJsonObject(a) || !isJsonObject(b)) {
+		return false;
+	}
+	const keys = Object.keys(a);
+	return keys.length === Object.keys(b).length
+		&& keys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && jsonEqual(a[k], b[k]));
 }

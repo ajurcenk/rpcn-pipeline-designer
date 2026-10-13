@@ -1,0 +1,14 @@
+{
+  "type": "result",
+  "result": {
+    "kind": "parseError",
+    "message": "expected end of input",
+    "excerpt": "root.b = this.a +",
+    "mappingLine": 1,
+    "mappingChar": 18,
+    "fileLine": 8,
+    "fileChar": 29
+  },
+  "durationMs": 95,
+  "binary": "rpk connect 4.112.0"
+}

@@ -86,7 +86,8 @@ export async function runMappingTest(
 			case 'timeout':
 				return done({ kind: 'error', message: `No result after ${outcome.timeoutMs / 1000} s; stopped.` });
 			case 'exited':
-				return done(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr));
+				// The input carries no metadata yet (4.7 sets it on the `generate` input).
+				return done(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr, { content, meta: {} }));
 		}
 	} catch (err) {
 		return done({ kind: 'error', message: errorText(err) });

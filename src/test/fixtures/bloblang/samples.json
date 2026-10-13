@@ -1,0 +1,9 @@
+{
+  "type": "samples",
+  "samples": [
+    { "name": "order", "content": "{\"id\":17,\"price\":12.5,\"currency\":\"EUR\"}", "meta": { "kafka_key": "order-17", "kafka_topic": "orders" } },
+    { "name": "string price", "content": "{\"id\":18,\"price\":\"12.50\"}", "meta": {} },
+    { "name": "not JSON", "content": "hello, world", "meta": { "source": "manual" } }
+  ],
+  "selected": "string price"
+}

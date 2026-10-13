@@ -1,0 +1,6 @@
+{
+  "type": "result",
+  "result": { "kind": "deleted" },
+  "durationMs": 1.5,
+  "binary": "redpanda-connect 4.112.0"
+}

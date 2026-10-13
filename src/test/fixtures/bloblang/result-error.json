@@ -1,0 +1,9 @@
+{
+  "type": "result",
+  "result": {
+    "kind": "error",
+    "message": "level=error msg=\"Config lint error\" lint=\"(1,1) required environment variables were not set: [API_TOKEN]\""
+  },
+  "durationMs": 64,
+  "binary": "rpk connect 4.112.0"
+}

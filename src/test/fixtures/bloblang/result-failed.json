@@ -1,0 +1,11 @@
+{
+  "type": "result",
+  "result": {
+    "kind": "failed",
+    "message": "failed assignment (line 2): field `this.price`: expected number value, got string (\"12.50\")",
+    "mappingLine": 2,
+    "fileLine": 9
+  },
+  "durationMs": 187,
+  "binary": "redpanda-connect 4.112.0"
+}

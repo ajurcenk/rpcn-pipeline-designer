@@ -1,6 +1,9 @@
 import * as assert from 'assert';
 import { parse } from 'yaml';
-import { bloblangString, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
+import { bloblangString, changesOf, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
+
+const NO_INPUT = { content: '', meta: {} };
+const NONE = { added: [], changed: [], removed: [] };
 
 /**
  * Reads a Bloblang double-quoted literal as Go's `strconv.Unquote` does, for the escapes JSON
@@ -65,37 +68,71 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 		assert.strictEqual(parse(yamlQuoted('$\né日😀\u0085', true)), '$\né日😀\u0085');
 	});
 
-	test('RUN_OK: exit 0 with a JSON line gives its content', () => {
-		assert.deepStrictEqual(parseRunOutput(0, '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}\n', ''), { kind: 'ok', content: '{"a":1,"b":2}' });
-		assert.deepStrictEqual(parseRunOutput(0, '{"content":"","meta":{}}\n', ''), { kind: 'ok', content: '' });
+	test('RUN_OK: exit 0 with a JSON line gives its content, its metadata and what changed', () => {
+		assert.deepStrictEqual(parseRunOutput(0, '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}\n', '', { content: '{"a":1}', meta: {} }), {
+			kind: 'ok',
+			content: '{"a":1,"b":2}',
+			meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+		});
+		assert.deepStrictEqual(parseRunOutput(0, '{"content":"","meta":{}}\n', '', NO_INPUT), {
+			kind: 'ok', content: '', meta: {}, changes: { fields: null, meta: NONE },
+		});
+		assert.deepStrictEqual(
+			parseRunOutput(0, '{"content":"x","meta":{"k":"x","n":2,"o":{"p":[1]},"":"dropped"}}\n', '', { content: 'x', meta: { k: 'x', gone: 'y' } }),
+			{
+				kind: 'ok',
+				content: 'x',
+				meta: { k: 'x', n: 2, o: { p: [1] } },
+				changes: { fields: null, meta: { added: ['n', 'o'], changed: [], removed: ['gone'] } },
+			},
+		);
+		// No `meta` in the line: none.
+		assert.deepStrictEqual(parseRunOutput(0, '{"content":"x"}\n', '', NO_INPUT), { kind: 'ok', content: 'x', meta: {}, changes: { fields: null, meta: NONE } });
+	});
+
+	test('CHANGES: top-level keys added, changed and removed, of the fields and the metadata', () => {
+		assert.deepStrictEqual(changesOf('{"a":1,"b":2}', '{"a":1,"b":3,"c":4}', { k: 'x' }, { k: 'x', j: 'y' }), {
+			fields: { added: ['c'], changed: ['b'], removed: [] },
+			meta: { added: ['j'], changed: [], removed: [] },
+		});
+		assert.deepStrictEqual(changesOf('{"a":{"x":1,"y":[1,2]},"b":1,"d":0}', '{"b":"1","a":{"y":[1,2],"x":1}}', { k: 'x', m: '1' }, { k: 'z', m: 1 }), {
+			fields: { added: [], changed: ['b'], removed: ['d'] },
+			meta: { added: [], changed: ['k', 'm'], removed: [] },
+		});
+		assert.deepStrictEqual(changesOf('{"a":[1]}', '{"a":[1,2]}', {}, {}).fields, { added: [], changed: ['a'], removed: [] });
+		// Not both JSON objects: no field changes.
+		for (const [input, output] of [['not json', '{"a":1}'], ['{"a":1}', 'nope'], ['[1]', '{"a":1}'], ['{"a":1}', '1'], ['{"a":1}', 'null'], ['', '']]) {
+			assert.strictEqual(changesOf(input, output, {}, {}).fields, null, `${input} -> ${output}`);
+		}
 	});
 
 	test('RUN_FAILED: exit 0 with an error line gives the mapping\'s message; stderr logs are ignored', () => {
 		assert.deepStrictEqual(
-			parseRunOutput(0, '{"error":"failed assignment (line 1): expected number value"}\n', 'level=error msg="processor failed"\n'),
+			parseRunOutput(0, '{"error":"failed assignment (line 1): expected number value"}\n', 'level=error msg="processor failed"\n', NO_INPUT),
 			{ kind: 'failed', message: 'failed assignment (line 1): expected number value' },
 		);
 	});
 
 	test('DELETED: exit 0 with no line', () => {
-		assert.deepStrictEqual(parseRunOutput(0, '', ''), { kind: 'deleted' });
-		assert.deepStrictEqual(parseRunOutput(0, '\n', 'level=warn x\n'), { kind: 'deleted' });
+		assert.deepStrictEqual(parseRunOutput(0, '', '', NO_INPUT), { kind: 'deleted' });
+		assert.deepStrictEqual(parseRunOutput(0, '\n', 'level=warn x\n', NO_INPUT), { kind: 'deleted' });
 	});
 
 	test('RUN_ERROR: any other exit gives the first stderr lines verbatim', () => {
 		const stderr = 'time="t" level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [X]"\n\nsecond\n';
-		assert.deepStrictEqual(parseRunOutput(1, '', stderr), {
+		assert.deepStrictEqual(parseRunOutput(1, '', stderr, NO_INPUT), {
 			kind: 'error',
 			message: 'time="t" level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [X]"\nsecond',
 		});
 		const many = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
-		assert.strictEqual((parseRunOutput(2, '', many) as { message: string }).message.split('\n').length, MAX_ERROR_LINES);
-		assert.deepStrictEqual(parseRunOutput(3, '', ''), { kind: 'error', message: 'Redpanda Connect exited with code 3.' });
-		assert.deepStrictEqual(parseRunOutput(null, '', ''), { kind: 'error', message: 'Redpanda Connect was stopped by a signal.' });
+		assert.strictEqual((parseRunOutput(2, '', many, NO_INPUT) as { message: string }).message.split('\n').length, MAX_ERROR_LINES);
+		assert.deepStrictEqual(parseRunOutput(3, '', '', NO_INPUT), { kind: 'error', message: 'Redpanda Connect exited with code 3.' });
+		assert.deepStrictEqual(parseRunOutput(null, '', '', NO_INPUT), { kind: 'error', message: 'Redpanda Connect was stopped by a signal.' });
 	});
 
 	test('output that is not the result step\'s is an error', () => {
-		assert.deepStrictEqual(parseRunOutput(0, 'hello\n', ''), { kind: 'error', message: 'Unexpected output: hello' });
-		assert.deepStrictEqual(parseRunOutput(0, '[1]\n', ''), { kind: 'error', message: 'Unexpected output: [1]' });
+		assert.deepStrictEqual(parseRunOutput(0, 'hello\n', '', NO_INPUT), { kind: 'error', message: 'Unexpected output: hello' });
+		assert.deepStrictEqual(parseRunOutput(0, '[1]\n', '', NO_INPUT), { kind: 'error', message: 'Unexpected output: [1]' });
 	});
 });

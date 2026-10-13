@@ -71,10 +71,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return handle;
 	}
 
-	/** Posts `run {input}` as the webview would and returns the result posted for it. */
+	/** Posts `run {content, meta: {}}` as the webview would and returns the result posted for it. */
 	async function run(handle: BloblangPanelHandle, input: string): Promise<{ result: BloblangResult; binary: string | null }> {
 		const before = results(handle).length;
-		await handle.receive({ type: 'run', input });
+		await handle.receive({ type: 'run', content: input, meta: {} });
 		const all = results(handle);
 		assert.strictEqual(all.length, before + 1, 'one result per run');
 		return all[all.length - 1];
@@ -148,7 +148,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		// The real webview loads dist/bloblang.js and asks for its snapshot.
 		assert.ok(await waitFor(() => handle.posted.some((m) => m.type === 'snapshot'), 15_000), 'the webview never posted ready');
 		assert.deepStrictEqual(handle.posted.find((m) => m.type === 'snapshot'),
-			{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1' });
+			{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1', binary: 'ok', samples: [], selected: null });
 		assert.notStrictEqual(handle.panel.viewColumn, vscode.ViewColumn.One);
 		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.One, 'focus stays in the YAML group');
 		assert.strictEqual(vscode.window.activeTextEditor?.document, doc);
@@ -181,7 +181,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const doc = (await open('ok.yaml', CONFIG)).document;
 		const mapping = await show(doc.uri, FIRST);
 		const out = await run(mapping, '{"a":1}');
-		assert.deepStrictEqual(out.result, { kind: 'ok', content: '{"b":2}' });
+		assert.deepStrictEqual(out.result, {
+			kind: 'ok', content: '{"b":2}', meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: ['a'] }, meta: { added: [], changed: [], removed: [] } },
+		});
 		assert.strictEqual(out.binary, 'redpanda-connect 4.112.0');
 		const { config: text, target } = lastRun();
 		assert.ok(!fs.existsSync(target), 'the temp config is removed');
@@ -191,7 +194,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(parsed.pipeline.processors[0].mapping, 'root.b = this.a + 1');
 
 		const mutation = await show(doc.uri, NESTED);
-		assert.deepStrictEqual((await run(mutation, '{"a":1}')).result, { kind: 'ok', content: '{"a":1,"b":2}' });
+		assert.deepStrictEqual((await run(mutation, '{"a":1}')).result, {
+			kind: 'ok', content: '{"a":1,"b":2}', meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+		});
 		assert.strictEqual(parse(lastRun().config).pipeline.processors[0].mutation, 'root.b = this.a + 1');
 
 		const tricky = '{"q":"say \\"hi\\"\\\\"}\nline 2 ü 日本 😀 ${HOME}';
@@ -233,7 +239,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const doc = (await open('flight.yaml', CONFIG)).document;
 		const handle = await show(doc.uri, FIRST);
 		const before = { runs: runs(), results: results(handle).length };
-		await Promise.all(['{"a":1}', '{"a":2}', '{"a":3}'].map((input) => handle.receive({ type: 'run', input })));
+		await Promise.all(['{"a":1}', '{"a":2}', '{"a":3}'].map((input) => handle.receive({ type: 'run', content: input, meta: {} })));
 		assert.strictEqual(runs() - before.runs, 2, 'the first input, then only the latest');
 		assert.strictEqual(results(handle).length - before.results, 1);
 		assert.strictEqual(parse(lastRun().config).input.generate.mapping, `root = ${bloblangString('{"a":3}')}`);

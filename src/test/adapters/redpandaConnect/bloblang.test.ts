@@ -39,7 +39,12 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 			cwd: dir,
 			run: fakeRun({ kind: 'exited', exitCode: 0, stdout: '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}\n', stderr: '' }, calls),
 		});
-		assert.deepStrictEqual(outcome.result, { kind: 'ok', content: '{"a":1,"b":2}' });
+		assert.deepStrictEqual(outcome.result, {
+			kind: 'ok',
+			content: '{"a":1,"b":2}',
+			meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+		});
 		assert.strictEqual(outcome.binary, 'rpk connect 4.112.0');
 		assert.ok(outcome.durationMs >= 0);
 		assert.strictEqual(calls.length, 1);
