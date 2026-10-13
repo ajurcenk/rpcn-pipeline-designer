@@ -3,7 +3,7 @@ title: 'Probe Bloblang execution on the binary'
 type: 'chore'
 ticket: '1'
 created: '2026-10-12'
-status: 'built'
+status: done
 baseline_revision: '8243faa9958bc0b3c5dd50674ea51bdd91639311'
 route: 'full'
 route_source: 'auto'

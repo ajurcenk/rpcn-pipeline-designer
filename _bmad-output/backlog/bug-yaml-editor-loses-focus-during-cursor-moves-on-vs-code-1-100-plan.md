@@ -3,7 +3,7 @@ title: 'YAML editor loses focus during cursor moves on VS Code 1.100'
 type: 'bugfix'
 ticket: '15'
 created: '2026-10-12'
-status: 'built'
+status: done
 baseline_revision: 'e9c0602628b03e1cb12353b492076c01cd8a01bb'
 route: 'full'
 route_source: 'auto'

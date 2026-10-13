@@ -6,6 +6,7 @@ covers: [CAP-1, CAP-13, CAP-14, CAP-15, CAP-16, CAP-17]
 after: []
 assignee: ""
 risk: medium
+status: in-progress
 ---
 
 # Bloblang check and test
