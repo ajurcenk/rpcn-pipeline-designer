@@ -3,7 +3,7 @@ title: 'Live Bloblang syntax diagnostics'
 type: 'feature'
 ticket: '5'
 created: '2026-10-13'
-status: built
+status: done
 baseline_revision: '696b000fd5ffdd7e3b70569bf8532fd97dc76892'
 route: 'full'
 route_source: 'auto'
