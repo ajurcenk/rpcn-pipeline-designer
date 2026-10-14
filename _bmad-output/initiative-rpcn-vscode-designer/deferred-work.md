@@ -18,3 +18,4 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-bloblang-check-and-test/story-errors-and-states-in-the-test-panel-plan.md`
   summary: The test panel's no-binary state (E4 R7): toolbar and columns hidden, "No Redpanda Connect binary" with Install guide, Set path and Retry (posting `installGuideRequested` / `setPathRequested` / `retryRequested` to `BinaryActions` in `notify.ts`, as the graph does), the host sending `binary {status}` on every binary change, and the panel running its input once when the binary becomes `ok`, without reopening.
   evidence: Split from 4.8 at planning (user, 2026-10-14) to keep the plan near the size guideline; it ships independently of the error cards. It goes right after 4.8 and before 4.9. Until then, a missing binary shows 4.8's `error` card ("No Redpanda Connect binary.").
+  resolution: ticket 4.15 "No-binary state in the test panel" (user, 2026-10-14), after 4.8 and before 4.9.

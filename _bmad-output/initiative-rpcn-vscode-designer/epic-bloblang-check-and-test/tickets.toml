@@ -87,12 +87,23 @@ risk = "medium"
 id = 8
 type = "story"
 title = "Errors and states in the test panel"
-description = "Parse-error and mapping-error cards with the binary's message and caret excerpt, the mapping line translated to the file line through entry 3's map and Go to line, the end-of-line hint in the editor for a failure on the current sample, the last successful output dimmed, and the deleted, invalid-input and no-binary (Install guide, Set path, Retry, recovery without reopening) states; EXPERIENCE gains the panel's states."
-verify = "Integration tests drive each state with a fake binary (including Set path recovery and Go to line selecting the right file line), and webview tests render every state from the fixtures."
-covers = ["R6", "R7", "R13"]
+description = "Parse-error and mapping-error cards with the binary's message and caret excerpt, the mapping line translated to the file line through entry 3's map and Go to line, the end-of-line hint in the editor for a failure on the current sample, the last successful output dimmed, and the deleted and invalid-input states; EXPERIENCE gains the panel's states. The no-binary state moved to entry 15 (user, 2026-10-14)."
+verify = "Integration tests drive each state with a fake binary (including Go to line selecting the right file line), and webview tests render every state from the fixtures."
+covers = ["R6", "R13"]
 after = [3, 7]
 hitl = false
 risk = "medium"
+
+[[entry]]
+id = 15
+type = "story"
+title = "No-binary state in the test panel"
+description = "With no usable binary the panel hides its toolbar and columns and shows \"No Redpanda Connect binary\" with Install guide, Set path and Retry, which reuse the graph's binary actions; the host sends the binary's status on every change, and the panel runs its current input once when a binary is found, without reopening. EXPERIENCE gains the state."
+verify = "Integration tests open a panel with no binary, check the state and that each button reaches its action, then set the path and see the panel run without reopening, with the graph open too; webview tests render the state from the `binary` fixture."
+covers = ["R7", "R13"]
+after = [8]
+hitl = false
+risk = "low"
 
 [[entry]]
 id = 9
@@ -101,7 +112,7 @@ title = "Saved samples"
 description = "Named samples per mapping stored in one workspace file next to the config (location and format in AD-22), with add, rename, delete and switch in the panel, edits saved, linking by `label` with the processor's path as a fallback and an offer to add a label, reload on outside edits, and the sample count in the CodeLens."
 verify = "Integration tests save samples, reload them in a new panel, keep them attached after processors are reordered, pick up an outside edit to the file, and show the count in the CodeLens."
 covers = ["R9", "R13"]
-after = [8]
+after = [15]
 hitl = false
 risk = "medium"
 unknown = "Where the file lives (beside the config or under `.rpcn/samples/`) and its format; AD-22 decides it with the user."
@@ -146,7 +157,7 @@ title = "Refactor sweep"
 description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during the epic; new scope becomes backlog stories."
 verify = "The suites, the corpus harness and CI pass with at least as many tests as before, and each deferred finding is fixed or moved to a named ticket."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12]
 hitl = false
 risk = "low"
 
