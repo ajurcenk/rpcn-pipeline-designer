@@ -3,7 +3,7 @@ title: 'Bloblang errors on graph nodes'
 type: 'feature'
 ticket: '6'
 created: '2026-10-14'
-status: 'built'
+status: done
 baseline_revision: 'ae3ee8fb220d87e6ae74c9472f9ad156c62a1b04'
 route: 'full'
 route_source: 'auto'
