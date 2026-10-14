@@ -36,7 +36,7 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 	test('runs the temp config with the Run builder (resources, env file, NO_COLOR) and a 10 s timeout, then removes it', async () => {
 		const calls: Call[] = [];
 		const storage = path.join(dir, 'storage');
-		const outcome = await runMappingTest(OK, 'mutation', 'root.b = 2', '{"a":1}', storage, {
+		const outcome = await runMappingTest(OK, 'mutation', 'root.b = 2', '{"a":1}', {}, storage, {
 			argsEnvironment: ENV,
 			cwd: dir,
 			run: fakeRun({ kind: 'exited', exitCode: 0, stdout: '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}\n', stderr: '' }, calls),
@@ -67,9 +67,24 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 		assert.deepStrictEqual(fs.readdirSync(storage), []);
 	});
 
+	test('META_IN: the metadata is set by the generate input and is the input of changes.meta', async () => {
+		const calls: Call[] = [];
+		const outcome = await runMappingTest(OK, 'mapping', 'root.k = @k', '{"a":1}', { k: 'v', gone: 'x' }, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			run: fakeRun({ kind: 'exited', exitCode: 0, stdout: '{"content":"{\\"a\\":1,\\"k\\":\\"v\\"}","meta":{"k":"w","out":"x"}}\n', stderr: '' }, calls),
+		});
+		assert.ok(calls[0].config.includes('mapping: "root = \\"{\\\\\\"a\\\\\\":1}\\"\\x0Ameta \\"k\\" = \\"v\\"\\x0Ameta \\"gone\\" = \\"x\\""'), calls[0].config);
+		assert.deepStrictEqual(outcome.result, {
+			kind: 'ok',
+			content: '{"a":1,"k":"v"}',
+			meta: { k: 'w', out: 'x' },
+			changes: { fields: { added: ['k'], changed: [], removed: [] }, meta: { added: ['out'], changed: ['k'], removed: ['gone'] } },
+		});
+	});
+
 	test('RUN_ERROR: a non-zero exit gives the stderr text, and the temp file is still removed', async () => {
 		const calls: Call[] = [];
-		const outcome = await runMappingTest(OK, 'mapping', 'root = "${X}"', '{}', dir, {
+		const outcome = await runMappingTest(OK, 'mapping', 'root = "${X}"', '{}', {}, dir, {
 			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
 			run: fakeRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: 'level=error msg="Config lint error"\n' }, calls),
 		});
@@ -85,7 +100,7 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 			[{ kind: 'spawnError', message: 'EACCES' }, 'Could not start Redpanda Connect: EACCES'],
 		];
 		for (const [processOutcome, message] of cases) {
-			const outcome = await runMappingTest(OK, 'mapping', 'root = this', '{}', dir, { ...env, run: fakeRun(processOutcome, []) });
+			const outcome = await runMappingTest(OK, 'mapping', 'root = this', '{}', {}, dir, { ...env, run: fakeRun(processOutcome, []) });
 			assert.deepStrictEqual(outcome.result, { kind: 'error', message });
 		}
 		assert.deepStrictEqual(fs.readdirSync(dir), []);
@@ -94,7 +109,7 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 	test('NO_BINARY: no spawn, no file', async () => {
 		const calls: Call[] = [];
 		for (const state of [{ kind: 'missing' }, { kind: 'unresolved' }] as BinaryState[]) {
-			const outcome = await runMappingTest(state, 'mapping', 'root = this', '{}', dir, { run: fakeRun({ kind: 'notFound' }, calls) });
+			const outcome = await runMappingTest(state, 'mapping', 'root = this', '{}', {}, dir, { run: fakeRun({ kind: 'notFound' }, calls) });
 			assert.deepStrictEqual(outcome, { result: { kind: 'error', message: NO_BINARY_MESSAGE }, durationMs: outcome.durationMs, binary: null });
 		}
 		assert.strictEqual(calls.length, 0);
@@ -103,7 +118,7 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 
 	test('a builder failure (relative env file without a workspace) is an error result with no spawn', async () => {
 		const calls: Call[] = [];
-		const outcome = await runMappingTest(OK, 'mapping', 'root = this', '{}', dir, {
+		const outcome = await runMappingTest(OK, 'mapping', 'root = this', '{}', {}, dir, {
 			argsEnvironment: { ...ENV, workspaceFolder: undefined, resourceFilesSetting: [] },
 			run: fakeRun({ kind: 'notFound' }, calls),
 		});

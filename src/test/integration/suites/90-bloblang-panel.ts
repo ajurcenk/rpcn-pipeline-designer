@@ -1,8 +1,9 @@
-// The Bloblang test panel, end to end (ticket 4.2): the CodeLens, Test mapping, one panel per
+// The Bloblang test panel, end to end (tickets 4.2, 4.7): the CodeLens, Test mapping, one panel per
 // mapping, and a run through the AD-21 adapter on a fake `run` (`mappingTestRunBody`). The panel is
 // driven through its host-side seam (`bloblangPanels.panelFor`, `receive`); the real webview only
 // posts `ready`. Plus the boundaries the entry meets: the graph still loads (3.1's `html.ts`), the
 // graph's locked group stays graph-only (3.10), and the env file reaches the test run (2.7's builder).
+// Ticket 4.7: metadata in and out, the changed fields, and a mapping edit while a run is in flight.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -34,6 +35,24 @@ const CONFIG = [
 	'    - mapping: root.b = this.nope.or("FAIL_ME")',
 	'    - mapping: root = deleted()',
 	'    - mapping: root = "${UNSET} BROKEN"',
+	'output:',
+	'  stdout: {}',
+	'',
+].join('\n');
+
+/** Ticket 4.7's processors: reads `@k`, sets `@out`, changes `b` and adds `c`, and a slow run. */
+const META_CONFIG = [
+	'input:',
+	'  stdin: {}',
+	'pipeline:',
+	'  processors:',
+	'    - mapping: root.k = @k',
+	'    - mapping: meta out = "x"',
+	'    - mapping: |',
+	'        root.b = 3',
+	'        root.c = 4',
+	'    - mapping: |',
+	'        root.b = this.a + 1 # SLOW_RUN',
 	'output:',
 	'  stdout: {}',
 	'',
@@ -77,10 +96,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return handle;
 	}
 
-	/** Posts `run {content, meta: {}}` as the webview would and returns the result posted for it. */
-	async function run(handle: BloblangPanelHandle, input: string): Promise<{ result: BloblangResult; binary: string | null }> {
+	/** Posts `run {content, meta}` as the webview would and returns the result posted for it. */
+	async function run(handle: BloblangPanelHandle, input: string, meta: Record<string, string> = {}): Promise<{ result: BloblangResult; binary: string | null }> {
 		const before = results(handle).length;
-		await handle.receive({ type: 'run', content: input, meta: {} });
+		await handle.receive({ type: 'run', content: input, meta });
 		const all = results(handle);
 		assert.strictEqual(all.length, before + 1, 'one result per run');
 		return all[all.length - 1];
@@ -248,6 +267,55 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(runs() - before.runs, 2, 'the first input, then only the latest');
 		assert.strictEqual(results(handle).length - before.results, 1);
 		assert.strictEqual(parse(lastRun().config).input.generate.mapping, `root = ${bloblangString('{"a":3}')}`);
+	});
+
+	test('META_IN: the input metadata is set by the generate input, the mapping reads it, and changes.meta starts from it', async () => {
+		const doc = (await open('meta-in.yaml', META_CONFIG)).document;
+		const out = await run(await show(doc.uri, 'pipeline.processors[0]'), '{"a":1}', { k: 'v' });
+		assert.deepStrictEqual(out.result, {
+			kind: 'ok', content: '{"a":1,"k":"v"}', meta: { k: 'v' },
+			changes: { fields: { added: ['k'], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+		});
+		assert.strictEqual(parse(lastRun().config).input.generate.mapping, `root = ${bloblangString('{"a":1}')}\nmeta "k" = "v"`);
+	});
+
+	test('META_OUT: a key the mapping sets is in ok.meta and changes.meta.added', async () => {
+		const doc = (await open('meta-out.yaml', META_CONFIG)).document;
+		const out = await run(await show(doc.uri, 'pipeline.processors[1]'), '{"a":1}');
+		assert.strictEqual(out.result.kind, 'ok');
+		assert.deepStrictEqual(out.result.kind === 'ok' && [out.result.meta, out.result.changes.meta],
+			[{ out: 'x' }, { added: ['out'], changed: [], removed: [] }]);
+	});
+
+	test('FIELDS: a changed and an added top-level field', async () => {
+		const doc = (await open('fields.yaml', META_CONFIG)).document;
+		const out = await run(await show(doc.uri, 'pipeline.processors[2]'), '{"a":1,"b":2}');
+		assert.deepStrictEqual(out.result.kind === 'ok' && out.result.changes.fields, { added: ['c'], changed: ['b'], removed: [] });
+	});
+
+	test('AI-7: a mapping edit while a run is in flight; only the run of the edited source posts its result', async () => {
+		const editor = await open('inflight.yaml', META_CONFIG);
+		const doc = editor.document;
+		const handle = await show(doc.uri, 'pipeline.processors[3]');
+		const before = { runs: runs(), results: results(handle).length };
+		const first = handle.receive({ type: 'run', content: '{"a":1}', meta: {} });
+		assert.ok(await waitFor(() => runs() > before.runs, 5_000), 'the first run never started');
+		const source = 'root.b = this.a + 1 # SLOW_RUN';
+		const start = META_CONFIG.indexOf(source);
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(doc.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(start + source.length)), 'root = deleted()');
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.ok(await waitFor(() => {
+			const snaps = handle.posted.filter((m) => m.type === 'snapshot');
+			const last = snaps[snaps.length - 1];
+			return last?.type === 'snapshot' && last.source.trim() === 'root = deleted()';
+		}, 5_000), 'no snapshot with the edited source');
+		// The webview's Run on change posts the input again for the new source.
+		await Promise.all([first, handle.receive({ type: 'run', content: '{"a":1}', meta: {} })]);
+		assert.strictEqual(runs() - before.runs, 2);
+		const posted = results(handle).slice(before.results);
+		assert.deepStrictEqual(posted.map((r) => r.result), [{ kind: 'deleted' }]);
+		assert.ok(await doc.save());
 	});
 
 	test('NO_LONGER_THERE: a lens path that is gone says so, not the cursor message', async () => {

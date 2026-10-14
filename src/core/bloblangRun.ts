@@ -1,13 +1,13 @@
-// The AD-21 test run, pure (ticket 4.2): the one-message `run` config for a mapping or mutation and
-// a content, and the reading of what the run printed. The adapter
+// The AD-21 test run, pure (tickets 4.2, 4.7): the one-message `run` config for a mapping or mutation,
+// a content and its metadata, and the reading of what the run printed. The adapter
 // (`src/adapters/redpandaConnect/bloblang.ts`) writes the config to a temporary file and runs it.
 //
 // The config (spike 4.1 Q2): no HTTP server, warn-level logs, a `generate` input that emits the
-// content once (`count: 1`, `interval: ""`), the code under test with its own kind, then a last
+// content once (`count: 1`, `interval: ""`) with the input metadata set, the code under test with its own kind, then a last
 // `mapping` that turns the message into one JSON line, `{content, meta}` or `{error}`, on `stdout`.
 // Every string is written as a YAML double-quoted scalar with all but printable ASCII escaped, so
-// any text survives the YAML reader. The content is also a Bloblang string literal (Go's
-// `strconv.Unquote` reads JSON escapes) and has its `$` escaped in the YAML, so that the binary's
+// any text survives the YAML reader. The content and each metadata key and value are also Bloblang
+// string literals (Go's `strconv.Unquote` reads JSON escapes) and have their `$` escaped in the YAML, so that the binary's
 // `${VAR}` substitution, which runs on the raw config text, never touches it; the code under test
 // keeps its `${VAR}`s, which are substituted as in Run.
 
@@ -21,8 +21,16 @@ export const RESULT_MAPPING = 'root = if errored() { {"error": error()} } else {
 /** How many stderr lines an `error` result keeps. */
 export const MAX_ERROR_LINES = 20;
 
-/** The text of the YAML config that runs `source` (as a `kind` processor) once on `content`. */
-export function testConfig(kind: BloblangProcessorKind, source: string, content: string): string {
+/**
+ * The text of the YAML config that runs `source` (as a `kind` processor) once on `content`, with
+ * `meta` set on the message: one `meta "<key>" = "<value>"` line per entry after `root = …` in the
+ * `generate` mapping (ticket 4.7), key and value as Bloblang string literals.
+ */
+export function testConfig(kind: BloblangProcessorKind, source: string, content: string, meta: InputMeta): string {
+	const generate = [
+		`root = ${bloblangString(content)}`,
+		...Object.keys(meta).map((key) => `meta ${bloblangString(key)} = ${bloblangString(meta[key] ?? '')}`),
+	].join('\n');
 	return [
 		'http:',
 		'  enabled: false',
@@ -32,7 +40,7 @@ export function testConfig(kind: BloblangProcessorKind, source: string, content:
 		'  generate:',
 		'    count: 1',
 		'    interval: ""',
-		`    mapping: ${yamlQuoted(`root = ${bloblangString(content)}`, true)}`,
+		`    mapping: ${yamlQuoted(generate, true)}`,
 		'pipeline:',
 		'  processors:',
 		`    - ${kind}: ${yamlQuoted(source, false)}`,

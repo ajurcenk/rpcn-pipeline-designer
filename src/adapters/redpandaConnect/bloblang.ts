@@ -1,4 +1,4 @@
-// RedpandaConnect adapter: the Bloblang test run (AD-21, ticket 4.2). Writes the one-message config
+// RedpandaConnect adapter: the Bloblang test run (AD-21, tickets 4.2, 4.7). Writes the one-message config
 // from `src/core/bloblangRun` to a temporary file under the extension's global storage, runs it
 // with `run` through the shared builder (AD-9: the same `--resources` and `--env-file` as Run) and
 // the one-shot spawn site with a timeout, deletes the file once the child exited, and reads the
@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BloblParseOutcome, parseBloblParseOutput } from '../../core/bloblangParse';
 import { parseRunOutput, testConfig } from '../../core/bloblangRun';
-import type { BloblangProcessorKind, BloblangResult } from '../../shared/bloblangProtocol';
+import type { BloblangProcessorKind, BloblangResult, InputMeta } from '../../shared/bloblangProtocol';
 import { ArgsEnvironment, buildBloblCommand, buildRunCommand, describeArgsFailure } from './args';
 import { BinaryState } from './binary';
 import { ProcessOutcome, runProcess, SpawnOptions } from './process';
@@ -48,7 +48,7 @@ export function binaryLabel(state: BinaryState): string | null {
 }
 
 /**
- * Runs `source` as a `kind` processor once on `content`, with the current binary. The temporary
+ * Runs `source` as a `kind` processor once on `content` with metadata `meta`, with the current binary. The temporary
  * config lives in `storageDir` (created when missing) and is removed after the child exits.
  */
 export async function runMappingTest(
@@ -56,6 +56,7 @@ export async function runMappingTest(
 	kind: BloblangProcessorKind,
 	source: string,
 	content: string,
+	meta: InputMeta,
 	storageDir: string,
 	deps: MappingTestDependencies = {},
 ): Promise<MappingTestOutcome> {
@@ -68,7 +69,7 @@ export async function runMappingTest(
 	const file = path.join(storageDir, `bloblang-test-${randomBytes(8).toString('hex')}.yaml`);
 	try {
 		await fs.promises.mkdir(storageDir, { recursive: true });
-		await fs.promises.writeFile(file, testConfig(kind, source, content), 'utf8');
+		await fs.promises.writeFile(file, testConfig(kind, source, content, meta), 'utf8');
 	} catch (err) {
 		await remove(file);
 		return done({ kind: 'error', message: `Could not write the test config: ${errorText(err)}` });
@@ -91,8 +92,7 @@ export async function runMappingTest(
 			case 'timeout':
 				return done({ kind: 'error', message: `No result after ${outcome.timeoutMs / 1000} s; stopped.` });
 			case 'exited':
-				// The input carries no metadata yet (4.7 sets it on the `generate` input).
-				return done(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr, { content, meta: {} }));
+				return done(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr, { content, meta }));
 		}
 	} catch (err) {
 		return done({ kind: 'error', message: errorText(err) });

@@ -143,18 +143,33 @@ export function connectScript(options: ConnectScriptOptions): string {
  * copies the config (`$last`) to `<capture>/config.yaml` and appends its argv to `<capture>/argv`,
  * then answers from the config's Bloblang as the real run would print: no line for `deleted()`,
  * `{error}` for a mapping containing `FAIL_ME`, a lint error on stderr and exit 1 for `BROKEN`, else
- * the content of `root.b = this.a + 1` on `{"a":1}` (`mutation` keeps `a`). Call before hiding PATH entries.
+ * a content: `{"a":1,"b":3,"c":4}` for a mapping with `root.c = 4` (FIELDS, 4.7), `{"a":1,"k":<@k>}`
+ * for one with `root.k = @k` (META_IN, 4.7), else the content of `root.b = this.a + 1` on `{"a":1}`
+ * (`mutation` keeps `a`). Its `meta` (4.7) echoes every `meta "<key>" = "<value>"` line of the
+ * input's `generate` mapping, then every `meta <key> = "<value>"` line of the code under test, for
+ * keys and values of `[A-Za-z0-9_]`. `SLOW_RUN` sleeps 2 s first. Call before hiding PATH entries.
  */
 export function mappingTestRunBody(capture: string): string {
 	const grep = toolPath('grep');
 	const cp = toolPath('cp');
+	const sed = toolPath('sed');
+	const sleep = toolPath('sleep');
 	return [
 		`'${cp}' "$last" '${path.join(capture, 'config.yaml')}'`,
 		`printf '%s\\n' "$*" >> '${path.join(capture, 'argv')}'`,
 		`if '${grep}' -q 'deleted()' "$last"; then exit 0; fi`,
 		`if '${grep}' -q 'FAIL_ME' "$last"; then echo '{"error":"failed assignment (line 1): fake failure"}'; exit 0; fi`,
 		`if '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
-		`if '${grep}' -q -- '- mutation:' "$last"; then echo '{"content":"{\\"a\\":1,\\"b\\":2}","meta":{}}'; else echo '{"content":"{\\"b\\":2}","meta":{}}'; fi`,
+		`if '${grep}' -q 'SLOW_RUN' "$last"; then '${sleep}' 2; fi`,
+		// The config's YAML escapes each `"` of a Bloblang literal as `\"`.
+		String.raw`meta=$('${grep}' -o 'meta \(\\"\)\{0,1\}[A-Za-z0-9_]*\(\\"\)\{0,1\} = \\"[A-Za-z0-9_]*\\"' "$last"`
+			+ String.raw` | '${sed}' -e 's/^meta \(\\"\)\{0,1\}\([A-Za-z0-9_]*\)\(\\"\)\{0,1\} = \\"\([A-Za-z0-9_]*\)\\"$/"\2":"\4"/'`
+			+ String.raw` | '${sed}' -e ':a' -e 'N' -e '$!ba' -e 's/\n/,/g')`,
+		String.raw`k=$('${grep}' -o 'meta \\"k\\" = \\"[A-Za-z0-9_]*\\"' "$last" | '${sed}' -e 's/.* = \\"\(.*\)\\"$/\1/')`,
+		String.raw`if '${grep}' -q 'root.c = 4' "$last"; then content='{\"a\":1,\"b\":3,\"c\":4}';`
+			+ String.raw` elif '${grep}' -q 'root.k = @k' "$last"; then content="{\\\"a\\\":1,\\\"k\\\":\\\"$k\\\"}";`
+			+ String.raw` elif '${grep}' -q -- '- mutation:' "$last"; then content='{\"a\":1,\"b\":2}'; else content='{\"b\":2}'; fi`,
+		`printf '{"content":"%s","meta":{%s}}\\n' "$content" "$meta"`,
 	].join('\n');
 }
 

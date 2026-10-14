@@ -4,18 +4,17 @@
 // mapping on the same processor reveals it. The webview posts `ready` (again whenever it is
 // recreated, since `retainContextWhenHidden` is off) and gets a `snapshot` of the processor, and
 // a new snapshot whenever an edit changes the processor's kind or Bloblang. Each `run {content, meta}`
-// runs the processor's current Bloblang, read from the open document then, on the content through the
-// AD-21 test run, and the panel gets the `result`. Runs are single flight per panel: an input that
-// arrives during a run waits (only the latest one), and only the latest input's result is posted.
-// Untitled files never run. Content only (ticket 4.4 settles the full protocol): the snapshot carries
-// the binary's status and no samples; the run's metadata, the other webview messages, samples and
-// the live parse come later (4.5, 4.7–4.9).
+// runs the processor's current Bloblang, read from the open document then, on the content and its
+// metadata through the AD-21 test run (4.7), and the panel gets the `result`. Runs are single flight
+// per panel: an input that arrives during a run waits (only the latest one), and only the latest
+// input's result is posted. Untitled files never run. The snapshot carries the binary's status and
+// no samples; the other webview messages and samples come later (4.8, 4.9).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
 import {
-	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind,
+	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
 import { webviewHtml } from '../graphPanel/html';
 import type { BinaryState } from '../redpandaConnect/binary';
@@ -56,9 +55,16 @@ export type MappingTestRunner = (
 	kind: BloblangProcessorKind,
 	source: string,
 	content: string,
+	meta: InputMeta,
 	storageDir: string,
 	deps: MappingTestDependencies,
 ) => Promise<MappingTestOutcome>;
+
+/** One run's input: the message content and its metadata. */
+interface TestInput {
+	readonly content: string;
+	readonly meta: InputMeta;
+}
 
 export interface BloblangPanelsOptions {
 	readonly extensionUri: vscode.Uri;
@@ -78,7 +84,7 @@ export interface BloblangPanelsOptions {
 class BloblangPanel implements BloblangPanelHandle {
 	readonly posted: BloblangHostMessage[] = [];
 	/** The latest input waiting for the run in flight to end (single flight); `undefined`: none. */
-	private pending: string | undefined;
+	private pending: TestInput | undefined;
 	/** The run loop in flight, if any. */
 	private loop: Promise<void> | undefined;
 	/** The `kind` and source last sent in a snapshot, so that an edit elsewhere sends nothing. */
@@ -101,8 +107,7 @@ class BloblangPanel implements BloblangPanelHandle {
 			if (msg?.type === 'ready') {
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
-				// The panel sets no metadata yet (4.7): the run uses the content only.
-				await this.run(msg.content);
+				await this.run({ content: msg.content, meta: msg.meta });
 			}
 		} catch (e) {
 			this.fail(e);
@@ -136,7 +141,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * any input still waiting, and starts when the current run ends; only a run with no input
 	 * waiting after it posts its result. A run that throws posts an `error` result.
 	 */
-	private async run(input: string): Promise<void> {
+	private async run(input: TestInput): Promise<void> {
 		this.pending = input;
 		if (!this.loop) {
 			this.loop = (async () => {
@@ -319,7 +324,7 @@ export class BloblangPanels implements vscode.Disposable {
 	}
 
 	/** Runs `processor` (the one at `processorPath` of `uri`, now) on `input`. */
-	async runTest(uri: vscode.Uri, processor: BloblangProcessor | undefined, processorPath: string, input: string): Promise<MappingTestOutcome> {
+	async runTest(uri: vscode.Uri, processor: BloblangProcessor | undefined, processorPath: string, input: TestInput): Promise<MappingTestOutcome> {
 		const state = this.options.binary.state;
 		if (!processor) {
 			return {
@@ -329,7 +334,7 @@ export class BloblangPanels implements vscode.Disposable {
 			};
 		}
 		const cwd = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
-		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, input, this.options.storageDir, { cwd });
+		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, input.content, input.meta, this.options.storageDir, { cwd });
 	}
 
 	/** The open panel of the processor at `processorPath` of `uri`, if any (test seam). */

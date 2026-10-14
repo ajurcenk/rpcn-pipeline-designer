@@ -18,7 +18,7 @@ function unquoteGo(literal: string): string {
 suite('core/bloblangRun (4.2, AD-21)', () => {
 	test('the config: no HTTP, warn logs, one generated message, the code with its kind, the result step, stdout lines', () => {
 		for (const kind of ['mapping', 'mutation'] as const) {
-			const config = parse(testConfig(kind, 'root.b = this.a + 1', '{"a":1}'));
+			const config = parse(testConfig(kind, 'root.b = this.a + 1', '{"a":1}', {}));
 			assert.deepStrictEqual(config, {
 				http: { enabled: false },
 				logger: { level: 'warn' },
@@ -43,7 +43,7 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 			'',
 		];
 		for (const content of contents) {
-			const text = testConfig('mapping', 'root = content()', content);
+			const text = testConfig('mapping', 'root = content()', content, {});
 			// Only printable ASCII in the config, and no `${` the binary could substitute.
 			assert.ok(/^[\x20-\x7e\n]*$/.test(text), JSON.stringify(text));
 			assert.ok(!text.split('\n')[8].includes('$'), 'the content line has no raw $');
@@ -53,8 +53,32 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 		}
 	});
 
+	test('META_IN: one meta line per entry after root, keys and values as Bloblang literals', () => {
+		const text = testConfig('mapping', 'root.k = @k', '{"a":1}', { k: 'v', other: 'w' });
+		const mapping = (parse(text) as { input: { generate: { mapping: string } } }).input.generate.mapping;
+		assert.strictEqual(mapping, 'root = "{\\"a\\":1}"\nmeta "k" = "v"\nmeta "other" = "w"');
+		assert.strictEqual(
+			(parse(testConfig('mapping', 'root = this', '{}', {})) as { input: { generate: { mapping: string } } }).input.generate.mapping,
+			'root = "{}"',
+		);
+	});
+
+	test('ODD_KEYS: a key with a space, a quote and a non-ASCII character, a value with ${HOME}, stay exact', () => {
+		const key = 'a "b" é';
+		const value = '${HOME} \\ \n end';
+		const text = testConfig('mapping', 'root = this', '{}', { [key]: value });
+		assert.ok(/^[\x20-\x7e\n]*$/.test(text), JSON.stringify(text));
+		assert.ok(!text.split('\n')[8].includes('$'), 'the generate line has no raw $');
+		const mapping = (parse(text) as { input: { generate: { mapping: string } } }).input.generate.mapping;
+		const [, metaLine] = mapping.split('\n');
+		const m = /^meta ("(?:[^"\\]|\\.)*") = ("(?:[^"\\]|\\.)*")$/.exec(metaLine);
+		assert.ok(m, metaLine);
+		assert.strictEqual(unquoteGo(m[1]), key);
+		assert.strictEqual(unquoteGo(m[2]), value);
+	});
+
 	test('the code under test keeps its ${VAR}s for the binary to substitute, as Run does', () => {
-		const text = testConfig('mapping', 'root.a = "${FOO}"', '{}');
+		const text = testConfig('mapping', 'root.a = "${FOO}"', '{}', {});
 		assert.ok(text.includes('- mapping: "root.a = \\"${FOO}\\""'));
 		assert.strictEqual((parse(text) as { pipeline: { processors: { mapping: string }[] } }).pipeline.processors[0].mapping, 'root.a = "${FOO}"');
 	});
