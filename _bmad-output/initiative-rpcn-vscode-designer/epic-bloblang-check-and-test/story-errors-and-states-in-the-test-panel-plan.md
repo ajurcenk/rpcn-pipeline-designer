@@ -3,7 +3,7 @@ title: 'Errors and states in the test panel'
 type: 'feature'
 ticket: '8'
 created: '2026-10-14'
-status: 'built'
+status: done
 baseline_revision: 'b539477f77e0a5699727062558c6ecae7bfe87d6'
 route: 'full'
 route_source: 'auto'
