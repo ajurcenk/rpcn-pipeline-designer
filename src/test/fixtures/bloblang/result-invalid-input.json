@@ -1,6 +1,9 @@
 {
   "type": "result",
-  "result": { "kind": "invalidInput", "message": "The input is not valid JSON: unexpected end of input at line 1, column 8." },
-  "durationMs": 0,
+  "result": {
+    "kind": "invalidInput",
+    "message": "failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid character 'o' in literal null (expecting 'u')"
+  },
+  "durationMs": 196,
   "binary": "rpk connect 4.112.0"
 }

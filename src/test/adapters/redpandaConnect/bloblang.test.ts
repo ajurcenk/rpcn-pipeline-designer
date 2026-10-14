@@ -92,6 +92,87 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 		assert.deepStrictEqual(fs.readdirSync(dir), []);
 	});
 
+	/** A fake runner answering `run` with `runOutcome` and `blobl` with `bloblOutcome`; records each subcommand. */
+	function routedRun(runOutcome: ProcessOutcome, bloblOutcome: ProcessOutcome, seen: string[]) {
+		return async (_invocation: readonly string[], args: readonly string[]) => {
+			const sub = args.includes('blobl') ? 'blobl' : 'run';
+			seen.push(sub);
+			return sub === 'blobl' ? bloblOutcome : runOutcome;
+		};
+	}
+	const LINT_STDERR = 'time="t" level=error msg="Config lint error" @service=redpanda-connect lint="/x/c.yaml(16,24) required: expected comma or closing bracket, got: = 3\\n"\n'
+		+ 'time="t" level=error msg="shutting down due to linter errors, to prevent shutdown run Redpanda Connect with --chilled" @service=redpanda-connect\n';
+
+	test('PARSE (4.8): a lint stop that blobl parses as an error is parseError, with the mapping and the located file positions', async () => {
+		const seen: string[] = [];
+		const blobl = 'failed to parse mapping: line 2 char 10: required: expected query\n  |\n2 | root.c = = 3\n  |          ^---\n';
+		const located: [number, number][] = [];
+		const outcome = await runMappingTest(OK, 'mapping', 'root.a = 1\nroot.c = = 3', '{}', {}, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			locate: (line, char) => {
+				located.push([line, char]);
+				return { line: line + 10, char: char + 6 };
+			},
+			run: routedRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: LINT_STDERR }, { kind: 'exited', exitCode: 1, stdout: '', stderr: blobl }, seen),
+		});
+		assert.deepStrictEqual(seen, ['run', 'blobl']);
+		assert.deepStrictEqual(located, [[2, 10]]);
+		assert.deepStrictEqual(outcome.result, {
+			kind: 'parseError',
+			message: 'required: expected query',
+			excerpt: '  |\n2 | root.c = = 3\n  |          ^---',
+			mappingLine: 2,
+			mappingChar: 10,
+			fileLine: 12,
+			fileChar: 16,
+		});
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
+		// Without `locate`, the file positions are the mapping's.
+		const plain = await runMappingTest(OK, 'mapping', 'root.a = 1\nroot.c = = 3', '{}', {}, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			run: routedRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: LINT_STDERR }, { kind: 'exited', exitCode: 1, stdout: '', stderr: blobl }, []),
+		});
+		assert.deepStrictEqual(plain.result.kind === 'parseError' && [plain.result.fileLine, plain.result.fileChar], [2, 10]);
+	});
+
+	test('ENV_LINT (4.8): a lint stop that blobl does not see as a parse error is error with the lint message verbatim', async () => {
+		const seen: string[] = [];
+		const lint = 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [API_TOKEN]"\n';
+		const outcome = await runMappingTest(OK, 'mapping', 'root = "${API_TOKEN}"', '{}', {}, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			run: routedRun(
+				{ kind: 'exited', exitCode: 1, stdout: '', stderr: lint },
+				{ kind: 'exited', exitCode: 1, stdout: '', stderr: 'failed to replace env vars: required environment variables were not set: [API_TOKEN]\n' },
+				seen,
+			),
+		});
+		assert.deepStrictEqual(seen, ['run', 'blobl']);
+		assert.deepStrictEqual(outcome.result, { kind: 'error', message: lint.trim() });
+		// A mapping blobl parses fine: the lint message too.
+		const parses = await runMappingTest(OK, 'mapping', 'root = 1', '{}', {}, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			run: routedRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: lint }, { kind: 'exited', exitCode: 0, stdout: '', stderr: '' }, []),
+		});
+		assert.deepStrictEqual(parses.result, { kind: 'error', message: lint.trim() });
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
+	});
+
+	test('FAILED (4.8): a failed run with a mapping line gets the located file line; without one, no lines and no blobl', async () => {
+		const seen: string[] = [];
+		const env = { argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' }, locate: (line: number) => ({ line: line + 7, char: 9 }) };
+		const failed = await runMappingTest(OK, 'mapping', 'root.x = this.nope + 1', '{}', {}, dir, {
+			...env,
+			run: routedRun({ kind: 'exited', exitCode: 0, stdout: '{"error":"failed assignment (line 2): boom"}\n', stderr: '' }, { kind: 'notFound' }, seen),
+		});
+		assert.deepStrictEqual(failed.result, { kind: 'failed', message: 'failed assignment (line 2): boom', mappingLine: 2, fileLine: 9 });
+		const bare = await runMappingTest(OK, 'mapping', 'root = this', '{}', {}, dir, {
+			...env,
+			run: routedRun({ kind: 'exited', exitCode: 0, stdout: '{"error":"boom"}\n', stderr: '' }, { kind: 'notFound' }, seen),
+		});
+		assert.deepStrictEqual(bare.result, { kind: 'failed', message: 'boom' });
+		assert.deepStrictEqual(seen, ['run', 'run']);
+	});
+
 	test('a timeout, a missing binary or a spawn failure is an error result', async () => {
 		const env = { argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' } };
 		const cases: [ProcessOutcome, string][] = [

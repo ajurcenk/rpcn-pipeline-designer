@@ -1,6 +1,18 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { parse } from 'yaml';
 import { bloblangString, changesOf, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
+import { REPO_ROOT } from '../helpers/fakeBinary';
+
+/** Route C's captures (spike 4.1, standalone 4.112.0). */
+const CAPTURES = path.join(REPO_ROOT, '_bmad-output', 'initiative-rpcn-vscode-designer', 'epic-bloblang-check-and-test',
+	'spike-4-1-findings', 'captures', 'standalone-4.112.0', 'C');
+
+function capture(scenario: string): { exit: number; stdout: string; stderr: string } {
+	const read = (ext: string) => fs.readFileSync(path.join(CAPTURES, `${scenario}.${ext}`), 'utf8');
+	return { exit: Number(read('exit').trim()), stdout: read('stdout'), stderr: read('stderr') };
+}
 
 const NO_INPUT = { content: '', meta: {} };
 const NONE = { added: [], changed: [], removed: [] };
@@ -131,11 +143,46 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 		}
 	});
 
-	test('RUN_FAILED: exit 0 with an error line gives the mapping\'s message; stderr logs are ignored', () => {
+	test('RUN_FAILED: exit 0 with an error line gives the mapping\'s message and line; stderr logs are ignored', () => {
 		assert.deepStrictEqual(
 			parseRunOutput(0, '{"error":"failed assignment (line 1): expected number value"}\n', 'level=error msg="processor failed"\n', NO_INPUT),
-			{ kind: 'failed', message: 'failed assignment (line 1): expected number value' },
+			{ kind: 'failed', message: 'failed assignment (line 1): expected number value', mappingLine: 1 },
 		);
+	});
+
+	test('FAILED (4.8): the spike\'s map-error capture is failed on mapping line 2, the message verbatim', () => {
+		const { exit, stdout, stderr } = capture('map-error');
+		assert.strictEqual(exit, 0);
+		assert.deepStrictEqual(parseRunOutput(exit, stdout, stderr, { content: '{}', meta: {} }), {
+			kind: 'failed',
+			message: 'failed assignment (line 2): expected number value, got null from field `this.nope`',
+			mappingLine: 2,
+		});
+	});
+
+	test('FAILED_NO_LINE (4.8): an error without `failed assignment (line N)` has no line', () => {
+		assert.deepStrictEqual(parseRunOutput(0, '{"error":"something went wrong"}\n', '', NO_INPUT), { kind: 'failed', message: 'something went wrong' });
+		assert.deepStrictEqual(parseRunOutput(0, '{"error":"x failed assignment (line 3): y"}\n', '', NO_INPUT), { kind: 'failed', message: 'x failed assignment (line 3): y' });
+		assert.deepStrictEqual(parseRunOutput(0, '{"error":"failed assignment (line 0): y"}\n', '', NO_INPUT), { kind: 'failed', message: 'failed assignment (line 0): y' });
+	});
+
+	test('INVALID (4.8): the spike\'s bad-input capture is invalidInput with the binary\'s message', () => {
+		const { exit, stdout, stderr } = capture('bad-input');
+		assert.deepStrictEqual(parseRunOutput(exit, stdout, stderr, { content: 'not json', meta: {} }), {
+			kind: 'invalidInput',
+			message: 'failed assignment (line 1): unable to reference message as structured (with \'this\'): parse as json: invalid character \'o\' in literal null (expecting \'u\')',
+		});
+	});
+
+	test('LINT (4.8): an exit 1 with `Config lint error` is a lint stop for the adapter, the stderr lines verbatim', () => {
+		const { exit, stdout, stderr } = capture('parse-error');
+		assert.strictEqual(exit, 1);
+		const outcome = parseRunOutput(exit, stdout, stderr, NO_INPUT);
+		assert.strictEqual(outcome.kind, 'lint');
+		assert.strictEqual(outcome.kind === 'lint' && outcome.message, stderr.split('\n').filter((l) => l.trim() !== '').join('\n'));
+		// Another exit code, or exit 1 without the marker, stays an error.
+		assert.strictEqual(parseRunOutput(2, '', stderr, NO_INPUT).kind, 'error');
+		assert.strictEqual(parseRunOutput(1, '', 'level=error msg="boom"\n', NO_INPUT).kind, 'error');
 	});
 
 	test('DELETED: exit 0 with no line', () => {
@@ -143,10 +190,10 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 		assert.deepStrictEqual(parseRunOutput(0, '\n', 'level=warn x\n', NO_INPUT), { kind: 'deleted' });
 	});
 
-	test('RUN_ERROR: any other exit gives the first stderr lines verbatim', () => {
+	test('RUN_ERROR: any other exit gives the first stderr lines verbatim (a lint stop too)', () => {
 		const stderr = 'time="t" level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [X]"\n\nsecond\n';
 		assert.deepStrictEqual(parseRunOutput(1, '', stderr, NO_INPUT), {
-			kind: 'error',
+			kind: 'lint',
 			message: 'time="t" level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [X]"\nsecond',
 		});
 		const many = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');

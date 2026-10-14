@@ -26,8 +26,11 @@ export function graphHtml(webview: vscode.Webview, extensionUri: vscode.Uri, tit
 	return webviewHtml(webview, extensionUri, 'webview', title);
 }
 
-/** The page that loads `dist/<bundle>.js` and `dist/<bundle>.css`. */
-export function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, bundle: string, title: string): string {
+/**
+ * The page that loads `dist/<bundle>.js` and `dist/<bundle>.css`; each `data` entry becomes a
+ * `data-<key>` attribute of `#root` (the Bloblang panel's file name, ticket 4.8).
+ */
+export function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, bundle: string, title: string, data: Readonly<Record<string, string>> = {}): string {
 	const nonce = makeNonce();
 	const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', `${bundle}.js`));
 	const style = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', `${bundle}.css`));
@@ -41,7 +44,7 @@ export function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, b
 <title>${escapeHtml(title)}</title>
 </head>
 <body>
-<div id="root"></div>
+<div id="root"${Object.entries(data).map(([key, value]) => ` data-${key}="${escapeHtml(value)}"`).join('')}></div>
 <script nonce="${nonce}" src="${script.toString()}"></script>
 </body>
 </html>`;

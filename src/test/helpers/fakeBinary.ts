@@ -142,7 +142,10 @@ export function connectScript(options: ConnectScriptOptions): string {
  * A `run` body (for `connectScript({ run })`) standing in for the AD-21 test run (ticket 4.2): it
  * copies the config (`$last`) to `<capture>/config.yaml` and appends its argv to `<capture>/argv`,
  * then answers from the config's Bloblang as the real run would print: no line for `deleted()`,
- * `{error}` for a mapping containing `FAIL_ME`, a lint error on stderr and exit 1 for `BROKEN`, else
+ * `{error}` for a mapping containing `FAIL_ME` (`failed assignment (line 1)`, or of line N for
+ * `FAIL_ON_<N>`, 4.8), `{error}` about unstructured input for `NOT_STRUCTURED` (4.8), a lint error on
+ * stderr and exit 1 for `BROKEN`, a Bloblang `Config lint error` with config-relative positions and
+ * exit 1 for `ERR@` (4.8: the parse error `bloblParseBody` reports), else
  * a content: `{"a":1,"b":3,"c":4}` for a mapping with `root.c = 4` (FIELDS, 4.7), `{"a":1,"k":<@k>}`
  * for one with `root.k = @k` (META_IN, 4.7), else the content of `root.b = this.a + 1` on `{"a":1}`
  * (`mutation` keeps `a`). Its `meta` (4.7) echoes every `meta "<key>" = "<value>"` line of the
@@ -158,7 +161,11 @@ export function mappingTestRunBody(capture: string): string {
 		`'${cp}' "$last" '${path.join(capture, 'config.yaml')}'`,
 		`printf '%s\\n' "$*" >> '${path.join(capture, 'argv')}'`,
 		`if '${grep}' -q 'deleted()' "$last"; then exit 0; fi`,
+		`if '${grep}' -q 'ERR@' "$last"; then echo 'level=error msg="Config lint error" lint="'"$last"'(16,24) required: expected fake thing, got: x"' >&2; echo 'level=error msg="shutting down due to linter errors"' >&2; exit 1; fi`,
+		`n=$('${sed}' -n 's/.*FAIL_ON_\\([0-9][0-9]*\\).*/\\1/p' "$last" | '${sed}' -n 1p)`,
+		`if [ -n "$n" ]; then echo '{"error":"failed assignment (line '"$n"'): expected number value, got null from field \`this.nope\`"}'; exit 0; fi`,
 		`if '${grep}' -q 'FAIL_ME' "$last"; then echo '{"error":"failed assignment (line 1): fake failure"}'; exit 0; fi`,
+		`if '${grep}' -q 'NOT_STRUCTURED' "$last"; then echo '{"error":"failed assignment (line 1): unable to reference message as structured (with '"'"'this'"'"'): parse as json: invalid character '"'"'o'"'"' in literal null (expecting '"'"'u'"'"')"}'; exit 0; fi`,
 		`if '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
 		`if '${grep}' -q 'SLOW_RUN' "$last"; then '${sleep}' 2; fi`,
 		// The config's YAML escapes each `"` of a Bloblang literal as `\"`.

@@ -13,6 +13,9 @@ body {
 .rpcn-bl {
 	/* The marked style (4.7): a tint plus a 2px left bar, in the theme's "passed" green. */
 	--rpcn-bl-mark: var(--vscode-testing-iconPassed, var(--vscode-charts-green, currentColor));
+	/* The error and warning tones (4.8): the theme's error and warning foregrounds. */
+	--rpcn-bl-err: var(--vscode-errorForeground, var(--vscode-editorError-foreground, currentColor));
+	--rpcn-bl-warn: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, currentColor));
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
@@ -59,6 +62,16 @@ body {
 	background: color-mix(in srgb, var(--rpcn-bl-mark) 18%, transparent);
 	color: var(--vscode-editor-foreground);
 	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rpcn-bl-mark) 50%, transparent);
+}
+.rpcn-bl-pill-err {
+	background: color-mix(in srgb, var(--rpcn-bl-err) 16%, transparent);
+	color: var(--vscode-editor-foreground);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rpcn-bl-err) 50%, transparent);
+}
+.rpcn-bl-pill-warn {
+	background: color-mix(in srgb, var(--rpcn-bl-warn) 16%, transparent);
+	color: var(--vscode-editor-foreground);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rpcn-bl-warn) 50%, transparent);
 }
 .rpcn-bl-pill-running {
 	background: transparent;
@@ -275,17 +288,63 @@ body {
 .rpcn-bl-pad {
 	padding: 12px 16px;
 }
-.rpcn-bl-problem {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
+/* The result cards (4.8, the prototype's errcard and infocard). */
+.rpcn-bl-card {
+	display: grid;
+	gap: 6px;
 	margin: 12px 16px;
-	padding-left: 8px;
-	border-left: 2px solid var(--vscode-inputValidation-errorBorder);
+	padding: 10px 12px;
+	border-radius: 4px;
 }
-.rpcn-bl-problem-title {
+.rpcn-bl-card-error {
+	border: 1px solid color-mix(in srgb, var(--rpcn-bl-err) 45%, transparent);
+	background: color-mix(in srgb, var(--rpcn-bl-err) 8%, transparent);
+}
+.rpcn-bl-card-info {
+	border: 1px dashed var(--vscode-panel-border, var(--vscode-descriptionForeground));
+	padding: 14px;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-card-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 8px;
 	margin: 0;
-	color: var(--vscode-errorForeground);
+}
+.rpcn-bl-card-error .rpcn-bl-card-title {
+	font-weight: 600;
+	color: var(--rpcn-bl-err);
+}
+.rpcn-bl-card-info .rpcn-bl-card-title {
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+}
+.rpcn-bl-card-sub {
+	font-size: 0.92em;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-card-hint {
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-card-acts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+/* The last successful output under an error card: dimmed, unmarked. */
+.rpcn-bl-stale {
+	opacity: 0.55;
+}
+.rpcn-bl-stale-label {
+	margin: 0;
+	padding: 8px 16px 0;
+	font-size: 0.85em;
+	font-weight: 600;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
 }
 .rpcn-bl-sr {
 	position: absolute;

@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
-// The Bloblang test panel's view (tickets 4.2, 4.7) in happy-dom: it posts `ready`, shows the
+// The Bloblang test panel's view (tickets 4.2, 4.7, 4.8) in happy-dom: it posts `ready`, shows the
 // snapshot's title and kind, posts `run {content, meta}` on Run, or with Run on change after the
 // pause, and shows each result: the output content with the changed fields marked, the output
-// metadata, the "Changed:" tags and the status pill. The view state survives a reload.
+// metadata, the "Changed:" tags and the status pill; every other result's card and pill, Go to
+// line, and the last successful output dimmed under an error. The view state survives a reload.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -10,10 +11,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BloblangHostMessage, BloblangWebviewMessage } from '../../../src/shared/bloblangProtocol';
-import { DEFAULT_VIEW_STATE, type ViewState } from './host';
+import { DEFAULT_VIEW_STATE, readViewState, type ViewState } from './host';
 import {
-	DELETED_TEXT, EMPTY_TEXT, ERROR_TEXT, FAILED_TEXT, RUN_DEBOUNCE_MS, RUNNING_TEXT, TestPanel,
-} from './TestPanel';
+	DELETED_FOOTER, DELETED_TITLE, DIMMED_FOOTER, ERROR_TITLE, FAILED_NO_LINE_TITLE, INVALID_INPUT_TITLE, LAST_OK_LABEL,
+	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE,
+} from './OutputView';
+import { EMPTY_TEXT, RUN_DEBOUNCE_MS, RUNNING_TEXT, TestPanel } from './TestPanel';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -26,9 +29,11 @@ const send = async (message: BloblangHostMessage | Record<string, unknown>) => {
 	});
 };
 
-async function render(state: Partial<ViewState> = {}): Promise<void> {
+async function render(state: Partial<ViewState> = {}, fileName?: string): Promise<void> {
 	await act(async () => {
-		root.render(<TestPanel post={(m) => posted.push(m)} initialState={{ ...DEFAULT_VIEW_STATE, ...state }} saveState={(s) => saved.push(s)} />);
+		root.render(
+			<TestPanel post={(m) => posted.push(m)} initialState={{ ...DEFAULT_VIEW_STATE, ...state }} saveState={(s) => saved.push(s)} fileName={fileName} />,
+		);
 	});
 }
 
@@ -53,6 +58,12 @@ const tags = () => [...host.querySelectorAll('.rpcn-bl-out .rpcn-bl-tag')].map((
 const footer = () => host.querySelector('.rpcn-bl-out .rpcn-bl-foot')?.textContent;
 const outputText = () => host.querySelector('.rpcn-bl-output')?.textContent;
 const markedText = () => [...host.querySelectorAll('.rpcn-bl-output .rpcn-bl-mark')].map((l) => l.textContent);
+const card = () => host.querySelector('.rpcn-bl-card');
+const cardTitle = () => card()?.querySelector('.rpcn-bl-card-title')?.textContent;
+const cardSub = () => card()?.querySelector('.rpcn-bl-card-sub')?.textContent;
+const cardMessage = () => card()?.querySelector('.rpcn-bl-message')?.textContent;
+const goTo = () => host.querySelector('.rpcn-bl-goto');
+const stale = () => host.querySelector('.rpcn-bl-stale');
 const wait = (ms = RUN_DEBOUNCE_MS) => act(async () => {
 	vi.advanceTimersByTime(ms);
 });
@@ -311,34 +322,163 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		expect(pill()).toBe('✓ Ran in 1 ms');
 	});
 
-	it('RUN_FAILED, DELETED, RUN_ERROR: each result shows 4.2\'s text, and the pill 4.2\'s duration; malformed messages are ignored', async () => {
-		await render({ content: '{"a":1}' });
+	const OK_META = {
+		kind: 'ok', content: '{"b":2}', meta: { k: 'v' },
+		changes: { fields: { added: ['b'], changed: [], removed: [] }, meta: { added: ['k'], changed: [], removed: [] } },
+	} as const;
+	const PARSE = {
+		kind: 'parseError', message: 'required: expected comma or closing bracket', excerpt: '  |\n2 | root.c = = 3\n  |          ^---',
+		mappingLine: 2, mappingChar: 10, fileLine: 14, fileChar: 18,
+	} as const;
+	const goToLines = () => posted.flatMap((m) => (m.type === 'goToLine' ? [m.line] : []));
+
+	it('PARSE: the syntax-error pill and card (mapping and file position, message and excerpt), Go to line, its footer', async () => {
+		await render({ content: '{"a":1}' }, 'orders.yaml');
 		await send(SNAPSHOT);
-		await send({ type: 'result', result: { kind: 'failed', message: 'failed assignment (line 1): x' }, durationMs: 1, binary: 'b' });
-		expect(host.textContent).toContain(FAILED_TEXT);
-		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('failed assignment (line 1): x');
-		expect(pill()).toBe('1 ms · b');
+		await send({ type: 'result', result: PARSE, durationMs: 400, binary: 'b' });
+		expect(pill()).toBe('✕ Syntax error · not run');
+		expect(host.querySelector('.rpcn-bl-pill')?.classList.contains('rpcn-bl-pill-err')).toBe(true);
+		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(cardTitle()).toBe(PARSE_ERROR_TITLE);
+		expect(cardTitle()).toBe("Mapping doesn't parse");
+		expect(cardSub()).toBe('mapping line 2, char 10 · orders.yaml line 14');
+		expect(cardMessage()).toBe('required: expected comma or closing bracket\n  |\n2 | root.c = = 3\n  |          ^---');
+		expect(goTo()?.textContent).toBe('Go to line 14');
+		await click(goTo());
+		expect(goToLines()).toEqual([14]);
+		expect(footer()).toBe(PARSE_ERROR_FOOTER);
+		expect(footer()).toBe('Fix the mapping to run it again.');
+		expect(stale()).toBeNull();
 		expect(badge('out')).toBe('–');
-		expect(footer()).toBeUndefined();
-		await send({ type: 'result', result: { kind: 'deleted' }, durationMs: 1, binary: 'b' });
-		expect(host.textContent).toContain(DELETED_TEXT);
-		await send({ type: 'result', result: { kind: 'error', message: 'No Redpanda Connect binary.' }, durationMs: 0, binary: null });
-		expect(host.textContent).toContain(ERROR_TEXT);
-		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('No Redpanda Connect binary.');
-		expect(pill()).toBe('0 ms');
-		await send({ type: 'result', result: { kind: 'ok' }, durationMs: 1, binary: null });
-		expect(host.textContent).toContain(ERROR_TEXT);
 	});
 
-	it('until 4.8: a parse error and an invalid input show in the could-not-run block; samples and binary messages change nothing', async () => {
+	it('PARSE fixed (AI-7): the next ok replaces the card with the output', async () => {
 		await render({ content: '{"a":1}' });
 		await send(SNAPSHOT);
-		await send({ type: 'result', result: { kind: 'parseError', message: 'expected end of input', excerpt: 'root = (', mappingLine: 1, mappingChar: 8, fileLine: 7, fileChar: 20 }, durationMs: 1, binary: null });
-		expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
-		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('expected end of input');
-		await send({ type: 'result', result: { kind: 'invalidInput', message: 'The input is not valid JSON.' }, durationMs: 1, binary: null });
-		expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
-		expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe('The input is not valid JSON.');
+		await send({ type: 'result', result: PARSE, durationMs: 1, binary: null });
+		expect(cardSub()).toBe('mapping line 2, char 10 · YAML line 14');
+		await send({ type: 'result', result: OK_B2, durationMs: 2, binary: null });
+		expect(card()).toBeNull();
+		expect(outputText()).toBe('{\n  "b": 2\n}');
+		expect(pill()).toBe('✓ Ran in 2 ms');
+	});
+
+	it('FAILED: the card with the mapping and file line and Go to line; the last ok output dimmed, unmarked and labelled', async () => {
+		await render({ content: '{"a":1}' }, 'orders.yaml');
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: OK_META, durationMs: 3, binary: null });
+		await send({ type: 'result', result: { kind: 'failed', message: 'failed assignment (line 2): boom', mappingLine: 2, fileLine: 12 }, durationMs: 1, binary: 'b' });
+		expect(pill()).toBe('✕ Mapping failed on this input');
+		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(cardTitle()).toBe('Failed on mapping line 2');
+		expect(cardSub()).toBe('orders.yaml line 12');
+		expect(cardMessage()).toBe('failed assignment (line 2): boom');
+		expect(goTo()?.textContent).toBe('Go to line 12');
+		await click(goTo());
+		expect(goToLines()).toEqual([12]);
+		expect(stale()?.getAttribute('aria-label')).toBe(LAST_OK_LABEL);
+		expect(stale()?.textContent).toContain('Last successful output');
+		expect(host.querySelector('.rpcn-bl-stale .rpcn-bl-output')?.textContent).toBe('{\n  "b": 2\n}');
+		expect(markedText()).toEqual([]);
+		expect(footer()).toBe(DIMMED_FOOTER);
+		expect(footer()).toBe('Showing the last successful output, dimmed.');
+		expect(tags()).toEqual([]);
+		// The metadata tab dims the last ok metadata, unmarked.
+		await click(tab('out', 'meta'));
+		const rows = [...host.querySelectorAll('.rpcn-bl-stale tbody tr')];
+		expect(rows.map((r) => r.textContent)).toEqual(['kv']);
+		expect(rows.some((r) => r.classList.contains('rpcn-bl-mark'))).toBe(false);
+	});
+
+	it('RESTORE_DIMMED: the last ok result is saved; a recreated panel whose restored run fails still dims it', async () => {
+		await render({ content: '{"a":1}', runOnChange: false });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: OK_META, durationMs: 3, binary: null });
+		const state = saved[saved.length - 1];
+		expect(state.lastOk).toEqual(OK_META);
+		// A hidden-then-shown panel: the webview is recreated from the saved state, and its restored run fails.
+		await act(async () => root.unmount());
+		root = createRoot(host);
+		posted = [];
+		await render(readViewState(JSON.parse(JSON.stringify({ ...state, runOnChange: true }))));
+		await send(SNAPSHOT);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
+		await send({ type: 'result', result: { kind: 'failed', message: 'failed assignment (line 2): boom', mappingLine: 2, fileLine: 12 }, durationMs: 1, binary: null });
+		expect(stale()?.getAttribute('aria-label')).toBe(LAST_OK_LABEL);
+		expect(host.querySelector('.rpcn-bl-stale .rpcn-bl-output')?.textContent).toBe('{\n  "b": 2\n}');
+		expect(footer()).toBe(DIMMED_FOOTER);
+	});
+
+	it('readViewState keeps a well-formed lastOk only', () => {
+		expect(readViewState({ lastOk: OK_META }).lastOk).toEqual(OK_META);
+		expect(readViewState({ lastOk: { kind: 'failed', message: 'x' } }).lastOk).toBeUndefined();
+		expect(readViewState({ lastOk: { kind: 'ok', content: 1 } }).lastOk).toBeUndefined();
+		expect(readViewState({}).lastOk).toBeUndefined();
+	});
+
+	it('FAILED_NO_LINE + NO_OK_YET: no line, no button, no dimmed block, no footer', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: { kind: 'failed', message: 'boom' }, durationMs: 1, binary: null });
+		expect(cardTitle()).toBe(FAILED_NO_LINE_TITLE);
+		expect(cardSub()).toBeUndefined();
+		expect(cardMessage()).toBe('boom');
+		expect(goTo()).toBeNull();
+		expect(stale()).toBeNull();
+		expect(footer()).toBeUndefined();
+	});
+
+	it('INVALID: the input card with the binary\'s message and the hint, no button', async () => {
+		await render({ content: 'not json' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: { kind: 'invalidInput', message: 'unable to reference message as structured' }, durationMs: 1, binary: null });
+		expect(pill()).toBe('✕ Input not valid for this mapping');
+		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(cardTitle()).toBe(INVALID_INPUT_TITLE);
+		expect(cardTitle()).toBe("This input can't be read by the mapping");
+		expect(cardMessage()).toBe('unable to reference message as structured');
+		expect(card()?.querySelector('.rpcn-bl-card-hint')?.textContent).toBe("The mapping reads the message as JSON (this); check the input's Content.");
+		expect(card()?.querySelector('.rpcn-bl-card-hint code')?.textContent).toBe('this');
+		expect(goTo()).toBeNull();
+	});
+
+	it('DELETED: the warning pill, the dashed info card, its footer; nothing dimmed after an ok', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		await send({ type: 'result', result: { kind: 'deleted' }, durationMs: 38.2, binary: 'b' });
+		expect(pill()).toBe('⊘ Message deleted · 38 ms');
+		expect(host.querySelector('.rpcn-bl-pill')?.classList.contains('rpcn-bl-pill-warn')).toBe(true);
+		expect(card()?.classList.contains('rpcn-bl-card-info')).toBe(true);
+		expect(card()?.getAttribute('role')).toBeNull();
+		expect(cardTitle()).toBe(DELETED_TITLE);
+		expect(card()?.textContent).toBe('The mapping deleted this message');
+		expect(footer()).toBe(DELETED_FOOTER);
+		expect(footer()).toBe('No output and no metadata.');
+		expect(stale()).toBeNull();
+		expect(goTo()).toBeNull();
+	});
+
+	it('ERROR: the could-not-run card with the message verbatim, the last ok dimmed; malformed messages are ignored', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		await send({ type: 'result', result: { kind: 'error', message: 'No Redpanda Connect binary.' }, durationMs: 0, binary: null });
+		expect(pill()).toBe('✕ Not run');
+		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(cardTitle()).toBe(ERROR_TITLE);
+		expect(cardTitle()).toBe('The test could not run');
+		expect(cardMessage()).toBe('No Redpanda Connect binary.');
+		expect(stale()).not.toBeNull();
+		expect(footer()).toBe(DIMMED_FOOTER);
+		await send({ type: 'result', result: { kind: 'ok' }, durationMs: 1, binary: null });
+		expect(cardTitle()).toBe(ERROR_TITLE);
+	});
+
+	it('samples and binary messages change nothing', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: { kind: 'error', message: 'x' }, durationMs: 1, binary: null });
 		const before = host.innerHTML;
 		const postedBefore = posted.length;
 		await send({ type: 'samples', samples: [{ name: 's', content: '{"x":1}', meta: { k: 'v' } }], selected: 's' });
@@ -347,13 +487,13 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		expect(posted.length).toBe(postedBefore);
 	});
 
-	it.each(FIXTURE_NAMES)('FIXTURES: %s renders after a snapshot in the 4.7 layout', async (name) => {
+	it.each(FIXTURE_NAMES)('FIXTURES: %s renders after a snapshot in the 4.8 layout', async (name) => {
 		const message = fixture(name);
 		await render({ content: '{"a":1}', runOnChange: false });
 		await send(SNAPSHOT);
 		const before = host.innerHTML;
 		await send(message);
-		const result = message.result as { kind: string; content?: string; message?: string } | undefined;
+		const result = message.result as { kind: string; content?: string; message?: string; excerpt?: string; fileLine?: number; mappingLine?: number } | undefined;
 		if (message.type !== 'result' || !result) {
 			// snapshot replaces the header; samples and binary change nothing yet.
 			if (message.type === 'snapshot') {
@@ -371,15 +511,26 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 				expect(footer()).toMatch(/^Changed:/);
 				break;
 			case 'deleted':
-				expect(host.textContent).toContain(DELETED_TEXT);
+				expect(cardTitle()).toBe(DELETED_TITLE);
+				expect(pill()).toMatch(/^⊘ Message deleted · \d+ ms$/);
 				break;
 			case 'failed':
-				expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(FAILED_TEXT);
-				expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe(result.message);
+				expect(cardTitle()).toBe(`Failed on mapping line ${result.mappingLine}`);
+				expect(goTo()?.textContent).toBe(`Go to line ${result.fileLine}`);
+				expect(cardMessage()).toBe(result.message);
+				break;
+			case 'parseError':
+				expect(cardTitle()).toBe(PARSE_ERROR_TITLE);
+				expect(goTo()?.textContent).toBe(`Go to line ${result.fileLine}`);
+				expect(cardMessage()).toBe(`${result.message}\n${result.excerpt}`);
+				break;
+			case 'invalidInput':
+				expect(cardTitle()).toBe(INVALID_INPUT_TITLE);
+				expect(cardMessage()).toBe(result.message);
 				break;
 			default:
-				expect(host.querySelector('.rpcn-bl-problem-title')?.textContent).toBe(ERROR_TEXT);
-				expect(host.querySelector('.rpcn-bl-message')?.textContent).toBe(result.message);
+				expect(cardTitle()).toBe(ERROR_TITLE);
+				expect(cardMessage()).toBe(result.message);
 		}
 	});
 });

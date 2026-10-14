@@ -4,6 +4,9 @@
 // posts `ready`. Plus the boundaries the entry meets: the graph still loads (3.1's `html.ts`), the
 // graph's locked group stays graph-only (3.10), and the env file reaches the test run (2.7's builder).
 // Ticket 4.7: metadata in and out, the changed fields, and a mapping edit while a run is in flight.
+// Ticket 4.8: a parse error (the run's `Config lint error`, then `blobl`'s position on the fake
+// `bloblParseBody`) at the same place as 4.5's live diagnostic, a located failure with its
+// end-of-line hint (read through `hintRanges`), an invalid input, and Go to line.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -18,7 +21,7 @@ import { TEST_MAPPING_LENS_TITLE } from '../../../adapters/vscode/bloblangLens';
 import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
-import { connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
+import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
 
 const CONFIG = [
@@ -34,7 +37,8 @@ const CONFIG = [
 	'            - mutation: root.b = this.a + 1',
 	'    - mapping: root.b = this.nope.or("FAIL_ME")',
 	'    - mapping: root = deleted()',
-	'    - mapping: root = "${UNSET} BROKEN"',
+	// Not `UNSET`: the live parse (`bloblParseBody`) would log the line suite 91 counts once.
+	'    - mapping: root = "${NOT_SET} BROKEN"',
 	'output:',
 	'  stdout: {}',
 	'',
@@ -53,6 +57,34 @@ const META_CONFIG = [
 	'        root.c = 4',
 	'    - mapping: |',
 	'        root.b = this.a + 1 # SLOW_RUN',
+	'output:',
+	'  stdout: {}',
+	'',
+].join('\n');
+
+/**
+ * Ticket 4.8's processors: a parse error on mapping line 2, char 18 (YAML line 7, char 26), a
+ * failure on mapping line 2 (YAML line 10), an input the mapping can't read, and a 3-line mapping
+ * failing on its line 2 (YAML line 15) (the markers are
+ * in block scalars: a plain scalar's ` #` starts a comment).
+ */
+const ERRORS_CONFIG = [
+	'input:',
+	'  stdin: {}',
+	'pipeline:',
+	'  processors:',
+	'    - mapping: |',
+	'        root.a = 1',
+	'        root.c = = 3 # ERR@2:18',
+	'    - mapping: |',
+	'        root.a = 1',
+	'        root.x = this.nope + 1 # FAIL_ON_2',
+	'    - mapping: |',
+	'        root = this # NOT_STRUCTURED',
+	'    - mapping: |',
+	'        root.a = 1',
+	'        root.x = this.nope + 1 # FAIL_ON_2',
+	'        root.z = 3',
 	'output:',
 	'  stdout: {}',
 	'',
@@ -105,6 +137,14 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return all[all.length - 1];
 	}
 
+	/** Replaces the whole text of `doc`. */
+	async function setText(doc: vscode.TextDocument, text: string): Promise<void> {
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), text);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.strictEqual(doc.getText(), text);
+	}
+
 	/** The test config the fake last ran, and whether the file is gone. */
 	function lastRun(): { config: string; target: string } {
 		const target = lastRunArgv().split(' ').pop()!;
@@ -118,10 +158,11 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		fs.mkdirSync(capture);
 		counter = path.join(dir, 'counter');
 		const runBody = mappingTestRunBody(capture);
+		const bloblBody = bloblParseBody(capture);
 		process.env.PATH = (originalPath ?? '').split(path.delimiter)
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
-		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, run: runBody, counterFile: counter }));
+		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, run: runBody, blobl: bloblBody, counterFile: counter }));
 		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
 		await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok'
@@ -232,7 +273,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	test('RUN_FAILED / DELETED / RUN_ERROR: the binary\'s message, a deleted message, the stderr text', async () => {
 		const doc = (await open('outcomes.yaml', CONFIG)).document;
 		assert.deepStrictEqual((await run(await show(doc.uri, 'pipeline.processors[2]'), '{"a":1}')).result,
-			{ kind: 'failed', message: 'failed assignment (line 1): fake failure' });
+			{ kind: 'failed', message: 'failed assignment (line 1): fake failure', mappingLine: 1, fileLine: 11 });
 		assert.deepStrictEqual((await run(await show(doc.uri, 'pipeline.processors[3]'), '{"a":1}')).result, { kind: 'deleted' });
 		const broken = await run(await show(doc.uri, 'pipeline.processors[4]'), '{"a":1}');
 		assert.deepStrictEqual(broken.result, {
@@ -316,6 +357,128 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const posted = results(handle).slice(before.results);
 		assert.deepStrictEqual(posted.map((r) => r.result), [{ kind: 'deleted' }]);
 		assert.ok(await doc.save());
+	});
+
+	test('PARSE + PARSE_MATCH (4.8): a lint stop is the blobl parse error, at the live diagnostic\'s position; a fix gives the output', async () => {
+		const editor = await open('parse.yaml', ERRORS_CONFIG);
+		const doc = editor.document;
+		const handle = await show(doc.uri, FIRST);
+		const out = await run(handle, '{"a":1}');
+		assert.deepStrictEqual(out.result, {
+			kind: 'parseError',
+			message: 'expected fake thing',
+			excerpt: '  |\n1 | fake excerpt\n  |  ^---',
+			mappingLine: 2,
+			mappingChar: 18,
+			fileLine: 7,
+			fileChar: 26,
+		});
+		// 4.5's live diagnostic for the same mapping: the same line and column.
+		assert.ok(await waitFor(() => api().bloblangDiagnostics.diagnostics(doc.uri).length > 0, 15_000), 'no live Bloblang diagnostic');
+		const start = api().bloblangDiagnostics.diagnostics(doc.uri)[0].range.start;
+		assert.deepStrictEqual([start.line + 1, start.character + 1], [7, 26]);
+		// AI-7: an edit that fixes it, then the run Run on change posts, gives the output.
+		const broken = 'root.c = = 3 # ERR@2:18';
+		const at = doc.getText().indexOf(broken);
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + broken.length)), 'root.c = 3');
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+		assert.ok(await doc.save());
+	});
+
+	test('FAILED + hint + GO_TO_LINE (4.8): the located failure, the hint at its line\'s end, Go to line; the hint clears', async () => {
+		const editor = await open('failed.yaml', ERRORS_CONFIG);
+		const doc = editor.document;
+		const second = 'pipeline.processors[1]';
+		const handle = await show(doc.uri, second);
+		const panels = api().bloblangPanels;
+		const failing = 'root.x = this.nope + 1 # FAIL_ON_2';
+		const failed = await run(handle, '{"a":1}');
+		assert.deepStrictEqual(failed.result, {
+			kind: 'failed', message: 'failed assignment (line 2): expected number value, got null from field `this.nope`', mappingLine: 2, fileLine: 10,
+		});
+		const lineEnd = doc.lineAt(9).range.end;
+		assert.deepStrictEqual(panels.hintRanges(doc.uri).map((r) => [r.start.line, r.start.character, r.end.line, r.end.character]),
+			[[9, lineEnd.character, 9, lineEnd.character]]);
+		assert.strictEqual(doc.lineAt(9).text.trim(), failing);
+
+		// Go to line: the YAML editor takes focus with the cursor at the line's start; a line past the end clamps.
+		await handle.receive({ type: 'goToLine', line: 10 });
+		assert.strictEqual(vscode.window.activeTextEditor?.document, doc);
+		assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.One);
+		assert.deepStrictEqual([vscode.window.activeTextEditor?.selection.active.line, vscode.window.activeTextEditor?.selection.active.character], [9, 0]);
+		assert.notStrictEqual(handle.panel.viewColumn, vscode.ViewColumn.One, 'the panel stays in its own group');
+		await handle.receive({ type: 'goToLine', line: 999 });
+		assert.deepStrictEqual([vscode.window.activeTextEditor?.selection.active.line, vscode.window.activeTextEditor?.selection.active.character], [doc.lineCount - 1, 0]);
+
+		// The failing line leaves the processor: the hint clears.
+		const at = doc.getText().indexOf(`\n        ${failing}`);
+		const remove = new vscode.WorkspaceEdit();
+		remove.delete(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + failing.length + 9)));
+		assert.ok(await vscode.workspace.applyEdit(remove));
+		assert.ok(await waitFor(() => panels.hintRanges(doc.uri).length === 0, 5_000), 'the hint stays after its line left the processor');
+
+		// Back: failed again, then any other result clears it; failed again, then closing the panel clears it.
+		await setText(doc, ERRORS_CONFIG);
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'failed');
+		assert.strictEqual(panels.hintRanges(doc.uri).length, 1);
+		const fix = new vscode.WorkspaceEdit();
+		const f = doc.getText().indexOf(failing);
+		fix.replace(doc.uri, new vscode.Range(doc.positionAt(f), doc.positionAt(f + failing.length)), 'root.x = 2');
+		assert.ok(await vscode.workspace.applyEdit(fix));
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+		assert.deepStrictEqual(panels.hintRanges(doc.uri), []);
+		await setText(doc, ERRORS_CONFIG);
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'failed');
+		assert.strictEqual(panels.hintRanges(doc.uri).length, 1);
+		handle.panel.dispose();
+		assert.deepStrictEqual(panels.hintRanges(doc.uri), []);
+		assert.ok(await doc.save());
+	});
+
+	test('HINT_TEXT (4.8): a line inserted above the failing line, or the failing line deleted, clears the hint', async () => {
+		const editor = await open('hint-text.yaml', ERRORS_CONFIG);
+		const doc = editor.document;
+		const handle = await show(doc.uri, 'pipeline.processors[3]');
+		const panels = api().bloblangPanels;
+		const failing = 'root.x = this.nope + 1 # FAIL_ON_2';
+		const lastFailing = () => doc.getText().lastIndexOf(failing);
+		const failAndHint = async () => {
+			const out = await run(handle, '{"a":1}');
+			assert.deepStrictEqual(out.result.kind === 'failed' && [out.result.mappingLine, out.result.fileLine], [2, 15]);
+			assert.deepStrictEqual(panels.hintRanges(doc.uri).map((r) => r.start.line), [14]);
+		};
+
+		await failAndHint();
+		// A line inserted above: mapping line 2 is now another statement.
+		const insert = new vscode.WorkspaceEdit();
+		insert.insert(doc.uri, doc.positionAt(lastFailing()), 'root.y = 0\n        ');
+		assert.ok(await vscode.workspace.applyEdit(insert));
+		assert.ok(await waitFor(() => panels.hintRanges(doc.uri).length === 0, 5_000), 'the hint moved to the inserted line');
+		await setText(doc, ERRORS_CONFIG);
+		assert.deepStrictEqual(panels.hintRanges(doc.uri), [], 'restoring the text does not bring the hint back');
+
+		await failAndHint();
+		// The failing line deleted: mapping line 2 is now `root.z = 3`.
+		const at = lastFailing();
+		const remove = new vscode.WorkspaceEdit();
+		remove.delete(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + failing.length + 9)));
+		assert.ok(await vscode.workspace.applyEdit(remove));
+		assert.ok(doc.getText().includes('root.a = 1\n        root.z = 3'), doc.getText());
+		assert.ok(await waitFor(() => panels.hintRanges(doc.uri).length === 0, 5_000), 'the hint moved to the next statement');
+		await setText(doc, ERRORS_CONFIG);
+		assert.ok(await doc.save());
+	});
+
+	test('INVALID (4.8): an input the mapping can\'t read is invalidInput with the binary\'s message', async () => {
+		const doc = (await open('invalid.yaml', ERRORS_CONFIG)).document;
+		const out = await run(await show(doc.uri, 'pipeline.processors[2]'), 'not json');
+		assert.deepStrictEqual(out.result, {
+			kind: 'invalidInput',
+			message: 'failed assignment (line 1): unable to reference message as structured (with \'this\'): parse as json: invalid character \'o\' in literal null (expecting \'u\')',
+		});
+		assert.deepStrictEqual(api().bloblangPanels.hintRanges(doc.uri), []);
 	});
 
 	test('NO_LONGER_THERE: a lens path that is gone says so, not the cursor message', async () => {

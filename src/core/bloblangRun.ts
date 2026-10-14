@@ -1,4 +1,4 @@
-// The AD-21 test run, pure (tickets 4.2, 4.7): the one-message `run` config for a mapping or mutation,
+// The AD-21 test run, pure (tickets 4.2, 4.7, 4.8): the one-message `run` config for a mapping or mutation,
 // a content and its metadata, and the reading of what the run printed. The adapter
 // (`src/adapters/redpandaConnect/bloblang.ts`) writes the config to a temporary file and runs it.
 //
@@ -97,17 +97,38 @@ export interface RunInput {
 	readonly meta: InputMeta;
 }
 
+/** A run that stopped on `Config lint error` (exit 1): maybe a Bloblang parse error, which the adapter asks `blobl` about (AD-21). */
+export interface RunLintOutcome {
+	readonly kind: 'lint';
+	/** The first stderr lines, verbatim (the result's message when it is not a parse error). */
+	readonly message: string;
+}
+
+/** What `parseRunOutput` reads: a result, or a lint stop for the adapter to classify. */
+export type RunOutcome = BloblangResult | RunLintOutcome;
+
+/** The binary's marker of a run stopped by the config linter (spike 4.1 Q1). */
+export const CONFIG_LINT_ERROR = 'Config lint error';
+/** An `{error}` that names its mapping line: `failed assignment (line N): …`. */
+const FAILED_ASSIGNMENT = /^failed assignment \(line (\d+)\)/;
+/** An `{error}` about an input the mapping cannot read as structured data (spike 4.1, bad-input). */
+export const INVALID_INPUT_MARKER = 'unable to reference message as structured';
+
 /**
- * What a run's exit and output mean (AD-21): exit 0 with a JSON line is `ok` (its content and
- * metadata, and what changed from `input`) or `failed` (the mapping's error); exit 0 with no line
- * is `deleted`; any other exit (or a signal, `null`) is `error`, with the first stderr lines
- * verbatim. Classifying `parseError` and `invalidInput` is 4.8's.
+ * What a run's exit and output mean (AD-21, tickets 4.2, 4.7, 4.8): exit 0 with a JSON line is
+ * `ok` (its content and metadata, and what changed from `input`), `invalidInput` (an `{error}` about
+ * an input that is not structured) or `failed` (any other `{error}`, with its `mappingLine` when it
+ * starts `failed assignment (line N)`; the file line is the adapter's); exit 0 with no line is
+ * `deleted`; exit 1 with `Config lint error` on stderr is `lint` (the adapter decides whether it is
+ * a parse error); any other exit (or a signal, `null`) is `error`, with the first stderr lines
+ * verbatim.
  */
-export function parseRunOutput(exitCode: number | null, stdout: string, stderr: string, input: RunInput): BloblangResult {
+export function parseRunOutput(exitCode: number | null, stdout: string, stderr: string, input: RunInput): RunOutcome {
 	if (exitCode !== 0) {
 		const lines = stderr.split(/\r?\n/).filter((l) => l.trim() !== '');
 		if (lines.length > 0) {
-			return { kind: 'error', message: lines.slice(0, MAX_ERROR_LINES).join('\n') };
+			const message = lines.slice(0, MAX_ERROR_LINES).join('\n');
+			return exitCode === 1 && stderr.includes(CONFIG_LINT_ERROR) ? { kind: 'lint', message } : { kind: 'error', message };
 		}
 		return { kind: 'error', message: exitCode === null ? 'Redpanda Connect was stopped by a signal.' : `Redpanda Connect exited with code ${exitCode}.` };
 	}
@@ -123,7 +144,7 @@ export function parseRunOutput(exitCode: number | null, stdout: string, stderr: 
 	}
 	if (isJsonObject(parsed)) {
 		if (typeof parsed.error === 'string') {
-			return { kind: 'failed', message: parsed.error };
+			return failureOf(parsed.error);
 		}
 		if (typeof parsed.content === 'string') {
 			// An empty key is not metadata the panel can show or set; it is dropped.
@@ -134,6 +155,15 @@ export function parseRunOutput(exitCode: number | null, stdout: string, stderr: 
 		}
 	}
 	return { kind: 'error', message: `Unexpected output: ${line}` };
+}
+
+/** An `{error}` line's result: `invalidInput`, or `failed` with the mapping line it names, if any. */
+function failureOf(message: string): BloblangResult {
+	if (message.includes(INVALID_INPUT_MARKER)) {
+		return { kind: 'invalidInput', message };
+	}
+	const line = Number(FAILED_ASSIGNMENT.exec(message)?.[1] ?? 0);
+	return line >= 1 ? { kind: 'failed', message, mappingLine: line } : { kind: 'failed', message };
 }
 
 /**

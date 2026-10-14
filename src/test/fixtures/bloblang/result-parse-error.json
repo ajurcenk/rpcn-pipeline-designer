@@ -2,13 +2,13 @@
   "type": "result",
   "result": {
     "kind": "parseError",
-    "message": "expected end of input",
-    "excerpt": "root.b = this.a +",
-    "mappingLine": 1,
-    "mappingChar": 18,
-    "fileLine": 8,
-    "fileChar": 29
+    "message": "required: expected comma or closing bracket",
+    "excerpt": "  |\n3 | root.c = 3\n  |        ^---",
+    "mappingLine": 3,
+    "mappingChar": 8,
+    "fileLine": 14,
+    "fileChar": 16
   },
-  "durationMs": 95,
+  "durationMs": 412,
   "binary": "rpk connect 4.112.0"
 }

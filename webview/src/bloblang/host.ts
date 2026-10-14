@@ -1,8 +1,9 @@
 // The Bloblang test panel's only channel to the host (AD-3, AD-5, tickets 4.2, 4.7): it posts the
 // user's intents and keeps its view state (the input content and metadata rows, the selected tabs
-// and Run on change) with `setState`, so that it survives a reload.
+// and Run on change, and since 4.8 the last `ok` result, shown dimmed under an error) with
+// `setState`, so that it survives a reload.
 
-import type { BloblangWebviewMessage } from '../../../src/shared/bloblangProtocol';
+import { parseBloblangHostMessage, type BloblangResult, type BloblangWebviewMessage } from '../../../src/shared/bloblangProtocol';
 import type { MetaRow } from './changes';
 
 interface VsCodeApi {
@@ -23,6 +24,8 @@ export interface ViewState {
 	readonly inputTab: PanelTab;
 	readonly outputTab: PanelTab;
 	readonly runOnChange: boolean;
+	/** The last `ok` result since the panel opened (4.8); none: absent. */
+	readonly lastOk?: Extract<BloblangResult, { kind: 'ok' }>;
 }
 
 export const DEFAULT_VIEW_STATE: ViewState = { content: '', meta: [], inputTab: 'content', outputTab: 'content', runOnChange: true };
@@ -47,7 +50,14 @@ export function readViewState(state: unknown): ViewState {
 		inputTab: isTab(s.inputTab) ? s.inputTab : 'content',
 		outputTab: isTab(s.outputTab) ? s.outputTab : 'content',
 		runOnChange: typeof s.runOnChange === 'boolean' ? s.runOnChange : true,
+		...(isOkResult(s.lastOk) ? { lastOk: s.lastOk } : {}),
 	};
+}
+
+/** A well-formed `ok` result, checked as the host's `result` message would be. */
+function isOkResult(v: unknown): v is Extract<BloblangResult, { kind: 'ok' }> {
+	const message = parseBloblangHostMessage({ type: 'result', result: v, durationMs: 0, binary: null });
+	return message?.type === 'result' && message.result.kind === 'ok';
 }
 
 let api: VsCodeApi | undefined;

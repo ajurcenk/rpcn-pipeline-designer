@@ -50,4 +50,10 @@ suite('adapters/graphPanel html (3.1)', () => {
 		assert.ok(!html.includes('webview.js'));
 		assert.ok(html.includes('<title>Bloblang: first</title>'));
 	});
+
+	test('the Bloblang panel (4.8): data entries are escaped data-* attributes of #root; none by default', () => {
+		assert.ok(webviewHtml(webview, extensionUri, 'bloblang', 'B').includes('<div id="root"></div>'));
+		const html = webviewHtml(webview, extensionUri, 'bloblang', 'B', { file: `a"<b>'.yaml` });
+		assert.ok(html.includes('<div id="root" data-file="a&#34;&#60;b&#62;&#39;.yaml"></div>'), html);
+	});
 });

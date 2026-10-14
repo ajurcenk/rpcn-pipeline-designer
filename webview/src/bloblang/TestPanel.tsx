@@ -4,9 +4,12 @@
 // added or changed fields and keys marked, and a "Changed:" footer). Each run posts
 // `run {content, meta}`: from Run at once, or with Run on change 300 ms after the last content or
 // metadata edit, or after a snapshot whose kind or source differs (an empty content runs nothing). The
-// host answers with `result`; results other than `ok` keep 4.2's text until 4.8. The `samples` and
-// `binary` messages are ignored for now, and anything that fails `parseBloblangHostMessage` is
-// ignored. It holds no domain state and runs nothing itself (AD-3): the input, the tabs and the
+// host answers with `result`. Ticket 4.8: every other result has its card and status pill (a parse
+// error, a mapping failure, an invalid input, a deleted message, a run that could not happen); Go to
+// line posts `goToLine {line}`; and the last `ok` output stays, dimmed, under an error card. The
+// `samples` and `binary` messages are ignored for now (4.9, the no-binary follow-up), and anything
+// that fails `parseBloblangHostMessage` is ignored. The last `ok` result is view state too, so a
+// recreated panel whose restored run fails still dims it. It holds no domain state and runs nothing itself (AD-3): the input, the tabs and the
 // toggle are view state, kept by the host page across reloads.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -16,9 +19,7 @@ import {
 import { inputMeta, metaRowCount, type MetaRow } from './changes';
 import type { PanelTab, ViewState } from './host';
 import { InputMetadata, type EditableRow } from './MetadataTable';
-import { ChangesFooter, OutputBody } from './OutputView';
-
-export { DELETED_TEXT, ERROR_TEXT, FAILED_TEXT } from './OutputView';
+import { DEFAULT_FILE_NAME, OutputBody, ResultFooter, type OkResult } from './OutputView';
 
 /** How long edits pause before Run on change runs the input. */
 export const RUN_DEBOUNCE_MS = 300;
@@ -39,15 +40,29 @@ export interface TestPanelProps {
 	/** The view state saved by an earlier load of the panel. */
 	readonly initialState: ViewState;
 	readonly saveState: (state: ViewState) => void;
+	/** The YAML file's name, for the error cards (`data-file` of the page's root). */
+	readonly fileName?: string;
 }
 
-/** The status pill's text and style for the last result (`ok`: duration and binary; else 4.2's text). */
-function statusOf(result: Result): { text: string; tone: 'ok' | 'plain' } {
+type Tone = 'ok' | 'err' | 'warn' | 'running';
+
+/** The status pill's text and tone for the last result (4.7, 4.8). */
+export function statusOf(result: Result): { text: string; tone: Tone } {
 	const ms = Math.round(result.durationMs);
-	if (result.result.kind === 'ok') {
-		return { text: `✓ Ran in ${ms} ms${result.binary ? ` · ${result.binary}` : ''}`, tone: 'ok' };
+	switch (result.result.kind) {
+		case 'ok':
+			return { text: `✓ Ran in ${ms} ms${result.binary ? ` · ${result.binary}` : ''}`, tone: 'ok' };
+		case 'parseError':
+			return { text: '✕ Syntax error · not run', tone: 'err' };
+		case 'failed':
+			return { text: '✕ Mapping failed on this input', tone: 'err' };
+		case 'invalidInput':
+			return { text: '✕ Input not valid for this mapping', tone: 'err' };
+		case 'deleted':
+			return { text: `⊘ Message deleted · ${ms} ms`, tone: 'warn' };
+		case 'error':
+			return { text: '✕ Not run', tone: 'err' };
 	}
-	return { text: `${ms} ms${result.binary ? ` · ${result.binary}` : ''}`, tone: 'plain' };
 }
 
 interface TabsProps {
@@ -93,7 +108,7 @@ function lineCount(text: string): string {
 	return `${lines} ${lines === 1 ? 'line' : 'lines'}${json ? ' · JSON' : ''}`;
 }
 
-export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
+export function TestPanel({ post, initialState, saveState, fileName }: TestPanelProps) {
 	const nextId = useRef(0);
 	const withId = (row: MetaRow): EditableRow => ({ id: nextId.current++, key: row.key, value: row.value });
 	const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -103,6 +118,8 @@ export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
 	const [outputTab, setOutputTab] = useState<PanelTab>(initialState.outputTab);
 	const [runOnChange, setRunOnChange] = useState(initialState.runOnChange);
 	const [result, setResult] = useState<Result | null>(null);
+	/** The last `ok` result since the panel opened: shown dimmed under an error card. */
+	const [lastOk, setLastOk] = useState<OkResult | undefined>(initialState.lastOk);
 	const [running, setRunning] = useState(false);
 	const [focusRow, setFocusRow] = useState<number | undefined>(undefined);
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -115,8 +132,10 @@ export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
 	const lastSource = useRef<string | undefined>(undefined);
 
 	useEffect(() => {
-		saveState({ content, meta: rows.map(({ key, value }) => ({ key, value })), inputTab, outputTab, runOnChange });
-	}, [saveState, content, rows, inputTab, outputTab, runOnChange]);
+		saveState({
+			content, meta: rows.map(({ key, value }) => ({ key, value })), inputTab, outputTab, runOnChange, ...(lastOk ? { lastOk } : {}),
+		});
+	}, [saveState, content, rows, inputTab, outputTab, runOnChange, lastOk]);
 
 	const cancel = () => {
 		clearTimeout(timer.current);
@@ -167,6 +186,9 @@ export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
 				// A result arriving after the content was cleared is dropped: the empty state stays.
 				setResult(message);
 				setRunning(false);
+				if (message.result.kind === 'ok') {
+					setLastOk(message.result);
+				}
 			}
 		};
 		window.addEventListener('message', onMessage);
@@ -205,6 +227,8 @@ export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
 
 	const status = running ? { text: RUNNING_TEXT, tone: 'running' as const } : result ? statusOf(result) : undefined;
 	const okResult = result?.result.kind === 'ok' ? result.result : undefined;
+	const dimmed = result !== null && lastOk !== undefined && result.result.kind !== 'ok' && result.result.kind !== 'deleted';
+	const goToLine = useCallback((line: number) => post({ type: 'goToLine', line }), [post]);
 
 	return (
 		<main className="rpcn-bl">
@@ -263,9 +287,16 @@ export function TestPanel({ post, initialState, saveState }: TestPanelProps) {
 						count={okResult ? String(Object.keys(okResult.meta).length) : '–'} onSelect={setOutputTab}
 					/>
 					<div className="rpcn-bl-colbody" role="tabpanel" id="rpcn-bl-out-panel" aria-labelledby={`rpcn-bl-out-tab-${outputTab}`}>
-						{result ? <OutputBody result={result.result} tab={outputTab} /> : <p className="rpcn-bl-note rpcn-bl-pad">{EMPTY_TEXT}</p>}
+						{result
+							? (
+								<OutputBody
+									result={result.result} tab={outputTab} lastOk={lastOk}
+									fileName={fileName ?? DEFAULT_FILE_NAME} onGoToLine={goToLine}
+								/>
+							)
+							: <p className="rpcn-bl-note rpcn-bl-pad">{EMPTY_TEXT}</p>}
 					</div>
-					{okResult && <ChangesFooter result={okResult} />}
+					{result && <ResultFooter result={result.result} dimmed={dimmed} />}
 				</section>
 			</div>
 		</main>

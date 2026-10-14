@@ -2,7 +2,11 @@
 // from `src/core/bloblangRun` to a temporary file under the extension's global storage, runs it
 // with `run` through the shared builder (AD-9: the same `--resources` and `--env-file` as Run) and
 // the one-shot spawn site with a timeout, deletes the file once the child exited, and reads the
-// output with `parseRunOutput`. Never throws or rejects. Beside it, the live parse (ticket 4.5):
+// output with `parseRunOutput`. Never throws or rejects. Ticket 4.8 classifies the outcome: a run
+// stopped by `Config lint error` is parsed with `blobl` (`parseMapping`), so a Bloblang parse error
+// becomes `parseError` with the binary's mapping-relative position (the run's own lint positions are
+// config-relative and unreliable, spike 4.1 Q1), and any other lint message stays `error`; the file
+// positions of `parseError` and `failed` come from the caller's `locate` (4.3's position map). Beside it, the live parse (ticket 4.5):
 // `parseMapping` writes the Bloblang to a temporary file the same way and runs `blobl --file` on
 // it, stdin closed (parse only), read with `parseBloblParseOutput`.
 
@@ -10,7 +14,7 @@ import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { BloblParseOutcome, parseBloblParseOutput } from '../../core/bloblangParse';
-import { parseRunOutput, testConfig } from '../../core/bloblangRun';
+import { parseRunOutput, testConfig, type RunOutcome } from '../../core/bloblangRun';
 import type { BloblangProcessorKind, BloblangResult, InputMeta } from '../../shared/bloblangProtocol';
 import { ArgsEnvironment, buildBloblCommand, buildRunCommand, describeArgsFailure } from './args';
 import { BinaryState } from './binary';
@@ -23,8 +27,19 @@ export const MAPPING_PARSE_TIMEOUT_MS = 5_000;
 /** The message of a test run with no usable binary; nothing is spawned (4.8 adds the real state). */
 export const NO_BINARY_MESSAGE = 'No Redpanda Connect binary.';
 
+/** A 1-based line and char of the YAML document (a `vscode.Position`'s line and character plus 1). */
+export interface FilePosition {
+	readonly line: number;
+	readonly char: number;
+}
+
 export interface MappingTestDependencies {
 	readonly argsEnvironment?: ArgsEnvironment;
+	/**
+	 * From the mapping's 1-based `line` and `char` to the document's (4.3's position map). Without
+	 * it, the mapping's own position (as if the mapping were the whole file).
+	 */
+	readonly locate?: (line: number, char: number) => FilePosition;
 	readonly timeoutMs?: number;
 	/** The child's working directory (Run's: the workspace folder, else the file's folder). */
 	readonly cwd?: string;
@@ -92,13 +107,52 @@ export async function runMappingTest(
 			case 'timeout':
 				return done({ kind: 'error', message: `No result after ${outcome.timeoutMs / 1000} s; stopped.` });
 			case 'exited':
-				return done(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr, { content, meta }));
+				return done(await classify(parseRunOutput(outcome.exitCode, outcome.stdout, outcome.stderr, { content, meta }), state, source, storageDir, deps));
 		}
 	} catch (err) {
 		return done({ kind: 'error', message: errorText(err) });
 	} finally {
 		await remove(file);
 	}
+}
+
+/**
+ * A run outcome as the panel shows it (4.8): a lint stop is a `parseError` when `blobl` finds one
+ * (its message, excerpt and mapping position, plus the file position), else `error` with the lint
+ * message verbatim; a `failed` with a mapping line gets its file line.
+ */
+async function classify(
+	outcome: RunOutcome,
+	state: BinaryState,
+	source: string,
+	storageDir: string,
+	deps: MappingTestDependencies,
+): Promise<BloblangResult> {
+	const locate = deps.locate ?? ((line: number, char: number): FilePosition => ({ line, char }));
+	if (outcome.kind === 'lint') {
+		const parsed = await parseMapping(state, source, storageDir, {
+			...(deps.argsEnvironment ? { argsEnvironment: deps.argsEnvironment } : {}),
+			...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+			...(deps.run ? { run: deps.run } : {}),
+		});
+		if (parsed.kind !== 'parseError') {
+			return { kind: 'error', message: outcome.message };
+		}
+		const at = locate(parsed.line, parsed.char);
+		return {
+			kind: 'parseError',
+			message: parsed.message,
+			excerpt: parsed.excerpt,
+			mappingLine: parsed.line,
+			mappingChar: parsed.char,
+			fileLine: at.line,
+			fileChar: at.char,
+		};
+	}
+	if (outcome.kind === 'failed' && outcome.mappingLine !== undefined) {
+		return { ...outcome, fileLine: locate(outcome.mappingLine, 1).line };
+	}
+	return outcome;
 }
 
 export interface MappingParseDependencies {

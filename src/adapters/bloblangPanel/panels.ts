@@ -8,7 +8,12 @@
 // metadata through the AD-21 test run (4.7), and the panel gets the `result`. Runs are single flight
 // per panel: an input that arrives during a run waits (only the latest one), and only the latest
 // input's result is posted. Untitled files never run. The snapshot carries the binary's status and
-// no samples; the other webview messages and samples come later (4.8, 4.9).
+// no samples; samples and the binary actions come later (4.9, the no-binary follow-up).
+// Ticket 4.8: each result's file positions come from 4.3's position map on the text the run used
+// (`locate`); `goToLine` shows the YAML in its editor group with the cursor at that line's start,
+// revealed in the centre; and while a panel's latest result is `failed` with a file line, that line
+// ends with the shared end-of-line hint (`hint.ts`), which follows the mapping line through edits
+// and clears on any other result, when the line leaves the processor, and when the panel closes.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -18,9 +23,10 @@ import {
 } from '../../shared/bloblangProtocol';
 import { webviewHtml } from '../graphPanel/html';
 import type { BinaryState } from '../redpandaConnect/binary';
-import { runMappingTest, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
+import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
 import type { DetectionRegistry } from '../vscode/detection';
 import { parsedDocument } from '../vscode/parseCache';
+import { BloblangHints } from './hint';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export const BLOBLANG_VIEW_TYPE = 'redpandaConnect.bloblang';
@@ -60,6 +66,13 @@ export type MappingTestRunner = (
 	deps: MappingTestDependencies,
 ) => Promise<MappingTestOutcome>;
 
+/** The processor at a panel's path and the document text it was read from. */
+interface Current {
+	readonly processor: BloblangProcessor | undefined;
+	/** The document's text when the processor was read: the base of its position map. */
+	readonly text: string;
+}
+
 /** One run's input: the message content and its metadata. */
 interface TestInput {
 	readonly content: string;
@@ -89,6 +102,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	private loop: Promise<void> | undefined;
 	/** The `kind` and source last sent in a snapshot, so that an edit elsewhere sends nothing. */
 	private sentSource: string | undefined;
+	/**
+	 * The latest `failed` result with a file line: its mapping line and that line's text in the
+	 * source the run used; `undefined`: no hint.
+	 */
+	private hint: { readonly line: number; readonly text: string } | undefined;
 	private disposed = false;
 	private readonly subscription: vscode.Disposable;
 
@@ -108,6 +126,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
 				await this.run({ content: msg.content, meta: msg.meta });
+			} else if (msg?.type === 'goToLine') {
+				await this.owner.goToLine(this.uri, msg.line);
 			}
 		} catch (e) {
 			this.fail(e);
@@ -118,6 +138,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	async documentChanged(): Promise<void> {
 		try {
 			const processor = this.processor();
+			this.updateHint();
 			if (JSON.stringify([processor?.kind ?? 'mapping', processor?.source ?? '']) !== this.sentSource) {
 				await this.postSnapshot();
 			}
@@ -150,13 +171,20 @@ class BloblangPanel implements BloblangPanelHandle {
 						const next = this.pending;
 						this.pending = undefined;
 						let outcome: MappingTestOutcome;
+						let current: Current | undefined;
 						try {
-							outcome = await this.owner.runTest(this.uri, this.processor(), this.path, next);
+							current = this.current();
+							outcome = await this.owner.runTest(this.uri, current, this.path, next);
 						} catch (e) {
 							this.fail(e);
 							outcome = { result: { kind: 'error', message: e instanceof Error ? e.message : String(e) }, durationMs: 0, binary: null };
 						}
-						if (this.pending === undefined) {
+						if (this.pending === undefined && !this.disposed) {
+							const result = outcome.result;
+							const line = result.kind === 'failed' && result.fileLine !== undefined ? result.mappingLine : undefined;
+							const text = line === undefined ? undefined : mappingLineText(current?.processor?.source ?? '', line);
+							this.hint = line !== undefined && text !== undefined ? { line, text } : undefined;
+							this.updateHint();
 							await this.post({ type: 'result', ...outcome });
 						}
 					}
@@ -170,8 +198,48 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	/** The processor at this panel's path in the open document, now. */
 	private processor(): BloblangProcessor | undefined {
-		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
-		return doc ? bloblangProcessorByPath(bloblangProcessors(parsedDocument(doc).parsed), this.path) : undefined;
+		return this.current().processor;
+	}
+
+	/** The processor at this panel's path and the text of the open document, now. */
+	private current(): Current {
+		const doc = this.document();
+		if (!doc) {
+			return { processor: undefined, text: '' };
+		}
+		const parsed = parsedDocument(doc).parsed;
+		return { processor: bloblangProcessorByPath(bloblangProcessors(parsed), this.path), text: doc.getText() };
+	}
+
+	private document(): vscode.TextDocument | undefined {
+		return vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
+	}
+
+	/**
+	 * Puts the hint on the file line of the hint's mapping line in the processor now, or clears it
+	 * for good: with no hint, no processor, or a mapping line whose text is not the failed run's any
+	 * more (an edit that only shifts lines clears it too; the next run places it again).
+	 */
+	private updateHint(): void {
+		let line: number | undefined;
+		const doc = this.document();
+		const hint = this.hint;
+		const processor = hint && doc ? this.processor() : undefined;
+		if (doc && processor && hint && mappingLineText(processor.source, hint.line) === hint.text) {
+			const offset = processor.positions.lineStart(hint.line);
+			if (offset >= processor.range[0] && offset < processor.range[1]) {
+				line = doc.positionAt(offset).line;
+			}
+		}
+		if (line === undefined) {
+			// Gone for good: an edit that brings the line back does not bring the hint back.
+			this.hint = undefined;
+		}
+		this.owner.hints.set(this.key, this.uri, line);
+	}
+
+	private get key(): string {
+		return keyOf(this.uri, this.path);
 	}
 
 	private async post(message: BloblangHostMessage): Promise<void> {
@@ -197,6 +265,8 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	dispose(): void {
 		this.disposed = true;
+		this.hint = undefined;
+		this.owner.hints.set(this.key, this.uri, undefined);
 		this.subscription.dispose();
 	}
 }
@@ -205,6 +275,8 @@ class BloblangPanel implements BloblangPanelHandle {
 export class BloblangPanels implements vscode.Disposable {
 	private readonly panels = new Map<string, BloblangPanel>();
 	private readonly subscription: vscode.Disposable;
+	/** The end-of-line hints of all panels: one decoration type (4.8). */
+	readonly hints = new BloblangHints();
 
 	constructor(private readonly options: BloblangPanelsOptions) {
 		// The shown Bloblang follows edits, so it always matches what the next run uses.
@@ -319,13 +391,18 @@ export class BloblangPanels implements vscode.Disposable {
 				this.panels.delete(key);
 			}
 		});
-		panel.webview.html = webviewHtml(panel.webview, this.options.extensionUri, 'bloblang', title);
+		// The file's name, for the error cards' "<file> line F" (4.8).
+		panel.webview.html = webviewHtml(panel.webview, this.options.extensionUri, 'bloblang', title, { file: path.posix.basename(uri.path) });
 		return entry;
 	}
 
-	/** Runs `processor` (the one at `processorPath` of `uri`, now) on `input`. */
-	async runTest(uri: vscode.Uri, processor: BloblangProcessor | undefined, processorPath: string, input: TestInput): Promise<MappingTestOutcome> {
+	/**
+	 * Runs the processor of `current` (the one at `processorPath` of `uri`, now) on `input`. Its
+	 * result's file positions are those of `current.text`, the document the run used.
+	 */
+	async runTest(uri: vscode.Uri, current: Current, processorPath: string, input: TestInput): Promise<MappingTestOutcome> {
 		const state = this.options.binary.state;
+		const { processor, text } = current;
 		if (!processor) {
 			return {
 				result: { kind: 'error', message: `There is no mapping or mutation processor at ${processorPath} in ${path.posix.basename(uri.path)} any more.` },
@@ -334,7 +411,26 @@ export class BloblangPanels implements vscode.Disposable {
 			};
 		}
 		const cwd = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
-		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, input.content, input.meta, this.options.storageDir, { cwd });
+		const locate = (line: number, char: number): FilePosition => positionIn(text, processor.positions.offsetAt(line, char));
+		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, input.content, input.meta, this.options.storageDir, { cwd, locate });
+	}
+
+	/**
+	 * Go to line (4.8): shows `uri` in its editor group with the cursor at the start of the 1-based
+	 * `line` (past the end: the last line), revealed in the centre, and the editor takes focus.
+	 */
+	async goToLine(uri: vscode.Uri, line: number): Promise<void> {
+		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())
+			?? await vscode.workspace.openTextDocument(uri);
+		const at = new vscode.Position(Math.max(0, Math.min(line, doc.lineCount) - 1), 0);
+		const range = new vscode.Range(at, at);
+		const editor = await vscode.window.showTextDocument(doc, { viewColumn: editorColumn(uri), preserveFocus: false, selection: range });
+		editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+	}
+
+	/** The end-of-line hints' current ranges in `uri` (test seam: decorations can't be read back). */
+	hintRanges(uri: vscode.Uri): vscode.Range[] {
+		return this.hints.ranges(uri);
 	}
 
 	/** The open panel of the processor at `processorPath` of `uri`, if any (test seam). */
@@ -353,7 +449,46 @@ export class BloblangPanels implements vscode.Disposable {
 			entry.panel.dispose();
 		}
 		this.panels.clear();
+		this.hints.dispose();
 	}
+}
+
+/**
+ * The editor group of `uri`'s editor: a visible editor's, else the group with a tab of it, else the
+ * first group.
+ */
+function editorColumn(uri: vscode.Uri): vscode.ViewColumn {
+	const key = uri.toString();
+	const visible = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === key)?.viewColumn;
+	if (visible !== undefined) {
+		return visible;
+	}
+	const group = vscode.window.tabGroups.all.find((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === key));
+	return group?.viewColumn ?? vscode.ViewColumn.One;
+}
+
+/** The text of the mapping's 1-based `line`; `undefined` past its lines (a final line break starts none). */
+function mappingLineText(source: string, line: number): string | undefined {
+	const lines = source.replace(/\n$/, '').split('\n');
+	return line >= 1 && line <= lines.length ? lines[line - 1] : undefined;
+}
+
+/**
+ * The 1-based line and UTF-16 character of `offset` in `text`, as `TextDocument.positionAt` gives
+ * them plus 1 (line breaks: `\r\n`, `\n`, `\r`); an offset past the end is the end.
+ */
+export function positionIn(text: string, offset: number): FilePosition {
+	const at = Math.max(0, Math.min(offset, text.length));
+	let line = 1;
+	let start = 0;
+	for (let i = 0; i < at; i++) {
+		const c = text.charCodeAt(i);
+		if (c === 10 || (c === 13 && text.charCodeAt(i + 1) !== 10)) {
+			line++;
+			start = i + 1;
+		}
+	}
+	return { line, char: at - start + 1 };
 }
 
 function keyOf(uri: vscode.Uri, processorPath: string): string {
