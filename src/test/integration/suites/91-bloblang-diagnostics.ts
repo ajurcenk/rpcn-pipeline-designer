@@ -2,15 +2,19 @@
 // `blobl --file` parse on a fake (`bloblParseBody`: `ERR@<line>:<char>` is a parse error there,
 // `UNSET` an unset env var, `SLOW` a 1 s parse), the `Bloblang` collection at 4.3's mapped
 // positions, and the boundaries the entry meets: lint on save (2.4) hides its duplicate and keeps
-// the rest, and a 4.2 test run still works while a parse is in flight.
+// the rest, and a 4.2 test run still works while a parse is in flight. Ticket 6: the errors mark
+// their processors' nodes in the real graph panel (AD-17), seen through its posted `nodeStatus`.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { TEST_MAPPING_COMMAND, type BloblangPanelHandle } from '../../../adapters/bloblangPanel/panels';
+import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
+import type { NodeStatus, NodeStatusById } from '../../../shared/protocol';
 import { BLOBLANG_SOURCE } from '../../../adapters/vscode/bloblangDiagnostics';
 import { type ExtensionApi } from '../../../extension';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
+import { live, settle, showGraph } from '../graphHelpers';
 import { EXTENSION_ID, waitFor } from '../helpers';
 
 const ENV_LINE = 'Bloblang parse: failed to replace env vars: required environment variables were not set: [UNSET]';
@@ -36,6 +40,21 @@ const CONFIG = [
 	'    mapping: root.e = 1',
 	'',
 ].join('\n');
+
+/** The node ids of CONFIG's processors (ticket 6). */
+const SWITCH_ID = 'path:pipeline.processors[1]';
+const CASE_ID = `${SWITCH_ID}.switch[0]`;
+const MUTATION_ID = `${CASE_ID}.processors[0]`;
+const PLAIN_ID = 'path:pipeline.processors[2]';
+const RESOURCE_ID = 'res:processor:res';
+const MESSAGE = 'expected fake thing';
+/** CONFIG with its block mapping labelled `blk`. */
+const LABELLED = CONFIG.replace('    - mapping: |', '    - label: blk\n      mapping: |');
+const BLOCK_ID = 'label:blk';
+
+/** A node's status for its own messages; a group's for rolled-up ones. */
+const own = (...messages: string[]): NodeStatus => ({ severity: 'error', own: 'error', messages, ownMessages: messages });
+const rolled = (...messages: string[]): NodeStatus => ({ severity: 'error', messages });
 
 type Shown = [line: number, start: number, endLine: number, end: number, message: string, severity: vscode.DiagnosticSeverity];
 
@@ -109,6 +128,28 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		return doc.positionAt(offset);
 	}
 
+	/** The `nodeStatus` messages the graph panel posted, in order. */
+	const statuses = (handle: GraphPanelHandle): NodeStatusById[] =>
+		handle.posted.flatMap((m) => (m.type === 'nodeStatus' ? [m.byId] : []));
+
+	/** Opens the real graph panel of `doc` (once the schema is there) and answers its `ready`. */
+	async function graph(doc: vscode.TextDocument): Promise<GraphPanelHandle> {
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 15_000), 'a schema for the graph');
+		const handle = await showGraph(doc);
+		await handle.receive({ type: 'ready' });
+		return handle;
+	}
+
+	/** The status the webview has: the last `nodeStatus`, or a later snapshot's. */
+	const shownStatus = (handle: GraphPanelHandle): NodeStatusById | undefined => handle.posted.flatMap((m) =>
+		(m.type === 'nodeStatus' ? [m.byId] : m.type === 'snapshot' ? [m.nodeStatus] : [])).at(-1);
+
+	/** Waits until the status the webview has is `expected`. */
+	async function expectStatus(handle: GraphPanelHandle, expected: NodeStatusById, what: string): Promise<void> {
+		assert.ok(await waitFor(() => JSON.stringify(shownStatus(handle) ?? {}) === JSON.stringify(expected), 10_000),
+			`${what}: ${JSON.stringify(shownStatus(handle))}`);
+	}
+
 	const error = (pos: vscode.Position, width = 1): Shown =>
 		[pos.line, pos.character, pos.line, pos.character + width, 'expected fake thing', vscode.DiagnosticSeverity.Error];
 
@@ -142,6 +183,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 
 	teardown(async () => {
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		assert.ok(await waitFor(() => api().graphPanels.size === 0, 10_000), 'closing the editors disposes the graph panels');
 	});
 
 	suiteTeardown(async () => {
@@ -385,6 +427,102 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		}
 	});
 
+	test('GRAPH MARKED / CHURN / CLEARED (ticket 6): a live error marks its labelled block mapping\'s node with the binary\'s message; a move inside it posts nothing; the fix clears it', async () => {
+		const editor = await open('graph-marked.yaml', LABELLED);
+		const doc = editor.document;
+		const handle = await graph(doc);
+		await replace(editor, 'root.b = this.b', 'root.b = this.b + ERR@2:17');
+		await expectStatus(handle, { [BLOCK_ID]: own(MESSAGE) }, 'MARKED');
+
+		// CHURN: the diagnostic moves within the mapping; the node status stays the same.
+		const count = statuses(handle).length;
+		await replace(editor, 'ERR@2:17', 'ERR@2:18');
+		const moved = [error(at(doc, ' ERR@2:18'))];
+		assert.ok(await waitFor(() => JSON.stringify(bloblangOf(doc.uri)) === JSON.stringify(moved), 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		await quiet();
+		await settle();
+		assert.strictEqual(statuses(handle).length, count, 'no new nodeStatus for an unchanged status');
+
+		// CLEARED
+		await replace(editor, ' + ERR@2:18', '');
+		await expectStatus(handle, {}, 'CLEARED');
+	});
+
+	test('GRAPH NESTED / COLLAPSED (ticket 6): a switch case\'s mutation and a processor resource are marked; the case and the switch roll it up', async () => {
+		const editor = await open('graph-nested.yaml', CONFIG);
+		const doc = editor.document;
+		const handle = await graph(doc);
+		await replace(editor, 'mutation: root.c = 1', 'mutation: root.c = 1 ERR@1:6');
+		await replace(editor, 'mapping: root.e = 1', 'mapping: root.e = 1 ERR@1:8');
+		// The switch's roll-up is what its header shows when collapsed (3.8, the webview unchanged).
+		await expectStatus(handle, {
+			[SWITCH_ID]: rolled(MESSAGE),
+			[CASE_ID]: rolled(MESSAGE),
+			[MUTATION_ID]: own(MESSAGE),
+			[RESOURCE_ID]: own(MESSAGE),
+		}, 'NESTED');
+	});
+
+	test('GRAPH FROZEN (ticket 6): while the YAML does not parse no status is sent and the marker stays; once it parses the status is recomputed', async () => {
+		const editor = await open('graph-frozen.yaml', CONFIG.replace('mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:1'));
+		const doc = editor.document;
+		const handle = await graph(doc);
+		const marked = { [PLAIN_ID]: own(MESSAGE) };
+		await expectStatus(handle, marked, 'marked');
+		const brokenYaml = async () => {
+			const count = statuses(handle).length;
+			await replace(editor, 'stdout: {}', 'stdout: { codec: [lines }');
+			assert.ok(await waitFor(() => live(handle).at(-1)?.type === 'parseError', 10_000), 'the banner');
+			// 4.5 clears the Bloblang diagnostics while the YAML does not parse.
+			assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 0, 5_000));
+			await settle();
+			assert.strictEqual(statuses(handle).length, count, 'frozen while broken');
+			await handle.receive({ type: 'ready' });
+			const snapshot = handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+			assert.ok(snapshot?.type === 'snapshot' && snapshot.parseError);
+			assert.deepStrictEqual(snapshot.nodeStatus, marked, 'the marker stays');
+		};
+		const fixYaml = () => replace(editor, 'stdout: { codec: [lines }', 'stdout: {}');
+
+		await brokenYaml();
+		const beforeFix = statuses(handle).length;
+		await fixYaml();
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 1, 5_000), 'back once it parses');
+		// The model is mapped against the diagnostics of that moment, before 4.5 republishes its
+		// cached error (after its debounce), so a `{}` may be posted first; the last post is the marker.
+		assert.ok(await waitFor(() => statuses(handle).length > beforeFix
+			&& JSON.stringify(statuses(handle).at(-1)) === JSON.stringify(marked), 10_000),
+			`recomputed with the republished error: ${JSON.stringify(statuses(handle).slice(beforeFix))}`);
+		await quiet();
+		await settle();
+		assert.deepStrictEqual(statuses(handle).at(-1), marked);
+
+		// Fixed while the YAML is broken: once it parses, the recomputed status is empty.
+		await brokenYaml();
+		await replace(editor, ' ERR@1:1', '');
+		await fixYaml();
+		await expectStatus(handle, {}, 'recomputed');
+		assert.deepStrictEqual(bloblangOf(doc.uri), []);
+	});
+
+	test('GRAPH WITH_LINT (ticket 6): a lint finding and a live error on one processor, saved, give one status with both; lint\'s duplicate stays hidden', async () => {
+		const ONE_ID = 'label:one';
+		const NOPE = 'field nope not recognised';
+		const editor = await open('graph-lint.yaml', CONFIG.replace('    - mapping: root.d = 1',
+			'    - label: one\n      mapping: root.d = 1 ERR@1:1 LINTME\n      nope: 1'));
+		const doc = editor.document;
+		const handle = await graph(doc);
+		await expectStatus(handle, { [ONE_ID]: own(MESSAGE) }, 'the live error');
+		await replace(editor, 'stdin: {}', 'stdin: { }');
+		assert.ok(await doc.save());
+		assert.ok(await waitFor(() => (shownStatus(handle)?.[ONE_ID]?.ownMessages?.length ?? 0) === 2, 15_000),
+			JSON.stringify(shownStatus(handle)));
+		const status = shownStatus(handle)![ONE_ID];
+		assert.deepStrictEqual({ ...status, messages: [...status.messages].sort(), ownMessages: [...status.ownMessages!].sort() },
+			own(MESSAGE, NOPE));
+		assert.ok(!lintOf(doc.uri).some(([, m]) => String(m).startsWith(MESSAGE)), `lint's duplicate is hidden: ${JSON.stringify(lintOf(doc.uri))}`);
+	});
+
 	test('NO_BINARY: no diagnostics and no spawn; after Set path they appear', async () => {
 		await config().update('binaryPath', path.join(dir, 'gone'), vscode.ConfigurationTarget.Global);
 		try {
@@ -392,6 +530,9 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 			const before = spawns();
 			const editor = await open('nobin.yaml', CONFIG.replace('mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:1'));
 			const uri = editor.document.uri;
+			// Ticket 6: without a binary the graph has no model (3.9 empty state), so there is nothing to mark.
+			const handle = await showGraph(editor.document);
+			await handle.receive({ type: 'ready' });
 			await replace(editor, 'ERR@1:1', 'ERR@1:2');
 			await new Promise((r) => setTimeout(r, 600));
 			await quiet();
@@ -400,6 +541,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 			await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok', 15_000));
 			assert.ok(await waitFor(() => bloblangOf(uri).length === 1, 10_000), 'the diagnostic appears once the binary is found');
+			await expectStatus(handle, { [PLAIN_ID]: own(MESSAGE) }, 'the marker appears once the binary is found');
 		} finally {
 			await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok', 15_000));

@@ -12,7 +12,8 @@
 // while there is no usable binary, has none. A processor whose new text is still being parsed
 // keeps its last diagnostic until the result. Only deterministic outcomes are cached (a parse, a
 // parse error, an unset env var); a timeout or spawn failure is parsed again on the next trigger.
-// Lint (AD-12) reads `liveErrorsFor` to hide its duplicate of a live error.
+// Lint (AD-12) reads `liveErrorsFor` to hide its duplicate of a live error, and adds `diagnostics`
+// to the view the graph's node status reads (AD-17, ticket 6).
 
 import * as vscode from 'vscode';
 import type { BloblParseOutcome } from '../../core/bloblangParse';

@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { statusDiagnostics } from '../../../adapters/graphPanel/panels';
+import { BLOBLANG_SOURCE } from '../../../adapters/vscode/bloblangDiagnostics';
 import { LINT_SOURCE } from '../../../adapters/vscode/diagnostics';
 
 suite('adapters/graphPanel statusDiagnostics (3.8)', () => {
@@ -21,6 +22,16 @@ suite('adapters/graphPanel statusDiagnostics (3.8)', () => {
 			{ offset: text.indexOf('root'), severity: 'warning', message: 'precise' },
 			{ offset: 0, severity: 'information', message: 'info' },
 			{ offset: 0, severity: 'hint', message: 'hint' },
+		]);
+	});
+
+	test('a Bloblang diagnostic (ticket 6) maps at its range start, inside the mapping\'s value', async () => {
+		const text = 'pipeline:\n  processors:\n    - mapping: root = this +\n';
+		const doc = await vscode.workspace.openTextDocument({ language: 'yaml', content: text });
+		const bloblang = new vscode.Diagnostic(new vscode.Range(2, 27, 2, 28), 'expected thing', vscode.DiagnosticSeverity.Error);
+		bloblang.source = BLOBLANG_SOURCE;
+		assert.deepStrictEqual(statusDiagnostics(doc, [bloblang]), [
+			{ offset: text.indexOf('+'), severity: 'error', message: 'expected thing' },
 		]);
 	});
 });

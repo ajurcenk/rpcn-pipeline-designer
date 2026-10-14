@@ -6,11 +6,13 @@
 // file stopping being detected (which includes close). One lint per URI runs at a time: a save
 // during a run queues one rerun, and a result is dropped if the file was edited, saved again,
 // closed or undetected since its save (a generation per URI). `diagnosticsFor` is epic 3's
-// deduped view: Red Hat's diagnostics plus the published lint ones. Lint's duplicate of a live
-// Bloblang error (ticket 4.5, `bloblangErrors`) is hidden too: a finding on a line of that
-// processor (its key line through the line after its value) whose message starts with the live
-// error's. The live error wins over lint's duplicate, whose position is unreliable. The Bloblang collection is its
-// own, so the first edit after a save leaves it alone.
+// deduped view, which the graph's node status reads (AD-17): Red Hat's diagnostics, the
+// published lint ones and the published live Bloblang ones (ticket 6, `bloblangErrors`); its
+// event fires when any of the three change. Lint's duplicate of a live Bloblang error (ticket
+// 4.5) is hidden: a finding on a line of that processor (its key line through the line after its
+// value) whose message starts with the live error's. The live error wins over lint's duplicate,
+// whose position is unreliable. The Bloblang collection is its own, so the first edit after a
+// save leaves it alone.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -48,9 +50,13 @@ export interface LintDiagnosticsOptions {
 	readonly lint: (doc: vscode.TextDocument) => Promise<LintResult>;
 	readonly log: (line: string) => void;
 	readonly source?: DiagnosticsSource;
-	/** The live Bloblang errors (4.5); lint's duplicate of one is hidden. */
+	/**
+	 * The live Bloblang errors (4.5): lint's duplicate of one is hidden, and the published
+	 * diagnostics are part of `diagnosticsFor` (ticket 6).
+	 */
 	readonly bloblangErrors?: {
 		liveErrorsFor(uri: vscode.Uri): readonly LiveBloblangError[];
+		diagnostics(uri: vscode.Uri): readonly vscode.Diagnostic[];
 		readonly onDidChangeDiagnostics: vscode.Event<vscode.Uri>;
 	};
 }
@@ -116,9 +122,9 @@ export class LintDiagnostics implements vscode.Disposable {
 		}
 	}
 
-	/** Red Hat's diagnostics for the URI plus the published (deduped) lint ones. */
+	/** Red Hat's diagnostics for the URI, the published (deduped) lint ones and the published Bloblang ones. */
 	diagnosticsFor(uri: vscode.Uri): vscode.Diagnostic[] {
-		return [...this.redHat(uri), ...(this.collection.get(uri) ?? [])];
+		return [...this.redHat(uri), ...(this.collection.get(uri) ?? []), ...this.bloblang(uri)];
 	}
 
 	dispose(): void {
@@ -226,7 +232,7 @@ export class LintDiagnostics implements vscode.Disposable {
 				this.collection.delete(uri);
 			}
 		}
-		const signature = signatureOf([...redHat, ...published]);
+		const signature = signatureOf([...redHat, ...published, ...this.bloblang(uri)]);
 		if (signature !== state.signature) {
 			state.signature = signature;
 			this.emitter.fire(uri);
@@ -235,6 +241,10 @@ export class LintDiagnostics implements vscode.Disposable {
 
 	private redHat(uri: vscode.Uri): vscode.Diagnostic[] {
 		return this.source.getDiagnostics(uri).filter((d) => d.source !== LINT_SOURCE && isRedHatDiagnostic(d));
+	}
+
+	private bloblang(uri: vscode.Uri): readonly vscode.Diagnostic[] {
+		return this.options.bloblangErrors?.diagnostics(uri) ?? [];
 	}
 
 	private document(uri: vscode.Uri): vscode.TextDocument | undefined {

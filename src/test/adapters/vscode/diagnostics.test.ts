@@ -343,4 +343,57 @@ suite('adapters/vscode LintDiagnostics', () => {
 		await tick();
 		assert.deepStrictEqual(published().map((p) => p[0]), [2]);
 	});
+
+	suite('with live Bloblang errors (4.5, ticket 6)', () => {
+		/** A Bloblang collection the test sets (and fires) itself. */
+		class FakeBloblang {
+			readonly emitter = new vscode.EventEmitter<vscode.Uri>();
+			readonly onDidChangeDiagnostics = this.emitter.event;
+			current: vscode.Diagnostic[] = [];
+			diagnostics(): readonly vscode.Diagnostic[] { return this.current; }
+			liveErrorsFor() { return []; }
+			set(uri: vscode.Uri, lines: number[], message = 'expected thing'): void {
+				this.current = lines.map((l) => {
+					const d = new vscode.Diagnostic(new vscode.Range(l - 1, 4, l - 1, 5), message, vscode.DiagnosticSeverity.Error);
+					d.source = 'Bloblang';
+					return d;
+				});
+				this.emitter.fire(uri);
+			}
+		}
+		let bloblang: FakeBloblang;
+
+		setup(() => {
+			controller.dispose();
+			bloblang = new FakeBloblang();
+			controller = new LintDiagnostics({ detection, lint: lint.lint, log: (l) => logs.push(l), source, bloblangErrors: bloblang });
+			controller.onDidChangeDiagnostics((uri) => changes.push(uri.toString()));
+		});
+
+		teardown(() => bloblang.emitter.dispose());
+
+		const shown = () => controller.diagnosticsFor(doc.uri).map((d) => [d.source, d.range.start.line + 1, d.message]);
+
+		test('diagnosticsFor appends the published Bloblang diagnostics to Red Hat\'s and lint\'s', async () => {
+			source.setRedHat(doc.uri, [1]);
+			source.save.fire(doc);
+			lint.release(findings(doc.uri.fsPath, [5, 'five']));
+			await tick();
+			bloblang.set(doc.uri, [3]);
+			assert.deepStrictEqual(shown(), [['YAML', 1, 'red hat'], [LINT_SOURCE, 5, 'five'], ['Bloblang', 3, 'expected thing']]);
+			assert.deepStrictEqual(published().map((p) => p[0]), [5], 'lint\'s own collection is unchanged');
+		});
+
+		test('the event fires on a Bloblang-only change, and not on an unchanged one', () => {
+			bloblang.set(doc.uri, [3]);
+			assert.strictEqual(changes.length, 1, 'a new Bloblang error');
+			bloblang.set(doc.uri, [3]);
+			assert.strictEqual(changes.length, 1, 'the same Bloblang diagnostics again');
+			bloblang.set(doc.uri, [3], 'another message');
+			assert.strictEqual(changes.length, 2, 'a changed message');
+			bloblang.set(doc.uri, []);
+			assert.strictEqual(changes.length, 3, 'cleared');
+			assert.deepStrictEqual(shown(), []);
+		});
+	});
 });

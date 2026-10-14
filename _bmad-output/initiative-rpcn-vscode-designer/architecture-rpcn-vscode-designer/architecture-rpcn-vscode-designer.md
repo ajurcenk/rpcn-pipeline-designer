@@ -170,7 +170,7 @@ graph LR
 - **Binds:** `src/adapters/graphPanel` (NodeStatusService), `src/adapters/vscode` diagnostics, `webview/`
 - **Prevents:** graph and diagnostics units each picking their own source, mapping or transport for node markers
 - **Rule:**
-  - The host `NodeStatusService` reads the deduped diagnostics for the URI (Red Hat + lint, AD-12) and ignores churn it caused itself.
+  - The host `NodeStatusService` reads the deduped diagnostics for the URI (Red Hat + lint, AD-12, + the live `Bloblang` collection, ticket 6) and ignores churn it caused itself.
   - It maps each diagnostic to a node with `nodeAt` (AD-16). Error beats warning, and severity rolls up to ancestor group headers.
   - It sends `nodeStatus` as its own message, separate from the model. The status is frozen while `parseError` shows. The webview never maps ranges.
   - Warning markers come only from Red Hat warning-severity diagnostics and from `lint --deprecated` findings. Every other lint finding is Error (lint lines carry no severity).
