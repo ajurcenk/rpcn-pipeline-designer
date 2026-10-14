@@ -3,7 +3,7 @@ title: 'Panel input and output: content, metadata and changes'
 type: 'feature'
 ticket: '7'
 created: '2026-10-14'
-status: 'built'
+status: done
 baseline_revision: 'da91681c068fd673175fe52f516254f05e3a8613'
 route: 'full'
 route_source: 'auto'
