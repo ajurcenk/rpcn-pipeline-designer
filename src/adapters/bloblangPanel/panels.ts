@@ -8,7 +8,7 @@
 // metadata through the AD-21 test run (4.7), and the panel gets the `result`. Runs are single flight
 // per panel: an input that arrives during a run waits (only the latest one), and only the latest
 // input's result is posted. Untitled files never run. The snapshot carries the binary's status and
-// no samples (samples come in 4.9).
+// the samples (4.9).
 // Ticket 4.8: each result's file positions come from 4.3's position map on the text the run used
 // (`locate`); `goToLine` shows the YAML in its editor group with the cursor at that line's start,
 // revealed in the centre; and while a panel's latest result is `failed` with a file line, that line
@@ -17,10 +17,20 @@
 // Ticket 4.15: every open panel gets `binary {status}` each time the binary state changes (AD-9),
 // and the no-binary state's Install guide, Set path and Retry run the binary warning's own actions
 // (`BinaryActions`, the graph's). A run that races a binary loss still gets the no-binary `error`.
+// Ticket 4.9 (AD-22): the snapshot carries the mapping's saved samples and the selected one, from the
+// config's samples file (`sampleStore.ts`), linked by the processor's label at open, else its path.
+// `sampleAdded`, `sampleRenamed`, `sampleSwitched` and `inputEdited` change the file and post nothing
+// back (the webview already shows the change). `sampleDeleted` asks first (a modal, `confirmDelete`),
+// and on Delete the panel gets `samples`. A change the file can't take, or a file that can't be read, posts the file's state back
+// (`samples: [], selected: null, samplesError: <reason>` when unreadable); a failed write shows
+// `Couldn't save the samples: <reason>` and the config's panels get the file's state. An outside edit or a
+// save of the file posts `samples` to the config's panels. The page's `data-samples` is the file's
+// name (the "Saved in" line).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
+import { samplesFor, type SampleChange, type SampleRef } from '../../core/samples';
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
@@ -31,6 +41,7 @@ import { runMappingTest, type FilePosition, type MappingTestDependencies, type M
 import type { DetectionRegistry } from '../vscode/detection';
 import { parsedDocument } from '../vscode/parseCache';
 import { BloblangHints } from './hint';
+import { SampleStore, samplesUri } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export const BLOBLANG_VIEW_TYPE = 'redpandaConnect.bloblang';
@@ -38,6 +49,11 @@ export const BLOBLANG_VIEW_TYPE = 'redpandaConnect.bloblang';
 export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor.';
 /** Shown when the CodeLens's processor is not in the open, detected document any more. */
 export const NO_LONGER_THERE = 'That mapping or mutation processor is no longer there.';
+/** The Delete modal's message and its button (4.9). */
+export const deleteSampleMessage = (name: string): string => `Delete sample "${name}"?`;
+export const DELETE_SAMPLE_BUTTON = 'Delete';
+/** Shown (an error) when the samples file can't be written or deleted (4.9). */
+export const couldNotSaveSamples = (reason: string): string => `Couldn't save the samples: ${reason}`;
 /** Shown when Test mapping is used on an untitled file. */
 export const SAVE_TO_TEST = 'Save the file to test its mappings.';
 /** How many of a panel's posted messages `posted` keeps (test seam). */
@@ -99,8 +115,16 @@ export interface BloblangPanelsOptions {
 	readonly detection: Pick<DetectionRegistry, 'isDetected'>;
 	/** Test seam: the test runner; `undefined`: `runMappingTest`. */
 	readonly run?: MappingTestRunner;
-	/** Shows an information message; `undefined`: `window.showInformationMessage`. */
-	readonly showMessage?: (message: string) => void;
+	/**
+	 * Shows a message, an information one unless `kind` is `error`; `undefined`:
+	 * `window.showInformationMessage` / `window.showErrorMessage`.
+	 */
+	readonly showMessage?: (message: string, kind?: 'info' | 'error') => void;
+	/**
+	 * Asks whether to delete the sample `name` (4.9); `undefined`: a modal warning,
+	 * `Delete sample "<name>"?` with Delete.
+	 */
+	readonly confirmDelete?: (name: string) => Promise<boolean>;
 }
 
 class BloblangPanel implements BloblangPanelHandle {
@@ -118,13 +142,20 @@ class BloblangPanel implements BloblangPanelHandle {
 	private hint: { readonly line: number; readonly text: string } | undefined;
 	private disposed = false;
 	private readonly subscription: vscode.Disposable;
+	/** The watch on the config's samples file, held while the panel is open. */
+	private readonly watch: vscode.Disposable;
+	/** What links the panel to its saved samples: the processor's label at open, else its path (4.9). */
+	readonly ref: SampleRef;
 
 	constructor(
 		readonly uri: vscode.Uri,
 		readonly path: string,
+		label: string | undefined,
 		readonly panel: vscode.WebviewPanel,
 		private readonly owner: BloblangPanels,
 	) {
+		this.ref = label !== undefined ? { label, path } : { path };
+		this.watch = owner.samples.watch(uri);
 		this.subscription = panel.webview.onDidReceiveMessage((m) => this.receive(m));
 	}
 
@@ -143,6 +174,18 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.owner.actions?.setPath();
 			} else if (msg?.type === 'retryRequested') {
 				await this.owner.actions?.retry();
+			} else if (msg?.type === 'sampleAdded') {
+				await this.change({ type: 'add', sample: { name: msg.name, content: '', meta: {} } });
+			} else if (msg?.type === 'sampleRenamed') {
+				await this.change({ type: 'rename', from: msg.from, to: msg.to });
+			} else if (msg?.type === 'sampleSwitched') {
+				await this.change({ type: 'select', name: msg.name });
+			} else if (msg?.type === 'inputEdited') {
+				await this.change({ type: 'edit', content: msg.content, meta: msg.meta });
+			} else if (msg?.type === 'sampleDeleted') {
+				if (await this.owner.confirmDelete(msg.name)) {
+					await this.change({ type: 'delete', name: msg.name }, true);
+				}
 			}
 		} catch (e) {
 			this.fail(e);
@@ -179,9 +222,41 @@ class BloblangPanel implements BloblangPanelHandle {
 		const kind = processor?.kind ?? 'mapping';
 		const source = processor?.source ?? '';
 		this.sentSource = JSON.stringify([kind, source]);
-		await this.post({
-			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), samples: [], selected: null,
-		});
+		const samples = await this.samples();
+		await this.post({ type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples });
+	}
+
+	/** The panel's samples as the file has them now, or the unreadable file's reason (4.9). */
+	private async samples(): Promise<Pick<Extract<BloblangHostMessage, { type: 'samples' }>, 'samples' | 'selected' | 'samplesError'>> {
+		const state = await this.owner.samples.read(this.uri);
+		return state.kind === 'ok'
+			? samplesFor(state.file, this.ref)
+			: { samples: [], selected: null, samplesError: state.reason };
+	}
+
+	/** Posts `samples`: the file's state now (4.9). */
+	async postSamples(): Promise<void> {
+		try {
+			await this.post({ type: 'samples', ...await this.samples() });
+		} catch (e) {
+			this.fail(e);
+		}
+	}
+
+	/**
+	 * Applies `change` to the samples file (4.9). Written: the panel gets `samples` with `echo` only
+	 * (the webview already shows the change; the other panels' entries did not change). Not written:
+	 * it gets the file's state back, except for an edit that changed nothing (the webview may be
+	 * ahead of the file by then). A failed write shows `Couldn't save the samples: <reason>` and the
+	 * config's panels get the file's state, so they match the disk.
+	 */
+	private async change(change: SampleChange, echo = false): Promise<void> {
+		const outcome = await this.owner.samples.update(this.uri, this.ref, change);
+		if (typeof outcome === 'object') {
+			await this.owner.samplesFailed(this.uri, outcome.failed);
+		} else if (outcome === 'written' ? echo : outcome === 'unreadable' || change.type !== 'edit') {
+			await this.postSamples();
+		}
 	}
 
 	/**
@@ -295,6 +370,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.hint = undefined;
 		this.owner.hints.set(this.key, this.uri, undefined);
 		this.subscription.dispose();
+		this.watch.dispose();
 	}
 }
 
@@ -304,9 +380,18 @@ export class BloblangPanels implements vscode.Disposable {
 	private readonly subscriptions: vscode.Disposable[];
 	/** The end-of-line hints of all panels: one decoration type (4.8). */
 	readonly hints = new BloblangHints();
+	/** The configs' samples files (4.9). */
+	readonly samples: SampleStore;
 
 	constructor(private readonly options: BloblangPanelsOptions) {
+		this.samples = new SampleStore((line) => this.log(line));
 		this.subscriptions = [
+			// An outside edit of a samples file (4.9): its config's panels get `samples`.
+			this.samples.onDidChange((config) => {
+				for (const entry of this.panelsOf(config)) {
+					void entry.postSamples();
+				}
+			}),
 			// The shown Bloblang follows edits, so it always matches what the next run uses.
 			vscode.workspace.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length === 0) {
@@ -336,6 +421,27 @@ export class BloblangPanels implements vscode.Disposable {
 	/** The binary's status, as the panel shows it. */
 	binaryStatus(): BinaryStatus {
 		return this.options.binary.state.kind;
+	}
+
+	/** Asks whether to delete the sample `name` (4.9). */
+	async confirmDelete(name: string): Promise<boolean> {
+		if (this.options.confirmDelete) {
+			return this.options.confirmDelete(name);
+		}
+		const picked = await vscode.window.showWarningMessage(deleteSampleMessage(name), { modal: true }, DELETE_SAMPLE_BUTTON);
+		return picked === DELETE_SAMPLE_BUTTON;
+	}
+
+	/** Writing `config`'s samples file failed (4.9): the error, and its panels get the file's state. */
+	async samplesFailed(config: vscode.Uri, reason: string): Promise<void> {
+		this.tell(couldNotSaveSamples(reason), 'error');
+		await Promise.all(this.panelsOf(config).map((entry) => entry.postSamples()));
+	}
+
+	/** The open panels of `config`. */
+	private panelsOf(config: vscode.Uri): BloblangPanel[] {
+		const key = config.toString();
+		return [...this.panels.values()].filter((entry) => entry.uri.toString() === key);
 	}
 
 	/** Writes `line` to the output channel. */
@@ -379,10 +485,12 @@ export class BloblangPanels implements vscode.Disposable {
 		}
 	}
 
-	private tell(message: string): void {
+	private tell(message: string, kind: 'info' | 'error' = 'info'): void {
 		this.log(`Test mapping: ${message}`);
 		if (this.options.showMessage) {
-			this.options.showMessage(message);
+			this.options.showMessage(message, kind);
+		} else if (kind === 'error') {
+			void vscode.window.showErrorMessage(message);
 		} else {
 			void vscode.window.showInformationMessage(message);
 		}
@@ -423,7 +531,7 @@ export class BloblangPanels implements vscode.Disposable {
 				localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')],
 			},
 		);
-		const entry = new BloblangPanel(uri, processorPath, panel, this);
+		const entry = new BloblangPanel(uri, processorPath, processor.label, panel, this);
 		this.panels.set(key, entry);
 		panel.onDidDispose(() => {
 			entry.dispose();
@@ -431,8 +539,12 @@ export class BloblangPanels implements vscode.Disposable {
 				this.panels.delete(key);
 			}
 		});
-		// The file's name, for the error cards' "<file> line F" (4.8).
-		panel.webview.html = webviewHtml(panel.webview, this.options.extensionUri, 'bloblang', title, { file: path.posix.basename(uri.path) });
+		// The file's name, for the error cards' "<file> line F" (4.8), and its samples file's (4.9).
+		const samplesFile = samplesUri(uri);
+		panel.webview.html = webviewHtml(panel.webview, this.options.extensionUri, 'bloblang', title, {
+			file: path.posix.basename(uri.path),
+			...(samplesFile ? { samples: path.posix.basename(samplesFile.path) } : {}),
+		});
 		return entry;
 	}
 
@@ -492,6 +604,7 @@ export class BloblangPanels implements vscode.Disposable {
 		}
 		this.panels.clear();
 		this.hints.dispose();
+		this.samples.dispose();
 	}
 }
 

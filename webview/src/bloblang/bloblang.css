@@ -419,3 +419,78 @@ body {
 		border-top: 1px solid var(--vscode-panel-border, transparent);
 	}
 }
+/* The sample controls (4.9, the prototype's toolbar): theme tokens only. */
+.rpcn-bl-samples {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.rpcn-bl-samples-label {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+.rpcn-bl-sample, .rpcn-bl-sample-name {
+	min-width: 0;
+	max-width: 100%;
+	padding: 3px 6px;
+	border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+	border-radius: 2px;
+	background: var(--vscode-dropdown-background, var(--vscode-input-background));
+	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+	font-family: inherit;
+	font-size: inherit;
+}
+.rpcn-bl-sample-name {
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border-color: var(--vscode-input-border, transparent);
+}
+.rpcn-bl-sample-name[aria-invalid="true"] {
+	border-color: var(--vscode-inputValidation-errorBorder, var(--rpcn-bl-err));
+}
+.rpcn-bl-sample:disabled {
+	opacity: 0.5;
+}
+.rpcn-bl-rename {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+.rpcn-bl-rename-error, .rpcn-bl-samples-error {
+	color: var(--rpcn-bl-err);
+	font-size: 12px;
+}
+.rpcn-bl-samples-error, .rpcn-bl-saved {
+	flex-basis: 100%;
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.rpcn-bl-saved {
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family);
+	font-size: 12px;
+}
+.rpcn-bl-btn {
+	padding: 4px 10px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 2px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-family: inherit;
+	cursor: pointer;
+}
+.rpcn-bl-btn:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+.rpcn-bl-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.rpcn-bl-sample:focus-visible, .rpcn-bl-sample-name:focus-visible, .rpcn-bl-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}

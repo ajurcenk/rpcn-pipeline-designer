@@ -141,7 +141,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 
 ## Open Questions
 
-- **Sample storage and linking (CAP-17).** The folder and file format for samples, and how a sample stays attached to its mapping: by the processor's `label`, by its position, or by offering to add a label.
+- ~~**Sample storage and linking (CAP-17).** The folder and file format for samples, and how a sample stays attached to its mapping: by the processor's `label`, by its position, or by offering to add a label.~~ Answered 2026-10-15 (ticket 4.9, AD-22): one `<config>.samples.json` beside the config, linked by `label`, with the processor's path as the fallback; the offer to add a label is ticket 4.16.
 
 First-draft questions, answered by the 1.1 spike (`epic-foundation/spike-1-1-findings/findings.md`):
 

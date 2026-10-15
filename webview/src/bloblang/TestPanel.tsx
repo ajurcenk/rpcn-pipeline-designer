@@ -12,17 +12,29 @@
 // and Retry post the binary intents, nothing runs and no result shows; it is announced once in the
 // polite live region. Focus inside the panel moves to the state's region on entry, and from the
 // region back to the input on exit. The input stays in view state. When the status becomes `ok`
-// again the current input runs once, whatever Run on change says. The `samples` message is
-// ignored for now (4.9), and anything that fails `parseBloblangHostMessage` is ignored. The last
-// `ok` result is view state too, so a recreated panel whose restored run fails still dims it. It
-// holds no domain state and runs nothing itself (AD-3): the input, the tabs and the toggle are view
-// state, kept by the host page across reloads.
+// again the current input runs once, whatever Run on change says. Anything that fails
+// `parseBloblangHostMessage` is ignored. The last `ok` result is view state too, so a recreated
+// panel whose restored run fails still dims it. It runs nothing itself (AD-3): the input, the tabs
+// and the toggle are view state, kept by the host page across reloads.
+// Ticket 4.9: with a samples file (`samplesFile`, the page's `data-samples`; none for an untitled
+// config, whose controls are hidden and whose samples are ignored), the toolbar has the sample
+// controls (`SamplePicker.tsx`) and, while the mapping has samples, "Saved in <file>". The snapshot
+// and each `samples` message bring the host's samples: when the selected sample is another one, or
+// its content or metadata differs from the input, the input becomes the sample's (a pending edit of
+// the same sample wins) and runs (another sample: always; the same one: with Run on change). Switching
+// posts `sampleSwitched`, takes the sample's input and runs it; New sample with no samples saves the
+// input as "sample 1" (`sampleAdded`, then `inputEdited`), else adds an empty "sample N" and runs
+// nothing; Rename posts `sampleRenamed`; Delete posts `sampleDeleted` and the host's `samples` follows
+// a confirmed delete. An edit of a selected sample posts `inputEdited` after the run's pause (and before
+// any other sample intent). While the file can't be read (`samplesError`), the controls are disabled.
+// The selected sample's input is mirrored into the view state, as any input.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-	parseBloblangHostMessage, type BinaryStatus, type BloblangHostMessage, type BloblangWebviewMessage,
+	parseBloblangHostMessage, type BinaryStatus, type BloblangHostMessage, type BloblangSample, type BloblangWebviewMessage, type InputMeta,
 } from '../../../src/shared/bloblangProtocol';
 import { inputMeta, metaRowCount, type MetaRow } from './changes';
+import { nextSampleName, SamplePicker } from './SamplePicker';
 import type { PanelTab, ViewState } from './host';
 import { InputMetadata, type EditableRow } from './MetadataTable';
 import { DEFAULT_FILE_NAME, OutputBody, ResultFooter, type OkResult } from './OutputView';
@@ -47,6 +59,19 @@ export const NO_BINARY_ACTIONS = [
 	{ label: 'Retry', message: { type: 'retryRequested' } },
 ] as const satisfies readonly { readonly label: string; readonly message: BloblangWebviewMessage }[];
 
+/** The unreadable samples file's message (4.9), before its reason. */
+export const SAMPLES_ERROR_PREFIX = 'The samples file can\'t be read: ';
+/** The "Saved in <file>" line (4.9). */
+export const savedIn = (file: string): string => `Saved in ${file}`;
+
+/** Whether `content` and `rows` are the sample's input. */
+function isSampleInput(sample: BloblangSample, content: string, rows: readonly MetaRow[]): boolean {
+	const meta = inputMeta(rows);
+	const keys = Object.keys(meta);
+	return sample.content === content && keys.length === Object.keys(sample.meta).length
+		&& keys.every((k) => Object.prototype.hasOwnProperty.call(sample.meta, k) && sample.meta[k] === meta[k]);
+}
+
 /** Whether `status` is the no-binary state: known and not `ok`. */
 const noBinaryIn = (status: BinaryStatus | null): boolean => status !== null && status !== 'ok';
 
@@ -60,6 +85,8 @@ export interface TestPanelProps {
 	readonly saveState: (state: ViewState) => void;
 	/** The YAML file's name, for the error cards (`data-file` of the page's root). */
 	readonly fileName?: string;
+	/** The samples file's name (`data-samples`, 4.9); none: no sample controls. */
+	readonly samplesFile?: string;
 }
 
 type Tone = 'ok' | 'err' | 'warn' | 'running';
@@ -146,7 +173,7 @@ function NoBinaryView({ post }: { readonly post: (message: BloblangWebviewMessag
 	);
 }
 
-export function TestPanel({ post, initialState, saveState, fileName }: TestPanelProps) {
+export function TestPanel({ post, initialState, saveState, fileName, samplesFile }: TestPanelProps) {
 	const nextId = useRef(0);
 	const withId = (row: MetaRow): EditableRow => ({ id: nextId.current++, key: row.key, value: row.value });
 	const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -175,6 +202,87 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 	const main = useRef<HTMLElement>(null);
 	/** Where focus goes once the state has rendered (4.15): the region, the input, or nowhere. */
 	const moveFocus = useRef<'region' | 'input' | undefined>(undefined);
+	/** The mapping's samples, the selected one and the unreadable file's reason, as last known (4.9). */
+	const [samples, setSamples] = useState<{ list: readonly BloblangSample[]; selected: string | null; error?: string }>({ list: [], selected: null });
+	/** The same, for timers and host messages. */
+	const samplesNow = useRef(samples);
+	/** The pending save of the selected sample's edit (4.9). */
+	const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const hasSamples = samplesFile !== undefined;
+
+	/** Sets the samples state and its mirror. */
+	const putSamples = useCallback((next: { list: readonly BloblangSample[]; selected: string | null; error?: string }) => {
+		samplesNow.current = next;
+		setSamples(next);
+	}, []);
+
+	/** Posts the pending edit of the selected sample now, and keeps it in the samples' copy (4.9). */
+	const flushSave = useCallback(() => {
+		if (saveTimer.current === undefined) {
+			return;
+		}
+		clearTimeout(saveTimer.current);
+		saveTimer.current = undefined;
+		const { list, selected, error } = samplesNow.current;
+		if (selected === null || error !== undefined) {
+			return;
+		}
+		const content = latest.current.content;
+		const meta: InputMeta = inputMeta(latest.current.rows);
+		putSamples({ list: list.map((s) => (s.name === selected ? { ...s, content, meta } : s)), selected });
+		post({ type: 'inputEdited', content, meta });
+	}, [post, putSamples]);
+
+	/** With a sample selected, saves the input after the run's pause (4.9). */
+	const scheduleSave = useCallback(() => {
+		clearTimeout(saveTimer.current);
+		saveTimer.current = undefined;
+		if (hasSamples && samplesNow.current.selected !== null && samplesNow.current.error === undefined) {
+			saveTimer.current = setTimeout(flushSave, RUN_DEBOUNCE_MS);
+		}
+	}, [hasSamples, flushSave]);
+
+	/** Makes `sample` the input: its content and metadata rows (4.9). */
+	const takeInput = useCallback((sample: Pick<BloblangSample, 'content' | 'meta'>) => {
+		const nextRows = Object.entries(sample.meta).map(([key, value]) => withId({ key, value }));
+		latest.current = { ...latest.current, content: sample.content, rows: nextRows };
+		setContent(sample.content);
+		setRows(nextRows);
+		if (sample.content === '') {
+			clearTimeout(timer.current);
+			timer.current = undefined;
+			setResult(null);
+			setRunning(false);
+		}
+	// `withId` only reads a ref.
+	}, []);
+
+	/**
+	 * Takes the host's samples (4.9). The input becomes the selected sample's when it is another
+	 * sample, or the same one with another input and no edit pending: `switched` or `edited`.
+	 */
+	const takeSamples = useCallback((message: { samples: readonly BloblangSample[]; selected: string | null; samplesError?: string }): 'switched' | 'edited' | undefined => {
+		if (!hasSamples) {
+			return undefined;
+		}
+		const before = samplesNow.current.selected;
+		putSamples({
+			list: message.samples, selected: message.selected, ...(message.samplesError !== undefined ? { error: message.samplesError } : {}),
+		});
+		const sample = message.samples.find((s) => s.name === message.selected);
+		if (!sample || isSampleInput(sample, latest.current.content, latest.current.rows)) {
+			return undefined;
+		}
+		const switched = message.selected !== before;
+		if (!switched && saveTimer.current !== undefined) {
+			// The user's pending edit of this sample wins; it is saved next.
+			return undefined;
+		}
+		clearTimeout(saveTimer.current);
+		saveTimer.current = undefined;
+		takeInput(sample);
+		return switched ? 'switched' : 'edited';
+	}, [hasSamples, putSamples, takeInput]);
 
 	useEffect(() => {
 		saveState({
@@ -236,6 +344,7 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 			const message = parseBloblangHostMessage(event.data);
 			if (message?.type === 'snapshot') {
 				setSnapshot(message);
+				const taken = takeSamples(message);
 				const recovered = binaryChanged(message.binary);
 				// The kind and source last seen: a run follows a change of either.
 				const seen = JSON.stringify([message.kind, message.source]);
@@ -249,10 +358,15 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 					if (latest.current.runOnChange || recovered) {
 						runNow();
 					}
-				} else if (recovered) {
+				} else if (recovered || taken === 'switched' || (taken === 'edited' && latest.current.runOnChange)) {
 					runNow();
 				} else if (sourceChanged) {
 					schedule(latest.current.content, latest.current.runOnChange);
+				}
+			} else if (message?.type === 'samples') {
+				const taken = takeSamples(message);
+				if (taken === 'switched' || (taken === 'edited' && latest.current.runOnChange)) {
+					runNow();
 				}
 			} else if (message?.type === 'binary') {
 				// Recovery runs the current input once, whatever Run on change says, so the panel is not left empty.
@@ -271,17 +385,24 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 				}
 			}
 		};
+		// A pending save goes out before the page does (4.9).
+		const onHide = () => flushSave();
 		window.addEventListener('message', onMessage);
+		window.addEventListener('pagehide', onHide);
 		post({ type: 'ready' });
 		return () => {
 			window.removeEventListener('message', onMessage);
+			window.removeEventListener('pagehide', onHide);
 			clearTimeout(timer.current);
+			flushSave();
 		};
-	}, [post, runNow, schedule, binaryChanged]);
+	}, [post, runNow, schedule, binaryChanged, takeSamples, flushSave]);
 
 	const contentChanged = (text: string) => {
 		setContent(text);
+		latest.current = { ...latest.current, content: text };
 		restoredRun.current = true;
+		scheduleSave();
 		if (text === '') {
 			// An empty content runs nothing and shows the empty state again.
 			cancel();
@@ -294,8 +415,59 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 
 	const rowsChanged = (next: readonly EditableRow[]) => {
 		setRows(next);
+		latest.current = { ...latest.current, rows: next };
 		restoredRun.current = true;
+		scheduleSave();
 		schedule(content, runOnChange);
+	};
+
+	/** Picks another sample (4.9): its input, a run, and the choice saved. */
+	const switchSample = (name: string) => {
+		const sample = samples.list.find((s) => s.name === name);
+		if (!sample) {
+			return;
+		}
+		flushSave();
+		putSamples({ ...samplesNow.current, selected: name });
+		post({ type: 'sampleSwitched', name });
+		takeInput(sample);
+		runNow();
+	};
+
+	/** New sample (4.9): the input as "sample 1", else an empty "sample N"; nothing runs. */
+	const newSample = () => {
+		flushSave();
+		const { list } = samplesNow.current;
+		const name = nextSampleName(list);
+		if (list.length === 0) {
+			const sample = { name, content: latest.current.content, meta: inputMeta(latest.current.rows) };
+			putSamples({ list: [sample], selected: name });
+			post({ type: 'sampleAdded', name });
+			post({ type: 'inputEdited', content: sample.content, meta: sample.meta });
+			return;
+		}
+		putSamples({ list: [...list, { name, content: '', meta: {} }], selected: name });
+		post({ type: 'sampleAdded', name });
+		takeInput({ content: '', meta: {} });
+	};
+
+	const renameSample = (to: string) => {
+		const { list, selected } = samplesNow.current;
+		if (selected === null) {
+			return;
+		}
+		flushSave();
+		putSamples({ list: list.map((s) => (s.name === selected ? { ...s, name: to } : s)), selected: to });
+		post({ type: 'sampleRenamed', from: selected, to });
+	};
+
+	const deleteSample = () => {
+		const { selected } = samplesNow.current;
+		if (selected === null) {
+			return;
+		}
+		flushSave();
+		post({ type: 'sampleDeleted', name: selected });
 	};
 
 	const toggleChanged = (on: boolean) => {
@@ -342,12 +514,24 @@ export function TestPanel({ post, initialState, saveState, fileName }: TestPanel
 				: (
 					<>
 						<div className="rpcn-bl-toolbar">
+							{hasSamples && (
+								<SamplePicker
+									samples={samples.list} selected={samples.selected} disabled={samples.error !== undefined}
+									onSwitch={switchSample} onNew={newSample} onRename={renameSample} onDelete={deleteSample}
+								/>
+							)}
 							<span className="rpcn-bl-spacer" />
 							<label className="rpcn-bl-check">
 								<input type="checkbox" className="rpcn-bl-auto" checked={runOnChange} onChange={(e) => toggleChanged(e.target.checked)} />
 								{RUN_ON_CHANGE_LABEL}
 							</label>
 							<button type="button" className="rpcn-bl-run" disabled={content === ''} onClick={runNow}>{RUN_LABEL}</button>
+							{hasSamples && samples.error !== undefined && (
+								<p className="rpcn-bl-samples-error" role="alert">{SAMPLES_ERROR_PREFIX}{samples.error}</p>
+							)}
+							{hasSamples && samples.error === undefined && samples.list.length > 0 && (
+								<p className="rpcn-bl-saved">{savedIn(samplesFile)}</p>
+							)}
 						</div>
 						<div className="rpcn-bl-io">
 							<section className="rpcn-bl-col rpcn-bl-in" aria-label={INPUT_LABEL}>

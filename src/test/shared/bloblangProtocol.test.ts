@@ -33,6 +33,9 @@ const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 	{ type: 'samples', samples: [], selected: null },
 	{ type: 'samples', samples: SAMPLES, selected: null },
 	{ type: 'samples', samples: SAMPLES, selected: SAMPLES[1].name },
+	// 4.9: the samples file can't be read.
+	{ type: 'samples', samples: [], selected: null, samplesError: 'Unexpected end of JSON input' },
+	{ type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, samplesError: 'version must be 1' },
 	...(['ok', 'missing', 'invalid', 'unresolved'] as const).map((status): BloblangHostMessage => ({ type: 'binary', status })),
 ];
 
@@ -95,6 +98,9 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			{ type: 'samples', samples: SAMPLES },
 			{ type: 'samples', samples: SAMPLES, selected: 'missing' },
 			{ type: 'samples', samples: 'x', selected: null },
+			{ type: 'samples', samples: [], selected: null, samplesError: 1 },
+			{ type: 'samples', samples: [], selected: null, samplesError: null },
+			snapshotWith({ samplesError: false }),
 			{ type: 'binary' },
 			{ type: 'binary', status: 'broken' },
 			// result envelope

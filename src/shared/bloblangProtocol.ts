@@ -76,7 +76,8 @@ export interface BloblangSample {
 export type BloblangHostMessage =
 	/**
 	 * The panel's whole state, sent on `ready`: its title, the processor's kind and Bloblang, the
-	 * binary's status, the samples and the selected one (`null`: none).
+	 * binary's status, the samples and the selected one (`null`: none). `samplesError` (4.9): the
+	 * samples file can't be read, and why (the samples are then `[]` and `null`).
 	 */
 	| {
 		readonly type: 'snapshot';
@@ -86,11 +87,12 @@ export type BloblangHostMessage =
 		readonly binary: BinaryStatus;
 		readonly samples: readonly BloblangSample[];
 		readonly selected: string | null;
+		readonly samplesError?: string;
 	}
 	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
 	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
-	/** The samples changed. */
-	| { readonly type: 'samples'; readonly samples: readonly BloblangSample[]; readonly selected: string | null }
+	/** The samples changed; `samplesError` as in `snapshot`. */
+	| { readonly type: 'samples'; readonly samples: readonly BloblangSample[]; readonly selected: string | null; readonly samplesError?: string }
 	/** The binary's status changed. */
 	| { readonly type: 'binary'; readonly status: BinaryStatus };
 
@@ -188,9 +190,12 @@ function isSample(v: unknown): v is BloblangSample {
 	return isObject(v) && isSampleName(v.name) && isString(v.content) && isInputMeta(v.meta);
 }
 
-/** Samples with distinct names, and `selected` either `null` or one of them. */
-function isSamples(samples: unknown, selected: unknown): boolean {
-	if (!Array.isArray(samples) || !samples.every(isSample)) {
+/**
+ * Samples with distinct names, `selected` either `null` or one of them, and `samplesError` absent or
+ * a string.
+ */
+function isSamples(samples: unknown, selected: unknown, samplesError: unknown): boolean {
+	if (!Array.isArray(samples) || !samples.every(isSample) || !(samplesError === undefined || isString(samplesError))) {
 		return false;
 	}
 	const names = samples.map((s: BloblangSample) => s.name);
@@ -207,7 +212,7 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 		switch (message.type) {
 			case 'snapshot':
 				ok = isString(message.title) && isKind(message.kind) && isString(message.source)
-					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected);
+					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError);
 				break;
 			case 'result':
 				ok = isResult(message.result)
@@ -215,7 +220,7 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 					&& (message.binary === null || isString(message.binary));
 				break;
 			case 'samples':
-				ok = isSamples(message.samples, message.selected);
+				ok = isSamples(message.samples, message.selected, message.samplesError);
 				break;
 			case 'binary':
 				ok = isBinaryStatus(message.status);

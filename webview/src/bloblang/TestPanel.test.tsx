@@ -5,19 +5,25 @@
 // metadata, the "Changed:" tags and the status pill; every other result's card and pill, Go to
 // line, and the last successful output dimmed under an error. The view state survives a reload.
 // Ticket 4.15: the no-binary state, its buttons, and the run that follows recovery.
+// Ticket 4.9: the sample controls (picker, New sample, Rename with its validation, Delete), switching
+// runs, `inputEdited` after the pause, outside edits, the unreadable file's disabled state, and with
+// 4.15 (AI-7): no binary, a switch runs nothing and recovery runs the selected sample.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BloblangHostMessage, BloblangWebviewMessage } from '../../../src/shared/bloblangProtocol';
+import type { BloblangHostMessage, BloblangSample, BloblangWebviewMessage } from '../../../src/shared/bloblangProtocol';
 import { DEFAULT_VIEW_STATE, readViewState, type ViewState } from './host';
 import {
 	DELETED_FOOTER, DELETED_TITLE, DIMMED_FOOTER, ERROR_TITLE, FAILED_NO_LINE_TITLE, INVALID_INPUT_TITLE, LAST_OK_LABEL,
 	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE,
 } from './OutputView';
-import { EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, RUN_DEBOUNCE_MS, RUNNING_TEXT, TestPanel } from './TestPanel';
+import {
+	DELETE_LABEL, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL, SAMPLE_LABEL, UNSAVED_INPUT,
+} from './SamplePicker';
+import { EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, RUN_DEBOUNCE_MS, RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel } from './TestPanel';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -30,10 +36,13 @@ const send = async (message: BloblangHostMessage | Record<string, unknown>) => {
 	});
 };
 
-async function render(state: Partial<ViewState> = {}, fileName?: string): Promise<void> {
+async function render(state: Partial<ViewState> = {}, fileName?: string, samplesFile?: string): Promise<void> {
 	await act(async () => {
 		root.render(
-			<TestPanel post={(m) => posted.push(m)} initialState={{ ...DEFAULT_VIEW_STATE, ...state }} saveState={(s) => saved.push(s)} fileName={fileName} />,
+			<TestPanel
+				post={(m) => posted.push(m)} initialState={{ ...DEFAULT_VIEW_STATE, ...state }} saveState={(s) => saved.push(s)}
+				fileName={fileName} samplesFile={samplesFile}
+			/>,
 		);
 	});
 }
@@ -476,7 +485,7 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		expect(cardTitle()).toBe(ERROR_TITLE);
 	});
 
-	it('samples messages change nothing', async () => {
+	it('UNTITLED (4.9): with no samples file there are no sample controls, and samples messages change nothing', async () => {
 		await render({ content: '{"a":1}' });
 		await send(SNAPSHOT);
 		await send({ type: 'result', result: { kind: 'error', message: 'x' }, durationMs: 1, binary: null });
@@ -485,6 +494,8 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send({ type: 'samples', samples: [{ name: 's', content: '{"x":1}', meta: { k: 'v' } }], selected: 's' });
 		expect(host.innerHTML).toBe(before);
 		expect(posted.length).toBe(postedBefore);
+		expect(host.querySelector('.rpcn-bl-samples')).toBeNull();
+		expect(host.textContent).not.toContain(NEW_SAMPLE_LABEL);
 	});
 });
 
@@ -694,5 +705,294 @@ describe('Bloblang test panel fixtures', () => {
 				expect(cardTitle()).toBe(ERROR_TITLE);
 				expect(cardMessage()).toBe(result.message);
 		}
+	});
+});
+
+describe('Bloblang test panel: saved samples (4.9)', () => {
+	const FILE = 'orders.samples.json';
+	const A: BloblangSample = { name: 'a', content: '{"a":1}', meta: { k: 'v' } };
+	const B: BloblangSample = { name: 'b', content: '{"a":2}', meta: {} };
+	const C: BloblangSample = { name: 'c', content: '{"a":3}', meta: { z: '1' } };
+	const picker = () => host.querySelector<HTMLSelectElement>('#rpcn-bl-sample');
+	const options = () => [...(picker()?.querySelectorAll('option') ?? [])].map((o) => o.textContent);
+	const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.rpcn-bl-samples button')].find((b) => b.textContent === label)!;
+	const nameField = () => host.querySelector<HTMLInputElement>('#rpcn-bl-sample-name');
+	const savedLine = () => host.querySelector('.rpcn-bl-saved')?.textContent;
+	const input = () => host.querySelector<HTMLTextAreaElement>('textarea')?.value;
+	const intents = () => posted.filter((m) => m.type !== 'ready' && m.type !== 'run');
+	const withSamples = (samples: readonly BloblangSample[], selected: string | null) => ({ ...SNAPSHOT, samples, selected });
+	const pick = async (name: string) => {
+		await act(async () => {
+			const el = picker()!;
+			Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(el, name);
+			el.dispatchEvent(new Event('change', { bubbles: true }));
+		});
+	};
+	const key = async (el: Element, k: string) => {
+		await act(async () => {
+			el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+		});
+	};
+
+	it('CONTROLS: the label, the picker, New sample, Rename and Delete; with no samples only New sample is enabled', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send(SNAPSHOT);
+		expect(host.querySelector('.rpcn-bl-samples-label')?.textContent).toBe(SAMPLE_LABEL);
+		expect(options()).toEqual([UNSAVED_INPUT]);
+		expect(picker()!.disabled).toBe(true);
+		expect([...host.querySelectorAll('.rpcn-bl-samples button')].map((b) => [b.textContent, (b as HTMLButtonElement).disabled]))
+			.toEqual([[NEW_SAMPLE_LABEL, false], [RENAME_LABEL, true], [DELETE_LABEL, true]]);
+		expect(savedLine()).toBeUndefined();
+		// The toolbar's order: the sample controls, then Run on change and Run.
+		const toolbar = host.querySelector('.rpcn-bl-toolbar')!;
+		expect([...toolbar.children].map((c) => c.className)).toEqual(['rpcn-bl-samples', 'rpcn-bl-spacer', 'rpcn-bl-check', 'rpcn-bl-run']);
+	});
+
+	it('nextSampleName: the first free sample N', () => {
+		expect(nextSampleName([])).toBe('sample 1');
+		expect(nextSampleName([{ name: 'sample 1' }, { name: 'sample 3' }])).toBe('sample 2');
+	});
+
+	it('FIRST_SAMPLE: New sample saves the input as "sample 1", selected; "Saved in" shows; nothing runs', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}', meta: [{ key: 'k', value: 'v' }], runOnChange: false }, 'orders.yaml', FILE);
+		await send(SNAPSHOT);
+		await click(button(NEW_SAMPLE_LABEL));
+		expect(intents()).toEqual([
+			{ type: 'sampleAdded', name: 'sample 1' },
+			{ type: 'inputEdited', content: '{"a":1}', meta: { k: 'v' } },
+		]);
+		expect(options()).toEqual(['sample 1']);
+		expect(picker()!.value).toBe('sample 1');
+		expect(savedLine()).toBe(`Saved in ${FILE}`);
+		expect(input()).toBe('{"a":1}');
+		expect(runs()).toEqual([]);
+	});
+
+	it('NEW: with samples, New sample adds an empty "sample N", selects it and runs nothing', async () => {
+		vi.useFakeTimers();
+		await render({}, 'orders.yaml', FILE);
+		await send(withSamples([A, { ...B, name: 'sample 1' }], 'a'));
+		const before = runs().length;
+		await click(button(NEW_SAMPLE_LABEL));
+		expect(intents()).toEqual([{ type: 'sampleAdded', name: 'sample 2' }]);
+		expect(options()).toEqual(['a', 'sample 1', 'sample 2']);
+		expect(picker()!.value).toBe('sample 2');
+		expect(input()).toBe('');
+		expect(host.textContent).toContain(EMPTY_TEXT);
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(runs().length).toBe(before);
+	});
+
+	it('RELOAD: the snapshot\'s selected sample becomes the input, mirrored into the view state, and runs once', async () => {
+		await render({ content: 'stale' }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		expect(input()).toBe('{"a":1}');
+		expect(badge('in')).toBe('1');
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: { k: 'v' } }]);
+		expect(saved.at(-1)).toMatchObject({ content: '{"a":1}', meta: [{ key: 'k', value: 'v' }] });
+		expect(options()).toEqual(['a', 'b']);
+		expect(savedLine()).toBe(`Saved in ${FILE}`);
+		expect(intents()).toEqual([]);
+	});
+
+	it('SWITCH: another sample becomes the input, runs once (Run on change off too), and the choice is posted', async () => {
+		vi.useFakeTimers();
+		await render({ runOnChange: false }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		expect(runs()).toEqual([]);
+		await pick('b');
+		expect(intents()).toEqual([{ type: 'sampleSwitched', name: 'b' }]);
+		expect(input()).toBe('{"a":2}');
+		expect(badge('in')).toBe('0');
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":2}', meta: {} }]);
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(runs().length).toBe(1);
+	});
+
+	it('EDIT_SAVED: content and metadata edits post inputEdited once after the pause, Run on change off too; a switch flushes first', async () => {
+		vi.useFakeTimers();
+		await render({ runOnChange: false }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		await type('{"a":10}');
+		await type('{"a":11}');
+		await wait(RUN_DEBOUNCE_MS - 1);
+		expect(intents()).toEqual([]);
+		await wait(1);
+		expect(intents()).toEqual([{ type: 'inputEdited', content: '{"a":11}', meta: { k: 'v' } }]);
+		await click(tab('in', 'meta'));
+		await setValue(host.querySelector<HTMLInputElement>('.rpcn-bl-meta-value')!, 'w');
+		await wait();
+		expect(intents().at(-1)).toEqual({ type: 'inputEdited', content: '{"a":11}', meta: { k: 'w' } });
+		expect(runs()).toEqual([]);
+		// An edit, then a switch before the pause: the edit is saved first; switching back shows it.
+		await click(tab('in', 'content'));
+		await type('{"a":12}');
+		await pick('b');
+		expect(intents().slice(-2)).toEqual([
+			{ type: 'inputEdited', content: '{"a":12}', meta: { k: 'w' } },
+			{ type: 'sampleSwitched', name: 'b' },
+		]);
+		await pick('a');
+		expect(input()).toBe('{"a":12}');
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(intents().filter((m) => m.type === 'inputEdited').length).toBe(3);
+	});
+
+	it('UNSAVED: with no sample selected, edits post no inputEdited', async () => {
+		vi.useFakeTimers();
+		await render({}, 'orders.yaml', FILE);
+		await send(withSamples([A], null));
+		expect(options()).toEqual([UNSAVED_INPUT, 'a']);
+		expect(picker()!.disabled).toBe(false);
+		await type('{"x":1}');
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(intents()).toEqual([]);
+		expect(runs()).toEqual([{ type: 'run', content: '{"x":1}', meta: {} }]);
+	});
+
+	it('RENAME / DUP: the picker becomes a field; Enter saves a trimmed, unique name; errors stay inline; Esc and blur cancel', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		await click(button(RENAME_LABEL));
+		expect(picker()).toBeNull();
+		expect(nameField()?.value).toBe('a');
+		expect(document.activeElement).toBe(nameField());
+		await setValue(nameField()!, 'b');
+		await key(nameField()!, 'Enter');
+		expect(host.querySelector('.rpcn-bl-rename-error')?.textContent).toBe(NAME_EXISTS_ERROR);
+		expect(nameField()?.getAttribute('aria-invalid')).toBe('true');
+		await setValue(nameField()!, '   ');
+		await key(nameField()!, 'Enter');
+		expect(host.querySelector('.rpcn-bl-rename-error')?.textContent).toBe(NAME_LENGTH_ERROR);
+		await setValue(nameField()!, 'x'.repeat(101));
+		await key(nameField()!, 'Enter');
+		expect(host.querySelector('.rpcn-bl-rename-error')?.textContent).toBe(NAME_LENGTH_ERROR);
+		expect(nameField()).not.toBeNull();
+		expect(intents()).toEqual([]);
+		await key(nameField()!, 'Escape');
+		expect(nameField()).toBeNull();
+		expect(document.activeElement).toBe(picker());
+		expect(options()).toEqual(['a', 'b']);
+		// Blur cancels.
+		await click(button(RENAME_LABEL));
+		await setValue(nameField()!, 'gone');
+		await act(async () => nameField()!.blur());
+		expect(nameField()).toBeNull();
+		expect(intents()).toEqual([]);
+		// Enter saves.
+		await click(button(RENAME_LABEL));
+		await setValue(nameField()!, '  order  ');
+		await key(nameField()!, 'Enter');
+		expect(intents()).toEqual([{ type: 'sampleRenamed', from: 'a', to: 'order' }]);
+		expect(options()).toEqual(['order', 'b']);
+		expect(picker()!.value).toBe('order');
+		// The same name: nothing posted.
+		await click(button(RENAME_LABEL));
+		await key(nameField()!, 'Enter');
+		expect(intents().length).toBe(1);
+	});
+
+	it('RENAME + outside samples: another selection or an unreadable file cancels the rename; it never comes back stale', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		await click(button(RENAME_LABEL));
+		await setValue(nameField()!, 'typed');
+		// Another sample selected under the field.
+		await send({ type: 'samples', samples: [A, B], selected: 'b' });
+		expect(nameField()).toBeNull();
+		expect(picker()!.value).toBe('b');
+		await click(button(RENAME_LABEL));
+		expect(nameField()?.value).toBe('b');
+		await key(nameField()!, 'Escape');
+		// The file becomes unreadable mid-rename, then reads again.
+		await click(button(RENAME_LABEL));
+		await setValue(nameField()!, 'stale');
+		await send({ type: 'samples', samples: [], selected: null, samplesError: 'boom' });
+		expect(nameField()).toBeNull();
+		await send({ type: 'samples', samples: [A, B], selected: 'b' });
+		expect(nameField()).toBeNull();
+		expect(picker()).not.toBeNull();
+		expect(intents()).toEqual([]);
+	});
+
+	it('DELETE: posts sampleDeleted; the host\'s samples select the neighbour (input and run); with none left the input stays', async () => {
+		await render({ runOnChange: false }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		await click(button(DELETE_LABEL));
+		expect(intents()).toEqual([{ type: 'sampleDeleted', name: 'a' }]);
+		// Cancelled: the host posts nothing, nothing changes.
+		expect(options()).toEqual(['a', 'b']);
+		// Confirmed: the neighbour.
+		await send({ type: 'samples', samples: [B], selected: 'b' });
+		expect(input()).toBe('{"a":2}');
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":2}', meta: {} }]);
+		await send({ type: 'samples', samples: [], selected: null });
+		expect(input()).toBe('{"a":2}');
+		expect(options()).toEqual([UNSAVED_INPUT]);
+		expect(savedLine()).toBeUndefined();
+		expect(runs().length).toBe(1);
+	});
+
+	it('OUTSIDE_EDIT: a changed selected sample replaces the input and runs with Run on change; a pending edit wins', async () => {
+		vi.useFakeTimers();
+		await render({ runOnChange: true }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		expect(runs().length).toBe(1);
+		// Unchanged: nothing.
+		await send({ type: 'samples', samples: [A, B, C], selected: 'a' });
+		expect(runs().length).toBe(1);
+		expect(options()).toEqual(['a', 'b', 'c']);
+		await send({ type: 'samples', samples: [{ ...A, content: '{"a":100}' }, B], selected: 'a' });
+		expect(input()).toBe('{"a":100}');
+		expect(runs().at(-1)).toEqual({ type: 'run', content: '{"a":100}', meta: { k: 'v' } });
+		// With Run on change off: replaced, not run.
+		await click(host.querySelector('.rpcn-bl-auto'));
+		await send({ type: 'samples', samples: [{ ...A, meta: {} }, B], selected: 'a' });
+		expect(badge('in')).toBe('0');
+		expect(runs().length).toBe(2);
+		// Another selected sample: its input, and it runs.
+		await send({ type: 'samples', samples: [A, C], selected: 'c' });
+		expect(input()).toBe('{"a":3}');
+		expect(runs().length).toBe(3);
+		// The user is editing: their pending edit is kept and saved.
+		await type('{"mine":1}');
+		await send({ type: 'samples', samples: [A, { ...C, content: '{"theirs":1}' }], selected: 'c' });
+		expect(input()).toBe('{"mine":1}');
+		await wait();
+		expect(intents().at(-1)).toEqual({ type: 'inputEdited', content: '{"mine":1}', meta: { z: '1' } });
+	});
+
+	it('UNREADABLE: the message shows, every control is disabled, edits post nothing; a readable file enables them', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' }, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, samplesError: 'Unexpected end of JSON input' });
+		expect(host.querySelector('.rpcn-bl-samples-error')?.textContent).toBe(`${SAMPLES_ERROR_PREFIX}Unexpected end of JSON input`);
+		expect(host.querySelector('.rpcn-bl-samples-error')?.getAttribute('role')).toBe('alert');
+		expect(SAMPLES_ERROR_PREFIX).toBe('The samples file can\'t be read: ');
+		expect(picker()!.disabled).toBe(true);
+		expect([...host.querySelectorAll<HTMLButtonElement>('.rpcn-bl-samples button')].every((b) => b.disabled)).toBe(true);
+		await type('{"a":2}');
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(intents()).toEqual([]);
+		expect(input()).toBe('{"a":2}');
+		await send({ type: 'samples', samples: [A], selected: 'a' });
+		expect(host.querySelector('.rpcn-bl-samples-error')).toBeNull();
+		expect(picker()!.disabled).toBe(false);
+		expect(button(NEW_SAMPLE_LABEL).disabled).toBe(false);
+		expect(input()).toBe('{"a":1}');
+	});
+
+	it('AI-7 with 4.15: with no binary a switch runs nothing; recovery runs the selected sample once', async () => {
+		vi.useFakeTimers();
+		await render({ runOnChange: true }, 'orders.yaml', FILE);
+		await send({ ...withSamples([A, B], 'a'), binary: 'missing' });
+		expect(host.querySelector('.rpcn-bl-samples')).toBeNull();
+		await send({ type: 'samples', samples: [A, B], selected: 'b' });
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(runs()).toEqual([]);
+		await send({ type: 'binary', status: 'ok' });
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":2}', meta: {} }]);
+		expect(picker()!.value).toBe('b');
 	});
 });

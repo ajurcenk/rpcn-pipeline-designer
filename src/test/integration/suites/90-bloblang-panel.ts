@@ -10,14 +10,17 @@
 // Ticket 4.15: the no-binary state's host side: the snapshot's status, a `binary` message to every
 // panel on each change, and the three buttons running the graph's `BinaryActions` (`fakeActions`),
 // with a BloblangPanels of the test's own; plus the graph and the test panel recovering together.
+// Ticket 4.9: the saved samples matrix on the temp folder (the samples file beside the config, read
+// back from disk), with a BloblangPanels of the test's own whose Delete modal is a seam.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parse } from 'yaml';
 import {
-	BLOBLANG_VIEW_TYPE, BloblangPanels, NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle,
+	BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotSaveSamples, deleteSampleMessage, NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle,
 } from '../../../adapters/bloblangPanel/panels';
+import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
 import { NO_BINARY_MESSAGE } from '../../../adapters/redpandaConnect/bloblang';
 import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
@@ -499,8 +502,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	const lastSnapshot = (handle: BloblangPanelHandle) =>
 		handle.posted.filter((m): m is Extract<BloblangHostMessage, { type: 'snapshot' }> => m.type === 'snapshot').at(-1);
 
-	/** A BloblangPanels of the test's own on the extension's binary, with `actions` and a log of its own. */
-	function testBloblangPanels(actions: BinaryActions | undefined) {
+	/**
+	 * A BloblangPanels of the test's own on the extension's binary, with `actions`, a log of its own
+	 * and (4.9) `confirmDelete` as the Delete modal.
+	 */
+	function testBloblangPanels(
+		actions: BinaryActions | undefined, confirmDelete?: (name: string) => Promise<boolean>, showMessage?: (message: string, kind?: 'info' | 'error') => void,
+	) {
 		const log: string[] = [];
 		const panels = new BloblangPanels({
 			extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
@@ -509,6 +517,8 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			actions,
 			storageDir: path.join(dir, 'storage'),
 			detection: api().detection,
+			...(confirmDelete ? { confirmDelete } : {}),
+			...(showMessage ? { showMessage } : {}),
 		});
 		return { panels, log };
 	}
@@ -675,6 +685,8 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(await vscode.commands.executeCommand(TEST_MAPPING_COMMAND), undefined);
 		assert.strictEqual(await vscode.commands.executeCommand(TEST_MAPPING_COMMAND, doc.uri, FIRST), undefined);
 		assert.strictEqual(api().bloblangPanels.size, 0);
+		// 4.9: an untitled config has no samples file.
+		assert.strictEqual(samplesUri(doc.uri), undefined);
 		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 	});
 
@@ -710,6 +722,231 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.ok(argv.includes(`--env-file ${envFile} `), argv);
 		} finally {
 			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	// Saved samples (4.9).
+	type SamplesMessage = Extract<BloblangHostMessage, { type: 'samples' }>;
+	const samplesMessages = (handle: BloblangPanelHandle) => handle.posted.filter((m): m is SamplesMessage => m.type === 'samples');
+	/** The samples file beside `name` in the temp folder. */
+	const samplesFile = (name: string) => path.join(dir, name.replace(/\.yaml$/, '.samples.json'));
+	const readSamples = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'));
+	const sample = (name: string, content = '', meta: Record<string, string> = {}) => ({ name, content, meta });
+
+	/** A test BloblangPanels whose Delete modal answers `answer.value` and records what it was asked. */
+	function samplePanels() {
+		const asked: string[] = [];
+		const answer = { value: true };
+		const { panels, log } = testBloblangPanels(undefined, async (name) => {
+			asked.push(name);
+			return answer.value;
+		});
+		return { panels, log, asked, answer };
+	}
+
+	test('FIRST_SAMPLE + SWITCH + RENAME / DUP + EDIT_SAVED + RELOAD (4.9): the file beside the config, written by the host', async () => {
+		const doc = (await open('orders.yaml', CONFIG)).document;
+		const file = samplesFile('orders.yaml');
+		const { panels } = samplePanels();
+		try {
+			let handle = (await panels.show(doc.uri, FIRST))!;
+			assert.match(handle.panel.webview.html, /data-samples="orders\.samples\.json"/);
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle), { ...lastSnapshot(handle), samples: [], selected: null });
+			assert.strictEqual(lastSnapshot(handle)?.samplesError, undefined);
+			assert.ok(!fs.existsSync(file), 'no file before the first sample');
+
+			// FIRST_SAMPLE: the webview's New sample with no samples: sampleAdded, then the input.
+			await handle.receive({ type: 'sampleAdded', name: 'sample 1' });
+			await handle.receive({ type: 'inputEdited', content: '{"a":1}', meta: { k: 'v' } });
+			const text = fs.readFileSync(file, 'utf8');
+			assert.deepStrictEqual(JSON.parse(text), {
+				version: 1, mappings: [{ label: 'first', selected: 'sample 1', samples: [sample('sample 1', '{"a":1}', { k: 'v' })] }],
+			});
+			assert.ok(text.startsWith('{\n  "version": 1,\n  "mappings": [') && text.endsWith('}\n'), text);
+			assert.deepStrictEqual(samplesMessages(handle), [], 'nothing is posted back for the webview\'s own changes');
+
+			// SWITCH
+			await handle.receive({ type: 'sampleAdded', name: 'sample 2' });
+			assert.strictEqual(readSamples(file).mappings[0].selected, 'sample 2');
+			await handle.receive({ type: 'sampleSwitched', name: 'sample 1' });
+			assert.strictEqual(readSamples(file).mappings[0].selected, 'sample 1');
+
+			// RENAME / DUP
+			await handle.receive({ type: 'sampleRenamed', from: 'sample 2', to: 'two' });
+			assert.deepStrictEqual(readSamples(file).mappings[0].samples.map((s: { name: string }) => s.name), ['sample 1', 'two']);
+			const bytes = fs.readFileSync(file, 'utf8');
+			await handle.receive({ type: 'sampleRenamed', from: 'two', to: 'sample 1' });
+			assert.strictEqual(fs.readFileSync(file, 'utf8'), bytes, 'DUP: nothing written');
+			assert.deepStrictEqual(samplesMessages(handle).at(-1), {
+				type: 'samples', samples: [sample('sample 1', '{"a":1}', { k: 'v' }), sample('two')], selected: 'sample 1',
+			}, 'DUP: the file\'s state goes back');
+
+			// EDIT_SAVED: content and metadata into the selected sample.
+			await handle.receive({ type: 'inputEdited', content: '{"a":5}', meta: { k: 'w', n: '1' } });
+			assert.deepStrictEqual(readSamples(file).mappings[0].samples[0], sample('sample 1', '{"a":5}', { k: 'w', n: '1' }));
+
+			// RELOAD: a new panel finds them.
+			handle.panel.dispose();
+			assert.strictEqual(panels.panelFor(doc.uri, FIRST), undefined);
+			handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			const snap = lastSnapshot(handle)!;
+			assert.deepStrictEqual([snap.samples, snap.selected], [[sample('sample 1', '{"a":5}', { k: 'w', n: '1' }), sample('two')], 'sample 1']);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('DELETE (4.9): the modal; cancel changes nothing; Delete selects the neighbour; the last one deletes the file', async () => {
+		assert.strictEqual(deleteSampleMessage('a'), 'Delete sample "a"?');
+		const doc = (await open('delete.yaml', CONFIG)).document;
+		const file = samplesFile('delete.yaml');
+		fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: 'a', samples: [sample('a', '1'), sample('b', '2')] }] }));
+		const { panels, asked, answer } = samplePanels();
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			const bytes = fs.readFileSync(file, 'utf8');
+			answer.value = false;
+			await handle.receive({ type: 'sampleDeleted', name: 'a' });
+			assert.deepStrictEqual(asked, ['a']);
+			assert.strictEqual(fs.readFileSync(file, 'utf8'), bytes, 'cancelled: unchanged');
+			assert.deepStrictEqual(samplesMessages(handle), []);
+			answer.value = true;
+			await handle.receive({ type: 'sampleDeleted', name: 'a' });
+			assert.deepStrictEqual(readSamples(file).mappings, [{ label: 'first', selected: 'b', samples: [sample('b', '2')] }]);
+			assert.deepStrictEqual(samplesMessages(handle).at(-1), { type: 'samples', samples: [sample('b', '2')], selected: 'b' });
+			await handle.receive({ type: 'sampleDeleted', name: 'b' });
+			assert.ok(!fs.existsSync(file), 'no entry left: the file is deleted');
+			assert.deepStrictEqual(samplesMessages(handle).at(-1), { type: 'samples', samples: [], selected: null });
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('REORDER + PATH_FALLBACK (4.9): a moved labelled processor finds its samples by label; an unlabelled one is written with its path', async () => {
+		const editor = await open('reorder.yaml', CONFIG);
+		const doc = editor.document;
+		const file = samplesFile('reorder.yaml');
+		const { panels } = samplePanels();
+		try {
+			const first = (await panels.show(doc.uri, FIRST))!;
+			await first.receive({ type: 'sampleAdded', name: 'labelled' });
+			// PATH_FALLBACK: `pipeline.processors[2]` has no label.
+			const unlabelled = (await panels.show(doc.uri, 'pipeline.processors[2]'))!;
+			await unlabelled.receive({ type: 'sampleAdded', name: 'by path' });
+			assert.deepStrictEqual(readSamples(file).mappings, [
+				{ label: 'first', selected: 'labelled', samples: [sample('labelled')] },
+				{ path: 'pipeline.processors[2]', selected: 'by path', samples: [sample('by path')] },
+			]);
+			first.panel.dispose();
+			unlabelled.panel.dispose();
+
+			// REORDER: the labelled processor moves below the switch.
+			const lines = CONFIG.split('\n');
+			const at = lines.indexOf('    - label: first');
+			const moved = [...lines.slice(0, at), ...lines.slice(at + 2, at + 6), ...lines.slice(at, at + 2), ...lines.slice(at + 6)].join('\n');
+			await setText(doc, moved);
+			const handle = (await panels.show(doc.uri, 'pipeline.processors[1]'))!;
+			assert.strictEqual(handle.panel.title, 'Bloblang: first');
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual([lastSnapshot(handle)?.samples, lastSnapshot(handle)?.selected], [[sample('labelled')], 'labelled']);
+		} finally {
+			panels.dispose();
+			await setText(doc, CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('OUTSIDE_EDIT (4.9): a change on disk and a save in VS Code post samples; the host\'s own writes do not', async () => {
+		const doc = (await open('outside.yaml', CONFIG)).document;
+		const file = samplesFile('outside.yaml');
+		const write = (content: string) => fs.writeFileSync(file, `${JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: 'a', samples: [sample('a', content)] }] }, null, 2)}\n`);
+		write('{"a":1}');
+		const { panels } = samplePanels();
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle)?.samples, [sample('a', '{"a":1}')]);
+			// The host's own write.
+			await handle.receive({ type: 'inputEdited', content: '{"a":2}', meta: {} });
+			await settle();
+			await settle();
+			assert.deepStrictEqual(samplesMessages(handle), [], 'own writes are not outside edits');
+			// On disk.
+			write('{"a":3}');
+			assert.ok(await waitFor(() => samplesMessages(handle).some((m) => m.samples[0]?.content === '{"a":3}'), 10_000),
+				JSON.stringify(samplesMessages(handle)));
+			// A save in VS Code.
+			const json = await vscode.workspace.openTextDocument(file);
+			await vscode.window.showTextDocument(json, vscode.ViewColumn.One);
+			await setText(json, json.getText().replace('{\\"a\\":3}', '{\\"a\\":4}'));
+			assert.ok(await json.save());
+			assert.ok(await waitFor(() => samplesMessages(handle).some((m) => m.samples[0]?.content === '{"a":4}'), 10_000),
+				JSON.stringify(samplesMessages(handle)));
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('WRITE_FAILS (4.9): a write that fails shows the error and posts the file\'s samples back', async function () {
+		if (process.getuid?.() === 0) {
+			this.skip();
+		}
+		const doc = (await open('readonly.yaml', CONFIG)).document;
+		const file = samplesFile('readonly.yaml');
+		const text = JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: 'a', samples: [sample('a', '{"a":1}')] }] });
+		fs.writeFileSync(file, text);
+		fs.chmodSync(file, 0o444);
+		const shown: [string, string | undefined][] = [];
+		const { panels } = testBloblangPanels(undefined, async () => true, (message, kind) => shown.push([message, kind]));
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			await handle.receive({ type: 'inputEdited', content: '{"a":2}', meta: {} });
+			assert.strictEqual(fs.readFileSync(file, 'utf8'), text, 'the file is unchanged');
+			assert.strictEqual(shown.length, 1, JSON.stringify(shown));
+			assert.match(shown[0][0], /^Couldn't save the samples: .+/);
+			assert.strictEqual(shown[0][0], couldNotSaveSamples(shown[0][0].slice('Couldn\'t save the samples: '.length)));
+			assert.strictEqual(shown[0][1], 'error');
+			assert.deepStrictEqual(samplesMessages(handle).at(-1), { type: 'samples', samples: [sample('a', '{"a":1}')], selected: 'a' });
+		} finally {
+			panels.dispose();
+			fs.chmodSync(file, 0o644);
+		}
+	});
+
+	test('UNREADABLE (4.9): the reason in the snapshot; no change writes; a fixed file posts samples again', async () => {
+		const doc = (await open('unreadable.yaml', CONFIG)).document;
+		const file = samplesFile('unreadable.yaml');
+		const broken = '{"version": 1, "mappings": [';
+		fs.writeFileSync(file, broken);
+		const { panels } = samplePanels();
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			const snap = lastSnapshot(handle)!;
+			assert.deepStrictEqual([snap.samples, snap.selected], [[], null]);
+			assert.ok(snap.samplesError && snap.samplesError.length > 0, JSON.stringify(snap));
+			for (const message of [
+				{ type: 'sampleAdded', name: 'x' }, { type: 'inputEdited', content: '{}', meta: {} }, { type: 'sampleSwitched', name: 'x' },
+				{ type: 'sampleRenamed', from: 'x', to: 'y' }, { type: 'sampleDeleted', name: 'x' },
+			]) {
+				await handle.receive(message);
+			}
+			assert.strictEqual(fs.readFileSync(file, 'utf8'), broken, 'the file bytes are unchanged');
+			assert.ok(samplesMessages(handle).length >= 5 && samplesMessages(handle).every((m) => m.samplesError === snap.samplesError && m.samples.length === 0));
+			// Wrong shape: also unreadable.
+			fs.writeFileSync(file, '{"version": 2, "mappings": []}');
+			assert.ok(await waitFor(() => samplesMessages(handle).at(-1)?.samplesError === 'version must be 1', 10_000), JSON.stringify(samplesMessages(handle).at(-1)));
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: null, samples: [sample('ok')] }] }));
+			assert.ok(await waitFor(() => {
+				const last = samplesMessages(handle).at(-1);
+				return last?.samplesError === undefined && last?.samples.length === 1;
+			}, 10_000), JSON.stringify(samplesMessages(handle).at(-1)));
+		} finally {
+			panels.dispose();
 		}
 	});
 });
