@@ -3,7 +3,7 @@ title: 'No-binary state in the test panel'
 type: 'feature'
 ticket: '15'
 created: '2026-10-14'
-status: 'built'
+status: done
 baseline_revision: 'd1a4cd393c77617ee870503ec0d81ec812a234f5'
 route: 'full'
 route_source: 'auto'
