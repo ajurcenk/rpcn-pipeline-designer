@@ -7,21 +7,26 @@
 // Ticket 4.8: a parse error (the run's `Config lint error`, then `blobl`'s position on the fake
 // `bloblParseBody`) at the same place as 4.5's live diagnostic, a located failure with its
 // end-of-line hint (read through `hintRanges`), an invalid input, and Go to line.
+// Ticket 4.15: the no-binary state's host side: the snapshot's status, a `binary` message to every
+// panel on each change, and the three buttons running the graph's `BinaryActions` (`fakeActions`),
+// with a BloblangPanels of the test's own; plus the graph and the test panel recovering together.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parse } from 'yaml';
 import {
-	BLOBLANG_VIEW_TYPE, NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle,
+	BLOBLANG_VIEW_TYPE, BloblangPanels, NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle,
 } from '../../../adapters/bloblangPanel/panels';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
 import { NO_BINARY_MESSAGE } from '../../../adapters/redpandaConnect/bloblang';
+import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
 import { TEST_MAPPING_LENS_TITLE } from '../../../adapters/vscode/bloblangLens';
 import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
+import { fakeActions, loseBinary, restoreBinary, settle } from '../graphHelpers';
 import { EXTENSION_ID, waitFor } from '../helpers';
 
 const CONFIG = [
@@ -488,19 +493,174 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(api().bloblangPanels.size, 0);
 	});
 
-	test('NO_BINARY: an error result and no spawn', async () => {
+	// The no-binary state (4.15).
+	/** The `binary` statuses posted to a panel, in order. */
+	const binaries = (handle: BloblangPanelHandle) => handle.posted.flatMap((m) => (m.type === 'binary' ? [m.status] : []));
+	const lastSnapshot = (handle: BloblangPanelHandle) =>
+		handle.posted.filter((m): m is Extract<BloblangHostMessage, { type: 'snapshot' }> => m.type === 'snapshot').at(-1);
+
+	/** A BloblangPanels of the test's own on the extension's binary, with `actions` and a log of its own. */
+	function testBloblangPanels(actions: BinaryActions | undefined) {
+		const log: string[] = [];
+		const panels = new BloblangPanels({
+			extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
+			log: (line) => log.push(line),
+			binary: api().redpandaConnect,
+			actions,
+			storageDir: path.join(dir, 'storage'),
+			detection: api().detection,
+		});
+		return { panels, log };
+	}
+
+	/** `actions`, counting the calls of each method. */
+	function counting(actions: BinaryActions) {
+		const calls: string[] = [];
+		const counted: BinaryActions = {
+			installGuide: () => { calls.push('installGuide'); return actions.installGuide(); },
+			setPath: () => { calls.push('setPath'); return actions.setPath(); },
+			retry: () => { calls.push('retry'); return actions.retry(); },
+		};
+		return { counted, calls };
+	}
+
+	test('OPEN_MISSING + GUIDE / SET_PATH / RETRY + UNCHANGED (4.15): the snapshot says missing; each button calls its action once; Retry with nothing fixed posts nothing', async () => {
+		const doc = (await open('nobin-open.yaml', CONFIG)).document;
+		await loseBinary('gone-open', dir);
+		const fake = fakeActions();
+		const { counted, calls } = counting(fake.actions);
+		const { panels } = testBloblangPanels(counted);
+		try {
+			const before = runs();
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			assert.strictEqual(lastSnapshot(handle)?.binary, 'missing');
+
+			const count = handle.posted.length;
+			await handle.receive({ type: 'installGuideRequested' });
+			assert.deepStrictEqual(fake.opened, [INSTALL_GUIDE_URL]);
+			// The pick is cancelled: nothing changes.
+			await handle.receive({ type: 'setPathRequested' });
+			await handle.receive({ type: 'retryRequested' });
+			await settle();
+			assert.deepStrictEqual(calls, ['installGuide', 'setPath', 'retry']);
+			assert.strictEqual(api().redpandaConnect.state.kind, 'missing');
+			// The real webview's own `ready` may add a snapshot; it says missing too.
+			assert.deepStrictEqual(handle.posted.slice(count).filter((m) => m.type !== 'snapshot'), [], 'UNCHANGED: nothing posted');
+			assert.ok(handle.posted.slice(count).every((m) => m.type !== 'snapshot' || m.binary === 'missing'));
+			assert.strictEqual(runs(), before, 'no spawn');
+		} finally {
+			panels.dispose();
+			await restoreBinary(bin);
+		}
+	});
+
+	test('ACTION_FAILS (4.15): a failing action is logged, not thrown', async () => {
+		const doc = (await open('nobin-fails.yaml', CONFIG)).document;
+		const failing: BinaryActions = {
+			installGuide: async () => { throw new Error('no browser'); },
+			setPath: async () => { throw new Error('no picker'); },
+			retry: async () => { throw new Error('no retry'); },
+		};
+		const { panels, log } = testBloblangPanels(failing);
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'installGuideRequested' });
+			await handle.receive({ type: 'setPathRequested' });
+			await handle.receive({ type: 'retryRequested' });
+			assert.deepStrictEqual(log, ['no browser', 'no picker', 'no retry'].map((m) => `${handle.panel.title}: ${m}`));
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('RECOVER + EDIT_WHILE_MISSING (4.15): edits while missing spawn nothing; Set path to a working binary posts binary ok, and the same panel runs', async () => {
+		const doc = (await open('nobin-recover.yaml', CONFIG)).document;
+		await loseBinary('gone-recover', dir);
+		const fake = fakeActions();
+		const { panels } = testBloblangPanels(fake.actions);
+		try {
+			const before = runs();
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			// EDIT_WHILE_MISSING: the snapshot follows the edit, still missing; nothing runs.
+			const at = doc.getText().indexOf('this.a + 1');
+			await setText(doc, doc.getText().slice(0, at) + 'this.a + 2' + doc.getText().slice(at + 'this.a + 1'.length));
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.source === 'root.b = this.a + 2', 5_000), JSON.stringify(lastSnapshot(handle)));
+			assert.strictEqual(lastSnapshot(handle)?.binary, 'missing');
+			assert.deepStrictEqual(results(handle), []);
+			assert.strictEqual(runs(), before);
+
+			fake.fake.picked = bin;
+			await handle.receive({ type: 'setPathRequested' });
+			assert.ok(await waitFor(() => binaries(handle).includes('ok'), 30_000), JSON.stringify(handle.posted.map((m) => m.type)));
+			assert.deepStrictEqual(binaries(handle), ['ok'], 'missing to ok: one binary message');
+			assert.strictEqual(config().inspect<string>('binaryPath')?.globalValue, bin);
+			// The webview's recovery run, in the same panel.
+			const out = await run(handle, '{"a":1}');
+			assert.deepStrictEqual(out.result, { ...out.result, kind: 'ok', content: '{"b":2}' });
+			assert.strictEqual(parse(lastRun().config).pipeline.processors[0].mapping, 'root.b = this.a + 2', 'the current text');
+			assert.strictEqual(panels.panelFor(doc.uri, FIRST), handle, 'not reopened');
+			assert.strictEqual(runs(), before + 1);
+		} finally {
+			panels.dispose();
+			await restoreBinary(bin);
+			await setText(doc, CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('LOST (4.15): a lost binary posts binary missing and clears the hint; a racing run is the no-binary error, with no spawn; restored, it posts ok and runs', async () => {
 		const doc = (await open('nobin.yaml', CONFIG)).document;
 		const handle = await show(doc.uri, FIRST);
-		await config().update('binaryPath', path.join(dir, 'gone'), vscode.ConfigurationTarget.Global);
+		await handle.receive({ type: 'ready' });
+		assert.strictEqual(lastSnapshot(handle)?.binary, 'ok');
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+		// A located failure (`FAIL_ON_2`) with its end-of-line hint.
+		const errors = (await open('nobin-hint.yaml', ERRORS_CONFIG, vscode.ViewColumn.One)).document;
+		const failing = await show(errors.uri, 'pipeline.processors[1]');
+		assert.strictEqual((await run(failing, '{"a":1}')).result.kind, 'failed');
+		assert.strictEqual(api().bloblangPanels.hintRanges(errors.uri).length, 1, 'the hint is shown');
 		try {
-			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'missing', 15_000));
+			await loseBinary('gone', dir);
+			assert.ok(await waitFor(() => binaries(handle).includes('missing'), 10_000), JSON.stringify(binaries(handle)));
+			assert.ok(await waitFor(() => binaries(failing).includes('missing'), 10_000), JSON.stringify(binaries(failing)));
+			assert.deepStrictEqual(api().bloblangPanels.hintRanges(errors.uri), [], 'the lost binary clears the hint');
 			const before = runs();
 			const out = await run(handle, '{"a":1}');
 			assert.deepStrictEqual(out, { ...out, result: { kind: 'error', message: NO_BINARY_MESSAGE }, binary: null });
 			assert.strictEqual(runs(), before);
 		} finally {
-			await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
-			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok', 15_000));
+			await restoreBinary(bin);
+		}
+		assert.ok(await waitFor(() => binaries(handle).at(-1) === 'ok', 10_000), JSON.stringify(binaries(handle)));
+		assert.deepStrictEqual(binaries(handle), ['missing', 'ok']);
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+	});
+
+	test('WITH_GRAPH (4.15): the graph and the test panel on one file; on recovery the graph renders and the test panel hears it once', async () => {
+		const doc = (await open('nobin-graph.yaml', CONFIG)).document;
+		await loseBinary('gone-graph', dir);
+		try {
+			const graph = (await api().graphPanels.show(doc.uri))!;
+			await graph.lockSettled;
+			await graph.receive({ type: 'ready' });
+			const handle = await show(doc.uri, FIRST);
+			await handle.receive({ type: 'ready' });
+			assert.strictEqual(lastSnapshot(handle)?.binary, 'missing');
+			const graphFrom = graph.posted.length;
+			await restoreBinary(bin);
+			assert.ok(await waitFor(() => graph.posted.slice(graphFrom).some((m) => m.type === 'model'), 30_000),
+				JSON.stringify(graph.posted.slice(graphFrom).map((m) => m.type)));
+			const statuses = graph.posted.slice(graphFrom).flatMap((m) => (m.type === 'hostStatus' ? [m.binary] : []));
+			assert.ok(statuses.length > 0 && statuses.every((b) => b === 'ok'), JSON.stringify(statuses));
+			// The graph may post hostStatus twice by design (the binary change, then the schema settled).
+			// The test panel heard the change once.
+			assert.strictEqual(handle.posted.filter((m) => m.type === 'binary' && m.status === 'ok').length, 1, JSON.stringify(binaries(handle)));
+			assert.deepStrictEqual(binaries(handle), ['ok']);
+			assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+		} finally {
+			await restoreBinary(bin);
 		}
 	});
 

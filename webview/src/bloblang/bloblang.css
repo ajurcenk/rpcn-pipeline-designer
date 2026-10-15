@@ -346,6 +346,62 @@ body {
 	text-transform: uppercase;
 	color: var(--vscode-descriptionForeground);
 }
+/* The no-binary state (4.15, the prototype's): centred in the panel, a bold title, muted text, and
+   the binary actions as buttons (Install guide primary). */
+.rpcn-bl-nobin {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	padding: 40px 24px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-nobin-title {
+	margin: 0;
+	font-weight: 600;
+	font-size: 1.08em;
+	color: var(--vscode-editor-foreground);
+}
+.rpcn-bl-nobin-text {
+	margin: 0;
+	max-width: 46ch;
+}
+.rpcn-bl-nobin-acts {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
+}
+.rpcn-bl-nobin-act {
+	padding: 4px 12px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 2px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-family: inherit;
+	cursor: pointer;
+}
+.rpcn-bl-nobin-act:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+.rpcn-bl-nobin-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+.rpcn-bl-nobin-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+.rpcn-bl-nobin:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-bl-nobin-act:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
 .rpcn-bl-sr {
 	position: absolute;
 	width: 1px;

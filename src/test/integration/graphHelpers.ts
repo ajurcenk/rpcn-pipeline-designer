@@ -147,18 +147,22 @@ export function fakeDiagnostics() {
 	};
 }
 
-/** Points `redpandaConnect.binaryPath` at a file that is not there and waits for `missing` with no schema. */
-export async function loseBinary(name: string): Promise<string> {
-	const missing = path.join(h.dir, name);
+/**
+ * Points `redpandaConnect.binaryPath` at a file that is not there and waits for `missing` with no
+ * schema. `folder`: where that file would be (default: the graph suite's).
+ */
+export async function loseBinary(name: string, folder = h.dir): Promise<string> {
+	const missing = path.join(folder, name);
 	fs.rmSync(missing, { force: true });
 	await setBinaryPath(missing);
 	assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'missing' && api().schemaStore.current === undefined, 15_000),
 		`binaryState: ${JSON.stringify(api().redpandaConnect.state)}`);
 	return missing;
 }
-export async function restoreBinary(): Promise<void> {
-	await setBinaryPath(h.fakeBinary);
-	await schemaFrom(h.fakeBinary, '4.112.0');
+/** Points the setting back at `binary` (default: the graph suite's fake) and waits for its 4.112.0 schema. */
+export async function restoreBinary(binary = h.fakeBinary): Promise<void> {
+	await setBinaryPath(binary);
+	await schemaFrom(binary, '4.112.0');
 }
 
 /** The binary warning's actions on the extension's binary, with a fake picker and browser (the real ones need a human). */

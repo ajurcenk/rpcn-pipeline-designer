@@ -199,6 +199,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		extensionUri: context.extensionUri,
 		log,
 		binary: redpandaConnect,
+		// The graph's actions (4.15): the no-binary state's buttons.
+		actions: redpandaConnect.actions,
 		storageDir: context.globalStorageUri.fsPath,
 		detection,
 	});

@@ -8,12 +8,15 @@
 // metadata through the AD-21 test run (4.7), and the panel gets the `result`. Runs are single flight
 // per panel: an input that arrives during a run waits (only the latest one), and only the latest
 // input's result is posted. Untitled files never run. The snapshot carries the binary's status and
-// no samples; samples and the binary actions come later (4.9, the no-binary follow-up).
+// no samples (samples come in 4.9).
 // Ticket 4.8: each result's file positions come from 4.3's position map on the text the run used
 // (`locate`); `goToLine` shows the YAML in its editor group with the cursor at that line's start,
 // revealed in the centre; and while a panel's latest result is `failed` with a file line, that line
 // ends with the shared end-of-line hint (`hint.ts`), which follows the mapping line through edits
 // and clears on any other result, when the line leaves the processor, and when the panel closes.
+// Ticket 4.15: every open panel gets `binary {status}` each time the binary state changes (AD-9),
+// and the no-binary state's Install guide, Set path and Retry run the binary warning's own actions
+// (`BinaryActions`, the graph's). A run that races a binary loss still gets the no-binary `error`.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -23,6 +26,7 @@ import {
 } from '../../shared/bloblangProtocol';
 import { webviewHtml } from '../graphPanel/html';
 import type { BinaryState } from '../redpandaConnect/binary';
+import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
 import type { DetectionRegistry } from '../vscode/detection';
 import { parsedDocument } from '../vscode/parseCache';
@@ -82,8 +86,13 @@ interface TestInput {
 export interface BloblangPanelsOptions {
 	readonly extensionUri: vscode.Uri;
 	readonly log: (line: string) => void;
-	/** The current binary (AD-9): `RedpandaConnect` in production. */
-	readonly binary: { readonly state: BinaryState };
+	/** The current binary and its changes (AD-9): `RedpandaConnect` in production. */
+	readonly binary: { readonly state: BinaryState; readonly onDidChange: vscode.Event<BinaryState> };
+	/**
+	 * The binary warning's actions, run by the no-binary state's buttons (AD-9): `RedpandaConnect.actions`
+	 * in production, as the graph's. `undefined`: the buttons do nothing.
+	 */
+	readonly actions: BinaryActions | undefined;
 	/** Where temporary test configs are written: the extension's global storage. */
 	readonly storageDir: string;
 	/** Which files are Redpanda Connect configs (AD-18): only their processors are tested. */
@@ -128,6 +137,12 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.run({ content: msg.content, meta: msg.meta });
 			} else if (msg?.type === 'goToLine') {
 				await this.owner.goToLine(this.uri, msg.line);
+			} else if (msg?.type === 'installGuideRequested') {
+				await this.owner.actions?.installGuide();
+			} else if (msg?.type === 'setPathRequested') {
+				await this.owner.actions?.setPath();
+			} else if (msg?.type === 'retryRequested') {
+				await this.owner.actions?.retry();
 			}
 		} catch (e) {
 			this.fail(e);
@@ -145,6 +160,18 @@ class BloblangPanel implements BloblangPanelHandle {
 		} catch (e) {
 			this.fail(e);
 		}
+	}
+
+	/** The binary state changed (4.15): its status, as the panel shows it. */
+	binaryChanged(): Promise<void> {
+		const status = this.owner.binaryStatus();
+		if (status !== 'ok') {
+			// The webview hides the failed result with no binary: its hint goes too, for good.
+			this.hint = undefined;
+			this.owner.hints.set(this.key, this.uri, undefined);
+		}
+		// `post` logs a failed post; it never throws.
+		return this.post({ type: 'binary', status });
 	}
 
 	private async postSnapshot(): Promise<void> {
@@ -274,23 +301,36 @@ class BloblangPanel implements BloblangPanelHandle {
 /** All open Bloblang test panels, one per mapping processor. */
 export class BloblangPanels implements vscode.Disposable {
 	private readonly panels = new Map<string, BloblangPanel>();
-	private readonly subscription: vscode.Disposable;
+	private readonly subscriptions: vscode.Disposable[];
 	/** The end-of-line hints of all panels: one decoration type (4.8). */
 	readonly hints = new BloblangHints();
 
 	constructor(private readonly options: BloblangPanelsOptions) {
-		// The shown Bloblang follows edits, so it always matches what the next run uses.
-		this.subscription = vscode.workspace.onDidChangeTextDocument((e) => {
-			if (e.contentChanges.length === 0) {
-				return;
-			}
-			const key = e.document.uri.toString();
-			for (const entry of this.panels.values()) {
-				if (entry.uri.toString() === key) {
-					void entry.documentChanged();
+		this.subscriptions = [
+			// The shown Bloblang follows edits, so it always matches what the next run uses.
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				if (e.contentChanges.length === 0) {
+					return;
 				}
-			}
-		});
+				const key = e.document.uri.toString();
+				for (const entry of this.panels.values()) {
+					if (entry.uri.toString() === key) {
+						void entry.documentChanged();
+					}
+				}
+			}),
+			// The no-binary state (4.15): every panel hears each binary change.
+			options.binary.onDidChange(() => {
+				for (const entry of this.panels.values()) {
+					void entry.binaryChanged();
+				}
+			}),
+		];
+	}
+
+	/** The binary warning's actions (AD-9), for the no-binary state's buttons. */
+	get actions(): BinaryActions | undefined {
+		return this.options.actions;
 	}
 
 	/** The binary's status, as the panel shows it. */
@@ -444,7 +484,9 @@ export class BloblangPanels implements vscode.Disposable {
 	}
 
 	dispose(): void {
-		this.subscription.dispose();
+		for (const subscription of this.subscriptions) {
+			subscription.dispose();
+		}
 		for (const entry of [...this.panels.values()]) {
 			entry.panel.dispose();
 		}

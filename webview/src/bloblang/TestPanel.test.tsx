@@ -4,6 +4,7 @@
 // pause, and shows each result: the output content with the changed fields marked, the output
 // metadata, the "Changed:" tags and the status pill; every other result's card and pill, Go to
 // line, and the last successful output dimmed under an error. The view state survives a reload.
+// Ticket 4.15: the no-binary state, its buttons, and the run that follows recovery.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -16,7 +17,7 @@ import {
 	DELETED_FOOTER, DELETED_TITLE, DIMMED_FOOTER, ERROR_TITLE, FAILED_NO_LINE_TITLE, INVALID_INPUT_TITLE, LAST_OK_LABEL,
 	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE,
 } from './OutputView';
-import { EMPTY_TEXT, RUN_DEBOUNCE_MS, RUNNING_TEXT, TestPanel } from './TestPanel';
+import { EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, RUN_DEBOUNCE_MS, RUNNING_TEXT, TestPanel } from './TestPanel';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -83,20 +84,20 @@ const SNAPSHOT: BloblangHostMessage = {
 	type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1', binary: 'ok', samples: [], selected: null,
 };
 
-describe('Bloblang test panel (4.2, 4.7)', () => {
-	beforeEach(() => {
-		posted = [];
-		saved = [];
-		host = document.createElement('div');
-		document.body.appendChild(host);
-		root = createRoot(host);
-	});
-	afterEach(async () => {
-		vi.useRealTimers();
-		await act(async () => root.unmount());
-		host.remove();
-	});
+beforeEach(() => {
+	posted = [];
+	saved = [];
+	host = document.createElement('div');
+	document.body.appendChild(host);
+	root = createRoot(host);
+});
+afterEach(async () => {
+	vi.useRealTimers();
+	await act(async () => root.unmount());
+	host.remove();
+});
 
+describe('Bloblang test panel (4.2, 4.7)', () => {
 	it('posts ready, then shows the snapshot\'s title and kind; no Bloblang block; the layout\'s labels', async () => {
 		await render();
 		expect(posted).toEqual([{ type: 'ready' }]);
@@ -475,18 +476,177 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		expect(cardTitle()).toBe(ERROR_TITLE);
 	});
 
-	it('samples and binary messages change nothing', async () => {
+	it('samples messages change nothing', async () => {
 		await render({ content: '{"a":1}' });
 		await send(SNAPSHOT);
 		await send({ type: 'result', result: { kind: 'error', message: 'x' }, durationMs: 1, binary: null });
 		const before = host.innerHTML;
 		const postedBefore = posted.length;
 		await send({ type: 'samples', samples: [{ name: 's', content: '{"x":1}', meta: { k: 'v' } }], selected: 's' });
-		await send({ type: 'binary', status: 'missing' });
 		expect(host.innerHTML).toBe(before);
 		expect(posted.length).toBe(postedBefore);
 	});
+});
 
+describe('Bloblang test panel: no binary (4.15)', () => {
+	const MISSING = { ...SNAPSHOT, binary: 'missing' } as const;
+	const region = () => host.querySelector(`[role="region"][aria-label="${NO_BINARY_TITLE}"]`);
+	const live = () => host.querySelector('.rpcn-bl-sr[aria-live="polite"]')?.textContent;
+	const buttons = () => [...(region()?.querySelectorAll('button') ?? [])];
+
+	it('OPEN_MISSING: the header stays; the state replaces the pill, the toolbar and the columns; announced; no run', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' });
+		await send(MISSING);
+		await wait();
+		expect(host.querySelector('h1')?.textContent).toBe('Bloblang: first');
+		expect(host.querySelector('.rpcn-bl-kind')?.textContent).toBe('mapping');
+		expect(region()).not.toBeNull();
+		expect(region()?.querySelector('.rpcn-bl-nobin-title')?.textContent).toBe('No Redpanda Connect binary');
+		expect(region()?.querySelector('.rpcn-bl-nobin-text')?.textContent).toBe(
+			'The test panel runs mappings with your own binary, so results match the version you deploy.',
+		);
+		expect(buttons().map((b) => b.textContent)).toEqual(['Install guide', 'Set path', 'Retry']);
+		expect(buttons().every((b) => b.type === 'button')).toBe(true);
+		expect(host.querySelector('.rpcn-bl-pill')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-toolbar')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-io')).toBeNull();
+		expect(live()).toBe(`${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}`);
+		expect(runs()).toEqual([]);
+	});
+
+	it('GUIDE / SET_PATH / RETRY: each button posts its intent once', async () => {
+		await render();
+		await send(MISSING);
+		for (const button of buttons()) {
+			await click(button);
+		}
+		expect(posted.slice(1)).toEqual([{ type: 'installGuideRequested' }, { type: 'setPathRequested' }, { type: 'retryRequested' }]);
+	});
+
+	it.each([true, false])('RECOVER (Run on change %s): binary ok leaves the state and runs the current input once', async (runOnChange) => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}', meta: [{ key: 'k', value: 'v' }], runOnChange });
+		await send(MISSING);
+		await send({ type: 'binary', status: 'ok' });
+		expect(region()).toBeNull();
+		expect(host.querySelector('.rpcn-bl-io')).not.toBeNull();
+		expect(host.querySelector<HTMLInputElement>('.rpcn-bl-auto')!.checked).toBe(runOnChange);
+		expect(live()).toBe('');
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: { k: 'v' } }]);
+		expect(pill()).toBe(RUNNING_TEXT);
+		await send({ type: 'result', result: OK_B2, durationMs: 5, binary: 'redpanda-connect 4.112.0' });
+		expect(outputText()).toBe('{\n  "b": 2\n}');
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(runs().length).toBe(1);
+	});
+
+	it('RECOVER (empty content): nothing runs; the empty state shows', async () => {
+		await render();
+		await send(MISSING);
+		await send({ type: 'binary', status: 'ok' });
+		expect(runs()).toEqual([]);
+		expect(host.textContent).toContain(EMPTY_TEXT);
+	});
+
+	it('LOST: ok to missing hides the result and the pill; recovery runs once and brings a result back', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		expect(runs().length).toBe(1);
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		expect(outputText()).toBe('{\n  "b": 2\n}');
+		await send({ type: 'binary', status: 'missing' });
+		expect(region()).not.toBeNull();
+		expect(host.querySelector('.rpcn-bl-output')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-pill')).toBeNull();
+		// A result racing the loss (the host's no-binary guard) is not shown either.
+		await send({ type: 'result', result: { kind: 'error', message: 'No Redpanda Connect binary.' }, durationMs: 0, binary: null });
+		expect(card()).toBeNull();
+		await send({ type: 'binary', status: 'ok' });
+		expect(runs().length).toBe(2);
+		// No result until the recovery run's.
+		expect(host.querySelector('.rpcn-bl-output')).toBeNull();
+		expect(pill()).toBe(RUNNING_TEXT);
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		expect(outputText()).toBe('{\n  "b": 2\n}');
+	});
+
+	it('UNCHANGED: ok to ok, and not ok to not ok, run nothing and change nothing', async () => {
+		await render({ content: '{"a":1}', runOnChange: false });
+		await send(SNAPSHOT);
+		await send({ type: 'binary', status: 'ok' });
+		expect(runs()).toEqual([]);
+		await send({ type: 'binary', status: 'missing' });
+		const before = host.innerHTML;
+		await send({ type: 'binary', status: 'invalid' });
+		await send({ type: 'binary', status: 'unresolved' });
+		expect(host.innerHTML).toBe(before);
+		expect(runs()).toEqual([]);
+	});
+
+	it('EDIT_WHILE_MISSING: a new source runs nothing; the input, its metadata, the tabs and the toggle come back unchanged', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await click(tab('in', 'meta'));
+		await click(host.querySelector('.rpcn-bl-meta-add'));
+		const [key, value] = [...host.querySelectorAll<HTMLInputElement>('.rpcn-bl-meta input')];
+		await setValue(key, 'k');
+		await setValue(value, 'v');
+		await wait();
+		const before = runs().length;
+		await send({ type: 'binary', status: 'missing' });
+		await send({ ...MISSING, source: 'root.c = 1' });
+		await wait(RUN_DEBOUNCE_MS * 2);
+		expect(runs().length).toBe(before);
+		await send({ type: 'binary', status: 'ok' });
+		expect(tab('in', 'meta')?.getAttribute('aria-selected')).toBe('true');
+		expect(badge('in')).toBe('1');
+		expect(host.querySelector<HTMLInputElement>('.rpcn-bl-auto')!.checked).toBe(true);
+		expect(runs().at(-1)).toEqual({ type: 'run', content: '{"a":1}', meta: { k: 'v' } });
+		expect(runs().length).toBe(before + 1);
+		expect(saved.at(-1)).toMatchObject({ content: '{"a":1}', meta: [{ key: 'k', value: 'v' }], inputTab: 'meta', runOnChange: true });
+	});
+
+	it('FOCUS: focus in the input moves to the region on entry; from a button in the region back to the input on exit', async () => {
+		await render({ content: '{"a":1}', runOnChange: false });
+		await send(SNAPSHOT);
+		host.querySelector<HTMLTextAreaElement>('#rpcn-bl-input')!.focus();
+		await send({ type: 'binary', status: 'missing' });
+		expect(document.activeElement).toBe(region());
+		expect(region()?.getAttribute('tabindex')).toBe('0');
+		buttons()[2].focus();
+		await send({ type: 'binary', status: 'ok' });
+		expect(document.activeElement).toBe(host.querySelector('#rpcn-bl-input'));
+	});
+
+	it('FOCUS (Metadata tab): exit focuses Run; focus outside the panel is not moved', async () => {
+		await render({ content: '{"a":1}', runOnChange: false, inputTab: 'meta' });
+		await send(MISSING);
+		expect(document.activeElement).not.toBe(region());
+		(region() as HTMLElement).focus();
+		await send({ type: 'binary', status: 'ok' });
+		expect(document.activeElement).toBe(host.querySelector('.rpcn-bl-run'));
+		const outside = document.createElement('button');
+		document.body.appendChild(outside);
+		outside.focus();
+		await send({ type: 'binary', status: 'missing' });
+		expect(document.activeElement).toBe(outside);
+		await send({ type: 'binary', status: 'ok' });
+		expect(document.activeElement).toBe(outside);
+		outside.remove();
+	});
+
+	it('a reopened panel with no binary does not run its restored input; recovery does', async () => {
+		await render({ content: '{"a":1}', runOnChange: true });
+		await send(MISSING);
+		expect(runs()).toEqual([]);
+		await send({ ...SNAPSHOT });
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
+	});
+});
+
+describe('Bloblang test panel fixtures', () => {
 	it.each(FIXTURE_NAMES)('FIXTURES: %s renders after a snapshot in the 4.8 layout', async (name) => {
 		const message = fixture(name);
 		await render({ content: '{"a":1}', runOnChange: false });
@@ -495,10 +655,12 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send(message);
 		const result = message.result as { kind: string; content?: string; message?: string; excerpt?: string; fileLine?: number; mappingLine?: number } | undefined;
 		if (message.type !== 'result' || !result) {
-			// snapshot replaces the header; samples and binary change nothing yet.
+			// snapshot replaces the header; a binary not ok shows the no-binary state (4.15); samples change nothing yet.
 			if (message.type === 'snapshot') {
 				expect(host.querySelector('h1')?.textContent).toBe(message.title);
 				expect(host.querySelector('.rpcn-bl-kind')?.textContent).toBe(message.kind);
+			} else if (message.type === 'binary') {
+				expect(host.querySelector(`[role="region"][aria-label="${NO_BINARY_TITLE}"]`) !== null).toBe(message.status !== 'ok');
 			} else {
 				expect(host.innerHTML).toBe(before);
 			}
