@@ -1,0 +1,12 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: pipeline.processors[2]",
+  "kind": "mutation",
+  "source": "root.total = this.price * this.qty",
+  "binary": "ok",
+  "samples": [
+    { "name": "line item", "content": "{\"price\":2.5,\"qty\":4}", "meta": {} }
+  ],
+  "selected": "line item",
+  "unlabelledPath": "pipeline.processors[2]"
+}

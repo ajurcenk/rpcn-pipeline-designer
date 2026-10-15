@@ -474,6 +474,26 @@ body {
 	font-family: var(--vscode-editor-font-family);
 	font-size: 12px;
 }
+.rpcn-bl-labelnote {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+	padding: 6px 16px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	background: var(--vscode-editorInfo-background, transparent);
+}
+.rpcn-bl-labelnote-text {
+	flex: 1 1 240px;
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+.rpcn-bl-labelnote-text code {
+	font-family: var(--vscode-editor-font-family);
+	color: var(--vscode-textPreformat-foreground, inherit);
+}
 .rpcn-bl-btn {
 	padding: 4px 10px;
 	border: 1px solid var(--vscode-button-border, transparent);

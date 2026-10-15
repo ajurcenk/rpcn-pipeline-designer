@@ -28,6 +28,9 @@
 // a confirmed delete. An edit of a selected sample posts `inputEdited` after the run's pause (and before
 // any other sample intent). While the file can't be read (`samplesError`), the controls are disabled.
 // The selected sample's input is mirrored into the view state, as any input.
+// Ticket 4.16: while the snapshot says the processor is unlabelled (`unlabelledPath`) and the config
+// has a samples file, a note under the toolbar says its samples are linked to its position, with
+// **Add label**, which posts `addLabelRequested` (the host asks for the name and sends a new snapshot).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -63,6 +66,11 @@ export const NO_BINARY_ACTIONS = [
 export const SAMPLES_ERROR_PREFIX = 'The samples file can\'t be read: ';
 /** The "Saved in <file>" line (4.9). */
 export const savedIn = (file: string): string => `Saved in ${file}`;
+
+/** The unlabelled processor's note (4.16), around its path, and its button. */
+export const NO_LABEL_BEFORE = 'No label: samples are linked to this processor\'s position (';
+export const NO_LABEL_AFTER = ') and are lost if it moves.';
+export const ADD_LABEL_LABEL = 'Add label';
 
 /** Whether `content` and `rows` are the sample's input. */
 function isSampleInput(sample: BloblangSample, content: string, rows: readonly MetaRow[]): boolean {
@@ -533,6 +541,16 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 								<p className="rpcn-bl-saved">{savedIn(samplesFile)}</p>
 							)}
 						</div>
+						{hasSamples && snapshot?.unlabelledPath !== undefined && (
+							<div className="rpcn-bl-labelnote" role="note">
+								<p className="rpcn-bl-labelnote-text">
+									{NO_LABEL_BEFORE}<code>{snapshot.unlabelledPath}</code>{NO_LABEL_AFTER}
+								</p>
+								<button type="button" className="rpcn-bl-btn rpcn-bl-addlabel" onClick={() => post({ type: 'addLabelRequested' })}>
+									{ADD_LABEL_LABEL}
+								</button>
+							</div>
+						)}
 						<div className="rpcn-bl-io">
 							<section className="rpcn-bl-col rpcn-bl-in" aria-label={INPUT_LABEL}>
 								<ColumnHead id="rpcn-bl-in" label={INPUT_LABEL} selected={inputTab} count={String(metaRowCount(rows))} onSelect={setInputTab} />

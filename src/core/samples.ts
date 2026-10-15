@@ -4,7 +4,8 @@
 // `label`; an unlabelled one to the entry with its `path` (and no label). New entries are written with
 // the label when there is one. Every update returns the next file value, or `undefined` once no entry
 // is left (the file is then deleted); an entry left with no samples is removed. No `vscode`: the
-// store (`src/adapters/bloblangPanel/sampleStore.ts`) reads and writes the file.
+// store (`src/adapters/bloblangPanel/sampleStore.ts`) reads and writes the file. Ticket 4.16: the
+// lens's count (`sampleCount`) and the relink of an unlabelled entry to a new label (`relinkSamples`).
 
 import { isSampleName, type BloblangSample, type InputMeta } from '../shared/bloblangProtocol';
 
@@ -261,4 +262,32 @@ export function applySampleChange(
 		? mappings.filter((_, j) => j !== i)
 		: i >= 0 ? mappings.map((m, j) => (j === i ? next : m)) : [...mappings, next];
 	return { file: rest.length === 0 ? undefined : { version: SAMPLES_FILE_VERSION, mappings: rest } };
+}
+
+/** How many samples `ref` has in `file` (none: 0), by the panel's linking rule (ticket 4.16). */
+export function sampleCount(file: SamplesFile | undefined, ref: SampleRef): number {
+	return entryFor(file, ref)?.samples.length ?? 0;
+}
+
+/** Whether `file` has an entry linked by `label` (ticket 4.16). */
+export function hasLabelEntry(file: SamplesFile | undefined, label: string): boolean {
+	return indexOf(file, { label, path: '' }) >= 0;
+}
+
+/**
+ * Relinks the unlabelled entry of `path` to `label` (ticket 4.16): the entry is written with `label`
+ * instead of `path`, its samples and `selected` kept. `'none'`: no unlabelled entry has the path
+ * (nothing to write); `'taken'`: an entry already has the label (two entries are never merged).
+ */
+export function relinkSamples(file: SamplesFile | undefined, path: string, label: string): { readonly file: SamplesFile } | 'none' | 'taken' {
+	const i = indexOf(file, { path });
+	if (i < 0) {
+		return 'none';
+	}
+	if (hasLabelEntry(file, label)) {
+		return 'taken';
+	}
+	const { selected, samples } = file!.mappings[i];
+	const next: SampleEntry = { label, selected, samples };
+	return { file: { version: SAMPLES_FILE_VERSION, mappings: file!.mappings.map((m, j) => (j === i ? next : m)) } };
 }

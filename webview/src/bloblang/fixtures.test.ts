@@ -31,6 +31,8 @@ describe('Bloblang panel fixtures (4.4)', () => {
 		expect(messages.some((m) => m.type === 'samples' && m.samplesError !== undefined && m.samples.length === 0)).toBe(true);
 		expect(messages.some((m) => m.type === 'binary' && m.status === 'missing')).toBe(true);
 		expect(messages.some((m) => m.type === 'snapshot')).toBe(true);
+		// 4.16: an unlabelled processor's snapshot.
+		expect(messages.some((m) => m.type === 'snapshot' && m.unlabelledPath !== undefined)).toBe(true);
 		const ok = messages.find((m) => m.type === 'result' && m.result.kind === 'ok');
 		expect(ok?.type === 'result' && ok.result.kind === 'ok' && ok.result.changes.fields).toEqual({ added: ['c'], changed: ['b'], removed: [] });
 		const failed = messages.find((m) => m.type === 'result' && m.result.kind === 'failed');

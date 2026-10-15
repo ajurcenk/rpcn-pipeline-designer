@@ -26,10 +26,20 @@
 // `Couldn't save the samples: <reason>` and the config's panels get the file's state. An outside edit or a
 // save of the file posts `samples` to the config's panels. The page's `data-samples` is the file's
 // name (the "Saved in" line).
+// Ticket 4.16 (AD-22): while the panel's processor has no label (and its samples are linked by its
+// path), the snapshot carries `unlabelledPath`, and the webview offers Add label. `addLabelRequested`
+// shows an input box (`askLabel`) prefilled with `<kind>_<N>` and checked with the binary's label rule,
+// the document's labels and the samples file's label entries; on accept one edit inserts
+// `label: <name>` as the processor's first key (the document is not saved), then the samples entry
+// of the path, if any, is relinked to the label (`SampleStore.relink`); once it is, the panel's title,
+// its link and a new snapshot follow. A processor that changed meanwhile, or an edit that did not
+// apply, relinks nothing and shows the error; a relink that can't happen (the label taken, the file
+// unreadable or not written) removes the inserted label again, keeps the path link and says why.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
+import { documentLabels, labelError, labelInsertion, suggestLabel, type TextInsertion } from '../../core/labelEdit';
 import { samplesFor, type SampleChange, type SampleRef } from '../../core/samples';
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
@@ -56,6 +66,17 @@ export const DELETE_SAMPLE_BUTTON = 'Delete';
 export const couldNotSaveSamples = (reason: string): string => `Couldn't save the samples: ${reason}`;
 /** Shown when Test mapping is used on an untitled file. */
 export const SAVE_TO_TEST = 'Save the file to test its mappings.';
+/** Add label's input box (4.16): its title and prompt. */
+export const ADD_LABEL_TITLE = 'Add label';
+export const addLabelPrompt = (processorPath: string): string =>
+	`A label for the processor at ${processorPath}: its samples then follow it wherever it moves.`;
+/** Shown (an error) when Add label writes nothing (4.16), with the reason. */
+export const couldNotAddLabel = (reason: string): string => `Couldn't add the label: ${reason}`;
+export const LABEL_PROCESSOR_CHANGED = 'the processor changed meanwhile.';
+export const LABEL_EDIT_FAILED = 'the edit was not applied.';
+export const labelSamplesUnreadable = (reason: string): string => `the samples file can't be read: ${reason}`;
+export const labelSamplesNotSaved = (reason: string): string => `the samples could not be saved: ${reason}`;
+export const labelInSamples = (label: string): string => `samples already use the label "${label}".`;
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
 
@@ -125,6 +146,19 @@ export interface BloblangPanelsOptions {
 	 * `Delete sample "<name>"?` with Delete.
 	 */
 	readonly confirmDelete?: (name: string) => Promise<boolean>;
+	/**
+	 * Asks for a label (4.16): `value` prefilled, `validate` the input box's check (`undefined`: valid);
+	 * resolves with the accepted name, `undefined` on Esc. `undefined`: `window.showInputBox`.
+	 */
+	readonly askLabel?: (request: LabelRequest) => Promise<string | undefined>;
+}
+
+/** What Add label's input box shows and checks (4.16). */
+export interface LabelRequest {
+	readonly title: string;
+	readonly prompt: string;
+	readonly value: string;
+	readonly validate: (name: string) => string | undefined;
 }
 
 class BloblangPanel implements BloblangPanelHandle {
@@ -141,11 +175,16 @@ class BloblangPanel implements BloblangPanelHandle {
 	 */
 	private hint: { readonly line: number; readonly text: string } | undefined;
 	private disposed = false;
+	/** While Add label writes the label and relinks (4.16): sample changes wait for it, documentChanged posts nothing. */
+	private labelling: Promise<void> | undefined;
 	private readonly subscription: vscode.Disposable;
 	/** The watch on the config's samples file, held while the panel is open. */
 	private readonly watch: vscode.Disposable;
-	/** What links the panel to its saved samples: the processor's label at open, else its path (4.9). */
-	readonly ref: SampleRef;
+	/**
+	 * What links the panel to its saved samples: the processor's label at open, else its path (4.9);
+	 * the label Add label wrote (4.16).
+	 */
+	ref: SampleRef;
 
 	constructor(
 		readonly uri: vscode.Uri,
@@ -182,6 +221,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.change({ type: 'select', name: msg.name });
 			} else if (msg?.type === 'inputEdited') {
 				await this.change({ type: 'edit', content: msg.content, meta: msg.meta });
+			} else if (msg?.type === 'addLabelRequested') {
+				await this.addLabel();
 			} else if (msg?.type === 'sampleDeleted') {
 				if (await this.owner.confirmDelete(msg.name)) {
 					await this.change({ type: 'delete', name: msg.name }, true);
@@ -197,7 +238,8 @@ class BloblangPanel implements BloblangPanelHandle {
 		try {
 			const processor = this.processor();
 			this.updateHint();
-			if (JSON.stringify([processor?.kind ?? 'mapping', processor?.source ?? '']) !== this.sentSource) {
+			// While Add label runs, its own snapshot follows the relink.
+			if (!this.labelling && this.sourceKey(processor) !== this.sentSource) {
 				await this.postSnapshot();
 			}
 		} catch (e) {
@@ -217,20 +259,123 @@ class BloblangPanel implements BloblangPanelHandle {
 		return this.post({ type: 'binary', status });
 	}
 
+	/** What a snapshot shows of `processor`: its kind, its Bloblang and whether the offer shows. */
+	private sourceKey(processor: BloblangProcessor | undefined): string {
+		return JSON.stringify([processor?.kind ?? 'mapping', processor?.source ?? '', this.unlabelled(processor)]);
+	}
+
+	/**
+	 * Whether the panel offers Add label (4.16): its samples are linked by path, the processor (there
+	 * now) has no label and the config has a samples file (it is not untitled).
+	 */
+	private unlabelled(processor: BloblangProcessor | undefined): boolean {
+		return this.ref.label === undefined && processor !== undefined && processor.label === undefined && samplesUri(this.uri) !== undefined;
+	}
+
 	private async postSnapshot(): Promise<void> {
 		const processor = this.processor();
 		const kind = processor?.kind ?? 'mapping';
 		const source = processor?.source ?? '';
-		this.sentSource = JSON.stringify([kind, source]);
+		this.sentSource = this.sourceKey(processor);
+		const unlabelled = this.unlabelled(processor);
 		const samples = await this.samples();
-		await this.post({ type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples });
+		await this.post({
+			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples,
+			...(unlabelled ? { unlabelledPath: this.path } : {}),
+		});
+	}
+
+	/**
+	 * Add label (4.16): asks for a label, writes it as the processor's first key, relinks the path's
+	 * samples entry to it, and the title, the link and a snapshot follow. Esc changes nothing; a
+	 * processor that changed meanwhile or an edit that did not apply shows the error and relinks nothing.
+	 */
+	private async addLabel(): Promise<void> {
+		const processor = this.processor();
+		if (!processor || !this.unlabelled(processor)) {
+			// Nothing to offer any more: the webview gets the panel's state.
+			await this.postSnapshot();
+			return;
+		}
+		const state = await this.owner.samples.read(this.uri);
+		if (state.kind === 'unreadable') {
+			this.owner.tell(couldNotAddLabel(labelSamplesUnreadable(state.reason)), 'error');
+			return;
+		}
+		const sampleLabels = new Set(state.file?.mappings.flatMap((m) => (m.label !== undefined ? [m.label] : [])) ?? []);
+		const labels = () => {
+			const doc = this.document();
+			return documentLabels(doc ? parsedDocument(doc).parsed : undefined);
+		};
+		const name = await this.owner.askLabel({
+			title: ADD_LABEL_TITLE,
+			prompt: addLabelPrompt(this.path),
+			value: suggestLabel(processor.kind, labels()),
+			validate: (value) => labelError(value, labels(), sampleLabels),
+		});
+		if (name === undefined || this.disposed) {
+			return;
+		}
+		const doc = this.document();
+		const now = this.current();
+		const at = now.processor;
+		if (!doc || !at || !this.unlabelled(at) || at.kind !== processor.kind || at.source !== processor.source
+			|| labelError(name, labels(), sampleLabels) !== undefined) {
+			this.owner.tell(couldNotAddLabel(LABEL_PROCESSOR_CHANGED), 'error');
+			return;
+		}
+		const insertion = labelInsertion(now.text, at, name);
+		if (!insertion) {
+			this.owner.tell(couldNotAddLabel(LABEL_EDIT_FAILED), 'error');
+			return;
+		}
+		let done!: () => void;
+		this.labelling = new Promise((resolve) => (done = resolve));
+		try {
+			await this.writeLabel(doc, insertion, name);
+		} finally {
+			this.labelling = undefined;
+			done();
+		}
+		await this.postSnapshot();
+	}
+
+	/**
+	 * Inserts the label and relinks the path's samples to it (4.16). Only once the relink wrote the
+	 * file, or found no entry, do the link and the title follow; any other outcome removes the
+	 * inserted text again (when it is still there), keeps the path link and shows why.
+	 */
+	private async writeLabel(doc: vscode.TextDocument, insertion: TextInsertion, name: string): Promise<void> {
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(doc.uri, doc.positionAt(insertion.offset), insertion.text);
+		if (!await vscode.workspace.applyEdit(edit) || this.processor()?.label !== name) {
+			this.owner.tell(couldNotAddLabel(LABEL_EDIT_FAILED), 'error');
+			return;
+		}
+		const outcome = await this.owner.samples.relink(this.uri, this.path, name);
+		if (outcome === 'written' || outcome === 'unchanged') {
+			this.ref = { label: name, path: this.path };
+			this.panel.title = bloblangTitle({ label: name, path: this.path });
+			return;
+		}
+		const end = insertion.offset + insertion.text.length;
+		if (doc.getText().slice(insertion.offset, end) === insertion.text) {
+			const undo = new vscode.WorkspaceEdit();
+			undo.delete(doc.uri, new vscode.Range(doc.positionAt(insertion.offset), doc.positionAt(end)));
+			await vscode.workspace.applyEdit(undo);
+		}
+		const reason = outcome === 'taken' ? labelInSamples(name)
+			: 'failed' in outcome ? labelSamplesNotSaved(outcome.failed) : labelSamplesUnreadable(outcome.unreadable);
+		this.owner.tell(couldNotAddLabel(reason), 'error');
 	}
 
 	/** The panel's samples as the file has them now, or the unreadable file's reason (4.9). */
 	private async samples(): Promise<Pick<Extract<BloblangHostMessage, { type: 'samples' }>, 'samples' | 'selected' | 'samplesError'>> {
+		// The link as it is when the read is asked for: the read is queued in that order (4.16).
+		const ref = this.ref;
 		const state = await this.owner.samples.read(this.uri);
 		return state.kind === 'ok'
-			? samplesFor(state.file, this.ref)
+			? samplesFor(state.file, ref)
 			: { samples: [], selected: null, samplesError: state.reason };
 	}
 
@@ -251,6 +396,8 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * config's panels get the file's state, so they match the disk.
 	 */
 	private async change(change: SampleChange, echo = false): Promise<void> {
+		// A change during Add label's relink goes to the link that results (4.16).
+		await this.labelling;
 		const outcome = await this.owner.samples.update(this.uri, this.ref, change);
 		if (typeof outcome === 'object') {
 			await this.owner.samplesFailed(this.uri, outcome.failed);
@@ -485,7 +632,18 @@ export class BloblangPanels implements vscode.Disposable {
 		}
 	}
 
-	private tell(message: string, kind: 'info' | 'error' = 'info'): void {
+	/** Asks for a label (4.16): the seam, else an input box. */
+	askLabel(request: LabelRequest): Promise<string | undefined> {
+		if (this.options.askLabel) {
+			return this.options.askLabel(request);
+		}
+		return Promise.resolve(vscode.window.showInputBox({
+			title: request.title, prompt: request.prompt, value: request.value, validateInput: request.validate,
+		}));
+	}
+
+	/** Writes `message` to the output channel and shows it. */
+	tell(message: string, kind: 'info' | 'error' = 'info'): void {
 		this.log(`Test mapping: ${message}`);
 		if (this.options.showMessage) {
 			this.options.showMessage(message, kind);

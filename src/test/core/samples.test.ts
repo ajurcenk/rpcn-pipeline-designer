@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import {
-	applySampleChange, entryFor, parseSamplesFile, samplesFileName, samplesFor, serializeSamplesFile,
+	applySampleChange, entryFor, hasLabelEntry, parseSamplesFile, relinkSamples, sampleCount, samplesFileName, samplesFor, serializeSamplesFile,
 	type SampleChange, type SampleRef, type SamplesFile,
 } from '../../core/samples';
 import { MAX_SAMPLE_NAME_LENGTH } from '../../shared/bloblangProtocol';
@@ -131,5 +131,32 @@ suite('core/samples (4.9, AD-22)', () => {
 		const one = apply(FILE, FIRST, { type: 'delete', name: 'a' }, { type: 'delete', name: 'b' }, { type: 'delete', name: 'c' });
 		assert.deepStrictEqual(one, { version: 1, mappings: [FILE.mappings[1]] });
 		assert.strictEqual(apply(one, UNLABELLED, { type: 'delete', name: 'x' }), undefined, 'no entry left: no file');
+	});
+
+	test('COUNT (4.16): the samples of a ref by the panel\'s rule; none, no entry or no file: 0', () => {
+		assert.strictEqual(sampleCount(FILE, FIRST), 3);
+		assert.strictEqual(sampleCount(FILE, { label: 'first', path: 'elsewhere' }), 3, 'by label wherever it is');
+		assert.strictEqual(sampleCount(FILE, UNLABELLED), 1);
+		assert.strictEqual(sampleCount(FILE, { label: 'other', path: UNLABELLED.path }), 0, 'a labelled ref never takes a path entry');
+		assert.strictEqual(sampleCount(FILE, { path: 'pipeline.processors[0]' }), 0);
+		assert.strictEqual(sampleCount(undefined, FIRST), 0);
+		assert.ok(hasLabelEntry(FILE, 'first'));
+		assert.ok(!hasLabelEntry(FILE, 'pipeline.processors[2]'));
+		assert.ok(!hasLabelEntry(undefined, 'first'));
+	});
+
+	test('RELINK (4.16): the path entry becomes a label entry, samples and selected kept; none; taken', () => {
+		const file: SamplesFile = { ...FILE, mappings: [FILE.mappings[0], { ...FILE.mappings[1], selected: 'x' }] };
+		const relinked = relinkSamples(file, 'pipeline.processors[2]', 'mapping_1');
+		assert.ok(typeof relinked === 'object');
+		assert.deepStrictEqual(relinked.file, {
+			version: 1, mappings: [FILE.mappings[0], { label: 'mapping_1', selected: 'x', samples: [{ name: 'x', content: 'hi', meta: {} }] }],
+		});
+		assert.strictEqual(entryFor(relinked.file, { label: 'mapping_1', path: 'pipeline.processors[9]' })?.samples.length, 1, 'found by label after a move');
+		assert.ok(serializeSamplesFile(relinked.file).includes('"label": "mapping_1"'));
+		assert.ok(!serializeSamplesFile(relinked.file).includes('"path"'));
+		assert.strictEqual(relinkSamples(file, 'pipeline.processors[7]', 'mapping_1'), 'none');
+		assert.strictEqual(relinkSamples(undefined, 'pipeline.processors[2]', 'mapping_1'), 'none');
+		assert.strictEqual(relinkSamples(file, 'pipeline.processors[2]', 'first'), 'taken', 'two entries are never merged');
 	});
 });

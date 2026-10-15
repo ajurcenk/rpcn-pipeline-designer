@@ -5,12 +5,13 @@
 // at a time, in the order they were asked for. While a config has an open panel (`watch`), a watcher
 // on its samples file and the saves of VS Code reload it; `onDidChange` fires for the config when the
 // file's bytes differ from the last ones the store read or wrote, so its own writes are not outside
-// edits. Untitled configs have no samples file.
+// edits. Untitled configs have no samples file. Ticket 4.16: `relink` moves an unlabelled entry to a
+// new label, and `onDidWrite` fires after each of the store's own writes (the CodeLens's count).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	applySampleChange, parseSamplesFile, samplesFileName, serializeSamplesFile, type SampleChange, type SampleRef, type SamplesFile,
+	applySampleChange, parseSamplesFile, relinkSamples, samplesFileName, serializeSamplesFile, type SampleChange, type SampleRef, type SamplesFile,
 } from '../../core/samples';
 
 /** A config's samples file as read: its value (`undefined`: no file), or why it can't be read. */
@@ -23,6 +24,12 @@ export type SamplesState =
  * write (or delete) it, and why.
  */
 export type SamplesUpdate = 'written' | 'unchanged' | 'unreadable' | { readonly failed: string };
+
+/**
+ * What a relink did (4.16): wrote the file, found no entry to relink, found the label already used,
+ * failed to write (and why), or found the file unreadable (and why).
+ */
+export type RelinkOutcome = 'written' | 'unchanged' | 'taken' | { readonly failed: string } | { readonly unreadable: string };
 
 /** The samples file of `config`; `undefined` for an untitled config. */
 export function samplesUri(config: vscode.Uri): vscode.Uri | undefined {
@@ -54,6 +61,9 @@ export class SampleStore implements vscode.Disposable {
 	private readonly changed = new vscode.EventEmitter<vscode.Uri>();
 	/** Fires with the config whose samples file changed outside the store. */
 	readonly onDidChange = this.changed.event;
+	private readonly wrote = new vscode.EventEmitter<vscode.Uri>();
+	/** Fires with the config whose samples file the store wrote or deleted (4.16). */
+	readonly onDidWrite = this.wrote.event;
 	/** Per samples file: the text last read or written (`null`: no file). */
 	private readonly seen = new Map<string, string | null>();
 	/** Per samples file: the tail of its queue of reads and writes. */
@@ -99,27 +109,50 @@ export class SampleStore implements vscode.Disposable {
 				return 'unreadable';
 			}
 			const next = applySampleChange(state.file, ref, change);
-			if (!next) {
-				return 'unchanged';
-			}
-			try {
-				if (next.file) {
-					const text = serializeSamplesFile(next.file);
-					await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
-					this.seen.set(uri.toString(), text);
-				} else {
-					await vscode.workspace.fs.delete(uri, { useTrash: false });
-					this.seen.set(uri.toString(), null);
-				}
-				return 'written';
-			} catch (e) {
-				const reason = e instanceof Error ? e.message : String(e);
-				this.log(`Samples: ${path.posix.basename(uri.path)}: ${reason}`);
-				// What is on disk now is unknown: the next read says.
-				this.seen.delete(uri.toString());
-				return { failed: reason };
-			}
+			return next ? this.write(config, uri, next.file) : 'unchanged';
 		});
+	}
+
+	/**
+	 * Relinks the unlabelled entry of `processorPath` in `config`'s samples to `label` (4.16), keeping
+	 * its samples and `selected`. `'unchanged'`: no entry has the path (no file is created);
+	 * `'taken'`: an entry already has the label (nothing is merged). Never throws, as `update`.
+	 */
+	relink(config: vscode.Uri, processorPath: string, label: string): Promise<RelinkOutcome> {
+		const uri = samplesUri(config);
+		if (!uri) {
+			return Promise.resolve('unchanged');
+		}
+		return this.queued(uri, async (): Promise<RelinkOutcome> => {
+			const state = await this.load(config, uri);
+			if (state.kind === 'unreadable') {
+				return { unreadable: state.reason };
+			}
+			const next = relinkSamples(state.file, processorPath, label);
+			return next === 'none' ? 'unchanged' : next === 'taken' ? 'taken' : this.write(config, uri, next.file);
+		});
+	}
+
+	/** Writes `file` (`undefined`: deletes the file); `onDidWrite` fires once it is written. */
+	private async write(config: vscode.Uri, uri: vscode.Uri, file: SamplesFile | undefined): Promise<'written' | { readonly failed: string }> {
+		try {
+			if (file) {
+				const text = serializeSamplesFile(file);
+				await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
+				this.seen.set(uri.toString(), text);
+			} else {
+				await vscode.workspace.fs.delete(uri, { useTrash: false });
+				this.seen.set(uri.toString(), null);
+			}
+			this.wrote.fire(config);
+			return 'written';
+		} catch (e) {
+			const reason = e instanceof Error ? e.message : String(e);
+			this.log(`Samples: ${path.posix.basename(uri.path)}: ${reason}`);
+			// What is on disk now is unknown: the next read says.
+			this.seen.delete(uri.toString());
+			return { failed: reason };
+		}
 	}
 
 	/** Watches `config`'s samples file until the returned disposable (one per panel) is disposed. */
@@ -204,5 +237,6 @@ export class SampleStore implements vscode.Disposable {
 		this.watched.clear();
 		this.saves.dispose();
 		this.changed.dispose();
+		this.wrote.dispose();
 	}
 }

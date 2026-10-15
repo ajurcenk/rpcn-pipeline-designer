@@ -36,6 +36,8 @@ const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 	// 4.9: the samples file can't be read.
 	{ type: 'samples', samples: [], selected: null, samplesError: 'Unexpected end of JSON input' },
 	{ type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, samplesError: 'version must be 1' },
+	// 4.16: an unlabelled processor.
+	{ type: 'snapshot', title: 't', kind: 'mutation', source: '', binary: 'ok', samples: SAMPLES, selected: null, unlabelledPath: 'pipeline.processors[2]' },
 	...(['ok', 'missing', 'invalid', 'unresolved'] as const).map((status): BloblangHostMessage => ({ type: 'binary', status })),
 ];
 
@@ -101,6 +103,9 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			{ type: 'samples', samples: [], selected: null, samplesError: 1 },
 			{ type: 'samples', samples: [], selected: null, samplesError: null },
 			snapshotWith({ samplesError: false }),
+			snapshotWith({ unlabelledPath: 1 }),
+			snapshotWith({ unlabelledPath: '' }),
+			snapshotWith({ unlabelledPath: null }),
 			{ type: 'binary' },
 			{ type: 'binary', status: 'broken' },
 			// result envelope
@@ -169,6 +174,7 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			[{ type: 'installGuideRequested', extra: 1 }, { type: 'installGuideRequested' }],
 			[{ type: 'setPathRequested', extra: 1 }, { type: 'setPathRequested' }],
 			[{ type: 'retryRequested', extra: 1 }, { type: 'retryRequested' }],
+			[{ type: 'addLabelRequested', label: 'x' }, { type: 'addLabelRequested' }],
 		];
 		for (const [message, expected] of good) {
 			const parsed = parseBloblangWebviewMessage(message);

@@ -1,7 +1,7 @@
-// The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4): every message
-// of the second webview, as discriminated unions on `type`, plus the pure validators both sides use
-// on what they receive. The panel adapter (`src/adapters/bloblangPanel`), the core run parser and
-// `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
+// The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
+// `addLabelRequested` and the snapshot's `unlabelledPath`): every message of the second webview,
+// as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
+// The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
 
 import type { BinaryStatus } from './protocol';
@@ -77,7 +77,9 @@ export type BloblangHostMessage =
 	/**
 	 * The panel's whole state, sent on `ready`: its title, the processor's kind and Bloblang, the
 	 * binary's status, the samples and the selected one (`null`: none). `samplesError` (4.9): the
-	 * samples file can't be read, and why (the samples are then `[]` and `null`).
+	 * samples file can't be read, and why (the samples are then `[]` and `null`). `unlabelledPath`
+	 * (4.16): the processor has no label and the config is saved, so its samples are linked by this
+	 * path (the panel offers Add label).
 	 */
 	| {
 		readonly type: 'snapshot';
@@ -88,6 +90,7 @@ export type BloblangHostMessage =
 		readonly samples: readonly BloblangSample[];
 		readonly selected: string | null;
 		readonly samplesError?: string;
+		readonly unlabelledPath?: string;
 	}
 	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
 	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
@@ -111,7 +114,9 @@ export type BloblangWebviewMessage =
 	| { readonly type: 'goToLine'; readonly line: number }
 	| { readonly type: 'installGuideRequested' }
 	| { readonly type: 'setPathRequested' }
-	| { readonly type: 'retryRequested' };
+	| { readonly type: 'retryRequested' }
+	/** Add label (4.16): ask for a label for the unlabelled processor and relink its samples. */
+	| { readonly type: 'addLabelRequested' };
 
 type Obj = Record<string, unknown>;
 
@@ -212,7 +217,8 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 		switch (message.type) {
 			case 'snapshot':
 				ok = isString(message.title) && isKind(message.kind) && isString(message.source)
-					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError);
+					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError)
+					&& (message.unlabelledPath === undefined || (isString(message.unlabelledPath) && message.unlabelledPath !== ''));
 				break;
 			case 'result':
 				ok = isResult(message.result)
@@ -261,6 +267,7 @@ export function parseBloblangWebviewMessage(message: unknown): BloblangWebviewMe
 			case 'installGuideRequested':
 			case 'setPathRequested':
 			case 'retryRequested':
+			case 'addLabelRequested':
 				return { type: message.type };
 			case 'run':
 			case 'inputEdited': {

@@ -12,25 +12,30 @@
 // with a BloblangPanels of the test's own; plus the graph and the test panel recovering together.
 // Ticket 4.9: the saved samples matrix on the temp folder (the samples file beside the config, read
 // back from disk), with a BloblangPanels of the test's own whose Delete modal is a seam.
+// Ticket 4.16: Add label (its input box a seam: `askLabel`) writing the label and relinking the
+// samples, and the CodeLens's sample count and its refreshes (heard through `bloblangLens`).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parse } from 'yaml';
 import {
-	BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotSaveSamples, deleteSampleMessage, NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle,
+	ADD_LABEL_TITLE, addLabelPrompt, BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotAddLabel, couldNotSaveSamples, deleteSampleMessage, LABEL_PROCESSOR_CHANGED,
+	labelInSamples, labelSamplesNotSaved, labelSamplesUnreadable,
+	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle, type LabelRequest,
 } from '../../../adapters/bloblangPanel/panels';
 import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
 import { NO_BINARY_MESSAGE } from '../../../adapters/redpandaConnect/bloblang';
 import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
-import { TEST_MAPPING_LENS_TITLE } from '../../../adapters/vscode/bloblangLens';
+import { TEST_MAPPING_LENS_TITLE, testMappingLensTitle } from '../../../adapters/vscode/bloblangLens';
+import { LABEL_IN_SAMPLES_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR } from '../../../core/labelEdit';
 import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, loseBinary, restoreBinary, settle } from '../graphHelpers';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, waitFor, waitForAsync } from '../helpers';
 
 const CONFIG = [
 	'input:',
@@ -189,7 +194,14 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
-	test('LENS: one lens per mapping / mutation processor on its key line; none in YAML that is not a config', async () => {
+	test('LENS: one lens per mapping / mutation processor on its key line, with its sample count (4.16); none in YAML that is not a config', async () => {
+		// 4.16: three samples by label, one by path; the others have none.
+		const s = (name: string) => ({ name, content: '', meta: {} });
+		fs.writeFileSync(path.join(dir, 'lens.samples.json'), JSON.stringify({ version: 1, mappings: [
+			{ label: 'first', selected: null, samples: [s('a'), s('b'), s('c')] },
+			{ path: 'pipeline.processors[2]', selected: null, samples: [s('x')] },
+			{ path: FIRST, selected: null, samples: [s('ignored: the processor has a label')] },
+		] }));
 		const editor = await open('lens.yaml', CONFIG);
 		const doc = editor.document;
 		assert.ok(api().detection.isDetected(doc.uri));
@@ -197,9 +209,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			.filter((l) => l.command?.command === TEST_MAPPING_COMMAND);
 		const keyLine = (needle: string) => CONFIG.split('\n').findIndex((l) => l.includes(needle));
 		assert.deepStrictEqual(lenses.map((l) => [l.range.start.line, l.command?.title, l.command?.arguments?.[1]]), [
-			[keyLine('mapping: root.b = this.a + 1'), TEST_MAPPING_LENS_TITLE, FIRST],
+			[keyLine('mapping: root.b = this.a + 1'), '▷ Test mapping · 3 samples', FIRST],
 			[keyLine('mutation: root.b'), TEST_MAPPING_LENS_TITLE, NESTED],
-			[keyLine('FAIL_ME'), TEST_MAPPING_LENS_TITLE, 'pipeline.processors[2]'],
+			[keyLine('FAIL_ME'), '▷ Test mapping · 1 sample', 'pipeline.processors[2]'],
 			[keyLine('deleted()'), TEST_MAPPING_LENS_TITLE, 'pipeline.processors[3]'],
 			[keyLine('BROKEN'), TEST_MAPPING_LENS_TITLE, 'pipeline.processors[4]'],
 		]);
@@ -508,6 +520,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	 */
 	function testBloblangPanels(
 		actions: BinaryActions | undefined, confirmDelete?: (name: string) => Promise<boolean>, showMessage?: (message: string, kind?: 'info' | 'error') => void,
+		askLabel?: (request: LabelRequest) => Promise<string | undefined>,
 	) {
 		const log: string[] = [];
 		const panels = new BloblangPanels({
@@ -519,6 +532,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			detection: api().detection,
 			...(confirmDelete ? { confirmDelete } : {}),
 			...(showMessage ? { showMessage } : {}),
+			...(askLabel ? { askLabel } : {}),
 		});
 		return { panels, log };
 	}
@@ -947,6 +961,268 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			}, 10_000), JSON.stringify(samplesMessages(handle).at(-1)));
 		} finally {
 			panels.dispose();
+		}
+	});
+
+	// Add label and the lens's count (4.16).
+	const UNLABELLED = 'pipeline.processors[2]';
+	/** The lens titles of `doc`'s processors, by path. */
+	async function lensTitles(doc: vscode.TextDocument): Promise<Record<string, string>> {
+		const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', doc.uri);
+		return Object.fromEntries(lenses.filter((l) => l.command?.command === TEST_MAPPING_COMMAND)
+			.map((l) => [l.command!.arguments![1] as string, l.command!.title]));
+	}
+	/** Waits until `doc`'s lens at `processorPath` reads `title`. */
+	async function lensReads(doc: vscode.TextDocument, processorPath: string, title: string): Promise<void> {
+		let last: Record<string, string> = {};
+		assert.ok(await waitForAsync(async () => (last = await lensTitles(doc))[processorPath] === title, 10_000),
+			`${processorPath}: ${JSON.stringify(last)}`);
+	}
+	/** Counts the lens's refreshes from now on. */
+	function lensRefreshes(): { readonly count: () => number; readonly dispose: () => void } {
+		let n = 0;
+		const subscription = api().bloblangLens.onDidChangeCodeLenses(() => n++);
+		return { count: () => n, dispose: () => subscription.dispose() };
+	}
+	/** A test BloblangPanels whose input box answers `answer.value` (or runs `answer.during` first) and records each request. */
+	function labelPanels() {
+		const asked: LabelRequest[] = [];
+		const shown: [string, string | undefined][] = [];
+		const answer: { value: string | undefined; during?: () => Promise<void> } = { value: undefined };
+		const { panels } = testBloblangPanels(undefined, async () => true, (message, kind) => shown.push([message, kind]), async (request) => {
+			asked.push(request);
+			await answer.during?.();
+			return answer.value;
+		});
+		return { panels, asked, shown, answer };
+	}
+
+	test('OFFER + ACCEPT + REORDER_AFTER + AI-7 (4.16): Add label writes the label, relinks the samples, and they follow a move', async () => {
+		const doc = (await open('label.yaml', CONFIG)).document;
+		const file = samplesFile('label.yaml');
+		const pathEntry = { path: UNLABELLED, selected: 'b', samples: [sample('a', '{"a":1}'), sample('b', '{"a":2}', { k: 'v' })] };
+		const used = { label: 'used', selected: null, samples: [sample('u')] };
+		fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [pathEntry, used] }));
+		const { panels, asked, shown, answer } = labelPanels();
+		try {
+			await lensReads(doc, UNLABELLED, '▷ Test mapping · 2 samples');
+			// OFFER: the unlabelled processor's snapshot has its path; a labelled one's has none.
+			const labelled = (await panels.show(doc.uri, FIRST))!;
+			await labelled.receive({ type: 'ready' });
+			assert.strictEqual(lastSnapshot(labelled)?.unlabelledPath, undefined);
+			await labelled.receive({ type: 'addLabelRequested' });
+			assert.strictEqual(asked.length, 0, 'a labelled processor is not offered a label');
+			const handle = (await panels.show(doc.uri, UNLABELLED))!;
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle), {
+				type: 'snapshot', title: `Bloblang: ${UNLABELLED}`, kind: 'mapping', source: 'root.b = this.nope.or("FAIL_ME")', binary: 'ok',
+				samples: pathEntry.samples, selected: 'b', unlabelledPath: UNLABELLED,
+			});
+
+			// INVALID / DUP / USED, then ACCEPT.
+			answer.value = 'mapping_1';
+			// While the box is open: what it checks (the document's labels are read as it is then).
+			const checked: (string | undefined)[] = [];
+			answer.during = async () => {
+				checked.push(...['Bad', '_x', 'first', 'used', 'mapping_1'].map((v) => asked[0].validate(v)));
+			};
+			const from = handle.posted.length;
+			await handle.receive({ type: 'addLabelRequested' });
+			// Nothing posted while the label is written and the samples relinked shows them gone.
+			await settle();
+			const during = handle.posted.slice(from).filter((m): m is SamplesMessage | Extract<BloblangHostMessage, { type: 'snapshot' }> =>
+				m.type === 'snapshot' || m.type === 'samples');
+			assert.ok(during.length > 0 && during.every((m) => m.samples.length === 2 && m.selected === 'b'), JSON.stringify(during));
+			answer.during = undefined;
+			assert.strictEqual(asked.length, 1);
+			const request = asked[0];
+			assert.deepStrictEqual([request.title, request.prompt, request.value], [ADD_LABEL_TITLE, addLabelPrompt(UNLABELLED), 'mapping_1']);
+			assert.deepStrictEqual(checked, [LABEL_RULE_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR, LABEL_IN_SAMPLES_ERROR, undefined]);
+			assert.strictEqual(request.validate('mapping_1'), LABEL_TAKEN_ERROR, 'once written, it is the document\'s');
+			assert.deepStrictEqual(shown, []);
+
+			// The YAML: the label is the first key, at the key column; not saved.
+			assert.ok(doc.getText().includes('    - label: mapping_1\n      mapping: root.b = this.nope.or("FAIL_ME")\n'), doc.getText());
+			assert.ok(doc.isDirty, 'the document is not saved');
+			// The samples: relinked, samples and selected kept.
+			assert.deepStrictEqual(readSamples(file).mappings, [{ label: 'mapping_1', selected: 'b', samples: pathEntry.samples }, used]);
+			// The panel: title, snapshot, no offer.
+			assert.strictEqual(handle.panel.title, 'Bloblang: mapping_1');
+			assert.deepStrictEqual(lastSnapshot(handle), {
+				type: 'snapshot', title: 'Bloblang: mapping_1', kind: 'mapping', source: 'root.b = this.nope.or("FAIL_ME")', binary: 'ok',
+				samples: pathEntry.samples, selected: 'b',
+			});
+			await lensReads(doc, UNLABELLED, '▷ Test mapping · 2 samples');
+
+			// AI-7 with 4.9's OUTSIDE_EDIT: the relinked entry reloads from disk.
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ label: 'mapping_1', selected: 'b', samples: [sample('a', '{"a":1}'), sample('b', '{"a":9}')] }, used] }));
+			assert.ok(await waitFor(() => samplesMessages(handle).some((m) => m.samples[1]?.content === '{"a":9}'), 10_000), JSON.stringify(samplesMessages(handle)));
+			// And a change from the panel goes to the label entry.
+			await handle.receive({ type: 'inputEdited', content: '{"a":10}', meta: {} });
+			assert.deepStrictEqual(readSamples(file).mappings[0].samples[1], sample('b', '{"a":10}'));
+			labelled.panel.dispose();
+			handle.panel.dispose();
+
+			// REORDER_AFTER: the processor moves to the top; a new panel finds the samples by label.
+			const text = doc.getText();
+			const block = '    - label: mapping_1\n      mapping: root.b = this.nope.or("FAIL_ME")\n';
+			await setText(doc, text.replace(block, '').replace('  processors:\n', `  processors:\n${block}`));
+			await lensReads(doc, FIRST, '▷ Test mapping · 2 samples');
+			const moved = (await panels.show(doc.uri, FIRST))!;
+			assert.strictEqual(moved.panel.title, 'Bloblang: mapping_1');
+			await moved.receive({ type: 'ready' });
+			assert.deepStrictEqual([lastSnapshot(moved)?.samples.length, lastSnapshot(moved)?.selected, lastSnapshot(moved)?.unlabelledPath], [2, 'b', undefined]);
+		} finally {
+			panels.dispose();
+			await setText(doc, CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('CANCEL + ACCEPT_NO_SAMPLES + CHANGED (4.16): Esc changes nothing; no entry: the file is not created; a processor changed meanwhile relinks nothing', async () => {
+		const doc = (await open('label-none.yaml', CONFIG)).document;
+		const file = samplesFile('label-none.yaml');
+		const { panels, asked, shown, answer } = labelPanels();
+		try {
+			const handle = (await panels.show(doc.uri, NESTED))!;
+			await handle.receive({ type: 'ready' });
+			assert.strictEqual(lastSnapshot(handle)?.unlabelledPath, NESTED);
+
+			// CANCEL
+			const before = handle.posted.length;
+			answer.value = undefined;
+			await handle.receive({ type: 'addLabelRequested' });
+			assert.strictEqual(asked.at(-1)?.value, 'mutation_1');
+			assert.strictEqual(doc.getText(), CONFIG);
+			assert.ok(!doc.isDirty);
+			assert.strictEqual(handle.panel.title, `Bloblang: ${NESTED}`);
+			assert.strictEqual(handle.posted.length, before, 'nothing is posted');
+			assert.deepStrictEqual(shown, []);
+
+			// CHANGED: an edit of the processor while the box is open.
+			answer.value = 'mutation_1';
+			answer.during = () => setText(doc, CONFIG.replace('mutation: root.b = this.a + 1', 'mutation: root.b = this.a + 2'));
+			await handle.receive({ type: 'addLabelRequested' });
+			assert.ok(!doc.getText().includes('label: mutation_1'), doc.getText());
+			assert.deepStrictEqual(shown.at(-1), [couldNotAddLabel(LABEL_PROCESSOR_CHANGED), 'error']);
+			assert.strictEqual(handle.panel.title, `Bloblang: ${NESTED}`);
+			answer.during = undefined;
+
+			// ACCEPT_NO_SAMPLES
+			shown.length = 0;
+			await handle.receive({ type: 'addLabelRequested' });
+			assert.ok(doc.getText().includes('            - label: mutation_1\n              mutation: root.b = this.a + 2\n'), doc.getText());
+			assert.ok(!fs.existsSync(file), 'no entry: no samples file');
+			assert.deepStrictEqual(shown, []);
+			assert.strictEqual(handle.panel.title, 'Bloblang: mutation_1');
+			assert.strictEqual(lastSnapshot(handle)?.title, 'Bloblang: mutation_1');
+			assert.strictEqual(lastSnapshot(handle)?.unlabelledPath, undefined);
+			// The new samples go to the label.
+			await handle.receive({ type: 'sampleAdded', name: 'one' });
+			assert.deepStrictEqual(readSamples(file).mappings, [{ label: 'mutation_1', selected: 'one', samples: [sample('one')] }]);
+		} finally {
+			panels.dispose();
+			await setText(doc, CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('RELINK_FAILS (4.16): taken, unreadable or a failed write undoes the label, keeps the path link and the note, and says why', async () => {
+		const doc = (await open('label-fails.yaml', CONFIG)).document;
+		const file = samplesFile('label-fails.yaml');
+		const pathEntry = { path: UNLABELLED, selected: 'a', samples: [sample('a', '{"a":1}')] };
+		const good = JSON.stringify({ version: 1, mappings: [pathEntry] });
+		fs.writeFileSync(file, good);
+		const { panels, shown, answer } = labelPanels();
+		/** Add label with `during` run while the box is open; then the YAML, the panel and the error are as before. */
+		const failsWith = async (handle: BloblangPanelHandle, during: () => Promise<void>, error: (shown: string) => string) => {
+			shown.length = 0;
+			answer.value = 'mapping_1';
+			answer.during = during;
+			await handle.receive({ type: 'addLabelRequested' });
+			answer.during = undefined;
+			assert.strictEqual(doc.getText(), CONFIG, 'the inserted label is removed');
+			assert.strictEqual(handle.panel.title, `Bloblang: ${UNLABELLED}`);
+			assert.strictEqual(shown.length, 1, JSON.stringify(shown));
+			assert.deepStrictEqual(shown[0], [couldNotAddLabel(error(shown[0][0])), 'error']);
+			fs.chmodSync(file, 0o644);
+			fs.writeFileSync(file, good);
+			// The path link and the note are back: a new snapshot shows the samples by path.
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual([lastSnapshot(handle)?.samples, lastSnapshot(handle)?.unlabelledPath], [pathEntry.samples, UNLABELLED]);
+		};
+		try {
+			const handle = (await panels.show(doc.uri, UNLABELLED))!;
+			await handle.receive({ type: 'ready' });
+			// TAKEN: a label entry appears while the box is open.
+			await failsWith(handle, async () => {
+				fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [pathEntry, { label: 'mapping_1', selected: null, samples: [sample('z')] }] }));
+			}, () => labelInSamples('mapping_1'));
+			// UNREADABLE: the file breaks while the box is open; the reason is in the error.
+			await failsWith(handle, async () => {
+				fs.writeFileSync(file, '{"version": 1, "mappings": [');
+			}, (text) => {
+				const prefix = couldNotAddLabel(labelSamplesUnreadable(''));
+				assert.ok(text.startsWith(prefix) && text.length > prefix.length, text);
+				return labelSamplesUnreadable(text.slice(prefix.length));
+			});
+			// WRITE_FAILS: the file can't be written.
+			if (process.getuid?.() !== 0) {
+				await failsWith(handle, async () => {
+					fs.chmodSync(file, 0o444);
+				}, (text) => {
+					const prefix = couldNotAddLabel(labelSamplesNotSaved(''));
+					assert.ok(text.startsWith(prefix) && text.length > prefix.length, text);
+					return labelSamplesNotSaved(text.slice(prefix.length));
+				});
+			}
+			// Retry works.
+			shown.length = 0;
+			await handle.receive({ type: 'addLabelRequested' });
+			assert.deepStrictEqual(shown, []);
+			assert.strictEqual(handle.panel.title, 'Bloblang: mapping_1');
+			assert.deepStrictEqual(readSamples(file).mappings, [{ label: 'mapping_1', selected: 'a', samples: pathEntry.samples }]);
+		} finally {
+			fs.chmodSync(file, 0o644);
+			panels.dispose();
+			await setText(doc, CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('LENS_COUNT + LENS_REFRESH_PANEL / OUTSIDE + LENS_UNREADABLE (4.16): the count follows the panel\'s writes and the disk', async () => {
+		assert.deepStrictEqual([0, 1, 3].map(testMappingLensTitle), ['▷ Test mapping', '▷ Test mapping · 1 sample', '▷ Test mapping · 3 samples']);
+		const doc = (await open('count.yaml', CONFIG)).document;
+		const file = samplesFile('count.yaml');
+		assert.strictEqual((await lensTitles(doc))[FIRST], TEST_MAPPING_LENS_TITLE);
+		const refreshes = lensRefreshes();
+		try {
+			// LENS_REFRESH_PANEL: the extension's own panel writes; the lens hears it.
+			const handle = await show(doc.uri, FIRST);
+			await handle.receive({ type: 'sampleAdded', name: 'one' });
+			assert.ok(await waitFor(() => refreshes.count() > 0, 5_000), 'the lens refreshes after the host\'s write');
+			await lensReads(doc, FIRST, '▷ Test mapping · 1 sample');
+			await handle.receive({ type: 'sampleAdded', name: 'two' });
+			await handle.receive({ type: 'sampleAdded', name: 'three' });
+			await lensReads(doc, FIRST, '▷ Test mapping · 3 samples');
+			handle.panel.dispose();
+			assert.ok(await waitFor(() => api().bloblangPanels.size === 0, 5_000));
+
+			// LENS_REFRESH_OUTSIDE: no panel open; the file changes on disk.
+			const from = refreshes.count();
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: null, samples: [sample('a'), sample('b')] }] }));
+			assert.ok(await waitFor(() => refreshes.count() > from, 10_000), 'the lens refreshes on an outside edit');
+			await lensReads(doc, FIRST, '▷ Test mapping · 2 samples');
+
+			// LENS_UNREADABLE: invalid JSON shows no count; deleted, none either.
+			fs.writeFileSync(file, '{"version": 1, "mappings": [');
+			await lensReads(doc, FIRST, TEST_MAPPING_LENS_TITLE);
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ label: 'first', selected: null, samples: [sample('a')] }] }));
+			await lensReads(doc, FIRST, '▷ Test mapping · 1 sample');
+			fs.rmSync(file);
+			await lensReads(doc, FIRST, TEST_MAPPING_LENS_TITLE);
+		} finally {
+			refreshes.dispose();
 		}
 	});
 });

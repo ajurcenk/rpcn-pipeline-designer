@@ -65,6 +65,8 @@ export interface ExtensionApi {
 	readonly graphPanels: GraphPanels;
 	/** The Bloblang test panels, one per mapping (4.2); tests use `panelFor` as their seam. */
 	readonly bloblangPanels: BloblangPanels;
+	/** The "▷ Test mapping" CodeLens (4.2); tests hear its refreshes (4.16). */
+	readonly bloblangLens: Pick<BloblangLensProvider, 'onDidChangeCodeLenses'>;
 	/** The Red Hat YAML schema contributor's callbacks (AD-11). */
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
@@ -204,7 +206,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		storageDir: context.globalStorageUri.fsPath,
 		detection,
 	});
-	const bloblangLens = new BloblangLensProvider(detection);
+	// The lens counts each processor's samples (4.16) through the panels' store; it disposes its watchers.
+	const bloblangLens = new BloblangLensProvider(detection, bloblangPanels.samples);
 	context.subscriptions.push(
 		bloblangPanels,
 		...bloblangPanels.registerCommands(),
@@ -222,6 +225,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		run,
 		graphPanels,
 		bloblangPanels,
+		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
 		outputLines: () => [...lines],

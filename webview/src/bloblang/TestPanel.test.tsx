@@ -8,6 +8,7 @@
 // Ticket 4.9: the sample controls (picker, New sample, Rename with its validation, Delete), switching
 // runs, `inputEdited` after the pause, outside edits, the unreadable file's disabled state, and with
 // 4.15 (AI-7): no binary, a switch runs nothing and recovery runs the selected sample.
+// Ticket 4.16: the unlabelled processor's note and Add label.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,7 +24,10 @@ import {
 import {
 	DELETE_LABEL, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL, SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
-import { EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, RUN_DEBOUNCE_MS, RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel } from './TestPanel';
+import {
+	ADD_LABEL_LABEL, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, RUN_DEBOUNCE_MS, RUNNING_TEXT, SAMPLES_ERROR_PREFIX,
+	TestPanel,
+} from './TestPanel';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -994,5 +998,50 @@ describe('Bloblang test panel: saved samples (4.9)', () => {
 		await send({ type: 'binary', status: 'ok' });
 		expect(runs()).toEqual([{ type: 'run', content: '{"a":2}', meta: {} }]);
 		expect(picker()!.value).toBe('b');
+	});
+});
+
+describe('Bloblang test panel: Add label (4.16)', () => {
+	const FILE = 'orders.samples.json';
+	const PATH = 'pipeline.processors[2]';
+	const UNLABELLED = { ...SNAPSHOT, title: `Bloblang: ${PATH}`, unlabelledPath: PATH };
+	const note = () => host.querySelector('.rpcn-bl-labelnote');
+	const addLabel = () => note()?.querySelector<HTMLButtonElement>('button');
+
+	it('OFFER: under the toolbar, the note with the path and Add label, which posts addLabelRequested; none on a labelled processor', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send(SNAPSHOT);
+		expect(note()).toBeNull();
+		await send(UNLABELLED);
+		expect(note()?.getAttribute('role')).toBe('note');
+		expect(note()?.querySelector('p')?.textContent)
+			.toBe(`No label: samples are linked to this processor's position (${PATH}) and are lost if it moves.`);
+		expect(`${NO_LABEL_BEFORE}${PATH}${NO_LABEL_AFTER}`).toBe(note()?.querySelector('p')?.textContent);
+		expect(note()?.querySelector('code')?.textContent).toBe(PATH);
+		expect(note()?.previousElementSibling?.className).toBe('rpcn-bl-toolbar');
+		expect(addLabel()?.textContent).toBe(ADD_LABEL_LABEL);
+		await click(addLabel()!);
+		expect(posted.filter((m) => m.type === 'addLabelRequested')).toEqual([{ type: 'addLabelRequested' }]);
+		expect(runs()).toEqual([]);
+	});
+
+	it('ACCEPT: the host\'s next snapshot has the label\'s title and no unlabelled path: the note goes', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send(UNLABELLED);
+		expect(note()).not.toBeNull();
+		await send({ ...SNAPSHOT, title: 'Bloblang: mapping_1' });
+		expect(host.querySelector('h1')?.textContent).toBe('Bloblang: mapping_1');
+		expect(note()).toBeNull();
+	});
+
+	it('UNTITLED and no binary: no note', async () => {
+		await render();
+		await send(UNLABELLED);
+		expect(note()).toBeNull();
+		await act(async () => root.unmount());
+		root = createRoot(host);
+		await render({}, 'orders.yaml', FILE);
+		await send({ ...UNLABELLED, binary: 'missing' });
+		expect(note()).toBeNull();
 	});
 });
