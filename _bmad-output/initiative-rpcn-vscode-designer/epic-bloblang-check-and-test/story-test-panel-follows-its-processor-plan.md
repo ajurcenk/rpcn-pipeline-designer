@@ -3,7 +3,7 @@ title: 'Test panel follows its processor'
 type: 'feature'
 ticket: '10'
 created: '2026-10-15'
-status: 'built'
+status: done
 baseline_revision: 'bba254797ff2d2af5c7e760dc079338be5358e4d'
 route: 'full'
 route_source: 'auto'
