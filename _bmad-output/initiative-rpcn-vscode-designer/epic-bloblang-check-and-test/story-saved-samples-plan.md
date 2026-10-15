@@ -3,7 +3,7 @@ title: 'Saved samples'
 type: 'feature'
 ticket: '9'
 created: '2026-10-15'
-status: 'built'
+status: done
 baseline_revision: '32d9bffb1be3db236c97310c382995fe5357c5aa'
 route: 'full'
 route_source: 'auto'
