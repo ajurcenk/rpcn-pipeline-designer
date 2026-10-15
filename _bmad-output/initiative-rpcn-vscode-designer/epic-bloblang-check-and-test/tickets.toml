@@ -130,11 +130,22 @@ risk = "low"
 [[entry]]
 id = 10
 type = "story"
-title = "Test panel lifecycle"
-description = "One panel per mapping keyed by file and processor: it follows its processor through edits and a changed label, says so when the processor is removed, closes with the file's last tab, follows a file rename, and opens in a settled editor group beside the YAML and the graph's locked group."
-verify = "Integration tests cover editing above the mapping, renaming its label, deleting the processor, closing the file, renaming it, and opening two panels, each in combination with an open graph."
+title = "Test panel follows its processor"
+description = "A panel follows its processor through edits (shifted ranges, a moved or reordered processor, a changed label): its key, path and title update, a typed label change relinks the samples when the YAML is saved, and a deleted processor shows a removed state that an undo restores."
+verify = "Integration tests cover editing above the mapping, inserting and reordering processors, renaming and removing its label (relinked on save), and deleting and undoing the processor, each in combination with an open graph."
 covers = ["R8"]
 after = [16]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 17
+type = "story"
+title = "Test panel tabs, rename and placement"
+description = "A test panel closes with its file's last tab, follows a file rename (its key, title and file names, and the samples file renamed with the config), and opens in a settled editor group beside the YAML and the graph's locked group, two panels sharing it."
+verify = "Integration tests cover closing the file, renaming it (the samples file follows), and opening two panels, each in combination with an open graph and its locked group."
+covers = ["R8"]
+after = [10]
 hitl = false
 risk = "medium"
 
@@ -145,7 +156,7 @@ title = "Keyboard and screen-reader model for the test panel"
 description = "Every panel control reachable and operable by keyboard with a visible focus ring, accessible names for the panel and its regions, run results and errors announced in a polite live region, theme tokens and high-contrast borders; EXPERIENCE's Accessibility Floor and DESIGN gain the panel."
 verify = "happy-dom webview tests walk the controls by keyboard and check the accessible names and live-region announcements for a result and an error."
 covers = ["R10", "R13"]
-after = [10]
+after = [17]
 hitl = false
 risk = "low"
 
@@ -167,7 +178,7 @@ title = "Refactor sweep"
 description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during the epic; new scope becomes backlog stories."
 verify = "The suites, the corpus harness and CI pass with at least as many tests as before, and each deferred finding is fixed or moved to a named ticket."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 16, 10, 11, 12]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 16, 10, 17, 11, 12]
 hitl = false
 risk = "low"
 

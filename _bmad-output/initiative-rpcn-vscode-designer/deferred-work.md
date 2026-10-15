@@ -24,3 +24,8 @@
   summary: The "add a label" offer for a mapping with no `label` (writing the label into the YAML and re-linking its samples) and the sample count in the "▷ Test mapping" CodeLens (E4 R9).
   evidence: Split from 4.9 at planning (user, 2026-10-15) to keep the plan near the size guideline; both build on 4.9's samples file and ship on their own.
   resolution: ticket 4.16 "Sample label offer and CodeLens count" (user, 2026-10-15), after 4.9 and before 4.10.
+
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-bloblang-check-and-test/story-test-panel-follows-its-processor-plan.md`
+  summary: The test panel closing with its file's last tab, following a file rename (with the samples file), and opening in a settled editor group beside the YAML and the graph's locked group (E4 R8).
+  evidence: Split from 4.10 at planning (user, 2026-10-15) to keep the plan near the size guideline; it reuses the graph's tab, rename and group helpers and ships on its own.
+  resolution: ticket 4.17 "Test panel tabs, rename and placement" (user, 2026-10-15), after 4.10 and before 4.11.
