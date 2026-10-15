@@ -1,5 +1,5 @@
 // The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
-// `addLabelRequested` and the snapshot's `unlabelledPath`): every message of the second webview,
+// `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`): every message of the second webview,
 // as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
 // The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
@@ -79,7 +79,8 @@ export type BloblangHostMessage =
 	 * binary's status, the samples and the selected one (`null`: none). `samplesError` (4.9): the
 	 * samples file can't be read, and why (the samples are then `[]` and `null`). `unlabelledPath`
 	 * (4.16): the processor has no label and the config is saved, so its samples are linked by this
-	 * path (the panel offers Add label).
+	 * path (the panel offers Add label). `removed` (4.10): the processor is not in the file any more;
+	 * the panel shows the removed notice (title, kind and source are the last ones it had).
 	 */
 	| {
 		readonly type: 'snapshot';
@@ -91,6 +92,7 @@ export type BloblangHostMessage =
 		readonly selected: string | null;
 		readonly samplesError?: string;
 		readonly unlabelledPath?: string;
+		readonly removed?: true;
 	}
 	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
 	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
@@ -218,7 +220,8 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 			case 'snapshot':
 				ok = isString(message.title) && isKind(message.kind) && isString(message.source)
 					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError)
-					&& (message.unlabelledPath === undefined || (isString(message.unlabelledPath) && message.unlabelledPath !== ''));
+					&& (message.unlabelledPath === undefined || (isString(message.unlabelledPath) && message.unlabelledPath !== ''))
+					&& (message.removed === undefined || message.removed === true);
 				break;
 			case 'result':
 				ok = isResult(message.result)

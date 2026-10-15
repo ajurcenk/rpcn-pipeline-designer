@@ -1,0 +1,12 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: enrich",
+  "kind": "mapping",
+  "source": "root = this\nroot.total = this.price * this.qty",
+  "binary": "ok",
+  "samples": [
+    { "name": "line item", "content": "{\"price\":2.5,\"qty\":4}", "meta": {} }
+  ],
+  "selected": "line item",
+  "removed": true
+}

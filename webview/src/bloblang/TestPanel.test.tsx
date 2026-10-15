@@ -9,6 +9,7 @@
 // runs, `inputEdited` after the pause, outside edits, the unreadable file's disabled state, and with
 // 4.15 (AI-7): no binary, a switch runs nothing and recovery runs the selected sample.
 // Ticket 4.16: the unlabelled processor's note and Add label.
+// Ticket 4.10: the removed processor's notice, and the run when it comes back.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -25,8 +26,8 @@ import {
 	DELETE_LABEL, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL, SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
 import {
-	ADD_LABEL_LABEL, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, RUN_DEBOUNCE_MS, RUNNING_TEXT, SAMPLES_ERROR_PREFIX,
-	TestPanel,
+	ADD_LABEL_LABEL, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
+	RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel,
 } from './TestPanel';
 
 let host: HTMLDivElement;
@@ -1043,5 +1044,95 @@ describe('Bloblang test panel: Add label (4.16)', () => {
 		await render({}, 'orders.yaml', FILE);
 		await send({ ...UNLABELLED, binary: 'missing' });
 		expect(note()).toBeNull();
+	});
+});
+
+describe('Bloblang test panel: removed processor (4.10)', () => {
+	const REMOVED = { ...SNAPSHOT, removed: true } as const;
+	const region = () => host.querySelector(`[role="region"][aria-label="${REMOVED_TITLE}"]`);
+	const live = () => host.querySelector('.rpcn-bl-sr[aria-live="polite"]')?.textContent;
+	const SAMPLE: BloblangSample = { name: 'one', content: '{"a":1}', meta: {} };
+
+	it('REMOVED: the header stays; the notice replaces the toolbar and the columns; announced; nothing runs', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' }, 'orders.yaml', 'orders.samples.json');
+		await send(SNAPSHOT);
+		expect(runs().length).toBe(1);
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		await send(REMOVED);
+		expect(host.querySelector('h1')?.textContent).toBe('Bloblang: first');
+		expect(host.querySelector('.rpcn-bl-kind')?.textContent).toBe('mapping');
+		expect(region()?.textContent).toBe('This processor was removed from orders.yaml. Undo the change to bring it back.');
+		expect(removedText('orders.yaml')).toBe(region()?.textContent);
+		expect(host.querySelector('.rpcn-bl-toolbar')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-io')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-pill')).toBeNull();
+		expect(live()).toBe(removedText('orders.yaml'));
+		// A new source while removed runs nothing; a result arriving meanwhile is dropped.
+		await send({ ...REMOVED, source: 'root = 2' });
+		await send({ type: 'result', result: { kind: 'error', message: 'There is no mapping' }, durationMs: 0, binary: null });
+		await wait(RUN_DEBOUNCE_MS * 3);
+		expect(runs().length).toBe(1);
+	});
+
+	it('REMOVED while a run is pending: the run is cancelled', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		const before = runs().length;
+		await type('{"a":2}');
+		await send(REMOVED);
+		await wait(RUN_DEBOUNCE_MS * 3);
+		expect(runs().length).toBe(before);
+	});
+
+	it.each([true, false])('UNDO (Run on change %s): back to normal; the input and samples stay; it runs once with Run on change', async (runOnChange) => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}', runOnChange }, 'orders.yaml', 'orders.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		const before = runs().length;
+		await send({ ...REMOVED, samples: [SAMPLE], selected: 'one' });
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		expect(region()).toBeNull();
+		expect(host.querySelector('.rpcn-bl-io')).not.toBeNull();
+		expect(host.querySelector('textarea')?.value).toBe('{"a":1}');
+		expect(host.querySelector('#rpcn-bl-sample')).not.toBeNull();
+		expect(live()).toBe('');
+		await wait(RUN_DEBOUNCE_MS * 3);
+		expect(runs().length - before).toBe(runOnChange ? 1 : 0);
+	});
+
+	it('REMOVED with no binary: the notice, not the no-binary state; back with no binary: the no-binary state', async () => {
+		await render({ content: '{"a":1}' });
+		await send({ ...REMOVED, binary: 'missing' });
+		expect(region()).not.toBeNull();
+		expect(host.querySelector('.rpcn-bl-nobin')).toBeNull();
+		await send({ ...SNAPSHOT, binary: 'missing' });
+		expect(region()).toBeNull();
+		expect(host.querySelector('.rpcn-bl-nobin')).not.toBeNull();
+		expect(runs()).toEqual([]);
+	});
+
+	it('REMOVED_BACK_OFF: removed, then back with Run on change off: the last result is gone, nothing stale shows', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}', runOnChange: false });
+		await send(SNAPSHOT);
+		await act(async () => host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.click());
+		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
+		expect(host.querySelector('.rpcn-bl-output')).not.toBeNull();
+		await send(REMOVED);
+		await send(SNAPSHOT);
+		await wait(RUN_DEBOUNCE_MS * 3);
+		expect(host.querySelector('.rpcn-bl-output')).toBeNull();
+		expect(runs().length).toBe(1);
+	});
+
+	it('a recreated panel whose processor is removed does not run its restored input; it runs once it is back', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}' });
+		await send(REMOVED);
+		expect(runs()).toEqual([]);
+		await send(SNAPSHOT);
+		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
 	});
 });

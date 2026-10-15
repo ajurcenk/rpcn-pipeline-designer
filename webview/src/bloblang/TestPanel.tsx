@@ -31,6 +31,12 @@
 // Ticket 4.16: while the snapshot says the processor is unlabelled (`unlabelledPath`) and the config
 // has a samples file, a note under the toolbar says its samples are linked to its position, with
 // **Add label**, which posts `addLabelRequested` (the host asks for the name and sends a new snapshot).
+// Ticket 4.10: while the snapshot says the processor was removed (`removed`), the header stays and
+// a notice replaces the toolbar and the columns (and the no-binary state): "This processor was removed
+// from <file>. Undo the change to bring it back." Nothing runs, a pending run is cancelled, the last
+// result is cleared (as entering the no-binary state) and a result arriving meanwhile is dropped;
+// the input and the samples stay. A snapshot without `removed` brings the panel back and runs the
+// input once, with Run on change on.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -71,6 +77,10 @@ export const savedIn = (file: string): string => `Saved in ${file}`;
 export const NO_LABEL_BEFORE = 'No label: samples are linked to this processor\'s position (';
 export const NO_LABEL_AFTER = ') and are lost if it moves.';
 export const ADD_LABEL_LABEL = 'Add label';
+
+/** The removed processor's notice (4.10): its region's name and its text. */
+export const REMOVED_TITLE = 'Processor removed';
+export const removedText = (file: string): string => `This processor was removed from ${file}. Undo the change to bring it back.`;
 
 /** Whether `content` and `rows` are the sample's input. */
 function isSampleInput(sample: BloblangSample, content: string, rows: readonly MetaRow[]): boolean {
@@ -207,6 +217,8 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 	const [binary, setBinary] = useState<BinaryStatus | null>(null);
 	/** The same, for timers and host messages. */
 	const binaryNow = useRef<BinaryStatus | null>(null);
+	/** Whether the last snapshot said the processor was removed (4.10), for timers and host messages. */
+	const removedNow = useRef(false);
 	const main = useRef<HTMLElement>(null);
 	/** Where focus goes once the state has rendered (4.15): the region, the input, or nowhere. */
 	const moveFocus = useRef<'region' | 'input' | undefined>(undefined);
@@ -308,7 +320,7 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 		clearTimeout(timer.current);
 		timer.current = undefined;
 		const { content: text, rows: current } = latest.current;
-		if (text === '' || noBinaryIn(binaryNow.current)) {
+		if (text === '' || noBinaryIn(binaryNow.current) || removedNow.current) {
 			return;
 		}
 		setRunning(true);
@@ -319,7 +331,7 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 	const schedule = useCallback((text: string, on: boolean) => {
 		clearTimeout(timer.current);
 		timer.current = undefined;
-		if (on && text !== '' && !noBinaryIn(binaryNow.current)) {
+		if (on && text !== '' && !noBinaryIn(binaryNow.current) && !removedNow.current) {
 			timer.current = setTimeout(runNow, RUN_DEBOUNCE_MS);
 		}
 	}, [runNow]);
@@ -352,6 +364,17 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 			const message = parseBloblangHostMessage(event.data);
 			if (message?.type === 'snapshot') {
 				setSnapshot(message);
+				// The removed state (4.10): entering it cancels the pending run; leaving it runs once (Run on change).
+				const wasRemoved = removedNow.current;
+				removedNow.current = message.removed === true;
+				const back = wasRemoved && !removedNow.current;
+				if (removedNow.current && !wasRemoved) {
+					// As entering the no-binary state: the pending run and the last result go.
+					clearTimeout(timer.current);
+					timer.current = undefined;
+					setResult(null);
+					setRunning(false);
+				}
 				const taken = takeSamples(message);
 				const recovered = binaryChanged(message.binary);
 				// The kind and source last seen: a run follows a change of either.
@@ -366,8 +389,14 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 					if (latest.current.runOnChange || recovered) {
 						runNow();
 					}
+				} else if (removedNow.current) {
+					// Nothing runs while removed.
 				} else if (recovered || taken === 'switched' || (taken === 'edited' && latest.current.runOnChange)) {
 					runNow();
+				} else if (back) {
+					if (latest.current.runOnChange) {
+						runNow();
+					}
 				} else if (sourceChanged) {
 					schedule(latest.current.content, latest.current.runOnChange);
 				}
@@ -381,8 +410,8 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 				if (binaryChanged(message.status)) {
 					runNow();
 				}
-			} else if (message?.type === 'result' && noBinaryIn(binaryNow.current)) {
-				// A result arriving with no binary is dropped: only the recovery run brings one back.
+			} else if (message?.type === 'result' && (noBinaryIn(binaryNow.current) || removedNow.current)) {
+				// A result arriving with no binary, or while removed (4.10), is dropped.
 				setRunning(false);
 			} else if (message?.type === 'result' && latest.current.content !== '') {
 				// A result arriving after the content was cleared is dropped: the empty state stays.
@@ -490,6 +519,7 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 	const dimmed = result !== null && lastOk !== undefined && result.result.kind !== 'ok' && result.result.kind !== 'deleted';
 	const goToLine = useCallback((line: number) => post({ type: 'goToLine', line }), [post]);
 	const noBinary = noBinaryIn(binary);
+	const removed = snapshot?.removed === true;
 
 	useEffect(() => {
 		const to = moveFocus.current;
@@ -511,13 +541,19 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 					<h1 className="rpcn-bl-title">{snapshot?.title ?? 'Bloblang'}</h1>
 					{snapshot && <span className="rpcn-bl-kind">{snapshot.kind}</span>}
 				</div>
-				{status && !noBinary && <span className={`rpcn-bl-pill rpcn-bl-pill-${status.tone}`} role="status">{status.text}</span>}
+				{status && !noBinary && !removed && <span className={`rpcn-bl-pill rpcn-bl-pill-${status.tone}`} role="status">{status.text}</span>}
 			</header>
 			{/* The polite live region (4.15): always mounted; the no-binary state is announced once on entry. */}
 			<div className="rpcn-bl-sr" role="status" aria-live="polite" aria-atomic="true">
-				{noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : ''}
+				{removed ? removedText(fileName ?? DEFAULT_FILE_NAME) : noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : ''}
 			</div>
-			{noBinary
+			{removed
+				? (
+					<section className="rpcn-bl-removed" role="region" aria-label={REMOVED_TITLE}>
+						<p className="rpcn-bl-removed-text">{removedText(fileName ?? DEFAULT_FILE_NAME)}</p>
+					</section>
+				)
+				: noBinary
 				? <NoBinaryView post={post} />
 				: (
 					<>

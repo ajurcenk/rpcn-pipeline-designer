@@ -14,14 +14,17 @@
 // back from disk), with a BloblangPanels of the test's own whose Delete modal is a seam.
 // Ticket 4.16: Add label (its input box a seam: `askLabel`) writing the label and relinking the
 // samples, and the CodeLens's sample count and its refreshes (heard through `bloblangLens`).
+// Ticket 4.10: each panel follows its processor through edits (an insert above, a reorder, a typed
+// label), its samples follow on save, and a deleted processor's removed state clears on undo; each
+// scenario with and without the graph open.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parse } from 'yaml';
 import {
-	ADD_LABEL_TITLE, addLabelPrompt, BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotAddLabel, couldNotSaveSamples, deleteSampleMessage, LABEL_PROCESSOR_CHANGED,
-	labelInSamples, labelSamplesNotSaved, labelSamplesUnreadable,
+	ADD_LABEL_TITLE, addLabelPrompt, BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotAddLabel, couldNotMoveSamples, couldNotSaveSamples, deleteSampleMessage,
+	LABEL_PROCESSOR_CHANGED, labelInSamples, labelSamplesNotSaved, labelSamplesUnreadable, SAMPLES_USE_IT, SAMPLES_WAIT_FOR_SAVE,
 	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle, type LabelRequest,
 } from '../../../adapters/bloblangPanel/panels';
 import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
@@ -34,7 +37,7 @@ import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
-import { fakeActions, loseBinary, restoreBinary, settle } from '../graphHelpers';
+import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
 import { EXTENSION_ID, waitFor, waitForAsync } from '../helpers';
 
 const CONFIG = [
@@ -150,11 +153,25 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return all[all.length - 1];
 	}
 
-	/** Replaces the whole text of `doc`. */
+	/**
+	 * Makes `text` the whole text of `doc`, as an editor would: one edit of the part between their
+	 * common start and end (4.10: a replacement of everything would remove every processor).
+	 */
 	async function setText(doc: vscode.TextDocument, text: string): Promise<void> {
-		const edit = new vscode.WorkspaceEdit();
-		edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), text);
-		assert.ok(await vscode.workspace.applyEdit(edit));
+		const old = doc.getText();
+		let start = 0;
+		while (start < old.length && start < text.length && old[start] === text[start]) {
+			start++;
+		}
+		let end = 0;
+		while (end < old.length - start && end < text.length - start && old[old.length - 1 - end] === text[text.length - 1 - end]) {
+			end++;
+		}
+		if (old !== text) {
+			const edit = new vscode.WorkspaceEdit();
+			edit.replace(doc.uri, new vscode.Range(doc.positionAt(start), doc.positionAt(old.length - end)), text.slice(start, text.length - end));
+			assert.ok(await vscode.workspace.applyEdit(edit));
+		}
 		assert.strictEqual(doc.getText(), text);
 	}
 
@@ -1223,6 +1240,495 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			await lensReads(doc, FIRST, TEST_MAPPING_LENS_TITLE);
 		} finally {
 			refreshes.dispose();
+		}
+	});
+
+	// The panel follows its processor (4.10).
+	const FOLLOW_CONFIG = [
+		'input:',
+		'  stdin: {}',
+		'pipeline:',
+		'  processors:',
+		'    - label: first',
+		'      mapping: root.b = this.a + 1',
+		'    - mapping: |',
+		'        root.c = 2',
+		'        root.x = this.nope + 1 # FAIL_ON_2',
+		'    - mutation: root.d = 3',
+		'output:',
+		'  stdout: {}',
+		'',
+	].join('\n');
+	const P = (i: number) => `pipeline.processors[${i}]`;
+	/** The offset of the start of the line of `doc` that holds `text`. */
+	const lineOf = (doc: vscode.TextDocument, text: string) => {
+		const at = doc.getText().indexOf(text);
+		assert.ok(at >= 0, `no ${JSON.stringify(text)} in ${doc.getText()}`);
+		return doc.getText().lastIndexOf('\n', at) + 1;
+	};
+	/** Opens the graph on `doc` when `graph`: the graph checks that it still renders after the edits. */
+	async function maybeGraph(doc: vscode.TextDocument, graph: boolean): Promise<{ readonly works: () => Promise<void> }> {
+		if (!graph) {
+			return { works: async () => undefined };
+		}
+		const handle = (await api().graphPanels.show(doc.uri))!;
+		await handle.lockSettled;
+		await handle.receive({ type: 'ready' });
+		const from = handle.posted.length;
+		return {
+			works: async () => {
+				assert.ok(await waitFor(() => handle.posted.slice(from).some((m) => m.type === 'model'), 10_000), 'the graph renders the edits');
+				assert.strictEqual(api().graphPanels.panelFor(doc.uri), handle, 'the graph is still open');
+			},
+		};
+	}
+	/** Waits until `doc`'s samples file reads `mappings`. */
+	async function samplesRead(file: string, mappings: unknown): Promise<void> {
+		let last: unknown;
+		assert.ok(await waitFor(() => {
+			last = fs.existsSync(file) ? readSamples(file).mappings : undefined;
+			return JSON.stringify(last) === JSON.stringify(mappings);
+		}, 10_000), JSON.stringify(last));
+	}
+
+	for (const graph of [false, true]) {
+		const g = graph ? ' + WITH_GRAPH' : '';
+		const name = (base: string) => `${base}${graph ? '-graph' : ''}.yaml`;
+
+		test(`EDIT_ABOVE + INSERT_BEFORE + UNLABELLED_SHIFT_SAVE (4.10)${g}: the panel stays on its processor, its key and title follow, runs use it; the save moves its samples`, async () => {
+			const editor = await open(name('follow-insert'), FOLLOW_CONFIG);
+			const doc = editor.document;
+			const file = samplesFile(name('follow-insert'));
+			const { panels, shown } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const handle = (await panels.show(doc.uri, P(1)))!;
+				await handle.receive({ type: 'ready' });
+				await handle.receive({ type: 'sampleAdded', name: 'one' });
+				await handle.receive({ type: 'inputEdited', content: '{"a":1}', meta: {} });
+				await samplesRead(file, [{ path: P(1), selected: 'one', samples: [sample('one', '{"a":1}')] }]);
+				await settle();
+				const shownBefore = lastSnapshot(handle);
+				const from = handle.posted.length;
+
+				// EDIT_ABOVE: the same processor; nothing shown changed, so no other snapshot (the real
+				// webview's own `ready` may still bring the same one).
+				await insert(doc, 0, '# a note\n');
+				await settle();
+				assert.strictEqual(handle.path, P(1));
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), handle);
+				const after = handle.posted.slice(from).filter((m) => m.type === 'snapshot');
+				assert.ok(after.every((m) => JSON.stringify(m) === JSON.stringify(shownBefore)), JSON.stringify(after));
+
+				// INSERT_BEFORE: path [1] → [2]; the key, the title and the runs follow.
+				await insert(doc, lineOf(doc, '    - mapping: |'), '    - mapping: root.new = 0\n');
+				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
+				assert.strictEqual(handle.panel.title, `Bloblang: ${P(2)}`);
+				assert.strictEqual(panels.panelFor(doc.uri, P(2)), handle);
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), undefined, 'the inserted processor has no panel');
+				assert.strictEqual(await panels.show(doc.uri, P(2)), handle, 'Test mapping finds it under its new key');
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.title === `Bloblang: ${P(2)}`, 5_000));
+				// Before the save, the samples are still shown under the old link, and the note names its path.
+				assert.deepStrictEqual([lastSnapshot(handle)?.samples, lastSnapshot(handle)?.unlabelledPath], [[sample('one', '{"a":1}')], P(1)]);
+				const out = await run(handle, '{"a":1}');
+				assert.strictEqual(out.result.kind, 'failed', 'the run used the followed processor (FAIL_ON_2)');
+				assert.ok(lastRun().config.includes('root.c = 2') && !lastRun().config.includes('root.new'), lastRun().config);
+				// Its hint is at the followed processor's line.
+				const failing = doc.lineAt(doc.positionAt(doc.getText().indexOf('FAIL_ON_2')).line);
+				assert.deepStrictEqual(panels.hintRanges(doc.uri).map((r) => r.start.line), [failing.lineNumber]);
+				assert.deepStrictEqual(readSamples(file).mappings[0].path, P(1), 'not moved while typing');
+
+				// UNLABELLED_SHIFT_SAVE: the entry moves from the old path to the new one.
+				assert.ok(await doc.save());
+				await samplesRead(file, [{ path: P(2), selected: 'one', samples: [sample('one', '{"a":1}')] }]);
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.unlabelledPath === P(2), 5_000), 'the note names the new path');
+				assert.deepStrictEqual(shown, []);
+				await handle.receive({ type: 'inputEdited', content: '{"a":2}', meta: {} });
+				await samplesRead(file, [{ path: P(2), selected: 'one', samples: [sample('one', '{"a":2}')] }]);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`REORDER_LABELLED + LABEL_TYPED + RELINK_TAKEN + LABEL_REMOVED (4.10)${g}: found by its label; the title follows the label; the save moves the samples, or says why not`, async () => {
+			const doc = (await open(name('follow-label'), FOLLOW_CONFIG)).document;
+			const file = samplesFile(name('follow-label'));
+			const entry = (link: Record<string, string>) => ({ ...link, selected: 'a', samples: [sample('a', '{"a":1}')] });
+			const taken = { label: 'taken', selected: null, samples: [sample('t')] };
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [entry({ label: 'first' }), taken] }));
+			const { panels, shown } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const handle = (await panels.show(doc.uri, P(0)))!;
+				await handle.receive({ type: 'ready' });
+				assert.deepStrictEqual(lastSnapshot(handle)?.samples, [sample('a', '{"a":1}')]);
+
+				// REORDER_LABELLED: cut, then pasted below the mutation.
+				const block = '    - label: first\n      mapping: root.b = this.a + 1\n';
+				const at = lineOf(doc, '    - label: first');
+				await replace(doc, at, at + block.length, '');
+				assert.ok(await waitFor(() => handle.removed, 5_000), 'cut: removed');
+				await insert(doc, lineOf(doc, 'output:'), block);
+				assert.ok(await waitFor(() => !handle.removed && handle.path === P(2), 5_000), `${handle.removed} ${handle.path}`);
+				assert.strictEqual(handle.panel.title, 'Bloblang: first');
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.removed === undefined, 5_000));
+				// The real webview runs its selected sample once on coming back (Run on change): let it end first.
+				await settle();
+				assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+				assert.ok(lastRun().config.includes('root.b = this.a + 1'), lastRun().config);
+
+				// LABEL_TYPED: `first` → `second`: the title at once, the samples on save.
+				const label = (from: string, to: string) => {
+					const i = doc.getText().indexOf(`label: ${from}`) + 'label: '.length;
+					return replace(doc, i, i + from.length, to);
+				};
+				await label('first', 'second');
+				assert.ok(await waitFor(() => handle.panel.title === 'Bloblang: second', 5_000), handle.panel.title);
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.title === 'Bloblang: second', 5_000));
+				assert.deepStrictEqual(lastSnapshot(handle)?.samples, [sample('a', '{"a":1}')], 'still shown under the old link');
+				assert.deepStrictEqual(readSamples(file).mappings, [entry({ label: 'first' }), taken], 'not moved while typing');
+				assert.ok(await doc.save());
+				await samplesRead(file, [entry({ label: 'second' }), taken]);
+
+				// RELINK_TAKEN: `second` → `taken`, saved: nothing moves; the error; the old link stays.
+				await label('second', 'taken');
+				assert.ok(await waitFor(() => handle.panel.title === 'Bloblang: taken', 5_000));
+				assert.ok(await doc.save());
+				assert.ok(await waitFor(() => shown.length > 0, 5_000), 'the error is shown');
+				assert.deepStrictEqual(shown, [[couldNotMoveSamples('taken', SAMPLES_USE_IT), 'error']]);
+				assert.strictEqual(couldNotMoveSamples('taken', SAMPLES_USE_IT), 'Couldn\'t move the samples to taken: samples already use it.');
+				assert.deepStrictEqual(readSamples(file).mappings, [entry({ label: 'second' }), taken]);
+				await handle.receive({ type: 'inputEdited', content: '{"a":5}', meta: {} });
+				assert.deepStrictEqual(readSamples(file).mappings[0], { label: 'second', selected: 'a', samples: [sample('a', '{"a":5}')] }, 'the old link');
+				shown.length = 0;
+
+				// LABEL_REMOVED: the label deleted, saved: the title is the path; the entry moves to the path.
+				const l = doc.getText().indexOf('label: taken');
+				await replace(doc, l, l + 'label: taken\n      '.length, '');
+				assert.ok(await waitFor(() => handle.panel.title === `Bloblang: ${P(2)}`, 5_000), handle.panel.title);
+				assert.strictEqual(handle.removed, false);
+				assert.ok(await doc.save());
+				await samplesRead(file, [{ path: P(2), selected: 'a', samples: [sample('a', '{"a":5}')] }, taken]);
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.unlabelledPath === P(2), 5_000), 'the offer is back');
+				assert.deepStrictEqual(shown, []);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`DELETED + UNDO + TWO_PANELS (4.10)${g}: the removed state, nothing runs, the hint clears; undo brings it back; the other panel is unaffected`, async () => {
+			const editor = await open(name('follow-delete'), FOLLOW_CONFIG);
+			const doc = editor.document;
+			const { panels } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const deleted = (await panels.show(doc.uri, P(1)))!;
+				await deleted.receive({ type: 'ready' });
+				const other = (await panels.show(doc.uri, P(2)))!;
+				await other.receive({ type: 'ready' });
+				assert.strictEqual((await run(deleted, '{"a":1}')).result.kind, 'failed');
+				assert.strictEqual(panels.hintRanges(doc.uri).length, 1);
+
+				// DELETED
+				const block = '    - mapping: |\n        root.c = 2\n        root.x = this.nope + 1 # FAIL_ON_2\n';
+				const at = lineOf(doc, '    - mapping: |');
+				await replace(doc, at, at + block.length, '');
+				assert.ok(await waitFor(() => deleted.removed, 5_000), 'removed');
+				assert.ok(await waitFor(() => lastSnapshot(deleted)?.removed === true, 5_000));
+				assert.deepStrictEqual(lastSnapshot(deleted), {
+					type: 'snapshot', title: `Bloblang: ${P(1)}`, kind: 'mapping', source: 'root.c = 2\nroot.x = this.nope + 1 # FAIL_ON_2\n',
+					binary: 'ok', samples: [], selected: null, removed: true,
+				});
+				assert.strictEqual(deleted.path, P(1), 'its last path');
+				assert.deepStrictEqual(panels.hintRanges(doc.uri), [], 'the hint clears');
+				const spawned = runs();
+				assert.strictEqual((await run(deleted, '{"a":1}')).result.kind, 'error');
+				assert.strictEqual(runs(), spawned, 'nothing runs');
+				// TWO_PANELS: the other panel follows its own processor; nothing converges.
+				assert.ok(await waitFor(() => other.path === P(1), 5_000), other.path);
+				assert.strictEqual(other.removed, false);
+				assert.strictEqual(other.panel.title, `Bloblang: ${P(1)}`);
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), other, 'the key is the live panel\'s');
+				assert.strictEqual(await panels.show(doc.uri, P(1)), other);
+				assert.strictEqual((await run(other, '{"a":1}')).result.kind, 'ok');
+				assert.ok(lastRun().config.includes('root.d = 3'), lastRun().config);
+
+				// UNDO
+				await vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false });
+				await vscode.commands.executeCommand('undo');
+				assert.ok(await waitFor(() => !deleted.removed, 5_000), 'back');
+				assert.strictEqual(doc.getText(), FOLLOW_CONFIG);
+				assert.ok(await waitFor(() => lastSnapshot(deleted)?.removed === undefined, 5_000));
+				assert.deepStrictEqual([deleted.path, other.path], [P(1), P(2)]);
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), deleted);
+				assert.strictEqual(panels.panelFor(doc.uri, P(2)), other);
+				assert.strictEqual((await run(deleted, '{"a":1}')).result.kind, 'failed');
+				assert.ok(lastRun().config.includes('root.c = 2'), lastRun().config);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`AI-7 with 4.16 (4.10)${g}: Add label relinks at once; a typed rename then moves the samples on save`, async () => {
+			const doc = (await open(name('follow-addlabel'), FOLLOW_CONFIG)).document;
+			const file = samplesFile(name('follow-addlabel'));
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [{ path: P(2), selected: 'a', samples: [sample('a')] }] }));
+			const { panels, shown, answer } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const handle = (await panels.show(doc.uri, P(2)))!;
+				await handle.receive({ type: 'ready' });
+				answer.value = 'mutation_1';
+				await handle.receive({ type: 'addLabelRequested' });
+				assert.deepStrictEqual(readSamples(file).mappings, [{ label: 'mutation_1', selected: 'a', samples: [sample('a')] }], 'relinked at once');
+				assert.strictEqual(handle.panel.title, 'Bloblang: mutation_1');
+				// A save with the link unchanged writes nothing.
+				const bytes = fs.readFileSync(file, 'utf8');
+				assert.ok(await doc.save());
+				await settle();
+				assert.strictEqual(fs.readFileSync(file, 'utf8'), bytes);
+				// The typed rename.
+				const i = doc.getText().indexOf('label: mutation_1') + 'label: '.length;
+				await replace(doc, i, i + 'mutation_1'.length, 'totals');
+				assert.ok(await waitFor(() => handle.panel.title === 'Bloblang: totals', 5_000), handle.panel.title);
+				assert.ok(await doc.save());
+				await samplesRead(file, [{ label: 'totals', selected: 'a', samples: [sample('a')] }]);
+				assert.ok(await waitFor(() => lastSnapshot(handle)?.title === 'Bloblang: totals', 5_000));
+				assert.deepStrictEqual(lastSnapshot(handle)?.samples, [sample('a')]);
+				assert.deepStrictEqual(shown, []);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`LABEL_PREFIX + WHOLE_LINE + BROKEN_YAML (4.10)${g}: a typed label takes nothing from another panel; a replaced line keeps the processor; broken YAML removes no panel`, async () => {
+			const doc = (await open(name('follow-typing'), FOLLOW_CONFIG)).document;
+			const { panels } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const b = (await panels.show(doc.uri, P(0)))!;
+				await b.receive({ type: 'ready' });
+				const a = (await panels.show(doc.uri, P(1)))!;
+				await a.receive({ type: 'ready' });
+
+				// LABEL_PREFIX: `label: firstx` typed on A's processor, passing through `label: first` (B's).
+				const at = doc.getText().indexOf('mapping: |');
+				await insert(doc, at, 'label: f\n      ');
+				for (const [offset, typed] of [[0, 'i'], [1, 'r'], [2, 's'], [3, 't'], [4, 'x']] as const) {
+					await insert(doc, at + 'label: f'.length + offset, typed);
+				}
+				assert.ok(await waitFor(() => a.panel.title === 'Bloblang: firstx', 5_000), a.panel.title);
+				assert.deepStrictEqual([a.path, a.removed, b.path, b.removed, b.panel.title], [P(1), false, P(0), false, 'Bloblang: first']);
+
+				// WHOLE_LINE: B's `- label: first` line replaced in one edit by `- label: b`.
+				const line = lineOf(doc, '    - label: first');
+				await replace(doc, line, line + '    - label: first'.length, '    - label: b');
+				assert.ok(await waitFor(() => b.panel.title === 'Bloblang: b', 5_000), b.panel.title);
+				assert.deepStrictEqual([b.path, b.removed], [P(0), false]);
+
+				// BROKEN_YAML: a stray line in the processors list: nothing changes while it is broken.
+				const stray = lineOf(doc, '    - label: firstx');
+				await insert(doc, stray, '  mapping: root.z = 9\n');
+				await settle();
+				assert.deepStrictEqual([a.path, a.removed, a.panel.title, b.path, b.removed, b.panel.title], [P(1), false, 'Bloblang: firstx', P(0), false, 'Bloblang: b']);
+				assert.strictEqual(lastSnapshot(a)?.removed, undefined);
+				assert.strictEqual((await run(a, '{"a":1}')).result.kind, 'failed', 'runs use the last processor found');
+				assert.ok(lastRun().config.includes('root.c = 2'), lastRun().config);
+				// Fixed with an indent change: a new processor above A's; A's path follows.
+				await insert(doc, stray + 2, '  - ');
+				assert.ok(await waitFor(() => a.path === P(2), 5_000), a.path);
+				assert.deepStrictEqual([a.removed, a.panel.title, b.path, b.panel.title], [false, 'Bloblang: firstx', P(0), 'Bloblang: b']);
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), undefined, 'the new processor has no panel');
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`INSERT_AT_NEXT_LINE (4.10)${g}: a processor inserted at the start of the next item's line takes no panel's processor`, async () => {
+			const doc = (await open(name('follow-next-line'), FOLLOW_CONFIG)).document;
+			const { panels } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			try {
+				const first = (await panels.show(doc.uri, P(0)))!;
+				await first.receive({ type: 'ready' });
+				const second = (await panels.show(doc.uri, P(1)))!;
+				await second.receive({ type: 'ready' });
+				await insert(doc, lineOf(doc, '    - mapping: |'), '    - mapping: root.pasted = 0\n');
+				assert.ok(await waitFor(() => second.path === P(2), 5_000), second.path);
+				assert.deepStrictEqual([first.path, first.removed, first.panel.title], [P(0), false, 'Bloblang: first']);
+				assert.strictEqual(panels.panelFor(doc.uri, P(1)), undefined, 'the inserted processor has no panel');
+				assert.strictEqual((await run(first, '{"a":1}')).result.kind, 'ok');
+				assert.ok(lastRun().config.includes('root.b = this.a + 1') && !lastRun().config.includes('root.pasted'), lastRun().config);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`UNDO_RELINK (4.10)${g}: delete A, save, undo: A and B on their processors, never sharing a link, both refreshed`, async () => {
+			const editor = await open(name('follow-undo-relink'), FOLLOW_CONFIG);
+			const doc = editor.document;
+			const file = samplesFile(name('follow-undo-relink'));
+			const bEntry = (at: string, content = '{"b":1}') => ({ path: at, selected: 'b', samples: [sample('b', content)] });
+			fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [bEntry(P(2))] }));
+			const { panels, shown } = labelPanels();
+			const graphed = await maybeGraph(doc, graph);
+			/** The samples `handle` shows now: from its last snapshot or `samples`. */
+			const showing = (handle: BloblangPanelHandle) => {
+				const last = [...handle.posted].reverse().find((m) => m.type === 'snapshot' || m.type === 'samples');
+				return last && (last.type === 'snapshot' || last.type === 'samples') ? last.samples : undefined;
+			};
+			try {
+				const a = (await panels.show(doc.uri, P(1)))!;
+				await a.receive({ type: 'ready' });
+				const b = (await panels.show(doc.uri, P(2)))!;
+				await b.receive({ type: 'ready' });
+				assert.deepStrictEqual([showing(a), showing(b)], [[], [sample('b', '{"b":1}')]]);
+
+				const block = '    - mapping: |\n        root.c = 2\n        root.x = this.nope + 1 # FAIL_ON_2\n';
+				const at = lineOf(doc, '    - mapping: |');
+				await replace(doc, at, at + block.length, '');
+				assert.ok(await waitFor(() => a.removed && b.path === P(1), 5_000));
+				assert.ok(await doc.save());
+				await samplesRead(file, [bEntry(P(1))]);
+
+				await vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false });
+				await vscode.commands.executeCommand('undo');
+				assert.ok(await waitFor(() => !a.removed && a.path === P(1) && b.path === P(2), 5_000), `${a.removed} ${a.path} ${b.path}`);
+				await settle();
+				assert.deepStrictEqual([showing(a), showing(b)], [[], [sample('b', '{"b":1}')]], 'A does not show B\'s samples');
+				// A sample added on A before the save is not saved, and says so: B's entry is untouched.
+				await a.receive({ type: 'sampleAdded', name: 'lost' });
+				assert.deepStrictEqual(readSamples(file).mappings, [bEntry(P(1))]);
+				assert.deepStrictEqual(shown, [[SAMPLES_WAIT_FOR_SAVE, 'info']]);
+				assert.strictEqual(SAMPLES_WAIT_FOR_SAVE, 'This processor\'s samples can\'t be saved until the file is saved.');
+				shown.length = 0;
+
+				// The save: B's entry moves back; A's link follows to its path; both are refreshed.
+				const fromA = a.posted.length;
+				const fromB = b.posted.length;
+				assert.ok(await doc.save());
+				await samplesRead(file, [bEntry(P(2))]);
+				assert.ok(await waitFor(() => a.posted.length > fromA && b.posted.length > fromB, 5_000), 'both refreshed');
+				assert.deepStrictEqual([showing(a), showing(b)], [[], [sample('b', '{"b":1}')]]);
+				await a.receive({ type: 'sampleAdded', name: 'a' });
+				await samplesRead(file, [bEntry(P(2)), { path: P(1), selected: 'a', samples: [sample('a')] }]);
+				assert.deepStrictEqual(shown, []);
+				await graphed.works();
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+
+		test(`CLOSE_UNSAVED (4.10)${g}: an insert above, closed without saving, reopened: the panel is on its processor at the saved path`, async () => {
+			// Opened as a user would (`vscode.open`): a document an extension opened stays open for minutes after its editor closes.
+			const uri = vscode.Uri.file(path.join(dir, name('follow-close')));
+			fs.writeFileSync(uri.fsPath, FOLLOW_CONFIG);
+			const opened = async () => {
+				await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: vscode.ViewColumn.One });
+				let found: vscode.TextDocument | undefined;
+				assert.ok(await waitFor(() => (found = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())) !== undefined, 5_000));
+				assert.ok(await waitFor(() => api().detection.has(uri), 5_000));
+				return found!;
+			};
+			let doc = await opened();
+			const { panels } = labelPanels();
+			await maybeGraph(doc, graph);
+			try {
+				const handle = (await panels.show(doc.uri, P(1)))!;
+				await handle.receive({ type: 'ready' });
+				await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
+				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
+				await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+				await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+				assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
+				doc = await opened();
+				assert.strictEqual(doc.getText(), FOLLOW_CONFIG);
+				assert.ok(await waitFor(() => handle.path === P(1), 5_000), handle.path);
+				assert.strictEqual(handle.removed, false);
+				assert.strictEqual(handle.panel.title, `Bloblang: ${P(1)}`);
+				assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'failed');
+				assert.ok(lastRun().config.includes('root.c = 2') && !lastRun().config.includes('root.new'), lastRun().config);
+				// An edit after the reopen: still tracked. (With the graph open, the graph's own behaviour
+				// on its document's close is unchanged here.)
+				await insert(doc, 0, '# reopened\n');
+				await settle();
+				assert.deepStrictEqual([handle.path, handle.removed], [P(1), false]);
+			} finally {
+				panels.dispose();
+				await setText(doc, FOLLOW_CONFIG);
+				assert.ok(await doc.save());
+			}
+		});
+	}
+
+	test('SAVED_POSITION (4.10): a refused relink, saved, closed, reopened: the panel is on its own processor; a panel with no samples to move is refused silently', async () => {
+		const uri = vscode.Uri.file(path.join(dir, 'follow-saved-position.yaml'));
+		fs.writeFileSync(uri.fsPath, FOLLOW_CONFIG);
+		const file = samplesFile('follow-saved-position.yaml');
+		const firstEntry = { label: 'first', selected: 'a', samples: [sample('a', '{"a":1}')] };
+		const taken = { label: 'taken', selected: null, samples: [sample('t')] };
+		const used = { label: 'used', selected: null, samples: [sample('u')] };
+		fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [firstEntry, taken, used] }));
+		// Opened as a user would (`vscode.open`), so that closing its editor closes it.
+		const opened = async () => {
+			await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: vscode.ViewColumn.One });
+			let found: vscode.TextDocument | undefined;
+			assert.ok(await waitFor(() => (found = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())) !== undefined, 5_000));
+			assert.ok(await waitFor(() => api().detection.has(uri), 5_000));
+			return found!;
+		};
+		let doc = await opened();
+		const { panels, shown } = labelPanels();
+		try {
+			const handle = (await panels.show(doc.uri, P(0)))!;
+			await handle.receive({ type: 'ready' });
+			const mutation = (await panels.show(doc.uri, P(2)))!;
+			await mutation.receive({ type: 'ready' });
+			// P(0)'s label becomes `taken`, P(1) gets `first`, the mutation gets `used`; saved.
+			const i = doc.getText().indexOf('label: first') + 'label: '.length;
+			await replace(doc, i, i + 'first'.length, 'taken');
+			await insert(doc, doc.getText().indexOf('mapping: |'), 'label: first\n      ');
+			await insert(doc, doc.getText().indexOf('mutation: root.d'), 'label: used\n      ');
+			assert.ok(await waitFor(() => handle.panel.title === 'Bloblang: taken' && mutation.panel.title === 'Bloblang: used', 5_000));
+			assert.ok(await doc.save());
+			assert.ok(await waitFor(() => shown.length > 0, 5_000), 'the error is shown');
+			await settle();
+			assert.deepStrictEqual(shown, [[couldNotMoveSamples('taken', SAMPLES_USE_IT), 'error']], 'only for the panel with samples to move');
+			assert.deepStrictEqual(readSamples(file).mappings, [firstEntry, taken, used]);
+			// Closed (no unsaved changes) and reopened: still on its own processor, not the one now labelled `first`.
+			await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+			assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
+			doc = await opened();
+			await settle();
+			assert.deepStrictEqual([handle.path, handle.removed, handle.panel.title], [P(0), false, 'Bloblang: taken']);
+			assert.deepStrictEqual([mutation.path, mutation.removed], [P(2), false]);
+			assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+			assert.ok(lastRun().config.includes('root.b = this.a + 1'), lastRun().config);
+		} finally {
+			panels.dispose();
+			await setText(doc, FOLLOW_CONFIG);
+			assert.ok(await doc.save());
 		}
 	});
 });

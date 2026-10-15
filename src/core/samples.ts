@@ -5,7 +5,9 @@
 // the label when there is one. Every update returns the next file value, or `undefined` once no entry
 // is left (the file is then deleted); an entry left with no samples is removed. No `vscode`: the
 // store (`src/adapters/bloblangPanel/sampleStore.ts`) reads and writes the file. Ticket 4.16: the
-// lens's count (`sampleCount`) and the relink of an unlabelled entry to a new label (`relinkSamples`).
+// lens's count (`sampleCount`) and the relink of an unlabelled entry to a new label (`relinkSamples`);
+// ticket 4.10 generalizes the relink to any pair of links (label or path, either way) and adds a
+// config's save relink, all its panels' moves in one step (`relinkAll`).
 
 import { isSampleName, type BloblangSample, type InputMeta } from '../shared/bloblangProtocol';
 
@@ -274,20 +276,82 @@ export function hasLabelEntry(file: SamplesFile | undefined, label: string): boo
 	return indexOf(file, { label, path: '' }) >= 0;
 }
 
+/** The link of `ref`: `label <name>` or `path <path>`, for comparing two refs. */
+export function linkOf(ref: SampleRef): string {
+	return ref.label !== undefined ? `label ${ref.label}` : `path ${ref.path}`;
+}
+
 /**
- * Relinks the unlabelled entry of `path` to `label` (ticket 4.16): the entry is written with `label`
- * instead of `path`, its samples and `selected` kept. `'none'`: no unlabelled entry has the path
- * (nothing to write); `'taken'`: an entry already has the label (two entries are never merged).
+ * Relinks the entry of `from` to `to` (tickets 4.16, 4.10): label → label, label → path, path → label
+ * or path → path. The entry is written with `to`'s link (its label, else its path) instead of its
+ * own, its samples and `selected` kept. `'none'`: `from` has no entry, or both are the same link
+ * (nothing to write); `'taken'`: `to` already has an entry (two entries are never merged).
  */
-export function relinkSamples(file: SamplesFile | undefined, path: string, label: string): { readonly file: SamplesFile } | 'none' | 'taken' {
-	const i = indexOf(file, { path });
-	if (i < 0) {
+export function relinkSamples(file: SamplesFile | undefined, from: SampleRef, to: SampleRef): { readonly file: SamplesFile } | 'none' | 'taken' {
+	const i = indexOf(file, from);
+	if (i < 0 || linkOf(from) === linkOf(to)) {
 		return 'none';
 	}
-	if (hasLabelEntry(file, label)) {
+	if (indexOf(file, to) >= 0) {
 		return 'taken';
 	}
 	const { selected, samples } = file!.mappings[i];
-	const next: SampleEntry = { label, selected, samples };
+	const next: SampleEntry = { ...(to.label !== undefined ? { label: to.label } : { path: to.path }), selected, samples };
 	return { file: { version: SAMPLES_FILE_VERSION, mappings: file!.mappings.map((m, j) => (j === i ? next : m)) } };
+}
+
+/** One panel's move at a save (ticket 4.10): from its samples link (`undefined`: none) to its processor's. */
+export interface RelinkMove {
+	readonly from: SampleRef | undefined;
+	readonly to: SampleRef;
+}
+
+/**
+ * A config's save relink (ticket 4.10), all its panels in one step. Each move whose target link is
+ * free moves its entry there (no entry: only the link follows), samples and `selected` kept. A target
+ * is taken while an entry has it that no applied move frees, while `held` (the links of the live
+ * panels that don't move) has it, while a move that doesn't apply keeps it, or while an earlier move
+ * takes it too. The moves are applied together, so one move freeing a link lets another take it (a
+ * chain or a swap). `applied[i]`: whether move `i` applies; `hadEntry[i]`: whether its `from` has an
+ * entry; `file`: the next file, `undefined` when no entry moved (nothing to write).
+ */
+export function relinkAll(
+	file: SamplesFile | undefined, moves: readonly RelinkMove[], held: readonly SampleRef[],
+): { readonly file: SamplesFile | undefined; readonly applied: readonly boolean[]; readonly hadEntry: readonly boolean[] } {
+	const active = new Set(moves.map((_, i) => i).filter((i) => !moves[i].from || linkOf(moves[i].from!) !== linkOf(moves[i].to)));
+	const heldLinks = new Set(held.map(linkOf));
+	const entryLinks = new Set((file?.mappings ?? []).map((m) => linkOf(m.label !== undefined ? { label: m.label, path: '' } : { path: m.path ?? '' })));
+	for (let changed = true; changed;) {
+		changed = false;
+		const freed = new Set([...active].flatMap((i) => (moves[i].from ? [linkOf(moves[i].from!)] : [])));
+		const kept = new Set(moves.flatMap((m, i) => (!active.has(i) && m.from ? [linkOf(m.from)] : [])));
+		const targets = new Set<string>();
+		for (const i of [...active].sort((a, b) => a - b)) {
+			const to = linkOf(moves[i].to);
+			if (heldLinks.has(to) || kept.has(to) || targets.has(to) || (entryLinks.has(to) && !freed.has(to))) {
+				active.delete(i);
+				changed = true;
+				break;
+			}
+			targets.add(to);
+		}
+	}
+	const applied = moves.map((_, i) => active.has(i));
+	const hadEntry = moves.map((m) => m.from !== undefined && indexOf(file, m.from) >= 0);
+	const rewrites = new Map<number, SampleRef>();
+	for (const i of active) {
+		const from = moves[i].from;
+		const at = from ? indexOf(file, from) : -1;
+		if (at >= 0) {
+			rewrites.set(at, moves[i].to);
+		}
+	}
+	if (rewrites.size === 0) {
+		return { file: undefined, applied, hadEntry };
+	}
+	const mappings = file!.mappings.map((m, j): SampleEntry => {
+		const to = rewrites.get(j);
+		return to ? { ...(to.label !== undefined ? { label: to.label } : { path: to.path }), selected: m.selected, samples: m.samples } : m;
+	});
+	return { file: { version: SAMPLES_FILE_VERSION, mappings }, applied, hadEntry };
 }

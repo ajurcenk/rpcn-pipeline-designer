@@ -346,6 +346,21 @@ body {
 	text-transform: uppercase;
 	color: var(--vscode-descriptionForeground);
 }
+/* The removed processor's notice (4.10): in place of the toolbar and the columns, centred and muted,
+   as the no-binary state. */
+.rpcn-bl-removed {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 40px 24px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-bl-removed-text {
+	margin: 0;
+	max-width: 46ch;
+}
 /* The no-binary state (4.15, the prototype's): centred in the panel, a bold title, muted text, and
    the binary actions as buttons (Install guide primary). */
 .rpcn-bl-nobin {

@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import {
-	applySampleChange, entryFor, hasLabelEntry, parseSamplesFile, relinkSamples, sampleCount, samplesFileName, samplesFor, serializeSamplesFile,
+	applySampleChange, entryFor, hasLabelEntry, linkOf, parseSamplesFile, relinkAll, relinkSamples, sampleCount, samplesFileName, samplesFor, serializeSamplesFile,
 	type SampleChange, type SampleRef, type SamplesFile,
 } from '../../core/samples';
 import { MAX_SAMPLE_NAME_LENGTH } from '../../shared/bloblangProtocol';
@@ -147,7 +147,7 @@ suite('core/samples (4.9, AD-22)', () => {
 
 	test('RELINK (4.16): the path entry becomes a label entry, samples and selected kept; none; taken', () => {
 		const file: SamplesFile = { ...FILE, mappings: [FILE.mappings[0], { ...FILE.mappings[1], selected: 'x' }] };
-		const relinked = relinkSamples(file, 'pipeline.processors[2]', 'mapping_1');
+		const relinked = relinkSamples(file, UNLABELLED, { label: 'mapping_1', path: UNLABELLED.path });
 		assert.ok(typeof relinked === 'object');
 		assert.deepStrictEqual(relinked.file, {
 			version: 1, mappings: [FILE.mappings[0], { label: 'mapping_1', selected: 'x', samples: [{ name: 'x', content: 'hi', meta: {} }] }],
@@ -155,8 +155,65 @@ suite('core/samples (4.9, AD-22)', () => {
 		assert.strictEqual(entryFor(relinked.file, { label: 'mapping_1', path: 'pipeline.processors[9]' })?.samples.length, 1, 'found by label after a move');
 		assert.ok(serializeSamplesFile(relinked.file).includes('"label": "mapping_1"'));
 		assert.ok(!serializeSamplesFile(relinked.file).includes('"path"'));
-		assert.strictEqual(relinkSamples(file, 'pipeline.processors[7]', 'mapping_1'), 'none');
-		assert.strictEqual(relinkSamples(undefined, 'pipeline.processors[2]', 'mapping_1'), 'none');
-		assert.strictEqual(relinkSamples(file, 'pipeline.processors[2]', 'first'), 'taken', 'two entries are never merged');
+		assert.strictEqual(relinkSamples(file, { path: 'pipeline.processors[7]' }, { label: 'mapping_1', path: '' }), 'none');
+		assert.strictEqual(relinkSamples(undefined, UNLABELLED, { label: 'mapping_1', path: '' }), 'none');
+		assert.strictEqual(relinkSamples(file, UNLABELLED, { label: 'first', path: '' }), 'taken', 'two entries are never merged');
+	});
+
+	test('RELINK (4.10): label → label, label → path and path → path; the same link is none; a taken target moves nothing', () => {
+		const toLabel = relinkSamples(FILE, FIRST, { label: 'renamed', path: FIRST.path });
+		assert.ok(typeof toLabel === 'object');
+		assert.deepStrictEqual(toLabel.file.mappings[0], { label: 'renamed', selected: 'b', samples: FILE.mappings[0].samples });
+		assert.deepStrictEqual(toLabel.file.mappings[1], FILE.mappings[1], 'the other entry is unchanged');
+
+		const toPath = relinkSamples(FILE, FIRST, { path: 'pipeline.processors[0]' });
+		assert.ok(typeof toPath === 'object');
+		assert.deepStrictEqual(toPath.file.mappings[0], { path: 'pipeline.processors[0]', selected: 'b', samples: FILE.mappings[0].samples });
+		assert.ok(!serializeSamplesFile(toPath.file).includes('"label": "first"'));
+		assert.deepStrictEqual(parseSamplesFile(serializeSamplesFile(toPath.file)), { ok: true, file: toPath.file }, 'still a valid file');
+
+		const shifted = relinkSamples(FILE, UNLABELLED, { path: 'pipeline.processors[3]' });
+		assert.ok(typeof shifted === 'object');
+		assert.deepStrictEqual(shifted.file.mappings[1], { path: 'pipeline.processors[3]', selected: null, samples: FILE.mappings[1].samples });
+
+		assert.strictEqual(relinkSamples(FILE, FIRST, { label: 'first', path: 'elsewhere' }), 'none', 'the same label: nothing to move');
+		assert.strictEqual(relinkSamples(FILE, UNLABELLED, UNLABELLED), 'none');
+		assert.strictEqual(relinkSamples(FILE, FIRST, UNLABELLED), 'taken', 'label → a path that has samples');
+		assert.strictEqual(relinkSamples(FILE, UNLABELLED, { label: 'first', path: '' }), 'taken', 'path → a label that has samples');
+		assert.strictEqual(relinkSamples(FILE, { label: 'nope', path: '' }, UNLABELLED), 'none', 'no entry: none, even onto a taken link');
+		assert.strictEqual(linkOf(FIRST), 'label first');
+		assert.strictEqual(linkOf(UNLABELLED), 'path pipeline.processors[2]');
+	});
+
+	test('RELINK_ALL (4.10): a save\'s moves in one step: chains and swaps, no entry, taken links', () => {
+		const P = (i: number): SampleRef => ({ path: `pipeline.processors[${i}]` });
+		const entry = (link: SampleRef, name: string) => ({ ...(link.label !== undefined ? { label: link.label } : { path: link.path }), selected: null, samples: [{ name, content: '', meta: {} }] });
+		const file: SamplesFile = { version: 1, mappings: [entry(P(0), 'zero'), entry(P(1), 'one'), entry({ label: 'x', path: '' }, 'x')] };
+
+		// UNLABELLED_SHIFT_SAVE as a chain: [1] → [2] frees [1] for [0] → [1].
+		const chain = relinkAll(file, [{ from: P(0), to: P(1) }, { from: P(1), to: P(2) }], []);
+		assert.deepStrictEqual(chain.applied, [true, true]);
+		assert.deepStrictEqual(chain.file?.mappings, [entry(P(1), 'zero'), entry(P(2), 'one'), file.mappings[2]]);
+		// A swap.
+		const swap = relinkAll(file, [{ from: P(1), to: P(0) }, { from: P(0), to: P(1) }], []);
+		assert.deepStrictEqual(swap.applied, [true, true]);
+		assert.deepStrictEqual(swap.file?.mappings, [entry(P(1), 'zero'), entry(P(0), 'one'), file.mappings[2]]);
+		// No entry: the link follows, nothing to write.
+		assert.deepStrictEqual(relinkAll(file, [{ from: P(5), to: P(6) }, { from: undefined, to: P(7) }], []), { file: undefined, applied: [true, true], hadEntry: [false, false] });
+		// RELINK_TAKEN: a target an entry keeps, a live panel holds, a blocked move keeps, or an earlier move takes.
+		assert.deepStrictEqual(relinkAll(file, [{ from: P(1), to: { label: 'x', path: '' } }], []), { file: undefined, applied: [false], hadEntry: [true] });
+		assert.deepStrictEqual(relinkAll(file, [{ from: P(5), to: P(0) }], []), { file: undefined, applied: [false], hadEntry: [false] }, 'no entry onto an entry: taken, nothing to move');
+		assert.deepStrictEqual(relinkAll(file, [{ from: P(5), to: P(6) }], [P(6)]).applied, [false], 'a live panel holds it');
+		const blocked = relinkAll(file, [{ from: P(0), to: P(1) }, { from: P(1), to: { label: 'x', path: '' } }], []);
+		assert.deepStrictEqual(blocked, { file: undefined, applied: [false, false], hadEntry: [true, true] }, '[1] stays, so [0] can\'t take it');
+		const twice = relinkAll(file, [{ from: P(5), to: P(8) }, { from: P(6), to: P(8) }], []);
+		assert.deepStrictEqual(twice.applied, [true, false], 'one link, two panels: the first');
+		// Label → label, label → path.
+		const renamed = relinkAll(file, [{ from: { label: 'x', path: '' }, to: { label: 'y', path: 'pipeline.processors[2]' } }], []);
+		assert.deepStrictEqual(renamed.file?.mappings[2], entry({ label: 'y', path: '' }, 'x'));
+		const unlabelled = relinkAll(file, [{ from: { label: 'x', path: '' }, to: P(2) }], []);
+		assert.deepStrictEqual(unlabelled.file?.mappings[2], entry(P(2), 'x'));
+		// The same link: nothing to do.
+		assert.deepStrictEqual(relinkAll(file, [{ from: P(0), to: P(0) }], []), { file: undefined, applied: [false], hadEntry: [true] });
 	});
 });

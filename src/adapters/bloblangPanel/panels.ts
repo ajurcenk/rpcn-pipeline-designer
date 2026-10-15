@@ -35,12 +35,32 @@
 // its link and a new snapshot follow. A processor that changed meanwhile, or an edit that did not
 // apply, relinks nothing and shows the error; a relink that can't happen (the label taken, the file
 // unreadable or not written) removes the inserted label again, keeps the path link and says why.
+// Ticket 4.10 (AD-1, AD-22): each panel follows its processor through the document's changes
+// (`processorTracking.ts`): its processor's map range is mapped through each change's
+// `contentChanges`, and while the document parses all its panels are matched together, one panel per
+// processor: by overlap, else by label; a removed panel by its last label, else by the same kind and
+// Bloblang nearest its last path. While the YAML doesn't parse nothing is matched: the panels keep
+// their processor, title and state (as the graph, AD-17), and runs use the last processor found. Its
+// path, label, key (`uri#path`) and title follow, and a snapshot goes out when the title, kind,
+// Bloblang or removed state changes. A processor that can't be found puts the panel in the removed
+// state (the snapshot's `removed`): it keeps its last path, label, kind and Bloblang, runs nothing,
+// and its hint clears. When the document closes with unsaved changes, each panel resets to its saved
+// position (its label and path in the saved file) and is matched by it when the document opens again.
+// On each save of the document, all of the config's panels whose
+// processor's link (its label, else its path) differs from their samples link move their entries to
+// the new links in one step (`SampleStore.relinkAll`); a link still taken moves nothing and says so
+// (a panel with no samples to move keeps its link silently), and afterwards every panel of the
+// config gets the file's samples. Until then a panel shows its samples under the old link. Two live
+// panels never share a samples link: a removed panel whose link another panel took, or that comes
+// back to a link a live panel has, is left with none (no samples, and a sample change says
+// SAMPLES_WAIT_FOR_SAVE) until its next save. The hint is keyed by the panel itself, so it follows.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
 import { documentLabels, labelError, labelInsertion, suggestLabel, type TextInsertion } from '../../core/labelEdit';
-import { samplesFor, type SampleChange, type SampleRef } from '../../core/samples';
+import { mapRange, matchProcessors, parses, type OffsetRange, type TextChange, type TrackedProcessor } from '../../core/processorTracking';
+import { linkOf, samplesFor, type RelinkMove, type SampleChange, type SampleRef } from '../../core/samples';
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
@@ -77,6 +97,11 @@ export const LABEL_EDIT_FAILED = 'the edit was not applied.';
 export const labelSamplesUnreadable = (reason: string): string => `the samples file can't be read: ${reason}`;
 export const labelSamplesNotSaved = (reason: string): string => `the samples could not be saved: ${reason}`;
 export const labelInSamples = (label: string): string => `samples already use the label "${label}".`;
+/** Shown (an error) when a save can't move the samples to the processor's new link (4.10). */
+export const couldNotMoveSamples = (link: string, reason: string): string => `Couldn't move the samples to ${link}: ${reason}`;
+export const SAMPLES_USE_IT = 'samples already use it.';
+/** Shown when a panel with no samples link (4.10) gets a sample change. */
+export const SAMPLES_WAIT_FOR_SAVE = 'This processor\'s samples can\'t be saved until the file is saved.';
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
 
@@ -88,7 +113,10 @@ export function bloblangTitle(processor: Pick<BloblangProcessor, 'label' | 'path
 /** One mapping's panel, as seen by tests (the host-side seam). */
 export interface BloblangPanelHandle {
 	readonly uri: vscode.Uri;
+	/** The path of the processor it follows now (4.10); while removed, its last path. */
 	readonly path: string;
+	/** Whether its processor can't be found (the removed state, 4.10). */
+	readonly removed: boolean;
 	readonly panel: vscode.WebviewPanel;
 	/** The last MAX_BLOBLANG_POSTED messages posted to the webview, in order. */
 	readonly posted: readonly BloblangHostMessage[];
@@ -106,6 +134,9 @@ export type MappingTestRunner = (
 	storageDir: string,
 	deps: MappingTestDependencies,
 ) => Promise<MappingTestOutcome>;
+
+/** The next hint key: one per panel, so its hint follows it through path changes (4.10). */
+let nextHintKey = 0;
 
 /** The processor at a panel's path and the document text it was read from. */
 interface Current {
@@ -167,7 +198,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	private pending: TestInput | undefined;
 	/** The run loop in flight, if any. */
 	private loop: Promise<void> | undefined;
-	/** The `kind` and source last sent in a snapshot, so that an edit elsewhere sends nothing. */
+	/** What the last snapshot showed (`sourceKey`), so that an edit elsewhere sends nothing. */
 	private sentSource: string | undefined;
 	/**
 	 * The latest `failed` result with a file line: its mapping line and that line's text in the
@@ -177,23 +208,54 @@ class BloblangPanel implements BloblangPanelHandle {
 	private disposed = false;
 	/** While Add label writes the label and relinks (4.16): sample changes wait for it, documentChanged posts nothing. */
 	private labelling: Promise<void> | undefined;
+	/** While a save moves the samples to the new link (4.10): sample changes wait for it. */
+	private relinking: Promise<void> | undefined;
+	/** The path of the processor the panel follows (4.10); while removed, its last one. */
+	path: string;
+	/** Its label (4.10); while removed, its last one. */
+	private label: string | undefined;
+	/** Its kind and Bloblang (4.10); while removed, the last ones. */
+	private kind: BloblangProcessorKind;
+	private source: string;
+	/** Its map range in the document now, mapped through each change (4.10); `undefined`: reset to its samples link. */
+	private range: OffsetRange | undefined;
+	/** The processor last found and the text it was read from (4.10): what runs use while the YAML doesn't parse. */
+	private last: Current | undefined;
+	/** Whether its processor can't be found (the removed state, 4.10). */
+	removed = false;
+	/** The panel's hint key: its own, whatever its path (4.10). */
+	private readonly hintKey = `bloblang-hint-${nextHintKey++}`;
 	private readonly subscription: vscode.Disposable;
 	/** The watch on the config's samples file, held while the panel is open. */
 	private readonly watch: vscode.Disposable;
 	/**
 	 * What links the panel to its saved samples: the processor's label at open, else its path (4.9);
-	 * the label Add label wrote (4.16).
+	 * the label Add label wrote (4.16); the processor's link at the last save that moved it (4.10).
+	 * `undefined`: none, as another live panel has its link (4.10); it gets one at the next save.
 	 */
-	ref: SampleRef;
+	ref: SampleRef | undefined;
+	/**
+	 * Where its processor is in the saved file (4.10): its label and path as of the open, the last save,
+	 * or the last match in a document with no unsaved changes. A close with unsaved changes resets to it.
+	 */
+	private saved: SampleRef;
 
 	constructor(
 		readonly uri: vscode.Uri,
-		readonly path: string,
-		label: string | undefined,
+		processor: BloblangProcessor,
+		text: string,
 		readonly panel: vscode.WebviewPanel,
 		private readonly owner: BloblangPanels,
 	) {
+		const { path, label } = processor;
+		this.path = path;
+		this.label = label;
+		this.kind = processor.kind;
+		this.source = processor.source;
+		this.range = processor.range;
+		this.last = { processor, text };
 		this.ref = label !== undefined ? { label, path } : { path };
+		this.saved = this.ref;
 		this.watch = owner.samples.watch(uri);
 		this.subscription = panel.webview.onDidReceiveMessage((m) => this.receive(m));
 	}
@@ -233,7 +295,85 @@ class BloblangPanel implements BloblangPanelHandle {
 		}
 	}
 
-	/** The panel's document changed: a snapshot when the processor's kind or Bloblang changed. */
+	/** Maps its processor's range through a change of its document (4.10). */
+	mapThrough(changes: readonly TextChange[]): void {
+		if (this.range) {
+			this.range = mapRange(this.range, changes);
+		}
+	}
+
+	/** What the panel tracks, for matching (4.10). */
+	tracked(): TrackedProcessor {
+		return {
+			path: this.path, ...(this.label !== undefined ? { label: this.label } : {}), kind: this.kind, source: this.source,
+			range: this.range, removed: this.removed,
+		};
+	}
+
+	/**
+	 * Follows the processor matched in `text` (4.10): its path, label, kind, Bloblang, range and title;
+	 * none: the removed state, everything else kept. Synchronous, so the key is current at once.
+	 */
+	follow(found: BloblangProcessor | undefined, text: string): void {
+		if (!found) {
+			this.removed = true;
+			this.last = undefined;
+			return;
+		}
+		this.removed = false;
+		this.path = found.path;
+		this.label = found.label;
+		this.kind = found.kind;
+		this.source = found.source;
+		this.range = found.range;
+		this.last = { processor: found, text };
+		const title = bloblangTitle(found);
+		if (this.panel.title !== title) {
+			this.panel.title = title;
+		}
+	}
+
+	/** Its processor's place is the saved file's now (4.10): the document has no unsaved changes. */
+	markSaved(): void {
+		if (!this.removed && !this.isReset) {
+			this.saved = this.link();
+		}
+	}
+
+	/**
+	 * Its document closed with unsaved changes (4.10): they are gone, so the panel resets to its saved
+	 * position (label and path) and is matched by it when the document opens again.
+	 */
+	reset(): void {
+		this.path = this.saved.path;
+		this.label = this.saved.label;
+		this.range = undefined;
+		this.last = undefined;
+	}
+
+	/** Whether it waits to be matched by its samples link (its document closed, 4.10). */
+	get isReset(): boolean {
+		return this.range === undefined;
+	}
+
+	/** Its processor's link now (4.10): its label, else its path. */
+	link(): SampleRef {
+		return this.label !== undefined ? { label: this.label, path: this.path } : { path: this.path };
+	}
+
+	/** Waits for Add label and a save's relink in flight, then holds sample changes until `done` is called (4.10). */
+	async hold(): Promise<() => void> {
+		await this.labelling;
+		await this.relinking;
+		let done!: () => void;
+		this.relinking = new Promise((resolve) => (done = resolve));
+		return () => {
+			this.relinking = undefined;
+			done();
+		};
+	}
+
+	/** The panel's document changed: a snapshot when its title, kind, Bloblang or removed state changed. */
 	async documentChanged(): Promise<void> {
 		try {
 			const processor = this.processor();
@@ -253,15 +393,15 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (status !== 'ok') {
 			// The webview hides the failed result with no binary: its hint goes too, for good.
 			this.hint = undefined;
-			this.owner.hints.set(this.key, this.uri, undefined);
+			this.owner.hints.set(this.hintKey, this.uri, undefined);
 		}
 		// `post` logs a failed post; it never throws.
 		return this.post({ type: 'binary', status });
 	}
 
-	/** What a snapshot shows of `processor`: its kind, its Bloblang and whether the offer shows. */
+	/** What a snapshot shows: the title, the kind, the Bloblang, whether the offer shows, and the removed state (4.10). */
 	private sourceKey(processor: BloblangProcessor | undefined): string {
-		return JSON.stringify([processor?.kind ?? 'mapping', processor?.source ?? '', this.unlabelled(processor)]);
+		return JSON.stringify([this.panel.title, this.kind, this.source, this.unlabelled(processor) ? this.ref?.path : undefined, this.removed]);
 	}
 
 	/**
@@ -269,20 +409,30 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * now) has no label and the config has a samples file (it is not untitled).
 	 */
 	private unlabelled(processor: BloblangProcessor | undefined): boolean {
-		return this.ref.label === undefined && processor !== undefined && processor.label === undefined && samplesUri(this.uri) !== undefined;
+		return this.ref !== undefined && this.ref.label === undefined && processor !== undefined && processor.label === undefined && samplesUri(this.uri) !== undefined;
 	}
 
 	private async postSnapshot(): Promise<void> {
 		const processor = this.processor();
-		const kind = processor?.kind ?? 'mapping';
-		const source = processor?.source ?? '';
+		const { kind, source, removed } = this;
 		this.sentSource = this.sourceKey(processor);
 		const unlabelled = this.unlabelled(processor);
 		const samples = await this.samples();
 		await this.post({
 			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples,
-			...(unlabelled ? { unlabelledPath: this.path } : {}),
+			// The samples' link (4.10): until a save moves them, the path they are under.
+			...(unlabelled && this.ref ? { unlabelledPath: this.ref.path } : {}),
+			...(removed ? { removed: true as const } : {}),
 		});
+	}
+
+	/** Posts a snapshot (4.10: after a save moved its samples link). */
+	async refresh(): Promise<void> {
+		try {
+			await this.postSnapshot();
+		} catch (e) {
+			this.fail(e);
+		}
 	}
 
 	/**
@@ -314,6 +464,11 @@ class BloblangPanel implements BloblangPanelHandle {
 			validate: (value) => labelError(value, labels(), sampleLabels),
 		});
 		if (name === undefined || this.disposed) {
+			return;
+		}
+		// A save's relink in flight may change the samples link (4.10): read it once that is done.
+		await this.relinking;
+		if (this.disposed) {
 			return;
 		}
 		const doc = this.document();
@@ -352,7 +507,11 @@ class BloblangPanel implements BloblangPanelHandle {
 			this.owner.tell(couldNotAddLabel(LABEL_EDIT_FAILED), 'error');
 			return;
 		}
-		const outcome = await this.owner.samples.relink(this.uri, this.path, name);
+		if (!this.ref) {
+			this.owner.tell(couldNotAddLabel(LABEL_PROCESSOR_CHANGED), 'error');
+			return;
+		}
+		const outcome = await this.owner.samples.relink(this.uri, this.ref, { label: name, path: this.path });
 		if (outcome === 'written' || outcome === 'unchanged') {
 			this.ref = { label: name, path: this.path };
 			this.panel.title = bloblangTitle({ label: name, path: this.path });
@@ -373,6 +532,10 @@ class BloblangPanel implements BloblangPanelHandle {
 	private async samples(): Promise<Pick<Extract<BloblangHostMessage, { type: 'samples' }>, 'samples' | 'selected' | 'samplesError'>> {
 		// The link as it is when the read is asked for: the read is queued in that order (4.16).
 		const ref = this.ref;
+		if (!ref) {
+			// No link (4.10): another live panel has it.
+			return { samples: [], selected: null };
+		}
 		const state = await this.owner.samples.read(this.uri);
 		return state.kind === 'ok'
 			? samplesFor(state.file, ref)
@@ -396,8 +559,15 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * config's panels get the file's state, so they match the disk.
 	 */
 	private async change(change: SampleChange, echo = false): Promise<void> {
-		// A change during Add label's relink goes to the link that results (4.16).
+		// A change during Add label's relink, or a save's (4.10), goes to the link that results (4.16).
 		await this.labelling;
+		await this.relinking;
+		if (!this.ref) {
+			// No link (4.10): nothing is saved, and the user is told; the webview gets the panel's state back.
+			this.owner.tell(SAMPLES_WAIT_FOR_SAVE);
+			await this.postSamples();
+			return;
+		}
 		const outcome = await this.owner.samples.update(this.uri, this.ref, change);
 		if (typeof outcome === 'object') {
 			await this.owner.samplesFailed(this.uri, outcome.failed);
@@ -445,19 +615,32 @@ class BloblangPanel implements BloblangPanelHandle {
 		await this.loop;
 	}
 
-	/** The processor at this panel's path in the open document, now. */
+	/** The processor the panel follows in the open document, now; none while removed. */
 	private processor(): BloblangProcessor | undefined {
 		return this.current().processor;
 	}
 
-	/** The processor at this panel's path and the text of the open document, now. */
+	/**
+	 * The processor the panel follows and the text of the open document, now: the one at its tracked
+	 * path (4.10: the path follows every change); while the YAML doesn't parse, the last one found and
+	 * its text; none while removed.
+	 */
 	private current(): Current {
 		const doc = this.document();
-		if (!doc) {
+		if (!doc || this.removed) {
 			return { processor: undefined, text: '' };
 		}
 		const parsed = parsedDocument(doc).parsed;
+		if (!parses(parsed)) {
+			return this.last ?? { processor: undefined, text: '' };
+		}
 		return { processor: bloblangProcessorByPath(bloblangProcessors(parsed), this.path), text: doc.getText() };
+	}
+
+	/** Whether its open document doesn't parse now (4.10: everything stays as it is). */
+	private frozen(): boolean {
+		const doc = this.document();
+		return doc !== undefined && !parses(parsedDocument(doc).parsed);
 	}
 
 	private document(): vscode.TextDocument | undefined {
@@ -470,6 +653,10 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * more (an edit that only shifts lines clears it too; the next run places it again).
 	 */
 	private updateHint(): void {
+		if (this.hint && !this.removed && this.frozen()) {
+			// The YAML doesn't parse (4.10): the hint stays where it is until it does.
+			return;
+		}
 		let line: number | undefined;
 		const doc = this.document();
 		const hint = this.hint;
@@ -484,10 +671,11 @@ class BloblangPanel implements BloblangPanelHandle {
 			// Gone for good: an edit that brings the line back does not bring the hint back.
 			this.hint = undefined;
 		}
-		this.owner.hints.set(this.key, this.uri, line);
+		this.owner.hints.set(this.hintKey, this.uri, line);
 	}
 
-	private get key(): string {
+	/** `uri#path` of the processor it follows now (4.10). */
+	get key(): string {
 		return keyOf(this.uri, this.path);
 	}
 
@@ -515,7 +703,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	dispose(): void {
 		this.disposed = true;
 		this.hint = undefined;
-		this.owner.hints.set(this.key, this.uri, undefined);
+		this.owner.hints.set(this.hintKey, this.uri, undefined);
 		this.subscription.dispose();
 		this.watch.dispose();
 	}
@@ -523,7 +711,10 @@ class BloblangPanel implements BloblangPanelHandle {
 
 /** All open Bloblang test panels, one per mapping processor. */
 export class BloblangPanels implements vscode.Disposable {
-	private readonly panels = new Map<string, BloblangPanel>();
+	/** The open panels; each one's key follows its processor (4.10), so they are looked up by it. */
+	private readonly panels = new Set<BloblangPanel>();
+	/** The documents with panels that have unsaved changes, from change and save events (4.10). */
+	private readonly dirty = new Set<string>();
 	private readonly subscriptions: vscode.Disposable[];
 	/** The end-of-line hints of all panels: one decoration type (4.8). */
 	readonly hints = new BloblangHints();
@@ -539,16 +730,47 @@ export class BloblangPanels implements vscode.Disposable {
 					void entry.postSamples();
 				}
 			}),
-			// The shown Bloblang follows edits, so it always matches what the next run uses.
+			// The shown Bloblang follows edits, so it always matches what the next run uses; each panel
+			// follows its processor (4.10).
 			vscode.workspace.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length === 0) {
 					return;
 				}
-				const key = e.document.uri.toString();
-				for (const entry of this.panels.values()) {
-					if (entry.uri.toString() === key) {
-						void entry.documentChanged();
+				const entries = this.panelsOf(e.document.uri);
+				if (entries.length === 0) {
+					return;
+				}
+				const changes: TextChange[] = e.contentChanges.map((c) => ({ offset: c.rangeOffset, length: c.rangeLength, text: c.text }));
+				if (e.document.isDirty) {
+					this.dirty.add(e.document.uri.toString());
+				} else {
+					this.dirty.delete(e.document.uri.toString());
+				}
+				for (const entry of entries) {
+					entry.mapThrough(changes);
+				}
+				this.match(e.document, entries);
+			}),
+			// A save moves the samples of the panels whose processor's link changed (4.10).
+			vscode.workspace.onDidSaveTextDocument((doc) => {
+				this.dirty.delete(doc.uri.toString());
+				for (const entry of this.panelsOf(doc.uri)) {
+					entry.markSaved();
+				}
+				void this.relinkOnSave(doc.uri);
+			}),
+			// Closed with unsaved changes (4.10): each panel resets to its saved position, matched by it on reopen.
+			vscode.workspace.onDidCloseTextDocument((doc) => {
+				if (this.dirty.delete(doc.uri.toString())) {
+					for (const entry of this.panelsOf(doc.uri)) {
+						entry.reset();
 					}
+				}
+			}),
+			vscode.workspace.onDidOpenTextDocument((doc) => {
+				const entries = this.panelsOf(doc.uri);
+				if (entries.some((entry) => entry.isReset)) {
+					this.match(doc, entries);
 				}
 			}),
 			// The no-binary state (4.15): every panel hears each binary change.
@@ -588,7 +810,108 @@ export class BloblangPanels implements vscode.Disposable {
 	/** The open panels of `config`. */
 	private panelsOf(config: vscode.Uri): BloblangPanel[] {
 		const key = config.toString();
-		return [...this.panels.values()].filter((entry) => entry.uri.toString() === key);
+		return [...this.panels].filter((entry) => entry.uri.toString() === key);
+	}
+
+	/**
+	 * Matches `entries` (all the panels of `doc`) to its processors (4.10), when it parses; then each
+	 * panel posts what changed. A panel back from the removed state whose samples link a live panel has
+	 * is left with none, so two live panels never share one.
+	 */
+	private match(doc: vscode.TextDocument, entries: readonly BloblangPanel[]): void {
+		const parsed = parsedDocument(doc).parsed;
+		if (parses(parsed)) {
+			try {
+				const wasLive = new Set(entries.filter((entry) => !entry.removed && !entry.isReset));
+				const found = matchProcessors(bloblangProcessors(parsed), entries.map((entry) => entry.tracked()));
+				const text = doc.getText();
+				entries.forEach((entry, i) => entry.follow(found[i], text));
+				if (!doc.isDirty) {
+					entries.forEach((entry) => entry.markSaved());
+				}
+				const links = new Set([...wasLive].filter((entry) => !entry.removed && entry.ref).map((entry) => linkOf(entry.ref!)));
+				for (const entry of entries) {
+					if (!wasLive.has(entry) && !entry.removed && entry.ref) {
+						if (links.has(linkOf(entry.ref))) {
+							this.log(`Test mapping: ${entry.panel.title}: another panel has the samples of ${linkName(entry.ref)}.`);
+							entry.ref = undefined;
+						} else {
+							links.add(linkOf(entry.ref));
+						}
+					}
+				}
+			} catch (err) {
+				this.log(`Test mapping: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		for (const entry of entries) {
+			void entry.documentChanged();
+		}
+	}
+
+	/** The panel following the processor at `processorPath` of `uri` (4.10: a removed panel never is). */
+	private live(uri: vscode.Uri, processorPath: string): BloblangPanel | undefined {
+		const key = keyOf(uri, processorPath);
+		return [...this.panels].find((entry) => !entry.removed && entry.key === key);
+	}
+
+	/**
+	 * `uri` was saved (4.10): all its panels whose processor's link differs from their samples link
+	 * move their entries to it in one step (`relinkAll`); one whose link is still taken, by another
+	 * entry or another live panel, keeps its old link and says so. A removed panel whose link another
+	 * panel took is left with none. Once something moved, every panel of the config gets the file's
+	 * samples (a moved one, a snapshot: its offer may change).
+	 */
+	private async relinkOnSave(uri: vscode.Uri): Promise<void> {
+		if (samplesUri(uri) === undefined) {
+			return;
+		}
+		const entries = this.panelsOf(uri);
+		const releases = await Promise.all(entries.map((entry) => entry.hold()));
+		const moved = new Set<BloblangPanel>();
+		try {
+			const live = entries.filter((entry) => !entry.removed && !entry.isReset && this.panels.has(entry));
+			const movers: BloblangPanel[] = [];
+			const moves: RelinkMove[] = [];
+			const held: SampleRef[] = [];
+			for (const entry of live) {
+				const to = entry.link();
+				if (entry.ref && linkOf(entry.ref) === linkOf(to)) {
+					// The same link: only its path is brought up to date (the reset on close uses it).
+					entry.ref = to;
+					held.push(to);
+				} else {
+					movers.push(entry);
+					moves.push({ from: entry.ref, to });
+				}
+			}
+			if (moves.length === 0) {
+				return;
+			}
+			const outcome = await this.samples.relinkAll(uri, moves, held);
+			movers.forEach((entry, i) => {
+				if (outcome.applied[i]) {
+					entry.ref = moves[i].to;
+					moved.add(entry);
+				} else if (outcome.error !== undefined || outcome.hadEntry[i]) {
+					// A panel with no samples to move keeps its link silently.
+					this.tell(couldNotMoveSamples(linkName(moves[i].to), outcome.error ?? SAMPLES_USE_IT), 'error');
+				}
+			});
+			const links = new Set(live.flatMap((entry) => (entry.ref ? [linkOf(entry.ref)] : [])));
+			for (const entry of entries) {
+				if (!live.includes(entry) && entry.ref && links.has(linkOf(entry.ref))) {
+					entry.ref = undefined;
+				}
+			}
+		} catch (e) {
+			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+		} finally {
+			releases.forEach((release) => release());
+		}
+		if (moved.size > 0) {
+			await Promise.all(entries.map((entry) => (moved.has(entry) ? entry.refresh() : entry.postSamples())));
+		}
 	}
 
 	/** Writes `line` to the output channel. */
@@ -664,8 +987,7 @@ export class BloblangPanels implements vscode.Disposable {
 			this.tell(SAVE_TO_TEST);
 			return undefined;
 		}
-		const key = keyOf(uri, processorPath);
-		const open = this.panels.get(key);
+		const open = this.live(uri, processorPath);
 		if (open) {
 			open.panel.reveal(undefined, true);
 			return open;
@@ -689,13 +1011,14 @@ export class BloblangPanels implements vscode.Disposable {
 				localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')],
 			},
 		);
-		const entry = new BloblangPanel(uri, processorPath, processor.label, panel, this);
-		this.panels.set(key, entry);
+		const entry = new BloblangPanel(uri, processor, doc!.getText(), panel, this);
+		if (doc!.isDirty) {
+			this.dirty.add(uri.toString());
+		}
+		this.panels.add(entry);
 		panel.onDidDispose(() => {
 			entry.dispose();
-			if (this.panels.get(key) === entry) {
-				this.panels.delete(key);
-			}
+			this.panels.delete(entry);
 		});
 		// The file's name, for the error cards' "<file> line F" (4.8), and its samples file's (4.9).
 		const samplesFile = samplesUri(uri);
@@ -743,9 +1066,13 @@ export class BloblangPanels implements vscode.Disposable {
 		return this.hints.ranges(uri);
 	}
 
-	/** The open panel of the processor at `processorPath` of `uri`, if any (test seam). */
+	/**
+	 * The open panel of the processor at `processorPath` of `uri`, if any; else a removed panel whose
+	 * last path it is (4.10) (test seam).
+	 */
 	panelFor(uri: vscode.Uri, processorPath: string): BloblangPanelHandle | undefined {
-		return this.panels.get(keyOf(uri, processorPath));
+		const key = keyOf(uri, processorPath);
+		return this.live(uri, processorPath) ?? [...this.panels].find((entry) => entry.key === key);
 	}
 
 	/** How many Bloblang panels are open. */
@@ -802,6 +1129,11 @@ export function positionIn(text: string, offset: number): FilePosition {
 		}
 	}
 	return { line, char: at - start + 1 };
+}
+
+/** A samples link as messages name it (4.10): its label, else its path. */
+function linkName(ref: SampleRef): string {
+	return ref.label ?? ref.path;
 }
 
 function keyOf(uri: vscode.Uri, processorPath: string): string {

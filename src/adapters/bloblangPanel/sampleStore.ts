@@ -7,11 +7,14 @@
 // file's bytes differ from the last ones the store read or wrote, so its own writes are not outside
 // edits. Untitled configs have no samples file. Ticket 4.16: `relink` moves an unlabelled entry to a
 // new label, and `onDidWrite` fires after each of the store's own writes (the CodeLens's count).
+// Ticket 4.10: `relink` moves an entry between any two links (label or path), and `relinkAll` applies
+// a save's moves of all of a config's panels in one write.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	applySampleChange, parseSamplesFile, relinkSamples, samplesFileName, serializeSamplesFile, type SampleChange, type SampleRef, type SamplesFile,
+	applySampleChange, parseSamplesFile, relinkAll, relinkSamples, samplesFileName, serializeSamplesFile, type RelinkMove, type SampleChange,
+	type SampleRef, type SamplesFile,
 } from '../../core/samples';
 
 /** A config's samples file as read: its value (`undefined`: no file), or why it can't be read. */
@@ -26,7 +29,19 @@ export type SamplesState =
 export type SamplesUpdate = 'written' | 'unchanged' | 'unreadable' | { readonly failed: string };
 
 /**
- * What a relink did (4.16): wrote the file, found no entry to relink, found the label already used,
+ * What a save's relink did (4.10): which moves applied, whether the file was written, and why
+ * nothing applied when the file can't be read or written.
+ */
+export interface RelinkAllOutcome {
+	readonly applied: readonly boolean[];
+	/** Per move: whether its samples link had an entry to move. */
+	readonly hadEntry: readonly boolean[];
+	readonly written?: true;
+	readonly error?: string;
+}
+
+/**
+ * What a relink did (4.16, 4.10): wrote the file, found no entry to relink, found the target link already used,
  * failed to write (and why), or found the file unreadable (and why).
  */
 export type RelinkOutcome = 'written' | 'unchanged' | 'taken' | { readonly failed: string } | { readonly unreadable: string };
@@ -114,11 +129,11 @@ export class SampleStore implements vscode.Disposable {
 	}
 
 	/**
-	 * Relinks the unlabelled entry of `processorPath` in `config`'s samples to `label` (4.16), keeping
-	 * its samples and `selected`. `'unchanged'`: no entry has the path (no file is created);
-	 * `'taken'`: an entry already has the label (nothing is merged). Never throws, as `update`.
+	 * Relinks the entry of `from` in `config`'s samples to `to` (4.16, 4.10), keeping its samples and
+	 * `selected`. `'unchanged'`: `from` has no entry (no file is created); `'taken'`: `to` already has
+	 * an entry (nothing is merged). Never throws, as `update`.
 	 */
-	relink(config: vscode.Uri, processorPath: string, label: string): Promise<RelinkOutcome> {
+	relink(config: vscode.Uri, from: SampleRef, to: SampleRef): Promise<RelinkOutcome> {
 		const uri = samplesUri(config);
 		if (!uri) {
 			return Promise.resolve('unchanged');
@@ -128,8 +143,35 @@ export class SampleStore implements vscode.Disposable {
 			if (state.kind === 'unreadable') {
 				return { unreadable: state.reason };
 			}
-			const next = relinkSamples(state.file, processorPath, label);
+			const next = relinkSamples(state.file, from, to);
 			return next === 'none' ? 'unchanged' : next === 'taken' ? 'taken' : this.write(config, uri, next.file);
+		});
+	}
+
+	/**
+	 * A save's relink of `config`'s panels (4.10, `relinkAll`): the moves that apply, and the file
+	 * written once when an entry moved. Never throws, as `update`: an unreadable file or a failed
+	 * write applies no move and says why.
+	 */
+	relinkAll(config: vscode.Uri, moves: readonly RelinkMove[], held: readonly SampleRef[]): Promise<RelinkAllOutcome> {
+		const uri = samplesUri(config);
+		if (!uri) {
+			return Promise.resolve({ applied: moves.map(() => false), hadEntry: moves.map(() => false) });
+		}
+		return this.queued(uri, async (): Promise<RelinkAllOutcome> => {
+			const none = moves.map(() => false);
+			const state = await this.load(config, uri);
+			if (state.kind === 'unreadable') {
+				return { applied: none, hadEntry: none, error: state.reason };
+			}
+			const plan = relinkAll(state.file, moves, held);
+			if (!plan.file) {
+				return { applied: plan.applied, hadEntry: plan.hadEntry };
+			}
+			const written = await this.write(config, uri, plan.file);
+			return written === 'written'
+				? { applied: plan.applied, hadEntry: plan.hadEntry, written: true }
+				: { applied: none, hadEntry: plan.hadEntry, error: written.failed };
 		});
 	}
 
