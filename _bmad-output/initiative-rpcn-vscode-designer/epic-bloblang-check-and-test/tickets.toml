@@ -109,13 +109,23 @@ risk = "low"
 id = 9
 type = "story"
 title = "Saved samples"
-description = "Named samples per mapping stored in one workspace file next to the config (location and format in AD-22), with add, rename, delete and switch in the panel, edits saved, linking by `label` with the processor's path as a fallback and an offer to add a label, reload on outside edits, and the sample count in the CodeLens."
-verify = "Integration tests save samples, reload them in a new panel, keep them attached after processors are reordered, pick up an outside edit to the file, and show the count in the CodeLens."
+description = "Named samples per mapping in one JSON file beside the config (`<config>.samples.json`, AD-22), with New sample, Rename and Delete in the panel's toolbar, switching that re-runs, edits saved, linking by `label` with the processor's path as a fallback, and reload on outside edits."
+verify = "Integration tests save samples, reload them in a new panel, keep them attached after processors are reordered, pick up an outside edit to the file, and leave an unreadable file untouched."
 covers = ["R9", "R13"]
 after = [15]
 hitl = false
 risk = "medium"
-unknown = "Where the file lives (beside the config or under `.rpcn/samples/`) and its format; AD-22 decides it with the user."
+
+[[entry]]
+id = 16
+type = "story"
+title = "Sample label offer and CodeLens count"
+description = "A mapping with no `label` gets an offer in the panel to add one, which writes the label into the YAML and moves its samples from the path link to the label link; the \"▷ Test mapping\" CodeLens shows the mapping's sample count and refreshes when the samples file changes."
+verify = "Integration tests accept the offer and see the label in the YAML and the samples still attached after a reorder, and see the CodeLens count change after adding a sample and after an outside edit to the file."
+covers = ["R9"]
+after = [9]
+hitl = false
+risk = "low"
 
 [[entry]]
 id = 10
@@ -124,7 +134,7 @@ title = "Test panel lifecycle"
 description = "One panel per mapping keyed by file and processor: it follows its processor through edits and a changed label, says so when the processor is removed, closes with the file's last tab, follows a file rename, and opens in a settled editor group beside the YAML and the graph's locked group."
 verify = "Integration tests cover editing above the mapping, renaming its label, deleting the processor, closing the file, renaming it, and opening two panels, each in combination with an open graph."
 covers = ["R8"]
-after = [9]
+after = [16]
 hitl = false
 risk = "medium"
 
@@ -157,7 +167,7 @@ title = "Refactor sweep"
 description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during the epic; new scope becomes backlog stories."
 verify = "The suites, the corpus harness and CI pass with at least as many tests as before, and each deferred finding is fixed or moved to a named ticket."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 10, 11, 12]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 16, 10, 11, 12]
 hitl = false
 risk = "low"
 

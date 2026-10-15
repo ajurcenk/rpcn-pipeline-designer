@@ -19,3 +19,8 @@
   summary: The test panel's no-binary state (E4 R7): toolbar and columns hidden, "No Redpanda Connect binary" with Install guide, Set path and Retry (posting `installGuideRequested` / `setPathRequested` / `retryRequested` to `BinaryActions` in `notify.ts`, as the graph does), the host sending `binary {status}` on every binary change, and the panel running its input once when the binary becomes `ok`, without reopening.
   evidence: Split from 4.8 at planning (user, 2026-10-14) to keep the plan near the size guideline; it ships independently of the error cards. It goes right after 4.8 and before 4.9. Until then, a missing binary shows 4.8's `error` card ("No Redpanda Connect binary.").
   resolution: ticket 4.15 "No-binary state in the test panel" (user, 2026-10-14), after 4.8 and before 4.9.
+
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-bloblang-check-and-test/story-saved-samples-plan.md`
+  summary: The "add a label" offer for a mapping with no `label` (writing the label into the YAML and re-linking its samples) and the sample count in the "▷ Test mapping" CodeLens (E4 R9).
+  evidence: Split from 4.9 at planning (user, 2026-10-15) to keep the plan near the size guideline; both build on 4.9's samples file and ship on their own.
+  resolution: ticket 4.16 "Sample label offer and CodeLens count" (user, 2026-10-15), after 4.9 and before 4.10.
