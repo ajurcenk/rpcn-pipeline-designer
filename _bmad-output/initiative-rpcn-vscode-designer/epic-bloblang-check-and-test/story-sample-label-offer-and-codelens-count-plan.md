@@ -3,7 +3,7 @@ title: 'Sample label offer and CodeLens count'
 type: 'feature'
 ticket: '16'
 created: '2026-10-15'
-status: 'built'
+status: done
 baseline_revision: '0d30ad892dc29eda9948e5b7459214ee1a0fa8b8'
 route: 'full'
 route_source: 'auto'
