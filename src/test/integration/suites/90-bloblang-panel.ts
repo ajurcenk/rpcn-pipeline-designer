@@ -1333,18 +1333,33 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return doc.getText().lastIndexOf('\n', at) + 1;
 	};
 	/** Opens the graph on `doc` when `graph`: the graph checks that it still renders after the edits. */
-	async function maybeGraph(doc: vscode.TextDocument, graph: boolean): Promise<{ readonly works: () => Promise<void> }> {
+	async function maybeGraph(doc: vscode.TextDocument, graph: boolean): Promise<{ readonly works: () => Promise<void>; readonly settled: () => Promise<void> }> {
 		if (!graph) {
-			return { works: async () => undefined };
+			return { works: async () => undefined, settled: async () => undefined };
 		}
 		const handle = (await api().graphPanels.show(doc.uri))!;
 		await handle.lockSettled;
 		await handle.receive({ type: 'ready' });
 		const from = handle.posted.length;
+		const snapshots = () => handle.posted.filter((m) => m.type === 'snapshot').length;
 		return {
 			works: async () => {
 				assert.ok(await waitFor(() => handle.posted.slice(from).some((m) => m.type === 'model'), 10_000), 'the graph renders the edits');
 				assert.strictEqual(api().graphPanels.panelFor(doc.uri), handle, 'the graph is still open');
+			},
+			// Waits until the real webview posted its own `ready` (a second snapshot) and no other for 1 s:
+			// it posts one on every load (also when the layout around it changes), and a `ready` after the
+			// test closed the document reopens it (`openTextDocument`), which then stays open for minutes.
+			settled: async () => {
+				let count = -1;
+				let since = Date.now();
+				assert.ok(await waitFor(() => {
+					if (snapshots() !== count) {
+						count = snapshots();
+						since = Date.now();
+					}
+					return count >= 2 && Date.now() - since >= 1_000;
+				}, 15_000), `the graph webview did not settle: ${snapshots()} snapshots`);
 			},
 		};
 	}
@@ -1723,13 +1738,14 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			};
 			let doc = await opened();
 			const { panels } = labelPanels();
-			await maybeGraph(doc, graph);
+			const graphed = await maybeGraph(doc, graph);
 			try {
 				const handle = (await panels.show(doc.uri, P(1)))!;
 				await handle.receive({ type: 'ready' });
 				await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
 				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
 				await showDiff();
+				await graphed.settled();
 				await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 				assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 				doc = await opened();
