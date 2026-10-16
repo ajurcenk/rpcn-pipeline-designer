@@ -25,32 +25,48 @@ jobs:
           path: .vscode-test/vscode-linux-x64-1.100.0
           key: vscode-1.100.0-${{ runner.os }}-${{ runner.arch }}
 
-      # unit + integration tests in two downloaded VS Codes, latest stable and 1.100.0 (needs a display)
-      - run: xvfb-run -a npm test
+      # unit + integration tests (needs a display): the latest stable VS Code is required; the 1.100.0
+      # floor reports but doesn't fail the build (user decision 2026-10-16: its timing flakes are out of
+      # scope and must not hide the steps below)
+      - run: npm run pretest
+
+      - name: VS Code tests (stable)
+        run: xvfb-run -a npx vscode-test --label stable
+
+      - name: VS Code tests (1.100.0 floor, non-blocking)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: xvfb-run -a npx vscode-test --label floor
 
       # Corpus harness (ticket 1.7): pinned standalone binaries, keyed on fetch-binaries.sh (which pins the versions)
-      - uses: actions/cache@v6.1.0
+      - if: ${{ !cancelled() }}
+        uses: actions/cache@v6.1.0
         with:
           path: .cache/redpanda-connect
           key: redpanda-connect-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/spike/fetch-binaries.sh') }}
 
       - name: Fetch Redpanda Connect 4.100.0 and 4.112.0
+        if: ${{ !cancelled() }}
         run: scripts/spike/fetch-binaries.sh
         env:
           GH_TOKEN: ${{ github.token }}
 
       # lint every test/corpus/*.yaml with both binaries; CI=true turns a missing binary into a failure
       - name: Corpus harness
+        if: ${{ !cancelled() }}
         run: npm run test:corpus
         env:
           CI: 'true'
 
       # Graph view (ticket 3.4): layout and theme-token tests of webview/, plain Node
-      - run: npm run test:webview
+      - if: ${{ !cancelled() }}
+        run: npm run test:webview
 
-      - run: npx vsce package --no-dependencies
+      - if: ${{ !cancelled() }}
+        run: npx vsce package --no-dependencies
 
-      - uses: actions/upload-artifact@v7.0.1
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: rpcn-pipeline-designer-vsix
           path: '*.vsix'
