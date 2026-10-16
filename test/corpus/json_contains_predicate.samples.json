@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "label": "woof_drop",
+      "selected": "woof",
+      "samples": [
+        {
+          "name": "woof",
+          "content": "{\"resource\": {\"service.name\": \"woof\"}}",
+          "meta": {}
+        },
+        {
+          "name": "meow",
+          "content": "{\"resource\": {\"service.name\": \"meow\"}}",
+          "meta": {}
+        }
+      ]
+    }
+  ]
+}

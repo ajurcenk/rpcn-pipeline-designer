@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "path": "pipeline.processors[0]",
+      "selected": "any",
+      "samples": [
+        {
+          "name": "any",
+          "content": "{}",
+          "meta": {}
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 // The `mapping` and `mutation` processors of a document (epic 4, ticket 4.2). Pure: from a parsed
-// text, every map item of a `processors` or `processor_resources` list, at any depth, whose
-// component is `mapping` or `mutation`, with its path, its label, the range of the component key
+// text, every map item of a `processors` or `processor_resources` list (and, since ticket 4.12,
+// of the processor lists `try`, `catch` and `for_each`), at any depth, whose component is
+// `mapping` or `mutation`, with its path, its label, the range of the component key
 // and its decoded Bloblang (`Scalar.value`). Since ticket 4.3 each also carries its
 // Bloblang-to-document position map (src/core/bloblangPositions.ts) and, given the document's
 // PipelineModel, its graph node's AD-7 id (through `nodeAt`, never a copied rule).
@@ -17,8 +18,11 @@ export type BloblangKind = BloblangProcessorKind;
 
 export const BLOBLANG_KINDS: readonly BloblangKind[] = ['mapping', 'mutation'];
 
-/** Keys whose list items are processors. */
-const PROCESSOR_LISTS = new Set(['processors', 'processor_resources']);
+/**
+ * Keys whose list items are processors: `processors`, `processor_resources`, and the `try`,
+ * `catch` and `for_each` processors, whose value is itself a processor list (ticket 4.12).
+ */
+const PROCESSOR_LISTS = new Set(['processors', 'processor_resources', 'try', 'catch', 'for_each']);
 
 export interface BloblangProcessor {
 	/**

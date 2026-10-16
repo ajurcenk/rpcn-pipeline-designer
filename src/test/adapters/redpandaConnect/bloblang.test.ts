@@ -16,6 +16,11 @@ const ENV: ArgsEnvironment = {
 	resourceFilesSetting: ['r.yaml'], envFileSetting: '.env', homeDir: '/home/u', workspaceFolder: WS, processEnv: { FOO: 'bar' },
 };
 
+/** An environment whose env file setting throws when read (a failing settings read). */
+const throwingEnv = (): ArgsEnvironment => Object.defineProperty({ ...ENV }, 'envFileSetting', {
+	get: () => { throw new Error('settings read failed'); },
+});
+
 interface Call { invocation: readonly string[]; args: readonly string[]; timeoutMs: number; options: SpawnOptions; config: string; exists: boolean }
 
 suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
@@ -210,6 +215,14 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 		assert.deepStrictEqual(fs.readdirSync(dir), []);
 	});
 
+	test('a settings read that throws is an error result with its text, no spawn and no file left', async () => {
+		const calls: Call[] = [];
+		const outcome = await runMappingTest(OK, 'mapping', 'root = this', '{}', {}, dir, { argsEnvironment: throwingEnv(), run: fakeRun({ kind: 'notFound' }, calls) });
+		assert.deepStrictEqual(outcome.result, { kind: 'error', message: 'settings read failed' });
+		assert.strictEqual(calls.length, 0);
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
+	});
+
 	test('binaryLabel', () => {
 		assert.strictEqual(binaryLabel(OK), 'rpk connect 4.112.0');
 		assert.strictEqual(binaryLabel({ kind: 'ok', path: '/x/redpanda-connect', version: '4.100.0', invocation: ['/x/redpanda-connect'] }), 'redpanda-connect 4.100.0');
@@ -267,6 +280,14 @@ suite('adapters/redpandaConnect parseMapping (4.5, AD-21)', () => {
 		}
 		const thrown = await parseMapping(OK, 'root = this', dir, { argsEnvironment: ENV, run: async () => { throw new Error('boom'); } });
 		assert.deepStrictEqual(thrown, { kind: 'other', message: 'Could not parse the mapping: boom' });
+		assert.deepStrictEqual(fs.readdirSync(dir), []);
+	});
+
+	test('a settings read that throws is other, "Could not parse the mapping: …", no spawn and no file left', async () => {
+		const calls: ParseCall[] = [];
+		assert.deepStrictEqual(await parseMapping(OK, 'root = this', dir, { argsEnvironment: throwingEnv(), run: fakeRun({ kind: 'notFound' }, calls) }),
+			{ kind: 'other', message: 'Could not parse the mapping: settings read failed' });
+		assert.strictEqual(calls.length, 0);
 		assert.deepStrictEqual(fs.readdirSync(dir), []);
 	});
 

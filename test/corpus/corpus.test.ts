@@ -43,6 +43,35 @@
 // position map round-trips (each decoded character maps to an offset holding it, or the start of
 // its escape or fold) and, given the PipelineModel of each version's catalogue, it has an id, its
 // node's (through nodeAt). Needs no binary and no records.
+//
+// Bloblang parity (ticket 4.12, R11, AD-21): every corpus `mapping` / `mutation` processor (as
+// `bloblangProcessors` finds them) has samples in test/corpus/<name>.samples.json (AD-22's format,
+// linked by label, else by path; a sample carries the metadata its mapping reads). Record mode runs,
+// per pinned version, the harness's own copy of the AD-21 one-message pipeline
+// (test/corpus/bloblangReference.ts, not the extension's `testConfig`) on every sample, and
+// `blobl -f` (stdin closed) on every processor's source and on its broken variant (the source with
+// ` +` on a new last line), and writes test/corpus/<name>.bloblang/<ver>.json:
+//   { "binary": "redpanda-connect <ver>",
+//     "runs":   [{ "path", "sample", "exit", "stdout", "lint"? }],   lint only with `Config lint error`
+//     "parses": [{ "path", "variant": "original" | "broken", "exit", "stderr" }] }
+// in processor order, then sample order; the temporary directory is written `<TMP>`. `lint` is the
+// lint findings' messages (`lintFindings`: no timestamp, no config path or position). Besides the
+// corpus, the harness fixture test/corpus/fixtures/bloblang_env.yaml (a mapping that reads an unset
+// `${…}`) is checked the same way, so a lint stop and a non-parse `blobl` failure meet real binaries. Compare mode
+// runs the extension's own run and parse code (src/adapters/redpandaConnect/bloblangRunner.ts,
+// no `vscode`) with the live binary and checks it against the record: an output line is `ok` with
+// the same content and metadata, no line with exit 0 is `deleted`, an `{error}` is `failed` or
+// `invalidInput` with the same message (and the mapping and file line of `failed assignment (line N)`);
+// for the parses, exit 0 gives no diagnostic, a `failed to parse mapping: line L char C: <message>`
+// one diagnostic with that message and the file position of L and C through the processor's position
+// map. A reference run that exited non-zero must give `blobl`'s parse error (a `Config lint error`
+// that `blobl` reports as one) or the recorded lint findings (read from its message the same way); a `blobl` failure that is not a parse
+// error must give `blobl`'s message. Both fail on any difference: per version, a real record altered
+// in memory (content, deleted, error text, parse message, parse char) is reported by the same
+// comparison (WRONG_RECORD). Processors directly in `try`, `catch` and `for_each` count (4.12's
+// fix to `bloblangProcessors`). The run is never compared with `blobl`. Without a binary the version is skipped as for lint (failed in CI and record
+// mode); the samples, the records' coverage (an output, a `deleted()`, a mapping error, a parse error
+// in every broken variant) and the layout are checked without one.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -63,6 +92,15 @@ import { SCHEMA_FIXTURES } from '../../src/test/helpers/fakeBinary';
 import { servedSchema, type PinnedVersion } from '../../src/test/helpers/schemas';
 import { positionProblems } from '../../src/test/helpers/bloblangPositions';
 import { readVersion, runProcess } from '../../src/adapters/redpandaConnect/process';
+import {
+	parseMapping as extensionParse, runMappingTest as extensionRun, type BloblangCommand,
+} from '../../src/adapters/redpandaConnect/bloblangRunner';
+import type { BloblParseOutcome } from '../../src/core/bloblangParse';
+import type { BloblangPositions } from '../../src/core/bloblangPositions';
+import { parseSamplesFile, samplesFileName, samplesFor, type SamplesFile } from '../../src/core/samples';
+import type { BloblangResult } from '../../src/shared/bloblangProtocol';
+import { isDeepStrictEqual } from 'util';
+import { bloblParseError, brokenVariant, lintFindings, referenceParse, referenceRun, type ReferenceOutput } from './bloblangReference';
 
 /** Pinned versions; must equal VERSIONS in scripts/spike/fetch-binaries.sh (checked below). */
 const VERSIONS = ['4.100.0', '4.112.0'] as const;
@@ -90,6 +128,10 @@ const recordDirOf = (config: string) => path.join(CORPUS, `${path.basename(confi
 const recordOf = (config: string, ver: string) => path.join(recordDirOf(config), `${ver}.txt`);
 const graphDirOf = (config: string) => path.join(CORPUS, `${path.basename(config, '.yaml')}.graph`);
 const graphOf = (config: string, ver: string) => path.join(graphDirOf(config), `${ver}.json`);
+/** A config's Bloblang record directory; `config` is relative to the corpus (`eval.yaml`, `fixtures/bloblang_env.yaml`). */
+const bloblangDirOf = (config: string) => path.join(CORPUS, config.replace(/\.yaml$/, '.bloblang'));
+const bloblangRecordOf = (config: string, ver: string) => path.join(bloblangDirOf(config), `${ver}.json`);
+const samplesOf = (config: string) => path.join(CORPUS, samplesFileName(config));
 const rel = (p: string) => path.relative(ROOT, p).split(path.sep).join('/');
 
 function hasBinary(ver: string): boolean {
@@ -186,14 +228,32 @@ function describeDrift(config: string, ver: string, expected: LintRecord, actual
 		'If the change is intended, run `npm run test:corpus:record`.'].join('\n');
 }
 
-/** Record directory suffixes and the extension of the per-version files in them. */
-const RECORD_KINDS: readonly { readonly dirSuffix: string; readonly fileExt: string }[] = [
+/** Configs with at least one `mapping` / `mutation` processor (4.3, 4.12). */
+const withBloblang = configs.filter((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8'))).length > 0);
+
+/** The env var the harness fixture's mapping reads; never set, so `run` stops on lint and `blobl` fails. */
+const UNSET_ENV_VAR = 'RPCN_CORPUS_UNSET_4_12';
+delete process.env[UNSET_ENV_VAR];
+/** Harness fixtures checked for Bloblang parity beside the corpus (4.12): an unset `${…}` in a mapping. */
+const BLOBLANG_FIXTURES = ['fixtures/bloblang_env.yaml'];
+/** Every config the Bloblang parity checks: the corpus's, then the fixtures. */
+const PARITY_CONFIGS = [...withBloblang, ...BLOBLANG_FIXTURES];
+
+/**
+ * Record directory suffixes and the extension of the per-version files in them; `bloblang` records
+ * exist only for a config with Bloblang processors.
+ */
+const RECORD_KINDS: readonly { readonly dirSuffix: string; readonly fileExt: string; readonly bloblang?: true }[] = [
 	{ dirSuffix: '.lint', fileExt: '.txt' },
 	{ dirSuffix: '.graph', fileExt: '.json' },
+	{ dirSuffix: '.bloblang', fileExt: '.json', bloblang: true },
 ];
 
-/** Lint and graph record files with no matching config, or for a version that is not pinned. */
-function orphanedRecords(corpus: string = CORPUS, configList: readonly string[] = configs): string[] {
+/**
+ * Lint, graph and Bloblang record files with no matching config (for Bloblang records: no config
+ * with Bloblang processors), or for a version that is not pinned.
+ */
+function orphanedRecords(corpus: string = CORPUS, configList: readonly string[] = configs, bloblangList: readonly string[] = withBloblang): string[] {
 	const orphans: string[] = [];
 	for (const entry of fs.readdirSync(corpus, { withFileTypes: true })) {
 		const kind = RECORD_KINDS.find((k) => entry.name.endsWith(k.dirSuffix));
@@ -202,7 +262,7 @@ function orphanedRecords(corpus: string = CORPUS, configList: readonly string[] 
 		}
 		const dir = path.join(corpus, entry.name);
 		const config = `${entry.name.slice(0, -kind.dirSuffix.length)}.yaml`;
-		if (!configList.includes(config)) {
+		if (!(kind.bloblang ? bloblangList : configList).includes(config)) {
 			orphans.push(dir);
 			continue;
 		}
@@ -493,8 +553,6 @@ describe('graph accuracy (corpus config → extension PipelineModel, R12)', () =
 });
 
 describe('Bloblang positions and ids (corpus config → mapping / mutation processors, 4.3)', () => {
-	const withBloblang = configs.filter((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8'))).length > 0);
-
 	it('the corpus has mapping and mutation processors to check', () => {
 		expect(withBloblang.length).toBeGreaterThan(0);
 	});
@@ -520,6 +578,425 @@ describe('Bloblang positions and ids (corpus config → mapping / mutation proce
 			}
 		});
 	}
+});
+
+// ---- Bloblang parity (4.12) ----
+
+/** A recorded reference run: the raw exit and stdout, plus the lint findings when stderr says `Config lint error`. */
+interface RunEntry {
+	readonly path: string;
+	readonly sample: string;
+	readonly exit: number | null;
+	readonly stdout: string;
+	/** `lintFindings` of stderr: the findings' messages only (no timestamp, path or position). */
+	readonly lint?: readonly string[];
+}
+
+/** A recorded `blobl -f` parse (stdin closed): the raw exit and stderr. */
+interface ParseEntry {
+	readonly path: string;
+	readonly variant: 'original' | 'broken';
+	readonly exit: number | null;
+	readonly stderr: string;
+}
+
+interface BloblangRecord {
+	readonly binary: string;
+	readonly runs: readonly RunEntry[];
+	readonly parses: readonly ParseEntry[];
+}
+
+const TMP_PLACEHOLDER = '<TMP>';
+const VARIANTS = ['original', 'broken'] as const;
+
+/** `processor`'s source for a parse variant. */
+const variantSource = (source: string, variant: ParseEntry['variant']) => (variant === 'original' ? source : brokenVariant(source));
+
+const formatBloblangRecord = (record: BloblangRecord) => JSON.stringify(record, null, 2) + '\n';
+
+/** A config's samples file, read with the extension's AD-22 reader (`undefined`: none). */
+function readSamples(config: string): SamplesFile | undefined {
+	const file = samplesOf(config);
+	if (!fs.existsSync(file)) {
+		return undefined;
+	}
+	const parsed = parseSamplesFile(fs.readFileSync(file, 'utf8'));
+	if (!parsed.ok) {
+		throw new Error(`${rel(file)} can't be read: ${parsed.reason}`);
+	}
+	return parsed.file;
+}
+
+/** A config's Bloblang processors (first document only, as the panel opens them) with their samples. */
+function bloblangCases(config: string) {
+	const text = fs.readFileSync(path.join(CORPUS, config), 'utf8');
+	const samples = readSamples(config);
+	const processors = bloblangProcessors(parseYaml(text)).filter((p) => !p.path.startsWith('documents['));
+	return {
+		text,
+		processors: processors.map((p) => ({
+			processor: p,
+			samples: samplesFor(samples, { ...(p.label !== undefined ? { label: p.label } : {}), path: p.path }).samples,
+		})),
+	};
+}
+
+/** The 1-based file line and char (UTF-16, as VS Code counts) of `offset` in `text`, read here. */
+function fileAt(text: string, offset: number): { line: number; char: number } {
+	const before = text.slice(0, Math.max(0, Math.min(offset, text.length)));
+	const breaks = before.match(/\r\n|\r|\n/g) ?? [];
+	const lastBreak = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r'));
+	return { line: breaks.length + 1, char: before.length - (lastBreak + 1) + 1 };
+}
+
+/** The file position of the mapping's `line` and `char` through `positions` (4.3's map). */
+const fileOf = (text: string, positions: BloblangPositions) => (line: number, char: number) => fileAt(text, positions.offsetAt(line, char));
+
+const show = (v: unknown) => JSON.stringify(v);
+
+/** A child's stderr message, read here: its non-empty lines, joined. */
+const stderrMessage = (stderr: string) => stderr.split('\n').map((l) => l.replace(/\r$/, ''))
+	.filter((l) => l.trim() !== '').join('\n');
+
+/**
+ * What differs between a recorded reference run and the extension's result for the same sample;
+ * empty when they agree. `fileLineOf` gives the file line of a mapping line.
+ */
+function runProblems(entry: RunEntry, actual: BloblangResult, fileLineOf: (mappingLine: number) => number, parse: ParseEntry | undefined): string[] {
+	const at = `  ${entry.path} / ${entry.sample}:`;
+	if (entry.exit !== 0) {
+		// The run stopped: on a `Config lint error` that `blobl` reports as a parse error (the
+		// processor's original parse), the extension shows that parse error; on any other lint stop,
+		// an error whose message has the recorded lint findings (read the same way); a stop with no
+		// lint findings has no message to check.
+		const parsed = entry.lint !== undefined && parse?.exit !== 0 ? bloblParseError(parse?.stderr ?? '') : undefined;
+		if (parsed) {
+			return actual.kind === 'parseError' && actual.message === parsed.message
+				&& actual.mappingLine === parsed.line && actual.mappingChar === parsed.char ? []
+				: [`${at} the reference stopped on blobl's parse error ${show(parsed)}, the extension gave ${show(actual)}`];
+		}
+		if (entry.lint === undefined || entry.lint.length === 0) {
+			return [`${at} the reference exited ${entry.exit} with no recorded lint finding, the extension gave ${show(actual)}`];
+		}
+		return actual.kind === 'error' && isDeepStrictEqual(lintFindings(actual.message), entry.lint) ? []
+			: [`${at} the reference stopped on lint ${show(entry.lint)}, the extension gave ${show(actual)}`];
+	}
+	const lines = entry.stdout.split('\n').filter((l) => l.trim() !== '');
+	if (lines.length === 0) {
+		return actual.kind === 'deleted' ? [] : [`${at} the reference printed no line (deleted), the extension gave ${show(actual)}`];
+	}
+	if (lines.length > 1) {
+		return [`${at} the reference printed ${lines.length} lines, not one`];
+	}
+	let line: unknown;
+	try {
+		line = JSON.parse(lines[0]);
+	} catch {
+		return [`${at} the reference's line is not JSON: ${lines[0]}`];
+	}
+	const record = (typeof line === 'object' && line !== null ? line : {}) as Record<string, unknown>;
+	if (typeof record.error === 'string') {
+		if (actual.kind !== 'failed' && actual.kind !== 'invalidInput') {
+			return [`${at} the reference failed with ${show(record.error)}, the extension gave ${show(actual)}`];
+		}
+		const problems = actual.message === record.error ? [] : [`${at} error ${show(actual.message)}, recorded ${show(record.error)}`];
+		const named = /^failed assignment \(line ([0-9]+)\)/.exec(record.error);
+		if (named && actual.kind === 'failed') {
+			const mappingLine = Number(named[1]);
+			if (actual.mappingLine !== mappingLine || actual.fileLine !== fileLineOf(mappingLine)) {
+				problems.push(`${at} the error names mapping line ${mappingLine} (file line ${fileLineOf(mappingLine)}), ` +
+					`the extension gave mapping line ${actual.mappingLine} (file line ${actual.fileLine})`);
+			}
+		}
+		return problems;
+	}
+	if (typeof record.content === 'string') {
+		if (actual.kind !== 'ok') {
+			return [`${at} the reference gave ${lines[0]}, the extension gave ${show(actual)}`];
+		}
+		const problems: string[] = [];
+		if (actual.content !== record.content) {
+			problems.push(`${at} content ${show(actual.content)}, recorded ${show(record.content)}`);
+		}
+		if (!isDeepStrictEqual(actual.meta, record.meta ?? {})) {
+			problems.push(`${at} meta ${show(actual.meta)}, recorded ${show(record.meta)}`);
+		}
+		return problems;
+	}
+	return [`${at} the reference's line is neither {content, meta} nor {error}: ${lines[0]}`];
+}
+
+/**
+ * One diagnostic as the parity compares it: the message, its 1-based file position, and the
+ * mapping position it came from (a broken variant's ` +` lies past the processor's text, where the
+ * map clamps every position to the mapping's end).
+ */
+interface ParseDiagnostic {
+	readonly message: string;
+	readonly line: number;
+	readonly char: number;
+	readonly mappingLine: number;
+	readonly mappingChar: number;
+}
+
+/**
+ * What differs between a recorded `blobl` parse and the extension's for the same source; empty when
+ * they agree. `fileOfPosition` maps a mapping line and char to the file (the processor's map).
+ */
+function parseProblems(entry: ParseEntry, actual: BloblParseOutcome, fileOfPosition: (line: number, char: number) => { line: number; char: number }): string[] {
+	const at = `  ${entry.path} (${entry.variant}):`;
+	if (entry.exit === 0) {
+		return actual.kind === 'ok' ? [] : [`${at} blobl exited 0, the extension gave ${show(actual)}`];
+	}
+	const recorded = bloblParseError(entry.stderr);
+	if (!recorded) {
+		// Not a parse error: the extension shows blobl's message (no diagnostic position).
+		const message = stderrMessage(entry.stderr);
+		return actual.kind === 'other' && actual.message === message ? []
+			: [`${at} blobl failed with ${show(message)} (not a parse error), the extension gave ${show(actual)}`];
+	}
+	const expected: ParseDiagnostic | undefined = recorded && {
+		message: recorded.message, ...fileOfPosition(recorded.line, recorded.char), mappingLine: recorded.line, mappingChar: recorded.char,
+	};
+	const got: ParseDiagnostic | undefined = actual.kind === 'parseError'
+		? { message: actual.message, ...fileOfPosition(actual.line, actual.char), mappingLine: actual.line, mappingChar: actual.char }
+		: undefined;
+	return isDeepStrictEqual(expected, got) ? [] : [`${at} diagnostic ${show(got ?? null)}, recorded ${show(expected ?? null)}`];
+}
+
+/** Everything the extension's run and parse disagree with in `record`; empty when they agree. */
+async function bloblangParityProblems(config: string, record: BloblangRecord, setup: BloblangCommand, dir: string): Promise<string[]> {
+	const { text, processors } = bloblangCases(config);
+	const problems: string[] = [];
+	const expectedRuns = processors.flatMap(({ processor, samples }) => samples.map((s) => `${processor.path} / ${s.name}`));
+	const expectedParses = processors.flatMap(({ processor }) => VARIANTS.map((v) => `${processor.path} (${v})`));
+	const recordedRuns = record.runs.map((r) => `${r.path} / ${r.sample}`);
+	const recordedParses = record.parses.map((r) => `${r.path} (${r.variant})`);
+	if (!isDeepStrictEqual(recordedRuns, expectedRuns) || !isDeepStrictEqual(recordedParses, expectedParses)) {
+		return [`  the record's entries ${show([...recordedRuns, ...recordedParses])} are not the corpus's ` +
+			`${show([...expectedRuns, ...expectedParses])}`];
+	}
+	for (const { processor, samples } of processors) {
+		const toFile = fileOf(text, processor.positions);
+		for (const sample of samples) {
+			const entry = record.runs.find((r) => r.path === processor.path && r.sample === sample.name)!;
+			const actual = await extensionRun(setup, processor.kind, processor.source, sample.content, sample.meta, dir, {
+				cwd: dir,
+				locate: toFile,
+			});
+			const parse = record.parses.find((r) => r.path === processor.path && r.variant === 'original');
+			problems.push(...runProblems(entry, actual, (line) => toFile(line, 1).line, parse));
+		}
+		for (const variant of VARIANTS) {
+			const entry = record.parses.find((r) => r.path === processor.path && r.variant === variant)!;
+			const actual = await extensionParse(setup, variantSource(processor.source, variant), dir, { cwd: dir });
+			problems.push(...parseProblems(entry, actual, toFile));
+		}
+	}
+	return problems;
+}
+
+/** `output` with the temporary directory written `<TMP>`. */
+const hideTmp = (output: string, dir: string) => output.split(dir).join(TMP_PLACEHOLDER);
+
+/** The record `binary` gives for `config`: the reference pipeline on every sample, `blobl -f` on every variant. */
+async function recordBloblang(config: string, ver: string, dir: string): Promise<BloblangRecord> {
+	const binary = binaryOf(ver);
+	const { processors } = bloblangCases(config);
+	const runs: RunEntry[] = [];
+	const parses: ParseEntry[] = [];
+	for (const { processor, samples } of processors) {
+		for (const sample of samples) {
+			const out: ReferenceOutput = await referenceRun(binary, dir, processor.kind, processor.source, sample.content, sample.meta);
+			runs.push({
+				path: processor.path,
+				sample: sample.name,
+				exit: out.exit,
+				stdout: hideTmp(out.stdout, dir),
+				...(out.stderr.includes('Config lint error') ? { lint: lintFindings(hideTmp(out.stderr, dir)) } : {}),
+			});
+		}
+		for (const variant of VARIANTS) {
+			const out = await referenceParse(binary, dir, variantSource(processor.source, variant));
+			parses.push({ path: processor.path, variant, exit: out.exit, stderr: hideTmp(out.stderr, dir) });
+		}
+	}
+	return { binary: `redpanda-connect ${ver}`, runs, parses };
+}
+
+/** What a recorded run is, read here: `ok`, `deleted`, `error` (an `{error}` line) or `stopped`. */
+function runKindOf(entry: RunEntry): 'ok' | 'deleted' | 'error' | 'stopped' {
+	if (entry.exit !== 0) {
+		return 'stopped';
+	}
+	const line = entry.stdout.split('\n').find((l) => l.trim() !== '');
+	if (line === undefined) {
+		return 'deleted';
+	}
+	return typeof (JSON.parse(line) as Record<string, unknown>).error === 'string' ? 'error' : 'ok';
+}
+
+/** A record with one value altered, and the id of the entry it altered (`path / sample` or `path (variant)`). */
+interface Altered {
+	readonly record: BloblangRecord;
+	readonly entry: string;
+}
+
+/** `record` with the first run entry that `pick` accepts replaced by what `change` makes of it. */
+function alterRun(record: BloblangRecord, pick: (entry: RunEntry) => boolean, change: (entry: RunEntry) => RunEntry): Altered | undefined {
+	const i = record.runs.findIndex(pick);
+	return i < 0 ? undefined : {
+		record: { ...record, runs: record.runs.map((r, j) => (j === i ? change(r) : r)) },
+		entry: `${record.runs[i].path} / ${record.runs[i].sample}`,
+	};
+}
+
+/** `record` with the first broken variant's parse error changed by `change` (its stderr's first line). */
+function alterParse(record: BloblangRecord, change: (firstLine: string) => string): Altered | undefined {
+	const i = record.parses.findIndex((p) => p.variant === 'broken' && bloblParseError(p.stderr) !== undefined);
+	if (i < 0) {
+		return undefined;
+	}
+	const entry = record.parses[i];
+	const [first, ...rest] = entry.stderr.split('\n');
+	const stderr = [change(first), ...rest].join('\n');
+	return stderr === entry.stderr ? undefined : {
+		record: { ...record, parses: record.parses.map((p, j) => (j === i ? { ...p, stderr } : p)) },
+		entry: `${entry.path} (${entry.variant})`,
+	};
+}
+
+/** The recorded run line's JSON object. */
+const runLine = (entry: RunEntry) => JSON.parse(entry.stdout.split('\n').find((l) => l.trim() !== '')!) as Record<string, unknown>;
+
+/** One value per kind (content, deleted, error text, parse message, parse char), as the strictness test alters them. */
+const ALTERATIONS: readonly { readonly name: string; readonly alter: (record: BloblangRecord) => Altered | undefined }[] = [
+	{
+		name: 'content',
+		alter: (record) => alterRun(record, (r) => runKindOf(r) === 'ok', (r) => {
+			const line = runLine(r);
+			return { ...r, stdout: `${JSON.stringify({ ...line, content: `${String(line.content)} altered` })}\n` };
+		}),
+	},
+	{
+		name: 'deleted()',
+		alter: (record) => alterRun(record, (r) => runKindOf(r) === 'deleted', (r) => ({ ...r, stdout: '{"content":"{}","meta":{}}\n' })),
+	},
+	{
+		name: 'error text',
+		alter: (record) => alterRun(record, (r) => runKindOf(r) === 'error', (r) => {
+			const line = runLine(r);
+			return { ...r, stdout: `${JSON.stringify({ ...line, error: `${String(line.error)} altered` })}\n` };
+		}),
+	},
+	{ name: 'parse message', alter: (record) => alterParse(record, (first) => `${first} altered`) },
+	{ name: 'parse char', alter: (record) => alterParse(record, (first) => first.replace(/ char ([0-9]+):/, (_, c: string) => ` char ${Number(c) + 1}:`)) },
+];
+
+describe('Bloblang parity (4.12): samples, records and the checker', () => {
+	for (const ver of VERSIONS) {
+		it(`the records cover an output, a deleted(), a mapping error and a parse error in every broken variant @ ${ver}`, () => {
+			const records = withBloblang.map((c) => bloblangRecordOf(c, ver)).filter((f) => fs.existsSync(f))
+				.map((f) => JSON.parse(fs.readFileSync(f, 'utf8')) as BloblangRecord);
+			const fixtures = BLOBLANG_FIXTURES.map((c) => bloblangRecordOf(c, ver)).filter((f) => fs.existsSync(f))
+				.map((f) => JSON.parse(fs.readFileSync(f, 'utf8')) as BloblangRecord);
+			if (records.length === 0) {
+				return; // reported by 'every config has a lint and a graph record (and a Bloblang one …)'
+			}
+			const kinds = new Set(records.flatMap((r) => r.runs.map(runKindOf)));
+			for (const kind of ['ok', 'deleted', 'error'] as const) {
+				expect(kinds.has(kind), `no recorded run @ ${ver} is ${kind}`).toBe(true);
+			}
+			// The fixture's lint stop, and its blobl failures that are not parse errors.
+			if (fixtures.length > 0) {
+				expect(fixtures.flatMap((r) => r.runs).some((r) => runKindOf(r) === 'stopped' && (r.lint?.length ?? 0) > 0),
+					`the fixture's record @ ${ver} has no lint stop`).toBe(true);
+				expect(fixtures.flatMap((r) => r.parses).some((p) => p.exit !== 0 && !bloblParseError(p.stderr)),
+					`the fixture's record @ ${ver} has no blobl failure that is not a parse error`).toBe(true);
+			}
+			const unbroken = records.flatMap((r) => r.parses).filter((p) => p.variant === 'broken' && !bloblParseError(p.stderr));
+			expect(unbroken.map((p) => p.path), `broken variants @ ${ver} that blobl does not report as a parse error`).toEqual([]);
+		});
+	}
+
+	it('the run and parse checks, case by case (STOP_MESSAGE included)', () => {
+		const ok: RunEntry = { path: 'p', sample: 's', exit: 0, stdout: '{"content":"{\\"a\\":1}","meta":{"k":"v"}}\n' };
+		const okResult: BloblangResult = {
+			kind: 'ok', content: '{"a":1}', meta: { k: 'v' },
+			changes: { fields: null, meta: { added: [], changed: [], removed: [] } },
+		};
+		const line = (n: number) => n + 10;
+		expect(runProblems(ok, okResult, line, undefined)).toEqual([]);
+		expect(runProblems({ ...ok, stdout: '{"content":"{\\"a\\":2}","meta":{"k":"v"}}\n' }, okResult, line, undefined)).toEqual([
+			'  p / s: content "{\\"a\\":1}", recorded "{\\"a\\":2}"',
+		]);
+		expect(runProblems({ ...ok, stdout: '{"content":"{\\"a\\":1}","meta":{}}\n' }, okResult, line, undefined)).toEqual([
+			'  p / s: meta {"k":"v"}, recorded {}',
+		]);
+		expect(runProblems({ ...ok, stdout: '' }, okResult, line, undefined)).toHaveLength(1);
+		expect(runProblems({ ...ok, stdout: '' }, { kind: 'deleted' }, line, undefined)).toEqual([]);
+		const failed: RunEntry = { ...ok, stdout: '{"error":"failed assignment (line 2): boom"}\n' };
+		const failedResult: BloblangResult = { kind: 'failed', message: 'failed assignment (line 2): boom', mappingLine: 2, fileLine: 12 };
+		expect(runProblems(failed, failedResult, line, undefined)).toEqual([]);
+		expect(runProblems({ ...failed, stdout: '{"error":"failed assignment (line 3): boom"}\n' }, failedResult, line, undefined)).toHaveLength(2);
+		expect(runProblems(failed, { kind: 'deleted' }, line, undefined)).toHaveLength(1);
+		expect(runProblems({ ...ok, exit: 1 }, okResult, line, undefined)).toHaveLength(1);
+		// A stop: on blobl's parse error, its message and position; on another lint stop, its findings.
+		const lintLine = (file: string, time: string) =>
+			`time="${time}" level=error msg="Config lint error" @service=redpanda-connect lint="${file}(12,8) something \\"quoted\\""\n` +
+			`time="${time}" level=error msg="shutting down due to linter errors" @service=redpanda-connect`;
+		const stop: RunEntry = { ...ok, exit: 1, stdout: '', lint: ['something "quoted"'] };
+		expect(lintFindings(lintLine('/tmp/x/reference.yaml', '2026-01-01T00:00:00Z'))).toEqual(['something "quoted"']);
+		const originalParse: ParseEntry = { path: 'p', variant: 'original', exit: 1, stderr: 'failed to parse mapping: line 2 char 3: bad\n' };
+		const stopResult: BloblangResult = {
+			kind: 'parseError', message: 'bad', excerpt: '', mappingLine: 2, mappingChar: 3, fileLine: 12, fileChar: 7,
+		};
+		expect(runProblems(stop, stopResult, line, originalParse)).toEqual([]);
+		expect(runProblems(stop, { ...stopResult, message: 'other' }, line, originalParse)).toHaveLength(1);
+		expect(runProblems(stop, { ...stopResult, mappingChar: 4 }, line, originalParse)).toHaveLength(1);
+		expect(runProblems(stop, { kind: 'error', message: 'Config lint error' }, line, originalParse)).toHaveLength(1);
+		// The extension's own temp path and time differ from the reference's: only the findings count.
+		const lintMessage = lintLine('/storage/bloblang-test-1.yaml', '2026-02-02T00:00:00Z');
+		const noParse = { ...originalParse, exit: 0, stderr: '' };
+		expect(runProblems(stop, { kind: 'error', message: lintMessage }, line, noParse)).toEqual([]);
+		expect(runProblems(stop, { kind: 'error', message: lintMessage.replace('something', 'other') }, line, noParse)).toHaveLength(1);
+		expect(runProblems(stop, { kind: 'error', message: 'Config lint error' }, line, noParse)).toHaveLength(1);
+		expect(runProblems({ ...ok, exit: 1, stdout: '' }, { kind: 'error', message: '' }, line, undefined)).toHaveLength(1);
+
+		const toFile = (l: number, c: number) => ({ line: l + 10, char: c + 4 });
+		const parsed: ParseEntry = { path: 'p', variant: 'original', exit: 0, stderr: '' };
+		expect(parseProblems(parsed, { kind: 'ok' }, toFile)).toEqual([]);
+		const broken: ParseEntry = {
+			path: 'p', variant: 'broken', exit: 1,
+			stderr: 'failed to parse mapping: line 2 char 3: expected something\n  |\n2 |  +\n  |   ^---\n',
+		};
+		const brokenResult: BloblParseOutcome = { kind: 'parseError', message: 'expected something', line: 2, char: 3, excerpt: '' };
+		expect(parseProblems(broken, brokenResult, toFile)).toEqual([]);
+		expect(parseProblems({ ...broken, stderr: broken.stderr.replace('char 3', 'char 4') }, brokenResult, toFile)).toEqual([
+			'  p (broken): diagnostic {"message":"expected something","line":12,"char":7,"mappingLine":2,"mappingChar":3}, ' +
+				'recorded {"message":"expected something","line":12,"char":8,"mappingLine":2,"mappingChar":4}',
+		]);
+		// Past the processor's text the map clamps: the mapping position still tells them apart.
+		const clamped = () => ({ line: 9, char: 9 });
+		expect(parseProblems({ ...broken, stderr: broken.stderr.replace('char 3', 'char 4') }, brokenResult, clamped)).toHaveLength(1);
+		expect(parseProblems({ ...broken, stderr: broken.stderr.replace('something', 'else') }, brokenResult, toFile)).toHaveLength(1);
+		expect(parseProblems(broken, { kind: 'ok' }, toFile)).toHaveLength(1);
+		expect(parseProblems({ ...broken, exit: 0 }, brokenResult, toFile)).toHaveLength(1);
+		// A non-parse failure: the extension's message is blobl's.
+		// The message runs on to the caret excerpt; the space after the colon is optional.
+		expect(bloblParseError('failed to parse mapping: line 1 char 2:first\nsecond\n  |\n1 | x\n')).toEqual({ line: 1, char: 2, message: 'first\nsecond' });
+		expect(bloblParseError('failed to parse mapping: line 1 char 2:\n')).toEqual({ line: 1, char: 2, message: 'Bloblang parse error.' });
+		const envFailure: ParseEntry = { ...broken, stderr: 'failed to replace env vars: required environment variables were not set: [X]\n' };
+		expect(parseProblems(envFailure, { kind: 'other', message: 'failed to replace env vars: required environment variables were not set: [X]' }, toFile)).toEqual([]);
+		expect(parseProblems(envFailure, { kind: 'other', message: 'something else' }, toFile)).toHaveLength(1);
+		expect(parseProblems(envFailure, brokenResult, toFile)).toHaveLength(1);
+	});
+
+	it('the file position of an offset counts lines and UTF-16 units as VS Code does', () => {
+		expect(fileAt('ab\ncd', 4)).toEqual({ line: 2, char: 2 });
+		expect(fileAt('ab\r\ncd', 4)).toEqual({ line: 2, char: 1 });
+		expect(fileAt('ab', 99)).toEqual({ line: 1, char: 3 });
+	});
 });
 
 /**
@@ -578,7 +1055,7 @@ describe('corpus layout', () => {
 		expect(missing, `missing schema recordings: ${missing.join(', ')}`).toEqual([]);
 	});
 
-	it('the orphan check finds orphaned lint and graph records', () => {
+	it('the orphan check finds orphaned lint, graph and Bloblang records', () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-orphans-'));
 		try {
 			for (const f of ['x.graph/4.112.0.json', 'a.graph/9.9.9.json', 'a.graph/4.112.0.txt', 'a.graph/4.100.0.json',
@@ -586,12 +1063,42 @@ describe('corpus layout', () => {
 				fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
 				fs.writeFileSync(path.join(dir, f), '');
 			}
-			expect(orphanedRecords(dir, ['a.yaml'])).toEqual([
-				'a.graph/4.112.0.txt', 'a.graph/9.9.9.json', 'a.lint/4.112.0.json', 'x.graph', 'y.lint',
+			for (const f of ['a.bloblang/4.112.0.json', 'a.bloblang/4.112.0.txt', 'b.bloblang/4.112.0.json']) {
+				fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+				fs.writeFileSync(path.join(dir, f), '');
+			}
+			// b.yaml is a config, but has no Bloblang processors: its Bloblang record is an orphan.
+			expect(orphanedRecords(dir, ['a.yaml', 'b.yaml'], ['a.yaml'])).toEqual([
+				'a.bloblang/4.112.0.txt', 'a.graph/4.112.0.txt', 'a.graph/9.9.9.json', 'a.lint/4.112.0.json', 'b.bloblang',
+				'x.graph', 'y.lint',
 			].map((f) => path.join(dir, f)));
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it('every Bloblang processor has a sample, and every samples entry and file has its processor and config (4.12)', () => {
+		const missing = PARITY_CONFIGS.flatMap((c) => bloblangCases(c).processors.filter((p) => p.samples.length === 0)
+			.map((p) => `${c} ${p.processor.label ?? p.processor.path}`));
+		expect(missing, `processors with no sample in their <config>.samples.json: ${missing.join(', ')}`).toEqual([]);
+		const stale: string[] = [];
+		for (const file of fs.readdirSync(CORPUS).filter((f) => f.endsWith('.samples.json'))) {
+			const config = configs.find((c) => samplesFileName(c) === file);
+			if (!config) {
+				stale.push(`${file} (no config)`);
+				continue;
+			}
+			const processors = bloblangCases(config).processors.map((p) => p.processor);
+			for (const entry of readSamples(config)?.mappings ?? []) {
+				const linked = entry.label !== undefined
+					? processors.some((p) => p.label === entry.label)
+					: processors.some((p) => p.label === undefined && p.path === entry.path);
+				if (!linked) {
+					stale.push(`${file} ${entry.label ?? entry.path} (no such processor)`);
+				}
+			}
+		}
+		expect(stale, `samples with no processor: ${stale.join(', ')}`).toEqual([]);
 	});
 
 	it('resource dependencies exist', () => {
@@ -616,8 +1123,10 @@ describe('corpus layout', () => {
 				'delete them or run `npm run test:corpus:record`').toEqual([]);
 		});
 
-		it('every config has a lint and a graph record for each pinned version', () => {
-			const missing = configs.flatMap((c) => VERSIONS.flatMap((v) => [recordOf(c, v), graphOf(c, v)]))
+		it('every config has a lint and a graph record (and a Bloblang one with Bloblang processors) for each pinned version', () => {
+			const missing = configs.flatMap((c) => VERSIONS.flatMap((v) => [recordOf(c, v), graphOf(c, v),
+				...(withBloblang.includes(c) ? [bloblangRecordOf(c, v)] : [])]))
+				.concat(BLOBLANG_FIXTURES.flatMap((c) => VERSIONS.map((v) => bloblangRecordOf(c, v))))
 				.filter((r) => !fs.existsSync(r)).map(rel);
 			expect(missing, `missing records: ${missing.join(', ')}; run \`npm run test:corpus:record\``).toEqual([]);
 		});
@@ -673,5 +1182,61 @@ for (const ver of VERSIONS) {
 				}
 			});
 		}
+
+		describe('Bloblang parity (4.12)', () => {
+			// The pinned binary with no resource or env file settings, as the extension builds it.
+			const setup: BloblangCommand = {
+				state: { kind: 'ok', path: binaryOf(ver), version: ver, invocation: [binaryOf(ver)] },
+				settings: {
+					files: () => ({ kind: 'ok', resourceFiles: [], envFile: undefined }),
+					envFile: () => ({ kind: 'ok', path: undefined }),
+					processEnv: () => process.env,
+				},
+			};
+			for (const config of PARITY_CONFIGS) {
+				it(config, async () => {
+					const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-bloblang-'));
+					try {
+						const recordFile = bloblangRecordOf(config, ver);
+						if (RECORD) {
+							fs.mkdirSync(path.dirname(recordFile), { recursive: true });
+							fs.writeFileSync(recordFile, formatBloblangRecord(await recordBloblang(config, ver, dir)));
+						}
+						if (!fs.existsSync(recordFile)) {
+							throw new Error(`${config} has no Bloblang record for redpanda-connect ${ver} (${rel(recordFile)}); ` +
+								'run `npm run test:corpus:record`');
+						}
+						const record = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as BloblangRecord;
+						const problems = await bloblangParityProblems(config, record, setup, dir);
+						expect(problems, [`${config} with redpanda-connect ${ver}: the extension's Bloblang run or parse differs from ` +
+							`${rel(recordFile)}:`, ...problems, 'If the record is stale, run `npm run test:corpus:record`.'].join('\n')).toEqual([]);
+					} finally {
+						fs.rmSync(dir, { recursive: true, force: true });
+					}
+				});
+			}
+
+			// Strictness (WRONG_RECORD): a real record, altered in memory one value at a time, is
+			// reported by the same comparison as above, at exactly the altered entry.
+			for (const alteration of ALTERATIONS) {
+				it(`a recorded ${alteration.name} altered in memory is reported as a mismatch`, async () => {
+					const found = withBloblang.map((config) => {
+						const file = bloblangRecordOf(config, ver);
+						const record = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as BloblangRecord : undefined;
+						const altered = record && alteration.alter(record);
+						return altered && { config, ...altered };
+					}).find((a) => a !== undefined);
+					expect(found, `no record @ ${ver} has an entry to alter for ${alteration.name}`).toBeDefined();
+					const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-bloblang-'));
+					try {
+						const problems = await bloblangParityProblems(found!.config, found!.record, setup, dir);
+						expect(problems.length, `${found!.config}: ${problems.join('\n')}`).toBe(1);
+						expect(problems[0].startsWith(`  ${found!.entry}:`), problems[0]).toBe(true);
+					} finally {
+						fs.rmSync(dir, { recursive: true, force: true });
+					}
+				});
+			}
+		});
 	});
 }

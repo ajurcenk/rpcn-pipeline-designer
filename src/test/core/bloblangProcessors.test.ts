@@ -82,6 +82,53 @@ suite('core/bloblangProcessors (4.2)', () => {
 		assert.deepStrictEqual(processorsOf('input:\n  generate:\n    mapping: root = 1\n'), []);
 		assert.deepStrictEqual(processorsOf('pipeline:\n  processors:\n    - bloblang: root = 1\n'), []);
 	});
+
+	test('TRY_CATCH_FIX (4.12): try, catch and for_each are processor lists, at the top and nested', () => {
+		const text = [
+			'pipeline:',
+			'  processors:',
+			'    - try:',
+			'        - mapping: root.t = 1',
+			'        - log:',
+			'            message: hi',
+			'    - catch:',
+			'        - mutation: root.c = 2',
+			'    - for_each:',
+			'        - label: each',
+			'          mapping: root.f = 3',
+			'    - branch:',
+			'        processors:',
+			'          - try:',
+			'              - catch:',
+			'                  - for_each:',
+			'                      - mutation: root.deep = 4',
+			'    - workflow:',
+			'        branches:',
+			'          a:',
+			'            processors:',
+			'              - for_each:',
+			'                  - try:',
+			'                      - mapping: root.w = 5',
+			'processor_resources:',
+			'  - label: res',
+			'    catch:',
+			'      - mapping: root.r = 6',
+			'',
+		].join('\n');
+		const found = processorsOf(text);
+		assert.deepStrictEqual(found.map((p) => [p.path, p.kind, p.label, p.source]), [
+			['pipeline.processors[0].try[0]', 'mapping', undefined, 'root.t = 1'],
+			['pipeline.processors[1].catch[0]', 'mutation', undefined, 'root.c = 2'],
+			['pipeline.processors[2].for_each[0]', 'mapping', 'each', 'root.f = 3'],
+			['pipeline.processors[3].branch.processors[0].try[0].catch[0].for_each[0]', 'mutation', undefined, 'root.deep = 4'],
+			['pipeline.processors[4].workflow.branches.a.processors[0].for_each[0].try[0]', 'mapping', undefined, 'root.w = 5'],
+			['processor_resources[0].catch[0]', 'mapping', undefined, 'root.r = 6'],
+		]);
+		for (const p of found) {
+			assert.strictEqual(text.slice(p.keyRange[0], p.keyRange[1]), p.kind);
+		}
+		assert.strictEqual(bloblangProcessorAt(found, text.indexOf('root.deep'))?.path, found[3].path);
+	});
 });
 
 const CATALOGUE = componentCatalogue(servedSchema('4.112.0'));

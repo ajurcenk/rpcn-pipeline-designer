@@ -47,6 +47,41 @@ with `--resources` only where this file marks a dependency: `set_grab_cache.yaml
   versions currently record identical graphs, since their catalogue slots match. `test:corpus:record`
   needs both binaries even for a graph-only change; to re-record only the graphs, run
   `npx vitest run --config vitest.config.mts --mode record -t "graph accuracy"` (this skips the layout checks, so it does not delete orphaned graph records; the full `npm run test:corpus:record` does).
+- Bloblang parity (ticket 4.12, R11, AD-21): every `mapping` / `mutation` processor that the extension's
+  `bloblangProcessors` finds has at least one sample in `<name>.samples.json` beside its config, in the
+  panel's own samples format (AD-22: `{"version": 1, "mappings": [{label | path, selected, samples: [{name,
+  content, meta}]}]}`, linked by label, else by path). A sample carries the metadata its mapping reads
+  (`@operation` in `cdc_replication`), and together the samples give an output, a `deleted()`
+  (`cdc_replication` "begin", `json_contains_predicate` "woof"), and mapping errors on a bad input (`eval`
+  "not json", `stateful_polling` "text id"). These samples files are written for this repository; the
+  YAML stays unmodified. `<name>.bloblang/<ver>.json` holds, per pinned version, the raw output of the
+  harness's own copy of the AD-21 one-message pipeline (`bloblangReference.ts`, written from AD-21, not
+  the extension's `testConfig`) on every sample (`exit` and `stdout`, and with a `Config lint error` the lint findings' messages as
+  `lint`, without the log's timestamp or the config path and position), and of `blobl -f` with stdin closed (`exit` and `stderr`) on each processor's source and
+  on its broken variant (the source with ` +` on a new last line, since every corpus mapping parses), in
+  processor order, then sample order; the temporary directory is written `<TMP>`. Record mode writes it.
+  `npm run test:corpus` runs the extension's own run and parse code
+  (`src/adapters/redpandaConnect/bloblangRunner.ts`) with the live binary and checks it against the record:
+  output content and metadata, deleted, the mapping error's message (and line), and for the parses no
+  diagnostic on exit 0, else one with `blobl`'s message (without its `failed to parse mapping: line L char
+  C: ` prefix) at L and C through the processor's position map. A reference run that exited non-zero must
+  give the expected message: `blobl`'s parse error (message and position, from the processor's original
+  parse) for a `Config lint error` that `blobl` reports as a parse error, else an error whose message has
+  the recorded lint findings (read from it the same way);
+  a `blobl` failure that is not a parse error must give `blobl`'s message. Any difference fails, and the
+  record's entries must be exactly the corpus's processors, samples and variants; per version, a real
+  record altered in memory (content, deleted, error text, parse message, parse char) must be reported, at
+  that entry only, by the same comparison. A processor with no sample, a samples entry with no processor,
+  a missing record or an orphaned one fails the layout checks. The run is never compared with `blobl`
+  (they differ on deleted, bad input and multi-line input, spike 4.1). Processors directly in `try`,
+  `catch` and `for_each` lists (`track_benthos_downloads`' branches, `stateful_polling`'s `catch`) are
+  found since 4.12 and have samples (`track_benthos_downloads` "not json" and "no assets" are further
+  mapping errors); the `batch_index() != 0 { deleted() }` mapping can't delete in a one-message run. The
+  deprecated `bloblang:` processor is not checked. Beside the corpus, the harness fixture
+  `fixtures/bloblang_env.yaml` (written for this repository; its mapping reads the never-set
+  `${RPCN_CORPUS_UNSET_4_12}`), with `fixtures/bloblang_env.samples.json` and records in
+  `fixtures/bloblang_env.bloblang/<ver>.json`, makes the lint-stop and non-parse `blobl` checks run on
+  both real binaries.
 - The YAML and the records are checked out with LF line endings (`.gitattributes`): recorded ranges are
   offsets into the YAML as committed.
 

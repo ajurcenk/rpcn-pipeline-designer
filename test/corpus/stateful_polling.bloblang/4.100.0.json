@@ -1,0 +1,49 @@
+{
+  "binary": "redpanda-connect 4.100.0",
+  "runs": [
+    {
+      "path": "pipeline.processors[1].catch[0]",
+      "sample": "cache miss",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"id\\\":-1}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "output.broker.outputs[1].processors[0]",
+      "sample": "row",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"id\\\":42}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "output.broker.outputs[1].processors[0]",
+      "sample": "text id",
+      "exit": 0,
+      "stdout": "{\"error\":\"failed assignment (line 1): method from_all: index 0 of array: expected number value, got string (\\\"forty-two\\\")\"}\n"
+    }
+  ],
+  "parses": [
+    {
+      "path": "pipeline.processors[1].catch[0]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[1].catch[0]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "output.broker.outputs[1].processors[0]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "output.broker.outputs[1].processors[0]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    }
+  ]
+}

@@ -316,6 +316,43 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(parse(lastRun().config).input.generate.mapping, `root = ${bloblangString(tricky)}`);
 	});
 
+	test('TRY_CATCH_FIX (4.12): a mapping directly in try: and a mutation directly in catch: get a lens and run', async () => {
+		const text = [
+			'input:',
+			'  stdin: {}',
+			'pipeline:',
+			'  processors:',
+			'    - try:',
+			'        - mapping: root.b = this.a + 1',
+			'    - catch:',
+			'        - mutation: root.b = this.a + 1',
+			'output:',
+			'  stdout: {}',
+			'',
+		].join('\n');
+		const doc = (await open('try-catch.yaml', text)).document;
+		const lenses = (await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', doc.uri))
+			.filter((l) => l.command?.command === TEST_MAPPING_COMMAND);
+		const keyLine = (needle: string) => text.split('\n').findIndex((l) => l.includes(needle));
+		assert.deepStrictEqual(lenses.map((l) => [l.range.start.line, l.command?.title, l.command?.arguments?.[1]]), [
+			[keyLine('- mapping:'), TEST_MAPPING_LENS_TITLE, 'pipeline.processors[0].try[0]'],
+			[keyLine('- mutation:'), TEST_MAPPING_LENS_TITLE, 'pipeline.processors[1].catch[0]'],
+		]);
+		const inTry = await show(doc.uri, 'pipeline.processors[0].try[0]');
+		assert.strictEqual(inTry.panel.title, 'Bloblang: pipeline.processors[0].try[0]');
+		assert.deepStrictEqual((await run(inTry, '{"a":1}')).result, {
+			kind: 'ok', content: '{"b":2}', meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: ['a'] }, meta: { added: [], changed: [], removed: [] } },
+		});
+		assert.strictEqual(parse(lastRun().config).pipeline.processors[0].mapping, 'root.b = this.a + 1');
+		const inCatch = await show(doc.uri, 'pipeline.processors[1].catch[0]');
+		assert.deepStrictEqual((await run(inCatch, '{"a":1}')).result, {
+			kind: 'ok', content: '{"a":1,"b":2}', meta: {},
+			changes: { fields: { added: ['b'], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+		});
+		assert.strictEqual(parse(lastRun().config).pipeline.processors[0].mutation, 'root.b = this.a + 1');
+	});
+
 	test('RUN_FAILED / DELETED / RUN_ERROR: the binary\'s message, a deleted message, the stderr text', async () => {
 		const doc = (await open('outcomes.yaml', CONFIG)).document;
 		assert.deepStrictEqual((await run(await show(doc.uri, 'pipeline.processors[2]'), '{"a":1}')).result,

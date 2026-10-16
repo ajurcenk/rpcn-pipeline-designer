@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "path": "input.postgres_cdc.batching.processors[0]",
+      "selected": "insert",
+      "samples": [
+        {
+          "name": "insert",
+          "content": "{\"id\": 1, \"foo\": \"a\", \"bar\": \"b\"}",
+          "meta": {
+            "operation": "insert",
+            "table": "my_src_table"
+          }
+        },
+        {
+          "name": "begin",
+          "content": "{}",
+          "meta": {
+            "operation": "begin"
+          }
+        }
+      ]
+    }
+  ]
+}

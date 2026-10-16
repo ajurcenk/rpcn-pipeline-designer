@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "path": "output.broker.outputs[1].processors[0]",
+      "selected": "row",
+      "samples": [
+        {
+          "name": "row",
+          "content": "{\"id\": 42, \"name\": \"x\"}",
+          "meta": {}
+        },
+        {
+          "name": "text id",
+          "content": "{\"id\": \"forty-two\"}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "pipeline.processors[1].catch[0]",
+      "selected": "cache miss",
+      "samples": [
+        {
+          "name": "cache miss",
+          "content": "{}",
+          "meta": {}
+        }
+      ]
+    }
+  ]
+}

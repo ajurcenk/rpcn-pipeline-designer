@@ -1,0 +1,103 @@
+{
+  "binary": "redpanda-connect 4.112.0",
+  "runs": [
+    {
+      "path": "pipeline.processors[1]",
+      "sample": "question",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"query\\\":\\\"How do I enable Tiered Storage?\\\"}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "pipeline.processors[1]",
+      "sample": "not json",
+      "exit": 0,
+      "stdout": "{\"error\":\"failed assignment (line 1): unable to reference message as structured (with 'this'): parse as json: invalid character 'H' looking for beginning of value\"}\n"
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[0]",
+      "sample": "three results",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"processed\\\":[],\\\"unprocessed\\\":[{\\\"bm25\\\":{\\\"answer\\\":\\\"a\\\"},\\\"hybrid\\\":{\\\"answer\\\":\\\"c\\\"},\\\"q\\\":\\\"How do I enable Tiered Storage?\\\"},{\\\"bm25\\\":{\\\"answer\\\":\\\"a\\\"},\\\"q\\\":\\\"How do I enable Tiered Storage?\\\",\\\"vector\\\":{\\\"answer\\\":\\\"b\\\"}},{\\\"hybrid\\\":{\\\"answer\\\":\\\"c\\\"},\\\"q\\\":\\\"How do I enable Tiered Storage?\\\",\\\"vector\\\":{\\\"answer\\\":\\\"b\\\"}}]}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "sample": "two left",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"processed\\\":[{\\\"winner\\\":\\\"bm25\\\"}],\\\"unprocessed\\\":[{\\\"q\\\":\\\"y\\\"}]}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "pipeline.processors[3]",
+      "sample": "with result",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"query\\\":\\\"How do I enable Tiered Storage?\\\"}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "pipeline.processors[5]",
+      "sample": "object",
+      "exit": 0,
+      "stdout": "{\"content\":\"query: How do I enable Tiered Storage?\\nscores:\\n    - \\\"1\\\"\\n    - \\\"2\\\"\\n\",\"meta\":{}}\n"
+    }
+  ],
+  "parses": [
+    {
+      "path": "pipeline.processors[1]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[1]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[0]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[0]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 13 char 2: expected import, map, or assignment\n   |\n13 |  +\n   |  ^---\n"
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "pipeline.processors[3]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[3]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 4 char 2: expected import, map, or assignment\n  |\n4 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "pipeline.processors[5]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[5]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    }
+  ]
+}

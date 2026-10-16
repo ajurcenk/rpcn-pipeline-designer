@@ -1,8 +1,9 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import {
-	ArgsEnvironment, ArgsResult, buildBloblCommand, buildLintCommand, buildRunCommand, describeArgsFailure,
+	ArgsEnvironment, ArgsResult, buildLintCommand, buildRunCommand, commandSettings, describeArgsFailure,
 } from '../../../adapters/redpandaConnect/args';
+import { buildBloblCommandLine } from '../../../adapters/redpandaConnect/commandLine';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import { FORBIDDEN_ARGS } from '../../../core/args';
 
@@ -16,6 +17,9 @@ const B = path.join(WS, 'b.yaml');
 
 const standalone: BinaryState = { kind: 'ok', path: BIN, version: '4.112.0', invocation: [BIN] };
 const rpk: BinaryState = { kind: 'ok', path: RPK, version: '4.112.0', invocation: [RPK, 'connect'] };
+
+/** The live parse's command line (built in `commandLine.ts`) from `env`'s settings. */
+const buildBloblCommand = (state: BinaryState, file: string, env: ArgsEnvironment) => buildBloblCommandLine(state, file, commandSettings(() => env));
 
 function environment(overrides: Partial<ArgsEnvironment> = {}): ArgsEnvironment {
 	return {

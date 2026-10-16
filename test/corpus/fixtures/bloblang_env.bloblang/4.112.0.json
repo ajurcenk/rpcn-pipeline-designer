@@ -1,0 +1,28 @@
+{
+  "binary": "redpanda-connect 4.112.0",
+  "runs": [
+    {
+      "path": "pipeline.processors[0]",
+      "sample": "any",
+      "exit": 1,
+      "stdout": "",
+      "lint": [
+        "required environment variables were not set: [RPCN_CORPUS_UNSET_4_12]"
+      ]
+    }
+  ],
+  "parses": [
+    {
+      "path": "pipeline.processors[0]",
+      "variant": "original",
+      "exit": 1,
+      "stderr": "failed to replace env vars: required environment variables were not set: [RPCN_CORPUS_UNSET_4_12]\n"
+    },
+    {
+      "path": "pipeline.processors[0]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to replace env vars: required environment variables were not set: [RPCN_CORPUS_UNSET_4_12]\n"
+    }
+  ]
+}

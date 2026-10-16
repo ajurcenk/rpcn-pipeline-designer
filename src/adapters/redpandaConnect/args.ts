@@ -1,18 +1,25 @@
-// RedpandaConnect adapter: the shared lint/run argument builder (AD-9). Lint (AD-12) and Run
-// (AD-13) both get their `{ command, args, env }` here, so they pass identical `--resources` and
-// `--env-file` arguments; the live Bloblang parse (AD-21, `blobl`) gets the same `--env-file`. Resource files come from the `redpandaConnect.resourceFiles` setting
-// only; nothing detects them (AD-9, AD-18). The flags themselves live in `src/core/args`. This
-// module spawns nothing and never checks whether resource or env files exist (lint and run
-// report missing files). Run a result as `runProcess([command], args, …, { env })`.
+// RedpandaConnect adapter: the lint/run argument builder bound to VS Code's settings (AD-9). Lint
+// (AD-12) and Run (AD-13) get their `{ command, args, env }` here, so they pass identical
+// `--resources` and `--env-file` arguments; the Bloblang test run and live parse (AD-21) build theirs
+// in `bloblangRunner.ts` from the same settings (`commandSettings`). Resource files come from the
+// `redpandaConnect.resourceFiles` setting only; nothing detects them (AD-9, AD-18). The command
+// lines themselves are built in `commandLine.ts` (no `vscode`), the flags in `src/core/args`; this
+// module reads and resolves the settings. It spawns nothing and never checks whether resource or env
+// files exist (lint and run report missing files). Run a result as
+// `runProcess([command], args, …, { env })`.
 
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ArgvInput, ArgvResult, buildBloblArgs, buildLintArgs, buildRunArgs } from '../../core/args';
+import { buildLintArgs, buildRunArgs } from '../../core/args';
 import { BinaryState, firstWorkspaceFolderPath, resolveSettingPath } from './binary';
+import {
+	type ArgsFailure, type ArgsFiles, type ArgsResult, buildCommandLine, type CommandLine, type CommandSettings,
+	describeArgsFailure, ENV_FILE_SETTING, type EnvFileResult, RESOURCE_FILES_SETTING,
+} from './commandLine';
 
-export const RESOURCE_FILES_SETTING = 'redpandaConnect.resourceFiles';
-export const ENV_FILE_SETTING = 'redpandaConnect.envFile';
+export type { ArgsFailure, ArgsFiles, ArgsResult, CommandLine, EnvFileResult };
+export { describeArgsFailure, ENV_FILE_SETTING, RESOURCE_FILES_SETTING };
 
 /** Everything the builder reads from the outside world, as plain values. */
 export interface ArgsEnvironment {
@@ -27,31 +34,6 @@ export interface ArgsEnvironment {
 	readonly processEnv: NodeJS.ProcessEnv;
 }
 
-export interface CommandLine {
-	readonly command: string;
-	readonly args: readonly string[];
-	readonly env: NodeJS.ProcessEnv;
-}
-
-export type ArgsFailure =
-	/** `binaryState` is not `ok`. */
-	| { readonly kind: 'binaryUnavailable'; readonly state: BinaryState['kind'] }
-	/** `binaryState` is `ok` but its invocation is empty (should not happen). */
-	| { readonly kind: 'emptyInvocation' }
-	/** Lint got no target, or run did not get exactly one. */
-	| { readonly kind: 'targetCount'; readonly expected: 'atLeastOne' | 'exactlyOne'; readonly actual: number }
-	/** A setting value cannot be turned into an absolute path. */
-	| {
-		readonly kind: 'unusableSetting';
-		readonly setting: typeof RESOURCE_FILES_SETTING | typeof ENV_FILE_SETTING;
-		readonly value: string;
-		readonly reason: 'relativePathWithoutWorkspace';
-	}
-	/** A caller-supplied target path is not absolute (a programming error upstream). */
-	| { readonly kind: 'relativePath'; readonly role: 'target'; readonly path: string };
-
-export type ArgsResult = ({ readonly kind: 'ok' } & CommandLine) | ArgsFailure;
-
 export interface ArgsRequest {
 	/** Absolute target config paths. Lint: at least one. Run: exactly one. */
 	readonly targets: readonly string[];
@@ -59,53 +41,28 @@ export interface ArgsRequest {
 
 /** Builds the `lint` command line. Never throws. */
 export function buildLintCommand(state: BinaryState, request: ArgsRequest, env: ArgsEnvironment = defaultArgsEnvironment()): ArgsResult {
-	return buildCommand(buildLintArgs, state, request, env);
+	return buildCommandLine(buildLintArgs, state, request.targets, commandSettings(() => env));
 }
 
 /** Builds the `run` command line. Never throws. */
 export function buildRunCommand(state: BinaryState, request: ArgsRequest, env: ArgsEnvironment = defaultArgsEnvironment()): ArgsResult {
-	return buildCommand(buildRunArgs, state, request, env);
+	return buildCommandLine(buildRunArgs, state, request.targets, commandSettings(() => env));
 }
 
 /**
- * Builds the `blobl --file <mappingFile>` command line of the live parse (AD-21, ticket 4.5), with
- * the same `--env-file` and `NO_COLOR` as lint and run. Never throws.
+ * The settings as `commandLine.ts` reads them, from the environment `env` gives (called on each
+ * read, so with `defaultArgsEnvironment` a read happens only when a builder needs it).
  */
-export function buildBloblCommand(state: BinaryState, mappingFile: string, env: ArgsEnvironment = defaultArgsEnvironment()): ArgsResult {
-	if (state.kind !== 'ok') {
-		return { kind: 'binaryUnavailable', state: state.kind };
-	}
-	if (!path.isAbsolute(mappingFile)) {
-		return { kind: 'relativePath', role: 'target', path: mappingFile };
-	}
-	const envFile = resolveEnvFile(env);
-	if (envFile.kind !== 'ok') {
-		return envFile;
-	}
-	const result = buildBloblArgs({ invocation: state.invocation, mappingFile, envFile: envFile.path });
-	return result.kind === 'ok' ? commandLine(result.argv, env) : result;
-}
-
-/** The output-channel line for a failure. */
-export function describeArgsFailure(failure: ArgsFailure): string {
-	switch (failure.kind) {
-		case 'binaryUnavailable':
-			return `Redpanda Connect binary is unavailable (${failure.state}).`;
-		case 'targetCount':
-			return failure.expected === 'atLeastOne'
-				? 'Lint needs at least one file.'
-				: `Run needs exactly one file, got ${failure.actual}.`;
-		case 'emptyInvocation':
-			return 'Internal error: the Redpanda Connect binary state has an empty invocation.';
-		case 'unusableSetting':
-			return `${failure.setting} "${failure.value}" is a relative path, but no workspace folder is open.`;
-		case 'relativePath':
-			return `Internal error: target path "${failure.path}" is not absolute.`;
-	}
+export function commandSettings(env: () => ArgsEnvironment = defaultArgsEnvironment): CommandSettings {
+	return {
+		files: () => resolveArgsFiles(env()),
+		envFile: () => resolveEnvFile(env()),
+		processEnv: () => env().processEnv,
+	};
 }
 
 /** Reads the two settings, home dir, workspace folder and `process.env`. */
-function defaultArgsEnvironment(): ArgsEnvironment {
+export function defaultArgsEnvironment(): ArgsEnvironment {
 	const config = vscode.workspace.getConfiguration('redpandaConnect');
 	return {
 		resourceFilesSetting: config.get<unknown>('resourceFiles', []),
@@ -132,21 +89,11 @@ function resolveFileSettingPath(setting: string, homeDir: string, workspaceFolde
 		: { kind: 'relativeWithoutWorkspace' };
 }
 
-function buildCommand(
-	buildArgv: (input: ArgvInput) => ArgvResult,
-	state: BinaryState,
-	request: ArgsRequest,
-	env: ArgsEnvironment,
-): ArgsResult {
-	if (state.kind !== 'ok') {
-		return { kind: 'binaryUnavailable', state: state.kind };
-	}
-
-	for (const target of request.targets) {
-		if (!path.isAbsolute(target)) {
-			return { kind: 'relativePath', role: 'target', path: target };
-		}
-	}
+/**
+ * The `redpandaConnect.resourceFiles` and `redpandaConnect.envFile` settings as absolute paths
+ * (resources first, so a bad resource setting is the failure reported). Never throws.
+ */
+function resolveArgsFiles(env: ArgsEnvironment): ArgsFiles | ArgsFailure {
 	const resourceFiles: string[] = [];
 	for (const raw of stringList(env.resourceFilesSetting)) {
 		const resolved = resolveFileSettingPath(raw, env.homeDir, env.workspaceFolder);
@@ -155,24 +102,12 @@ function buildCommand(
 		}
 		resourceFiles.push(path.normalize(resolved.path));
 	}
-
 	const envFile = resolveEnvFile(env);
-	if (envFile.kind !== 'ok') {
-		return envFile;
-	}
-
-	const result = buildArgv({ invocation: state.invocation, targets: request.targets, resourceFiles, envFile: envFile.path, platform: process.platform });
-	switch (result.kind) {
-		case 'targetCount':
-		case 'emptyInvocation':
-			return result;
-		case 'ok':
-			return commandLine(result.argv, env);
-	}
+	return envFile.kind === 'ok' ? { kind: 'ok', resourceFiles, envFile: envFile.path } : envFile;
 }
 
-/** The `redpandaConnect.envFile` setting as an absolute path (`undefined` when unset). */
-function resolveEnvFile(env: ArgsEnvironment): { readonly kind: 'ok'; readonly path: string | undefined } | ArgsFailure {
+/** The `redpandaConnect.envFile` setting as an absolute path (`undefined` when unset). Never throws. */
+function resolveEnvFile(env: ArgsEnvironment): EnvFileResult {
 	const envSetting = typeof env.envFileSetting === 'string' ? env.envFileSetting.trim() : '';
 	if (!envSetting) {
 		return { kind: 'ok', path: undefined };
@@ -182,12 +117,6 @@ function resolveEnvFile(env: ArgsEnvironment): { readonly kind: 'ok'; readonly p
 		return { kind: 'unusableSetting', setting: ENV_FILE_SETTING, value: envSetting, reason: 'relativePathWithoutWorkspace' };
 	}
 	return { kind: 'ok', path: resolved.path };
-}
-
-/** A built argv as a command line whose child env carries `NO_COLOR=1`. */
-function commandLine(argv: readonly string[], env: ArgsEnvironment): ArgsResult {
-	const [command, ...args] = argv;
-	return { kind: 'ok', command, args, env: { ...env.processEnv, NO_COLOR: '1' } };
 }
 
 /** The trimmed, non-empty strings of a `string[]` setting; anything else is ignored. */

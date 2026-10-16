@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "path": "pipeline.processors[0]",
+      "selected": "tick",
+      "samples": [
+        {
+          "name": "tick",
+          "content": "{\"tick\": 1}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "processor_resources[0].branch.processors[0].try[1]",
+      "selected": "repository",
+      "samples": [
+        {
+          "name": "repository",
+          "content": "{\"name\": \"benthos\", \"namespace\": \"jeffail\", \"pull_count\": 1234567}",
+          "meta": {}
+        },
+        {
+          "name": "not json",
+          "content": "rate limited",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[1]",
+      "selected": "releases",
+      "samples": [
+        {
+          "name": "releases",
+          "content": "[{\"tag_name\": \"v4.27.0\", \"assets\": [{\"name\": \"benthos_4.27.0_linux_amd64.tar.gz\", \"download_count\": 120}, {\"name\": \"benthos-lambda_4.27.0_linux_arm64.zip\", \"download_count\": 7}, {\"name\": \"benthos_4.27.0_checksums.txt\", \"download_count\": 3}]}]",
+          "meta": {}
+        },
+        {
+          "name": "no assets",
+          "content": "[{\"tag_name\": \"v4.27.0\"}]",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[4]",
+      "selected": "first asset",
+      "samples": [
+        {
+          "name": "first asset",
+          "content": "{\"source\": \"github\", \"dist\": \"linux_amd64\", \"download_count\": 120, \"version\": \"4.27.0\"}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "processor_resources[2].branch.processors[0].try[1]",
+      "selected": "formula",
+      "samples": [
+        {
+          "name": "formula",
+          "content": "{\"name\": \"benthos\", \"analytics\": {\"install\": {\"30d\": {\"benthos\": 42}}}}",
+          "meta": {}
+        }
+      ]
+    }
+  ]
+}

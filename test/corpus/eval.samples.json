@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "path": "pipeline.processors[1]",
+      "selected": "question",
+      "samples": [
+        {
+          "name": "question",
+          "content": "\"How do I enable Tiered Storage?\"",
+          "meta": {}
+        },
+        {
+          "name": "not json",
+          "content": "How do I enable Tiered Storage?",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[0]",
+      "selected": "three results",
+      "samples": [
+        {
+          "name": "three results",
+          "content": "{\"query\": \"How do I enable Tiered Storage?\", \"bm25\": {\"answer\": \"a\"}, \"vector\": {\"answer\": \"b\"}, \"hybrid\": {\"answer\": \"c\"}}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "pipeline.processors[2].workflow.branches.score.processors[1].while.processors[1]",
+      "selected": "two left",
+      "samples": [
+        {
+          "name": "two left",
+          "content": "{\"processed\": [{\"winner\": \"bm25\"}], \"unprocessed\": [{\"q\": \"x\"}, {\"q\": \"y\"}]}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "pipeline.processors[3]",
+      "selected": "with result",
+      "samples": [
+        {
+          "name": "with result",
+          "content": "{\"query\": \"How do I enable Tiered Storage?\", \"workflow_result\": {\"score\": {\"processed\": []}}}",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "path": "pipeline.processors[5]",
+      "selected": "object",
+      "samples": [
+        {
+          "name": "object",
+          "content": "{\"query\": \"How do I enable Tiered Storage?\", \"scores\": [1, 2]}",
+          "meta": {}
+        }
+      ]
+    }
+  ]
+}

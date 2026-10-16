@@ -231,6 +231,31 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		assert.deepStrictEqual(sorted(bloblangOf(doc.uri)), sorted(expected));
 	});
 
+	test('TRY_CATCH_FIX (4.12): a mapping directly in try: and a mutation directly in catch: get their diagnostics', async () => {
+		const text = [
+			'input:',
+			'  stdin: {}',
+			'pipeline:',
+			'  processors:',
+			'    - try:',
+			'        - mapping: root.t = 1 ERR@1:6',
+			'    - catch:',
+			'        - mutation: |',
+			'            root.c = 2',
+			'            root.d = 3 ERR@2:8',
+			'output:',
+			'  stdout: {}',
+			'',
+		].join('\n');
+		const editor = await open('try-catch.yaml', text);
+		const doc = editor.document;
+		// Plain in try: char 6 is the `t` of `root.t`; block in catch: line 2 char 8 is its `=`.
+		const expected = [error(at(doc, 't = 1 ERR')), error(at(doc, '= 3 ERR'))];
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 2, 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		const sorted = (s: Shown[]) => [...s].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+		assert.deepStrictEqual(sorted(bloblangOf(doc.uri)), sorted(expected));
+	});
+
 	test('BURST / UNCHANGED: 10 keystrokes in one mapping run blobl once for it; an edit outside every mapping runs none', async () => {
 		const editor = await open('burst.yaml', CONFIG);
 		const doc = editor.document;

@@ -1,0 +1,109 @@
+{
+  "binary": "redpanda-connect 4.112.0",
+  "runs": [
+    {
+      "path": "pipeline.processors[0]",
+      "sample": "tick",
+      "exit": 0,
+      "stdout": "{\"content\":\"{}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "processor_resources[0].branch.processors[0].try[1]",
+      "sample": "repository",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"dist\\\":\\\"docker\\\",\\\"download_count\\\":1234567,\\\"source\\\":\\\"docker\\\",\\\"version\\\":\\\"all\\\"}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "processor_resources[0].branch.processors[0].try[1]",
+      "sample": "not json",
+      "exit": 0,
+      "stdout": "{\"error\":\"failed assignment (line 3): unable to reference message as structured (with 'this.pull_count'): parse as json: invalid character 'r' looking for beginning of value\"}\n"
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[1]",
+      "sample": "releases",
+      "exit": 0,
+      "stdout": "{\"content\":\"[{\\\"dist\\\":\\\"linux_amd64\\\",\\\"download_count\\\":120,\\\"source\\\":\\\"github\\\",\\\"version\\\":\\\"4.27.0\\\"},{\\\"dist\\\":\\\"lambda_linux_arm64\\\",\\\"download_count\\\":7,\\\"source\\\":\\\"github\\\",\\\"version\\\":\\\"4.27.0\\\"}]\",\"meta\":{}}\n"
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[1]",
+      "sample": "no assets",
+      "exit": 0,
+      "stdout": "{\"error\":\"failed assignment (line 1): field `this`: failed to process element 0: expected array value, got null from field `release.assets`\"}\n"
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[4]",
+      "sample": "first asset",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"source\\\": \\\"github\\\", \\\"dist\\\": \\\"linux_amd64\\\", \\\"download_count\\\": 120, \\\"version\\\": \\\"4.27.0\\\"}\",\"meta\":{}}\n"
+    },
+    {
+      "path": "processor_resources[2].branch.processors[0].try[1]",
+      "sample": "formula",
+      "exit": 0,
+      "stdout": "{\"content\":\"{\\\"dist\\\":\\\"brew\\\",\\\"download_count\\\":42,\\\"source\\\":\\\"homebrew\\\",\\\"version\\\":\\\"all\\\"}\",\"meta\":{}}\n"
+    }
+  ],
+  "parses": [
+    {
+      "path": "pipeline.processors[0]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "pipeline.processors[0]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "processor_resources[0].branch.processors[0].try[1]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "processor_resources[0].branch.processors[0].try[1]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 5 char 2: expected import, map, or assignment\n  |\n5 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[1]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[1]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 7 char 2: expected import, map, or assignment\n  |\n7 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[4]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "processor_resources[1].branch.processors[0].try[4]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 2 char 2: expected import, map, or assignment\n  |\n2 |  +\n  |  ^---\n"
+    },
+    {
+      "path": "processor_resources[2].branch.processors[0].try[1]",
+      "variant": "original",
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "path": "processor_resources[2].branch.processors[0].try[1]",
+      "variant": "broken",
+      "exit": 1,
+      "stderr": "failed to parse mapping: line 5 char 2: expected import, map, or assignment\n  |\n5 |  +\n  |  ^---\n"
+    }
+  ]
+}

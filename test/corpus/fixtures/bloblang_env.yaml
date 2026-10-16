@@ -1,0 +1,9 @@
+# Corpus harness fixture (ticket 4.12): a mapping that reads an env var that is never set, so the
+# test run stops on `Config lint error` and `blobl` fails with something other than a parse error.
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - mapping: 'root.greeting = "${RPCN_CORPUS_UNSET_4_12}"'
+output:
+  stdout: {}
