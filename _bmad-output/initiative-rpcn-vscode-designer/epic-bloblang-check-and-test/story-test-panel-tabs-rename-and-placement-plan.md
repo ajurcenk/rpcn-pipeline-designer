@@ -3,7 +3,7 @@ title: 'Test panel tabs, rename and placement'
 type: 'feature'
 ticket: '17'
 created: '2026-10-15'
-status: 'built'
+status: done
 baseline_revision: 'f3b66b3385725609a2195dbfb30ec0d67528bc34'
 route: 'full'
 route_source: 'auto'
