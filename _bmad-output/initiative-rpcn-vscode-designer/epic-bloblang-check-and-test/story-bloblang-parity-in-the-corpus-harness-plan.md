@@ -3,7 +3,7 @@ title: 'Bloblang parity in the corpus harness'
 type: 'feature'
 ticket: '12'
 created: '2026-10-16'
-status: 'built'
+status: done
 baseline_revision: '943aebbc410460bc308c792426260aad5c9fc9f3'
 route: 'full'
 route_source: 'auto'
