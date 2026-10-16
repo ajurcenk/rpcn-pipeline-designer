@@ -1,0 +1,11 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: normalise order",
+  "kind": "mapping",
+  "source": "root = this",
+  "binary": "ok",
+  "samples": [],
+  "selected": null,
+  "fileName": "orders.yaml",
+  "samplesFile": "orders.samples.json"
+}

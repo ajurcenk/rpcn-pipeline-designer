@@ -9,6 +9,8 @@
 // new label, and `onDidWrite` fires after each of the store's own writes (the CodeLens's count).
 // Ticket 4.10: `relink` moves an entry between any two links (label or path), and `relinkAll` applies
 // a save's moves of all of a config's panels in one write.
+// Ticket 4.17: a config's rename re-keys the store's caches (`rekey`), and a single file's rename
+// renames its samples file to the new config's (`moveFile`), never over an existing one.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -46,6 +48,9 @@ export interface RelinkAllOutcome {
  */
 export type RelinkOutcome = 'written' | 'unchanged' | 'taken' | { readonly failed: string } | { readonly unreadable: string };
 
+/** What a rename did to the samples file (4.17): moved it, found none to move (or a folder), or found the new one there already. */
+export type SamplesMove = 'moved' | 'none' | 'exists' | { readonly failed: string };
+
 /** The samples file of `config`; `undefined` for an untitled config. */
 export function samplesUri(config: vscode.Uri): vscode.Uri | undefined {
 	if (config.scheme === 'untitled') {
@@ -66,6 +71,23 @@ async function readText(uri: vscode.Uri): Promise<string | null> {
 	}
 }
 
+/** Whether `from` → `to` changes only the case of the path (4.17: the same file on a case-insensitive file system). */
+export function caseOnlyRename(from: vscode.Uri, to: vscode.Uri): boolean {
+	const a = from.toString();
+	const b = to.toString();
+	return a !== b && a.toLowerCase() === b.toLowerCase();
+}
+
+/** Whether `uri` exists (and, with `type`, is of that type). */
+async function exists(uri: vscode.Uri, type?: vscode.FileType): Promise<boolean> {
+	try {
+		const stat = await vscode.workspace.fs.stat(uri);
+		return type === undefined || (stat.type & type) !== 0;
+	} catch {
+		return false;
+	}
+}
+
 interface Watched {
 	count: number;
 	readonly watcher: vscode.FileSystemWatcher;
@@ -83,6 +105,8 @@ export class SampleStore implements vscode.Disposable {
 	private readonly seen = new Map<string, string | null>();
 	/** Per samples file: the tail of its queue of reads and writes. */
 	private readonly queues = new Map<string, Promise<unknown>>();
+	/** Samples files whose cache `rekey` copied from the old name (4.17), until `moveFile` settles it. */
+	private readonly rekeyed = new Set<string>();
 	/** Per config: its watcher and how many panels hold it. */
 	private readonly watched = new Map<string, Watched>();
 	private readonly saves: vscode.Disposable;
@@ -173,6 +197,92 @@ export class SampleStore implements vscode.Disposable {
 				? { applied: plan.applied, hadEntry: plan.hadEntry, written: true }
 				: { applied: none, hadEntry: plan.hadEntry, error: written.failed };
 		});
+	}
+
+	/**
+	 * `config` was renamed to `renamed` (4.17): the cache of its samples file's text and its queue
+	 * follow the new name, so that what the store read or wrote is not seen as an outside edit, and
+	 * the new name's reads and writes wait for the old one's. A cache the new name has is kept.
+	 */
+	rekey(config: vscode.Uri, renamed: vscode.Uri): void {
+		const from = samplesUri(config)?.toString();
+		const to = samplesUri(renamed)?.toString();
+		if (from === undefined || to === undefined || from === to) {
+			return;
+		}
+		if (this.seen.has(from) && !this.seen.has(to)) {
+			this.seen.set(to, this.seen.get(from)!);
+			this.rekeyed.add(to);
+		}
+		this.seen.delete(from);
+		const tail = this.queues.get(from);
+		if (tail) {
+			const after = this.queues.get(to);
+			this.queues.set(to, after ? Promise.all([tail, after]) : tail);
+		}
+	}
+
+	/**
+	 * A single file's rename (4.17): when `renamed` is a file, `config`'s samples file is renamed to
+	 * the new one's in its folder, only when the old one exists and the new one doesn't (no
+	 * overwrite): `'exists'` leaves both. A folder's rename (its files' samples moved with it) and a
+	 * missing samples file are `'none'`. Queued on the new samples file. Never throws: a failure is
+	 * logged and is `{failed}`.
+	 */
+	moveFile(config: vscode.Uri, renamed: vscode.Uri): Promise<SamplesMove> {
+		const from = samplesUri(config);
+		const to = samplesUri(renamed);
+		if (!from || !to || from.toString() === to.toString()) {
+			return Promise.resolve('none');
+		}
+		return this.queued(to, async (): Promise<SamplesMove> => {
+			const outcome = await this.moveSamplesFile(renamed, from, to);
+			// A cache `rekey` copied to the new name holds the old file's text: it stays only when that
+			// file is now there (moved, or a folder's rename moved it), else the next read would see an
+			// outside edit.
+			if (this.rekeyed.delete(to.toString()) && outcome !== 'moved' && outcome !== 'folder') {
+				this.seen.delete(to.toString());
+			}
+			return outcome === 'folder' ? 'none' : outcome;
+		});
+	}
+
+	private async moveSamplesFile(renamed: vscode.Uri, from: vscode.Uri, to: vscode.Uri): Promise<SamplesMove | 'folder'> {
+		try {
+			if (!(await exists(renamed, vscode.FileType.File))) {
+				return 'folder';
+			}
+			// A case-only rename (`orders.yaml` → `Orders.yaml`): on a case-insensitive file system the
+			// new name "exists" as the same file, so the file service decides (it allows that move and
+			// refuses a real overwrite with `FileExists`).
+			const caseOnly = caseOnlyRename(from, to);
+			// The new one first: a samples file moved meanwhile (by another rename) is then no move, not `'exists'`.
+			if (!caseOnly && await exists(to)) {
+				return await exists(from) ? 'exists' : 'none';
+			}
+			if (!(await exists(from))) {
+				return 'none';
+			}
+			await vscode.workspace.fs.rename(from, to, { overwrite: false });
+			const text = this.seen.get(from.toString());
+			this.seen.delete(from.toString());
+			if (text !== undefined) {
+				this.seen.set(to.toString(), text);
+			}
+			this.wrote.fire(renamed);
+			return 'moved';
+		} catch (e) {
+			if (e instanceof vscode.FileSystemError && e.code === 'FileExists') {
+				return 'exists';
+			}
+			if (!(await exists(from))) {
+				// Moved meanwhile: nothing to move any more.
+				return 'none';
+			}
+			const reason = e instanceof Error ? e.message : String(e);
+			this.log(`Samples: ${path.posix.basename(from.path)}: ${reason}`);
+			return { failed: reason };
+		}
 	}
 
 	/** Writes `file` (`undefined`: deletes the file); `onDidWrite` fires once it is written. */

@@ -37,6 +37,8 @@
 // result is cleared (as entering the no-binary state) and a result arriving meanwhile is dropped;
 // the input and the samples stay. A snapshot without `removed` brings the panel back and runs the
 // input once, with Run on change on.
+// Ticket 4.17: the snapshot's `fileName` and `samplesFile`, when present, win over the page's
+// `data-file` and `data-samples` (a rename of the config changes them).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -101,9 +103,9 @@ export interface TestPanelProps {
 	/** The view state saved by an earlier load of the panel. */
 	readonly initialState: ViewState;
 	readonly saveState: (state: ViewState) => void;
-	/** The YAML file's name, for the error cards (`data-file` of the page's root). */
+	/** The YAML file's name, for the error cards (`data-file` of the page's root); the snapshot's `fileName` wins (4.17). */
 	readonly fileName?: string;
-	/** The samples file's name (`data-samples`, 4.9); none: no sample controls. */
+	/** The samples file's name (`data-samples`, 4.9); none: no sample controls. The snapshot's `samplesFile` wins (4.17). */
 	readonly samplesFile?: string;
 }
 
@@ -191,7 +193,7 @@ function NoBinaryView({ post }: { readonly post: (message: BloblangWebviewMessag
 	);
 }
 
-export function TestPanel({ post, initialState, saveState, fileName, samplesFile }: TestPanelProps) {
+export function TestPanel({ post, initialState, saveState, fileName: pageFile, samplesFile: pageSamples }: TestPanelProps) {
 	const nextId = useRef(0);
 	const withId = (row: MetaRow): EditableRow => ({ id: nextId.current++, key: row.key, value: row.value });
 	const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -228,6 +230,9 @@ export function TestPanel({ post, initialState, saveState, fileName, samplesFile
 	const samplesNow = useRef(samples);
 	/** The pending save of the selected sample's edit (4.9). */
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	// The snapshot's names win over the page's (4.17: a rename changes them after the first paint).
+	const fileName = snapshot?.fileName ?? pageFile;
+	const samplesFile = snapshot?.samplesFile ?? pageSamples;
 	const hasSamples = samplesFile !== undefined;
 
 	/** Sets the samples state and its mirror. */

@@ -17,6 +17,9 @@
 // Ticket 4.10: each panel follows its processor through edits (an insert above, a reorder, a typed
 // label), its samples follow on save, and a deleted processor's removed state clears on undo; each
 // scenario with and without the graph open.
+// Ticket 4.17: the panel closes with its file's last text tab, follows a rename (a file's, with its
+// samples file, or a folder's), and opens in one test group below the graph (a graph opened later
+// goes above it).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,7 +28,7 @@ import { parse } from 'yaml';
 import {
 	ADD_LABEL_TITLE, addLabelPrompt, BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotAddLabel, couldNotMoveSamples, couldNotSaveSamples, deleteSampleMessage,
 	LABEL_PROCESSOR_CHANGED, labelInSamples, labelSamplesNotSaved, labelSamplesUnreadable, SAMPLES_USE_IT, SAMPLES_WAIT_FOR_SAVE,
-	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, TEST_MAPPING_COMMAND, type BloblangPanelHandle, type LabelRequest,
+	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, samplesNotMoved, TEST_MAPPING_COMMAND, type BloblangPanelHandle, type LabelRequest,
 } from '../../../adapters/bloblangPanel/panels';
 import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
@@ -133,7 +136,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const file = path.join(dir, name);
 		fs.writeFileSync(file, text);
 		const doc = await vscode.workspace.openTextDocument(file);
-		const editor = await vscode.window.showTextDocument(doc, column);
+		// Pinned, not a preview (4.17): another file opened in the group would replace a preview tab,
+		// and the file's panels close with its last tab.
+		const editor = await vscode.window.showTextDocument(doc, { viewColumn: column, preview: false });
 		assert.ok(await waitFor(() => api().detection.has(doc.uri), 5_000));
 		return editor;
 	}
@@ -250,7 +255,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		// The real webview loads dist/bloblang.js and asks for its snapshot.
 		assert.ok(await waitFor(() => handle.posted.some((m) => m.type === 'snapshot'), 15_000), 'the webview never posted ready');
 		assert.deepStrictEqual(handle.posted.find((m) => m.type === 'snapshot'),
-			{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1', binary: 'ok', samples: [], selected: null });
+			{
+				type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root.b = this.a + 1', binary: 'ok', samples: [], selected: null,
+				fileName: 'open.yaml', samplesFile: 'open.samples.json',
+			});
 		assert.notStrictEqual(handle.panel.viewColumn, vscode.ViewColumn.One);
 		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.One, 'focus stays in the YAML group');
 		assert.strictEqual(vscode.window.activeTextEditor?.document, doc);
@@ -1033,7 +1041,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			await handle.receive({ type: 'ready' });
 			assert.deepStrictEqual(lastSnapshot(handle), {
 				type: 'snapshot', title: `Bloblang: ${UNLABELLED}`, kind: 'mapping', source: 'root.b = this.nope.or("FAIL_ME")', binary: 'ok',
-				samples: pathEntry.samples, selected: 'b', unlabelledPath: UNLABELLED,
+				samples: pathEntry.samples, selected: 'b', unlabelledPath: UNLABELLED, fileName: 'label.yaml', samplesFile: 'label.samples.json',
 			});
 
 			// INVALID / DUP / USED, then ACCEPT.
@@ -1067,7 +1075,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.strictEqual(handle.panel.title, 'Bloblang: mapping_1');
 			assert.deepStrictEqual(lastSnapshot(handle), {
 				type: 'snapshot', title: 'Bloblang: mapping_1', kind: 'mapping', source: 'root.b = this.nope.or("FAIL_ME")', binary: 'ok',
-				samples: pathEntry.samples, selected: 'b',
+				samples: pathEntry.samples, selected: 'b', fileName: 'label.yaml', samplesFile: 'label.samples.json',
 			});
 			await lensReads(doc, UNLABELLED, '▷ Test mapping · 2 samples');
 
@@ -1444,6 +1452,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				assert.deepStrictEqual(lastSnapshot(deleted), {
 					type: 'snapshot', title: `Bloblang: ${P(1)}`, kind: 'mapping', source: 'root.c = 2\nroot.x = this.nope + 1 # FAIL_ON_2\n',
 					binary: 'ok', samples: [], selected: null, removed: true,
+					fileName: name('follow-delete'), samplesFile: name('follow-delete').replace(/\.yaml$/, '.samples.json'),
 				});
 				assert.strictEqual(deleted.path, P(1), 'its last path');
 				assert.deepStrictEqual(panels.hintRanges(doc.uri), [], 'the hint clears');
@@ -1640,11 +1649,15 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		});
 
 		test(`CLOSE_UNSAVED (4.10)${g}: an insert above, closed without saving, reopened: the panel is on its processor at the saved path`, async () => {
-			// Opened as a user would (`vscode.open`): a document an extension opened stays open for minutes after its editor closes.
+			// Opened as a user would (`vscode.diff`): a document an extension opened stays open for minutes after its editor
+			// closes. In a diff editor (4.17): the file has no text tab, so its panel outlives the document's close.
 			const uri = vscode.Uri.file(path.join(dir, name('follow-close')));
 			fs.writeFileSync(uri.fsPath, FOLLOW_CONFIG);
+			const left = vscode.Uri.file(path.join(dir, `${name('follow-close')}.left.txt`));
+			fs.writeFileSync(left.fsPath, '');
+			const showDiff = () => vscode.commands.executeCommand('vscode.diff', left, uri, 'diff', { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
 			const opened = async () => {
-				await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: vscode.ViewColumn.One });
+				await showDiff();
 				let found: vscode.TextDocument | undefined;
 				assert.ok(await waitFor(() => (found = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())) !== undefined, 5_000));
 				assert.ok(await waitFor(() => api().detection.has(uri), 5_000));
@@ -1658,7 +1671,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				await handle.receive({ type: 'ready' });
 				await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
 				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
-				await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+				await showDiff();
 				await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 				assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 				doc = await opened();
@@ -1689,9 +1702,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const taken = { label: 'taken', selected: null, samples: [sample('t')] };
 		const used = { label: 'used', selected: null, samples: [sample('u')] };
 		fs.writeFileSync(file, JSON.stringify({ version: 1, mappings: [firstEntry, taken, used] }));
-		// Opened as a user would (`vscode.open`), so that closing its editor closes it.
+		// Opened as a user would, so that closing its editor closes it; in a diff editor (4.17): the file has no text tab,
+		// so its panels outlive the document's close.
+		const left = vscode.Uri.file(path.join(dir, 'follow-saved-position.left.txt'));
+		fs.writeFileSync(left.fsPath, '');
+		const showDiff = () => vscode.commands.executeCommand('vscode.diff', left, uri, 'diff', { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
 		const opened = async () => {
-			await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: vscode.ViewColumn.One });
+			await showDiff();
 			let found: vscode.TextDocument | undefined;
 			assert.ok(await waitFor(() => (found = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())) !== undefined, 5_000));
 			assert.ok(await waitFor(() => api().detection.has(uri), 5_000));
@@ -1716,7 +1733,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.deepStrictEqual(shown, [[couldNotMoveSamples('taken', SAMPLES_USE_IT), 'error']], 'only for the panel with samples to move');
 			assert.deepStrictEqual(readSamples(file).mappings, [firstEntry, taken, used]);
 			// Closed (no unsaved changes) and reopened: still on its own processor, not the one now labelled `first`.
-			await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+			await showDiff();
 			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
 			assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 			doc = await opened();
@@ -1730,5 +1747,246 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			await setText(doc, FOLLOW_CONFIG);
 			assert.ok(await doc.save());
 		}
+	});
+
+	// Ticket 4.17: the panel closes with its file's last tab, follows a rename (with its samples file),
+	// and opens in one test group below the graph.
+	const textTabs = (uri: vscode.Uri) => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+		.filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+	const groupAt = (column: vscode.ViewColumn | undefined) => vscode.window.tabGroups.all.find((g) => g.viewColumn === column);
+	/** Whether the group in `column` holds webviews of `viewType` and nothing else. */
+	const holdsOnly = (column: vscode.ViewColumn | undefined, viewType: string) => {
+		const group = groupAt(column);
+		return group !== undefined && group.tabs.length > 0
+			&& group.tabs.every((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith(viewType));
+	};
+	/** Whether `handle`'s panel was disposed, from now on. */
+	const disposal = (handle: BloblangPanelHandle) => {
+		let gone = false;
+		handle.panel.onDidDispose(() => (gone = true));
+		return () => gone;
+	};
+	async function renameFile(from: vscode.Uri, to: vscode.Uri, options?: { overwrite?: boolean }): Promise<void> {
+		const edit = new vscode.WorkspaceEdit();
+		edit.renameFile(from, to, options);
+		assert.ok(await vscode.workspace.applyEdit(edit), 'the rename applied');
+	}
+	/** The editor layout: top-level groups left to right, each with the groups it is split into. */
+	const layout = async () => (await vscode.commands.executeCommand<{ groups: { groups?: unknown[] }[] }>('vscode.getEditorLayout')).groups;
+	const snapshots = (handle: BloblangPanelHandle) => handle.posted.filter((m) => m.type === 'snapshot').length;
+
+	test('TAB_CLOSE (4.17): the file in two groups: closing one tab keeps the panel; closing the last closes it and its hint', async () => {
+		const doc = (await open('tab-close.yaml', ERRORS_CONFIG)).document;
+		const handle = await show(doc.uri, 'pipeline.processors[1]');
+		const gone = disposal(handle);
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'failed');
+		assert.strictEqual(api().bloblangPanels.hintRanges(doc.uri).length, 1, 'the hint is shown');
+		await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three, preview: false });
+		assert.ok(await waitFor(() => textTabs(doc.uri).length === 2, 10_000));
+		await vscode.window.tabGroups.close(textTabs(doc.uri)[1]);
+		await settle();
+		assert.strictEqual(api().bloblangPanels.panelFor(doc.uri, 'pipeline.processors[1]'), handle, 'one tab left: the panel stays');
+		assert.ok(!gone());
+		await vscode.window.tabGroups.close(textTabs(doc.uri)[0]);
+		assert.ok(await waitFor(() => gone(), 10_000), 'the panel closed with the last tab');
+		assert.strictEqual(api().bloblangPanels.panelFor(doc.uri, 'pipeline.processors[1]'), undefined);
+		assert.deepStrictEqual(api().bloblangPanels.hintRanges(doc.uri), [], 'its hint is gone');
+	});
+
+	test('RENAME (4.17): the same panel under the new name, its snapshot names the new files, the samples file moved and still shown', async () => {
+		const entry = { label: 'first', selected: 'one', samples: [sample('one', '{"a":1}')] };
+		fs.writeFileSync(samplesFile('rename-a.yaml'), JSON.stringify({ version: 1, mappings: [entry] }));
+		const doc = (await open('rename-a.yaml', CONFIG)).document;
+		const handle = await show(doc.uri, FIRST);
+		const gone = disposal(handle);
+		await handle.receive({ type: 'ready' });
+		assert.deepStrictEqual([lastSnapshot(handle)?.fileName, lastSnapshot(handle)?.samples], ['rename-a.yaml', entry.samples]);
+		const to = vscode.Uri.file(path.join(dir, 'rename-b.yaml'));
+		await renameFile(doc.uri, to);
+		assert.ok(await waitFor(() => api().bloblangPanels.panelFor(to, FIRST) === handle, 10_000), 'the panel is keyed by the new URI');
+		assert.strictEqual(api().bloblangPanels.panelFor(doc.uri, FIRST), undefined);
+		assert.strictEqual(handle.uri.toString(), to.toString());
+		assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'rename-b.yaml', 10_000), JSON.stringify(lastSnapshot(handle)));
+		assert.deepStrictEqual([lastSnapshot(handle)?.samplesFile, lastSnapshot(handle)?.samples, lastSnapshot(handle)?.selected],
+			['rename-b.samples.json', entry.samples, 'one']);
+		assert.ok(!fs.existsSync(samplesFile('rename-a.yaml')), 'the old samples file is gone');
+		assert.deepStrictEqual(readSamples(samplesFile('rename-b.yaml')).mappings, [entry]);
+		await settle();
+		assert.ok(!gone(), 'the rename did not close the panel');
+		assert.strictEqual(handle.panel.title, 'Bloblang: first');
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'ok');
+		// A sample change goes to the new file.
+		await handle.receive({ type: 'sampleAdded', name: 'two' });
+		await samplesRead(samplesFile('rename-b.yaml'), [{ ...entry, selected: 'two', samples: [...entry.samples, sample('two')] }]);
+		assert.ok(!fs.existsSync(samplesFile('rename-a.yaml')));
+	});
+
+	test('RENAME_DIRTY + AI-7 (4.17): a rename with unsaved edits above the processor keeps the panel on it; the save then moves its samples', async () => {
+		const pathEntry = { path: UNLABELLED, selected: null, samples: [sample('x')] };
+		fs.writeFileSync(samplesFile('rename-dirty.yaml'), JSON.stringify({ version: 1, mappings: [pathEntry] }));
+		const doc = (await open('rename-dirty.yaml', CONFIG)).document;
+		const handle = await show(doc.uri, UNLABELLED);
+		const gone = disposal(handle);
+		await handle.receive({ type: 'ready' });
+		await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
+		assert.ok(await waitFor(() => handle.path === P(3), 5_000), handle.path);
+		assert.ok(doc.isDirty);
+		const to = vscode.Uri.file(path.join(dir, 'rename-dirty-b.yaml'));
+		await renameFile(doc.uri, to);
+		assert.ok(await waitFor(() => api().bloblangPanels.panelFor(to, P(3)) === handle, 10_000), `the panel follows: ${handle.path}`);
+		await settle();
+		assert.deepStrictEqual([handle.path, handle.removed, gone()], [P(3), false, false], 'not reset to its saved path');
+		const renamed = vscode.workspace.textDocuments.find((d) => d.uri.toString() === to.toString());
+		assert.ok(renamed?.isDirty, 'the renamed document keeps the edits');
+		assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'rename-dirty-b.yaml', 10_000));
+		assert.deepStrictEqual(lastSnapshot(handle)?.samples, pathEntry.samples);
+		// AI-7: saved, the samples move to the processor's new path in the new samples file.
+		assert.ok(await renamed.save());
+		await samplesRead(samplesFile('rename-dirty-b.yaml'), [{ ...pathEntry, path: P(3) }]);
+		assert.ok(await waitFor(() => lastSnapshot(handle)?.unlabelledPath === P(3), 5_000), 'the relinked samples are shown');
+		assert.strictEqual((await run(handle, '{"a":1}')).result.kind, 'failed');
+		assert.ok(lastRun().config.includes('FAIL_ME'), lastRun().config);
+	});
+
+	test('RENAME_FOLDER (4.17): the config\'s folder renamed: the panel follows; its samples file moved with the folder', async () => {
+		const entry = { label: 'first', selected: null, samples: [sample('f')] };
+		fs.mkdirSync(path.join(dir, 'rename-folder'));
+		fs.writeFileSync(path.join(dir, 'rename-folder', 'cfg.samples.json'), JSON.stringify({ version: 1, mappings: [entry] }));
+		const doc = (await open(path.join('rename-folder', 'cfg.yaml'), CONFIG)).document;
+		const handle = await show(doc.uri, FIRST);
+		const gone = disposal(handle);
+		await handle.receive({ type: 'ready' });
+		const before = snapshots(handle);
+		const folder = vscode.Uri.file(path.join(dir, 'rename-folder-moved'));
+		await renameFile(vscode.Uri.file(path.join(dir, 'rename-folder')), folder);
+		const to = vscode.Uri.joinPath(folder, 'cfg.yaml');
+		assert.ok(await waitFor(() => api().bloblangPanels.panelFor(to, FIRST) === handle, 10_000), 'the panel follows the folder');
+		assert.ok(await waitFor(() => snapshots(handle) > before, 10_000), 'a new snapshot');
+		assert.deepStrictEqual([lastSnapshot(handle)?.fileName, lastSnapshot(handle)?.samplesFile, lastSnapshot(handle)?.samples],
+			['cfg.yaml', 'cfg.samples.json', entry.samples]);
+		assert.deepStrictEqual(readSamples(path.join(folder.fsPath, 'cfg.samples.json')).mappings, [entry]);
+		await settle();
+		assert.ok(!gone(), 'the rename did not close the panel');
+	});
+
+	test('RENAME_TARGET_EXISTS (4.17): the new samples file exists: both are left, the user is told, the panel shows the new one', async () => {
+		const mine = { label: 'first', selected: null, samples: [sample('mine')] };
+		const theirs = { label: 'first', selected: 'theirs', samples: [sample('theirs', '{"t":1}')] };
+		fs.writeFileSync(samplesFile('target-a.yaml'), JSON.stringify({ version: 1, mappings: [mine] }));
+		fs.writeFileSync(samplesFile('target-b.yaml'), JSON.stringify({ version: 1, mappings: [theirs] }));
+		const doc = (await open('target-a.yaml', CONFIG)).document;
+		const shown: [string, string | undefined][] = [];
+		const { panels } = testBloblangPanels(undefined, undefined, (message, kind) => shown.push([message, kind]));
+		try {
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle)?.samples, mine.samples);
+			const to = vscode.Uri.file(path.join(dir, 'target-b.yaml'));
+			await renameFile(doc.uri, to);
+			assert.ok(await waitFor(() => shown.length > 0, 10_000), 'the user is told');
+			assert.deepStrictEqual(shown, [[samplesNotMoved('target-b.samples.json'), 'info']]);
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'target-b.yaml', 10_000));
+			assert.deepStrictEqual([lastSnapshot(handle)?.samples, lastSnapshot(handle)?.selected], [theirs.samples, 'theirs']);
+			assert.deepStrictEqual(readSamples(samplesFile('target-a.yaml')).mappings, [mine]);
+			assert.deepStrictEqual(readSamples(samplesFile('target-b.yaml')).mappings, [theirs]);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('COLLISION (4.17): renamed onto a file whose same processor has a panel: the incoming panel closes', async () => {
+		const one = (await open('collide-1.yaml', CONFIG)).document;
+		const two = (await open('collide-2.yaml', CONFIG)).document;
+		const incoming = await show(one.uri, FIRST);
+		const gone = disposal(incoming);
+		const there = await show(two.uri, FIRST);
+		assert.notStrictEqual(incoming, there);
+		const thereGone = disposal(there);
+		await renameFile(one.uri, two.uri, { overwrite: true });
+		assert.ok(await waitFor(() => gone(), 10_000), 'the incoming panel closed');
+		await settle();
+		assert.ok(!thereGone(), 'the panel already there stays');
+		assert.strictEqual(api().bloblangPanels.panelFor(two.uri, FIRST), there);
+		assert.strictEqual(api().bloblangPanels.panelFor(one.uri, FIRST), undefined);
+	});
+
+	test('PLACE_WITH_GRAPH + PLACE_SECOND (4.17): a new group below the graph\'s, holding only test panels; every test panel goes there; focus stays in the YAML', async () => {
+		const other = (await open('place-other.yaml', CONFIG)).document;
+		const doc = (await open('place-graph.yaml', CONFIG)).document;
+		const graph = (await api().graphPanels.show(doc.uri))!;
+		await graph.lockSettled;
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000));
+		const first = await show(doc.uri, FIRST);
+		assert.ok(await waitFor(() => first.panel.viewColumn !== undefined, 5_000));
+		const column = first.panel.viewColumn;
+		assert.ok(column !== graph.panel.viewColumn && column !== vscode.ViewColumn.One, `the test panel's group: ${column}`);
+		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group holds only graphs');
+		assert.ok(holdsOnly(column, BLOBLANG_VIEW_TYPE), 'the test group holds only test panels');
+		const groups = await layout();
+		assert.strictEqual(groups.length, 2, JSON.stringify(groups));
+		assert.strictEqual(groups[1].groups?.length, 2, `the test group is below the graph's: ${JSON.stringify(groups)}`);
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000), 'focus is back in the YAML');
+		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.One);
+
+		// PLACE_SECOND: another processor of the file, and another file's.
+		const second = await show(doc.uri, NESTED);
+		const third = await show(other.uri, FIRST);
+		assert.ok(await waitFor(() => second.panel.viewColumn !== undefined && third.panel.viewColumn !== undefined, 5_000));
+		assert.deepStrictEqual([second.panel.viewColumn, third.panel.viewColumn], [column, column], 'the same test group');
+		assert.strictEqual(vscode.window.tabGroups.all.length, 3);
+		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE));
+		assert.strictEqual(vscode.window.activeTextEditor?.document, doc, 'focus stays in the YAML');
+	});
+
+	test('PLACE_GRAPH_LEFT (4.17): A, the graph group, then B: the test group below the graph; focus back to B in its own group', async () => {
+		const a = (await open('place-left-a.yaml', CONFIG)).document;
+		const graphA = (await api().graphPanels.show(a.uri))!;
+		await graphA.lockSettled;
+		const b = (await open('place-left-b.yaml', CONFIG, vscode.ViewColumn.Three)).document;
+		const graphB = (await api().graphPanels.show(b.uri))!;
+		await graphB.lockSettled;
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === b, 10_000));
+		assert.deepStrictEqual([graphA.panel.viewColumn, graphB.panel.viewColumn], [vscode.ViewColumn.Two, vscode.ViewColumn.Two], 'one graph group');
+		assert.deepStrictEqual(textTabs(b.uri).map((t) => t.group.viewColumn), [vscode.ViewColumn.Three]);
+		const handle = await show(b.uri, FIRST);
+		assert.ok(await waitFor(() => handle.panel.viewColumn !== undefined, 5_000));
+		assert.strictEqual(handle.panel.viewColumn, vscode.ViewColumn.Three, 'the new group, below the graph\'s');
+		assert.ok(holdsOnly(handle.panel.viewColumn, BLOBLANG_VIEW_TYPE), 'the test group holds only test panels');
+		assert.ok(holdsOnly(vscode.ViewColumn.Two, GRAPH_VIEW_TYPE), 'the graph group holds only graphs');
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === b, 10_000), 'focus is back in B');
+		assert.deepStrictEqual(textTabs(b.uri).map((t) => t.group.viewColumn), [vscode.ViewColumn.Four], 'B stays in its own group, alone');
+		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.Four);
+		assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.Four);
+	});
+
+	test('PLACE_NO_GRAPH + GRAPH_AFTER (4.17): beside the YAML with no graph; a graph opened later goes into a new locked group above the test group', async () => {
+		const doc = (await open('place-none.yaml', CONFIG)).document;
+		const handle = await show(doc.uri, FIRST);
+		assert.ok(await waitFor(() => handle.panel.viewColumn === vscode.ViewColumn.Two, 5_000), `beside: ${handle.panel.viewColumn}`);
+		assert.strictEqual(vscode.window.tabGroups.all.length, 2);
+		assert.strictEqual(vscode.window.activeTextEditor?.document, doc);
+
+		// GRAPH_AFTER
+		const lines = api().outputLines().length;
+		const graph = (await api().graphPanels.show(doc.uri))!;
+		await graph.lockSettled;
+		assert.ok(await waitFor(() => graph.panel.viewColumn !== undefined && handle.panel.viewColumn !== undefined, 5_000));
+		assert.notStrictEqual(graph.panel.viewColumn, handle.panel.viewColumn, 'the graph is not in the test group');
+		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group holds only graphs');
+		assert.ok(holdsOnly(handle.panel.viewColumn, BLOBLANG_VIEW_TYPE), 'the test group holds only test panels');
+		assert.ok(graph.panel.viewColumn! < handle.panel.viewColumn!, 'the graph is above');
+		const groups = await layout();
+		assert.strictEqual(groups[1]?.groups?.length, 2, `the graph's group is above the test group: ${JSON.stringify(groups)}`);
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000), 'focus is back in the YAML');
+		assert.ok(!api().outputLines().slice(lines).some((l) => /not locked|could not (lock|return focus)|could not open a group/.test(l)),
+			api().outputLines().slice(lines).join(' | '));
+		// Locked: with the graph active, a file opened with no column does not go into its group.
+		graph.panel.reveal(undefined, false);
+		assert.ok(await waitFor(() => graph.panel.active, 10_000), 'the graph is active');
+		const notes = vscode.Uri.file(path.join(dir, 'place-notes.txt'));
+		fs.writeFileSync(notes.fsPath, 'notes\n');
+		await vscode.commands.executeCommand('vscode.open', notes);
+		assert.ok(await waitFor(() => textTabs(notes).length > 0, 10_000));
+		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group is locked');
 	});
 });

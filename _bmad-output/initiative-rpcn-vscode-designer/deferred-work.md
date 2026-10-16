@@ -29,3 +29,7 @@
   summary: The test panel closing with its file's last tab, following a file rename (with the samples file), and opening in a settled editor group beside the YAML and the graph's locked group (E4 R8).
   evidence: Split from 4.10 at planning (user, 2026-10-15) to keep the plan near the size guideline; it reuses the graph's tab, rename and group helpers and ships on its own.
   resolution: ticket 4.17 "Test panel tabs, rename and placement" (user, 2026-10-15), after 4.10 and before 4.11.
+
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-bloblang-check-and-test/story-test-panel-tabs-rename-and-placement-plan.md`
+  summary: `pendingRenames` in the graph and Bloblang panel registries is cleared only by a matching `onDidRenameFiles`. A rename that fails after `onWillRenameFiles` leaves the entry for the session, and that file's panels then never close with their last tab (and the Bloblang 4.10 close reset is skipped).
+  evidence: Review of 4.17 (finding 5). The pattern is pre-existing in `src/adapters/graphPanel/panels.ts` and was copied into `src/adapters/bloblangPanel/panels.ts`. A fix such as dropping entries after a timeout, or on the next rename event, belongs to both registries (refactor sweep 4.13).

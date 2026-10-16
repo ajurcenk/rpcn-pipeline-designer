@@ -205,6 +205,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		actions: redpandaConnect.actions,
 		storageDir: context.globalStorageUri.fsPath,
 		detection,
+		// 4.17: a new test panel goes below the file's graph.
+		graphColumn: (uri) => graphPanels.panelFor(uri)?.panel.viewColumn,
 	});
 	// The lens counts each processor's samples (4.16) through the panels' store; it disposes its watchers.
 	const bloblangLens = new BloblangLensProvider(detection, bloblangPanels.samples);

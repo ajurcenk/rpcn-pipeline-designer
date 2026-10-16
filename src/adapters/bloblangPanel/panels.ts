@@ -54,6 +54,16 @@
 // panels never share a samples link: a removed panel whose link another panel took, or that comes
 // back to a link a live panel has, is left with none (no samples, and a sample change says
 // SAMPLES_WAIT_FOR_SAVE) until its next save. The hint is keyed by the panel itself, so it follows.
+// Ticket 4.17 (AD-1, AD-22): as the graph's (`graphPanel/tabs.ts`), a panel closes once its file had a
+// text tab and has none left, except while a rename of the file (or of a folder holding it, or onto
+// it) is pending. A rename moves each panel of the renamed config to the new URI: its key, hint, samples
+// watch, dirty-set entry and tracking (the panel is not reset or reopened, and the close of the old
+// document the rename causes resets nothing); a panel landing on another panel's key closes; and the
+// snapshot carries the new `fileName` and `samplesFile`. A single file's rename also renames its
+// samples file (`SampleStore.moveFile`), unless the new one exists (both are left, and the user is
+// told). Placement: a new panel goes into the test group (a group holding a test panel and no text
+// editors or graph) when there is one; else, with the file's graph open, into a new group below the
+// graph's group; else beside the YAML (never into a graph's group). Focus stays in the YAML.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -64,7 +74,9 @@ import { linkOf, samplesFor, type RelinkMove, type SampleChange, type SampleRef 
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
+import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
+import { hasTextTab, isTextTabOf, renamedThrough, within, type Rename } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
@@ -74,7 +86,7 @@ import { BloblangHints } from './hint';
 import { SampleStore, samplesUri } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
-export const BLOBLANG_VIEW_TYPE = 'redpandaConnect.bloblang';
+export { BLOBLANG_VIEW_TYPE };
 /** Shown when Test mapping finds no mapping or mutation processor at the cursor. */
 export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor.';
 /** Shown when the CodeLens's processor is not in the open, detected document any more. */
@@ -102,6 +114,8 @@ export const couldNotMoveSamples = (link: string, reason: string): string => `Co
 export const SAMPLES_USE_IT = 'samples already use it.';
 /** Shown when a panel with no samples link (4.10) gets a sample change. */
 export const SAMPLES_WAIT_FOR_SAVE = 'This processor\'s samples can\'t be saved until the file is saved.';
+/** Shown when a rename can't move the samples file (4.17): the new config's already exists. */
+export const samplesNotMoved = (name: string): string => `Samples weren't moved: ${name} already exists.`;
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
 
@@ -182,6 +196,11 @@ export interface BloblangPanelsOptions {
 	 * resolves with the accepted name, `undefined` on Esc. `undefined`: `window.showInputBox`.
 	 */
 	readonly askLabel?: (request: LabelRequest) => Promise<string | undefined>;
+	/**
+	 * The column of `config`'s open graph panel, if any (4.17: a new test panel goes below it).
+	 * `undefined`: no graph is known.
+	 */
+	readonly graphColumn?: (config: vscode.Uri) => vscode.ViewColumn | undefined;
 }
 
 /** What Add label's input box shows and checks (4.16). */
@@ -226,8 +245,12 @@ class BloblangPanel implements BloblangPanelHandle {
 	/** The panel's hint key: its own, whatever its path (4.10). */
 	private readonly hintKey = `bloblang-hint-${nextHintKey++}`;
 	private readonly subscription: vscode.Disposable;
-	/** The watch on the config's samples file, held while the panel is open. */
-	private readonly watch: vscode.Disposable;
+	/** The watch on the config's samples file, held while the panel is open; a rename replaces it (4.17). */
+	private watch: vscode.Disposable;
+	/** Whether its file had a text tab (4.17): once it has none left, the panel closes. */
+	hadTab: boolean;
+	/** The 0-based document line its hint is on now, if any (4.17: a rename re-sets it). */
+	private hintLine: number | undefined;
 	/**
 	 * What links the panel to its saved samples: the processor's label at open, else its path (4.9);
 	 * the label Add label wrote (4.16); the processor's link at the last save that moved it (4.10).
@@ -241,7 +264,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	private saved: SampleRef;
 
 	constructor(
-		readonly uri: vscode.Uri,
+		public uri: vscode.Uri,
 		processor: BloblangProcessor,
 		text: string,
 		readonly panel: vscode.WebviewPanel,
@@ -257,6 +280,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.ref = label !== undefined ? { label, path } : { path };
 		this.saved = this.ref;
 		this.watch = owner.samples.watch(uri);
+		this.hadTab = hasTextTab(uri.toString());
 		this.subscription = panel.webview.onDidReceiveMessage((m) => this.receive(m));
 	}
 
@@ -300,6 +324,19 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (this.range) {
 			this.range = mapRange(this.range, changes);
 		}
+	}
+
+	/**
+	 * Its config was renamed to `uri` (4.17): the panel moves there with its tracking, hint and
+	 * samples link; its samples watch follows. Synchronous, so the key is current at once.
+	 */
+	moveTo(uri: vscode.Uri): void {
+		this.uri = uri;
+		const watch = this.watch;
+		this.watch = this.owner.samples.watch(uri);
+		watch.dispose();
+		// Its title (`Bloblang: <label ?? path>`) names no file: it stays.
+		this.owner.hints.set(this.hintKey, uri, this.hintLine);
 	}
 
 	/** What the panel tracks, for matching (4.10). */
@@ -393,7 +430,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (status !== 'ok') {
 			// The webview hides the failed result with no binary: its hint goes too, for good.
 			this.hint = undefined;
-			this.owner.hints.set(this.hintKey, this.uri, undefined);
+			this.setHint(undefined);
 		}
 		// `post` logs a failed post; it never throws.
 		return this.post({ type: 'binary', status });
@@ -413,16 +450,22 @@ class BloblangPanel implements BloblangPanelHandle {
 	}
 
 	private async postSnapshot(): Promise<void> {
+		// A snapshot asked for during Add label shows its outcome (4.16).
+		await this.labelling;
 		const processor = this.processor();
 		const { kind, source, removed } = this;
 		this.sentSource = this.sourceKey(processor);
 		const unlabelled = this.unlabelled(processor);
 		const samples = await this.samples();
+		const samplesFile = samplesUri(this.uri);
 		await this.post({
 			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples,
 			// The samples' link (4.10): until a save moves them, the path they are under.
 			...(unlabelled && this.ref ? { unlabelledPath: this.ref.path } : {}),
 			...(removed ? { removed: true as const } : {}),
+			// The names now (4.17: a rename changes them; the page's are the first paint's).
+			fileName: path.posix.basename(this.uri.path),
+			...(samplesFile ? { samplesFile: path.posix.basename(samplesFile.path) } : {}),
 		});
 	}
 
@@ -530,6 +573,9 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	/** The panel's samples as the file has them now, or the unreadable file's reason (4.9). */
 	private async samples(): Promise<Pick<Extract<BloblangHostMessage, { type: 'samples' }>, 'samples' | 'selected' | 'samplesError'>> {
+		// Add label's relink in flight changes the link (4.16): a read asked for meanwhile (a recreated
+		// webview's `ready`) waits for it, else it would read the old link after the move.
+		await this.labelling;
 		// The link as it is when the read is asked for: the read is queued in that order (4.16).
 		const ref = this.ref;
 		if (!ref) {
@@ -671,6 +717,12 @@ class BloblangPanel implements BloblangPanelHandle {
 			// Gone for good: an edit that brings the line back does not bring the hint back.
 			this.hint = undefined;
 		}
+		this.setHint(line);
+	}
+
+	/** Puts its hint on 0-based `line` of its file, or clears it (`undefined`). */
+	private setHint(line: number | undefined): void {
+		this.hintLine = line;
 		this.owner.hints.set(this.hintKey, this.uri, line);
 	}
 
@@ -703,7 +755,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	dispose(): void {
 		this.disposed = true;
 		this.hint = undefined;
-		this.owner.hints.set(this.hintKey, this.uri, undefined);
+		this.setHint(undefined);
 		this.subscription.dispose();
 		this.watch.dispose();
 	}
@@ -715,6 +767,10 @@ export class BloblangPanels implements vscode.Disposable {
 	private readonly panels = new Set<BloblangPanel>();
 	/** The documents with panels that have unsaved changes, from change and save events (4.10). */
 	private readonly dirty = new Set<string>();
+	/** Renames announced by `onWillRenameFiles` and not done yet (4.17): their files' tabs closing is no close. */
+	private pendingRenames: Rename[] = [];
+	/** Panel creations run one at a time (4.17): each one's placement sees the groups the last one left. */
+	private queue: Promise<unknown> = Promise.resolve();
 	private readonly subscriptions: vscode.Disposable[];
 	/** The end-of-line hints of all panels: one decoration type (4.8). */
 	readonly hints = new BloblangHints();
@@ -761,6 +817,10 @@ export class BloblangPanels implements vscode.Disposable {
 			}),
 			// Closed with unsaved changes (4.10): each panel resets to its saved position, matched by it on reopen.
 			vscode.workspace.onDidCloseTextDocument((doc) => {
+				// A rename closes the old document (4.17): its panels move, they are not reset.
+				if (this.renaming(doc.uri.toString())) {
+					return;
+				}
 				if (this.dirty.delete(doc.uri.toString())) {
 					for (const entry of this.panelsOf(doc.uri)) {
 						entry.reset();
@@ -779,7 +839,92 @@ export class BloblangPanels implements vscode.Disposable {
 					void entry.binaryChanged();
 				}
 			}),
+			// TAB_CLOSE (4.17): a panel whose file had a text tab and has none left closes.
+			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
+			vscode.workspace.onWillRenameFiles((e) => {
+				this.pendingRenames.push(...e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
+			}),
+			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
+	}
+
+	/** Whether a pending rename renames `key` (the file itself, or a folder holding it) (4.17). */
+	private renaming(key: string): boolean {
+		return this.pendingRenames.some((r) => key === r.from || within(key, r.from));
+	}
+
+	/**
+	 * A panel whose file had a text tab and has none left closes (4.17, TAB_CLOSE); a renaming file is
+	 * skipped, and so is a file a pending rename overwrites (its tab comes back with the rename, and
+	 * its panel stays: COLLISION closes the incoming one).
+	 */
+	private tabsChanged(): void {
+		for (const entry of [...this.panels]) {
+			const key = entry.uri.toString();
+			if (hasTextTab(key)) {
+				entry.hadTab = true;
+			} else if (entry.hadTab && !this.renaming(key) && !this.pendingRenames.some((r) => key === r.to || within(key, r.to))) {
+				entry.panel.dispose();
+			}
+		}
+	}
+
+	/**
+	 * RENAME (4.17): each panel of a renamed config (the file itself, or a folder holding it) moves to
+	 * the new URI, as the graph's do (the batch is applied as a whole, `renamedThrough`); a panel
+	 * landing on the key of a panel not moved closes (COLLISION). The dirty set follows, a single
+	 * file's samples file is renamed, and the moved panels get a snapshot with the new names.
+	 */
+	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
+		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
+		this.pendingRenames = this.pendingRenames.filter((p) => !renames.some((r) => r.from === p.from && r.to === p.to));
+		const moved = (key: string) => renamedThrough(key, renames);
+		const entries = [...this.panels];
+		const staying = new Set(entries.filter((entry) => moved(entry.uri.toString()) === undefined).map((entry) => entry.key));
+		const movers: { readonly entry: BloblangPanel; readonly uri: vscode.Uri }[] = [];
+		const configs = new Map<string, string>();
+		for (const entry of entries) {
+			const from = entry.uri.toString();
+			const to = moved(from);
+			if (to === undefined) {
+				continue;
+			}
+			const uri = vscode.Uri.parse(to);
+			if (staying.has(keyOf(uri, entry.path))) {
+				entry.panel.dispose();
+				continue;
+			}
+			configs.set(from, to);
+			movers.push({ entry, uri });
+		}
+		// The store's names follow first (before the old watches go, which would drop its cache), and
+		// the samples file's move is queued before the reads the moved panels ask for.
+		for (const [from, to] of configs) {
+			this.samples.rekey(vscode.Uri.parse(from), vscode.Uri.parse(to));
+		}
+		movers.forEach(({ entry, uri }) => entry.moveTo(uri));
+		const dirty = [...this.dirty];
+		this.dirty.clear();
+		dirty.forEach((key) => this.dirty.add(moved(key) ?? key));
+		for (const f of files) {
+			void this.moveSamples(f.oldUri, f.newUri);
+		}
+		for (const { entry } of movers) {
+			void entry.refresh();
+		}
+		this.tabsChanged();
+	}
+
+	/**
+	 * A single file's rename moves its samples file to the new config's name (4.17); when that one
+	 * exists already, both are left and the user is told.
+	 */
+	private async moveSamples(from: vscode.Uri, to: vscode.Uri): Promise<void> {
+		const outcome = await this.samples.moveFile(from, to);
+		if (outcome === 'exists') {
+			const target = samplesUri(to);
+			this.tell(samplesNotMoved(target ? path.posix.basename(target.path) : ''));
+		}
 	}
 
 	/** The binary warning's actions (AD-9), for the no-binary state's buttons. */
@@ -987,6 +1132,17 @@ export class BloblangPanels implements vscode.Disposable {
 			this.tell(SAVE_TO_TEST);
 			return undefined;
 		}
+		return this.enqueue(() => this.open(uri, processorPath));
+	}
+
+	private enqueue<T>(run: () => Promise<T>): Promise<T> {
+		const next = this.queue.then(run, run);
+		this.queue = next.catch(() => undefined);
+		return next;
+	}
+
+	/** `show`, one at a time. */
+	private async open(uri: vscode.Uri, processorPath: string): Promise<BloblangPanelHandle | undefined> {
 		const open = this.live(uri, processorPath);
 		if (open) {
 			open.panel.reveal(undefined, true);
@@ -1001,10 +1157,12 @@ export class BloblangPanels implements vscode.Disposable {
 			return undefined;
 		}
 		const title = bloblangTitle(processor);
+		const yamlColumn = editorColumnOf(uri);
+		const placed = await this.placement(uri, yamlColumn);
 		const panel = vscode.window.createWebviewPanel(
 			BLOBLANG_VIEW_TYPE,
 			title,
-			{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+			{ viewColumn: placed.column, preserveFocus: true },
 			{
 				enableScripts: true,
 				retainContextWhenHidden: false,
@@ -1026,7 +1184,55 @@ export class BloblangPanels implements vscode.Disposable {
 			file: path.posix.basename(uri.path),
 			...(samplesFile ? { samples: path.posix.basename(samplesFile.path) } : {}),
 		});
+		// A new group took focus: it goes back to the YAML editor, in its column now (a group created
+		// before the YAML's renumbers the columns after it).
+		const returnTo = !placed.movedFocus || yamlColumn === undefined ? undefined
+			: placed.created !== undefined && yamlColumn >= placed.created ? (yamlColumn + 1) as vscode.ViewColumn : yamlColumn;
+		if (doc && returnTo !== undefined) {
+			try {
+				await vscode.window.showTextDocument(doc, { viewColumn: returnTo, preserveFocus: false });
+			} catch (e) {
+				this.log(`Test mapping: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
 		return entry;
+	}
+
+	/**
+	 * Where a new panel goes (4.17, AD-1): the test group, if there is one; else, with the file's
+	 * graph open (or a graph's group beside the YAML), a new group below the graph's group; else
+	 * beside the YAML. `movedFocus`: focus moved to another group; `created`: the column of a group
+	 * created for it.
+	 */
+	private async placement(
+		uri: vscode.Uri, yamlColumn: vscode.ViewColumn | undefined,
+	): Promise<{ readonly column: vscode.ViewColumn; readonly movedFocus: boolean; readonly created?: vscode.ViewColumn }> {
+		const groups = vscode.window.tabGroups;
+		const testGroup = groups.all.find(isTestGroup);
+		if (testGroup) {
+			return { column: testGroup.viewColumn, movedFocus: false };
+		}
+		let graph: vscode.ViewColumn | undefined;
+		try {
+			graph = this.options.graphColumn?.(uri);
+		} catch (e) {
+			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+		}
+		if (graph === undefined || graph === yamlColumn) {
+			// Never into a graph's group: `Beside` would land in the one right of the active group.
+			const beside = groups.all.find((g) => g.viewColumn === groups.activeTabGroup.viewColumn + 1);
+			graph = beside && holdsGraph(beside) ? beside.viewColumn : undefined;
+		}
+		if (graph !== undefined) {
+			const below = await newGroupNextTo(graph, 'below');
+			if (below !== undefined) {
+				// The new group's column: the groups from it on (the YAML's, maybe) are one further now.
+				return { column: below, movedFocus: true, created: below };
+			}
+			this.log('Test mapping: could not open a group below the graph.');
+			return { column: vscode.ViewColumn.Beside, movedFocus: true };
+		}
+		return { column: vscode.ViewColumn.Beside, movedFocus: false };
 	}
 
 	/**
@@ -1105,6 +1311,17 @@ function editorColumn(uri: vscode.Uri): vscode.ViewColumn {
 	}
 	const group = vscode.window.tabGroups.all.find((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === key));
 	return group?.viewColumn ?? vscode.ViewColumn.One;
+}
+
+/** The column of a visible editor of `uri`, else of a group with a tab of it (4.17: focus returns there). */
+function editorColumnOf(uri: vscode.Uri): vscode.ViewColumn | undefined {
+	const key = uri.toString();
+	const groups = vscode.window.tabGroups;
+	if (isTextTabOf(groups.activeTabGroup.activeTab, key)) {
+		return groups.activeTabGroup.viewColumn;
+	}
+	return vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === key && e.viewColumn !== undefined)?.viewColumn
+		?? groups.all.find((g) => g.tabs.some((t) => isTextTabOf(t, key)))?.viewColumn;
 }
 
 /** The text of the mapping's 1-based `line`; `undefined` past its lines (a final line break starts none). */

@@ -34,6 +34,7 @@ import type { BinaryActions } from '../redpandaConnect/notify';
 import type { DetectionRegistry } from '../vscode/detection';
 import type { LintDiagnostics } from '../vscode/diagnostics';
 import { GraphPanel, type GraphPanelHandle } from './graphPanel';
+import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
 import { hasTextTab, isTextTabOf, openDocument, renamedThrough, until, within, type Rename } from './tabs';
@@ -57,7 +58,7 @@ const LOCK_WAIT_MS = 1_000;
 const LATE_LOCK_WINDOW_MS = 5_000;
 /** How long the late sequence lets pending focus changes arrive before it re-checks and locks. */
 const LATE_SETTLE_MS = 100;
-export const GRAPH_VIEW_TYPE = 'redpandaConnect.graph';
+export { GRAPH_VIEW_TYPE };
 
 /** Whether `graph`'s panel is active and its group is the active one: the lock acts on the active group. */
 function inItsGroup(graph: GraphPanel): boolean {
@@ -127,7 +128,8 @@ export type GraphDetection = Pick<DetectionRegistry, 'isDetected' | 'markDetecte
  * visible text editor shows a file in the session (editors visible at activation included), its
  * graph opens beside it when the file is detected, `autoOpen` is on, the file is not hidden and
  * not untitled. Every new panel goes into the column of an open graph panel, else into an empty
- * group beside the YAML (a group a reload left locked), else beside the YAML; its group is locked
+ * group beside the YAML (a group a reload left locked), else beside the YAML (4.17: when that group
+ * holds only Bloblang test panels, a new group above it); its group is locked
  * and focus goes back to the YAML editor (best effort, logged). Hide graph closes the panel and
  * stores a per-file Hide in the memento, which suppresses auto-open until Show graph clears it;
  * closing the panel by its own × is not a Hide. Closing the file's last text tab closes its
@@ -519,7 +521,7 @@ export class GraphPanels implements vscode.Disposable {
 		const panel = vscode.window.createWebviewPanel(
 			GRAPH_VIEW_TYPE,
 			title,
-			{ viewColumn: this.graphColumn(yamlColumn), preserveFocus: true },
+			{ viewColumn: await this.graphColumn(yamlColumn), preserveFocus: true },
 			{
 				enableScripts: true,
 				retainContextWhenHidden: false,
@@ -572,23 +574,46 @@ export class GraphPanels implements vscode.Disposable {
 	/**
 	 * Where a new panel goes (one graph group, SECOND): the column of an open graph panel, else the
 	 * empty group directly right of the YAML (the locked group a reload leaves), else beside the YAML.
+	 * Beside the YAML is never a group of test panels only (4.17, GRAPH_AFTER): the graph then goes
+	 * into a new group above it.
 	 */
-	private graphColumn(yamlColumn: vscode.ViewColumn | undefined): vscode.ViewColumn {
+	private async graphColumn(yamlColumn: vscode.ViewColumn | undefined): Promise<vscode.ViewColumn> {
 		for (const graph of this.panels.values()) {
 			const column = graph.panel.viewColumn;
 			if (column !== undefined && column !== yamlColumn) {
 				return column;
 			}
 		}
+		const groups = vscode.window.tabGroups;
 		if (yamlColumn === undefined) {
-			return vscode.ViewColumn.Beside;
+			return await this.aboveTestPanels((groups.activeTabGroup.viewColumn + 1) as vscode.ViewColumn) ?? vscode.ViewColumn.Beside;
 		}
-		const empty = vscode.window.tabGroups.all.find((g) => g.tabs.length === 0 && g.viewColumn === yamlColumn + 1);
+		const empty = groups.all.find((g) => g.tabs.length === 0 && g.viewColumn === yamlColumn + 1);
 		if (empty) {
 			return empty.viewColumn;
 		}
+		const beside = await this.aboveTestPanels((yamlColumn + 1) as vscode.ViewColumn);
+		if (beside !== undefined) {
+			return beside;
+		}
 		// `Beside` is beside the active group; an editor shown without focus may be in another one.
-		return vscode.window.tabGroups.activeTabGroup.viewColumn === yamlColumn ? vscode.ViewColumn.Beside : (yamlColumn + 1) as vscode.ViewColumn;
+		return groups.activeTabGroup.viewColumn === yamlColumn ? vscode.ViewColumn.Beside : (yamlColumn + 1) as vscode.ViewColumn;
+	}
+
+	/**
+	 * When the group in `column` holds test panels only (4.17), a new empty group above it, for the
+	 * graph; else (or when none could be created, logged) `undefined`.
+	 */
+	private async aboveTestPanels(column: vscode.ViewColumn): Promise<vscode.ViewColumn | undefined> {
+		const group = vscode.window.tabGroups.all.find((g) => g.viewColumn === column);
+		if (!group || !onlyTestPanels(group)) {
+			return undefined;
+		}
+		const above = await newGroupNextTo(column, 'above');
+		if (above === undefined) {
+			this.options.log('Graph: could not open a group above the test panels.');
+		}
+		return above;
 	}
 
 	/**

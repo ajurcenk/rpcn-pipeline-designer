@@ -40,6 +40,8 @@ const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 	{ type: 'snapshot', title: 't', kind: 'mutation', source: '', binary: 'ok', samples: SAMPLES, selected: null, unlabelledPath: 'pipeline.processors[2]' },
 	// 4.10: the processor was removed.
 	{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root = this', binary: 'ok', samples: SAMPLES, selected: null, removed: true },
+	// 4.17: the file's and samples file's names.
+	{ type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, fileName: 'b.yaml', samplesFile: 'b.samples.json' },
 	...(['ok', 'missing', 'invalid', 'unresolved'] as const).map((status): BloblangHostMessage => ({ type: 'binary', status })),
 ];
 
@@ -111,6 +113,10 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			snapshotWith({ removed: false }),
 			snapshotWith({ removed: 'yes' }),
 			snapshotWith({ removed: null }),
+			snapshotWith({ fileName: '' }),
+			snapshotWith({ fileName: 1 }),
+			snapshotWith({ samplesFile: '' }),
+			snapshotWith({ samplesFile: null }),
 			{ type: 'binary' },
 			{ type: 'binary', status: 'broken' },
 			// result envelope

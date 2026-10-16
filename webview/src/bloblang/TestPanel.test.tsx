@@ -1136,3 +1136,23 @@ describe('Bloblang test panel: removed processor (4.10)', () => {
 		expect(runs()).toEqual([{ type: 'run', content: '{"a":1}', meta: {} }]);
 	});
 });
+
+describe('Bloblang test panel: renamed config (4.17)', () => {
+	const SAMPLE: BloblangSample = { name: 'one', content: '{"a":1}', meta: {} };
+
+	it('RENAME: the snapshot\'s file and samples file names win over the page\'s', async () => {
+		await render({ content: '{"a":1}' }, 'a.yaml', 'a.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		expect(host.querySelector('.rpcn-bl-saved')?.textContent).toBe('Saved in a.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', fileName: 'b.yaml', samplesFile: 'b.samples.json' });
+		expect(host.querySelector('.rpcn-bl-saved')?.textContent).toBe('Saved in b.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', fileName: 'b.yaml', samplesFile: 'b.samples.json', removed: true });
+		expect(host.querySelector('[role="region"]')?.textContent).toBe(removedText('b.yaml'));
+	});
+
+	it('a snapshot without the names keeps the page\'s', async () => {
+		await render({ content: '{"a":1}' }, 'a.yaml', 'a.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', removed: true });
+		expect(host.querySelector('[role="region"]')?.textContent).toBe(removedText('a.yaml'));
+	});
+});

@@ -1,5 +1,6 @@
 // The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
-// `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`): every message of the second webview,
+// `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`; 4.17 its `fileName` and
+// `samplesFile`): every message of the second webview,
 // as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
 // The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
@@ -81,6 +82,8 @@ export type BloblangHostMessage =
 	 * (4.16): the processor has no label and the config is saved, so its samples are linked by this
 	 * path (the panel offers Add label). `removed` (4.10): the processor is not in the file any more;
 	 * the panel shows the removed notice (title, kind and source are the last ones it had).
+	 * `fileName` and `samplesFile` (4.17): the config's file name and its samples file's name now
+	 * (a rename changes them); the webview prefers them over the page's `data-file` and `data-samples`.
 	 */
 	| {
 		readonly type: 'snapshot';
@@ -93,6 +96,8 @@ export type BloblangHostMessage =
 		readonly samplesError?: string;
 		readonly unlabelledPath?: string;
 		readonly removed?: true;
+		readonly fileName?: string;
+		readonly samplesFile?: string;
 	}
 	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
 	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
@@ -129,6 +134,8 @@ const isBinaryStatus = (v: unknown): v is BinaryStatus => v === 'ok' || v === 'm
 /** A 1-based line or char. */
 const isPosition = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
 const isOptionalPosition = (v: unknown): boolean => v === undefined || isPosition(v);
+/** Absent, or a non-empty string (a file name). */
+const isOptionalName = (v: unknown): boolean => v === undefined || (isString(v) && v !== '');
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
 
 /** A valid sample name: a non-empty string of at most MAX_SAMPLE_NAME_LENGTH characters. */
@@ -221,7 +228,8 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 				ok = isString(message.title) && isKind(message.kind) && isString(message.source)
 					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError)
 					&& (message.unlabelledPath === undefined || (isString(message.unlabelledPath) && message.unlabelledPath !== ''))
-					&& (message.removed === undefined || message.removed === true);
+					&& (message.removed === undefined || message.removed === true)
+					&& isOptionalName(message.fileName) && isOptionalName(message.samplesFile);
 				break;
 			case 'result':
 				ok = isResult(message.result)
