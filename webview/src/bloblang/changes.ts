@@ -74,6 +74,10 @@ export function markedLines(shown: ShownContent, keys: readonly string[]): Reado
 export interface ChangeTag {
 	readonly kind: 'added' | 'changed' | 'removed';
 	readonly text: string;
+	/** The field or metadata key, unprefixed. */
+	readonly key: string;
+	/** Whether it is a metadata key (`@`). */
+	readonly meta: boolean;
 }
 
 const SIGN = { added: '+', changed: '~', removed: '−' } as const;
@@ -90,11 +94,20 @@ export function changeTags(changes: BloblangChanges): ChangeTag[] {
 		}
 		for (const kind of ['added', 'changed', 'removed'] as const) {
 			for (const key of group[kind]) {
-				tags.push({ kind, text: `${SIGN[kind]}${prefix}${key}` });
+				tags.push({ kind, text: `${SIGN[kind]}${prefix}${key}`, key, meta: prefix === '@' });
 			}
 		}
 	}
 	return tags;
+}
+
+/**
+ * The footer's tags in words, for the announcer (4.11): "added total, changed b, removed metadata k";
+ * none: "No changes".
+ */
+export function changeWords(changes: BloblangChanges): string {
+	const tags = changeTags(changes);
+	return tags.length === 0 ? 'No changes' : tags.map((t) => `${t.kind} ${t.meta ? 'metadata ' : ''}${t.key}`).join(', ');
 }
 
 /** The rows as the `run` message's metadata: rows with an empty key are left out; a repeated key's last row wins. */

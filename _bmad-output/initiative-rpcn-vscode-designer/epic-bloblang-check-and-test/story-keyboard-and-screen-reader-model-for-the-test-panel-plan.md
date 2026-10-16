@@ -3,13 +3,13 @@ title: 'Keyboard and screen-reader model for the test panel'
 type: 'feature'
 ticket: '11'
 created: '2026-10-16'
-status: 'ready-for-dev'
-baseline_revision: ''
+status: 'built'
+baseline_revision: '4e49179799cb71ceed47e36c6bdd20545e2c7ad9'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: ['quick']
 review_loop_iteration: 0
 context: []
 ---
@@ -76,7 +76,7 @@ context: []
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
-| TAB_WALK | Tab through a panel with samples and a result | stops in order: sample picker, New, Rename, Delete, Run on change, Run, input tab, content, output tab, output content, Go to line (when shown) | none |
+| TAB_WALK | Tab through a panel with samples and a result | stops in order: sample picker, New, Rename, Delete, Run on change, Run, input tab, content, output tab, Go to line (when shown, on the error card), output content (corrected, user, 2026-10-16) | none |
 | TABS_ARROWS | Right on Content, Home/End | Metadata selected and focused; first/last | none |
 | ESC | Esc in the textarea, on Run, in the output | `focusEditorRequested` posted | none |
 | ESC_RENAME | Esc in the rename field | rename cancelled; nothing posted | none |
@@ -116,11 +116,11 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] Protocol + host `focusEditorRequested` + tests.
-- [ ] `TestPanel.tsx`, `OutputView.tsx`, `SamplePicker.tsx` -- names, tabs, Esc, announcer, roles.
-- [ ] `bloblang.css` -- focus rings, contrast borders.
-- [ ] Webview and style tests -- the matrix.
-- [ ] Docs.
+- [x] Protocol + host `focusEditorRequested` + tests.
+- [x] `TestPanel.tsx`, `OutputView.tsx`, `SamplePicker.tsx` -- names, tabs, Esc, announcer, roles.
+- [x] `bloblang.css` -- focus rings, contrast borders.
+- [x] Webview and style tests -- the matrix.
+- [x] Docs.
 
 **Acceptance Criteria:**
 - Given the dev host with a screen reader or the keyboard only, when the user tabs through the panel, switches tabs with the arrows, runs a mapping with an error, and presses Esc, then every control is reached with a visible ring, the result and error are announced once, and focus returns to the YAML.
@@ -128,11 +128,30 @@ context: []
 
 ## Implementation Notes
 
+- Esc is a `window` keydown listener (so it also works with focus on the page body), skipped when the event is already `defaultPrevented`; the rename field's Esc prevents and stops it. An open `<select>`'s native popup takes Esc itself in Chromium, so no special case is coded for it; a closed picker's Esc returns to the YAML.
+- The announcer's text is derived from state (removed, no binary, else the last result), and kept while `announcementKey` (an ok result's changes without its run time, else the text) is unchanged, so a rerun with the same outcome is not re-announced (LIVE_REPEAT, 12 then 13 ms, checks with a MutationObserver). Clearing the content empties the region, so the same result after that is said again.
+- `changeWords` (changes.ts) builds the ok text from `changeTags`, which gained `key` and `meta`; metadata keys read "metadata k" instead of `@k`.
+- Focus on a state change is decided once per host message (`viewChanged`), covering the removed notice as well as the no-binary state (4.15's logic moved out of `binaryChanged`).
+- High contrast: the badges, tabs, link buttons and non-focusable boxes (pill, cards, notices, columns) take an `outline` of `contrastBorder` (as the graph's nodes); buttons' `button-border` falls back to `contrastBorder`. Focus rings win by specificity.
+- Host: `BloblangPanels.focusEditor(uri)` shows the YAML in `editorColumnOf(uri)` with `preserveFocus: false` and no selection; with no editor or tab of the file it does nothing, as the graph's.
+
 ## Plan Change Log
 
 ## Review Triage Log
 
+Iteration 0 (quick). Verdicts: 0 high, 0 medium, 5 low, 0 false, 0 maybe-false.
+
+| # | Finding | Verdict | Route | Evidence / action |
+|---|---|---|---|---|
+| 1 | The TAB_WALK matrix row and the EXPERIENCE keyboard row put Go to line after the output content; the error card renders it before the dimmed output, which the test asserts | low | patch (docs) + ask the user | Changing the render order is out (Never: what the panel shows). EXPERIENCE now describes the real order. The frozen matrix wording goes to the user. |
+| 2 | No high-contrast border on the kind badge, the tab badge, the tabs or the link-style buttons | low | patch | Added `contrastBorder` and extended the style test's CONTRAST list. |
+| 3 | The ok announcement includes the duration, so the same result with a different run time is announced on every debounced run | low | patch | Repeat suppression now compares the text without the duration; LIVE_REPEAT uses two durations. |
+| 4 | An open `<select>`'s Esc is documented but neither handled nor tested | low | reject | Chromium's native popup takes Esc before the page's keydown, and happy-dom can't model an open popup. Confirmed in the user's manual check. |
+| 5 | `focusEditor` repeats a lookup and opens a new editor in column One when the file has none; the graph's does nothing | low | patch | Uses `editorColumnOf` and does nothing when it is undefined. |
+
 ## Verification
+
+**Results (2026-10-16, after the review patches):** `npm run compile` exit 0; full stable suite under `xvfb-run -a` 827 passing; `npm run test:webview` 283; `npm run test:corpus` 129. Floor not targeted (user decision). Manual check (the user, dev host, real rpk): keyboard walk with focus rings, arrow keys on the tabs, Esc to the YAML (rename and open picker excepted), focus on the removed notice, High Contrast borders: no issues.
 
 **Commands:**
 - `npm run compile` -- expected: exit 0.

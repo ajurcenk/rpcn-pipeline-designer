@@ -186,6 +186,7 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			[{ type: 'setPathRequested', extra: 1 }, { type: 'setPathRequested' }],
 			[{ type: 'retryRequested', extra: 1 }, { type: 'retryRequested' }],
 			[{ type: 'addLabelRequested', label: 'x' }, { type: 'addLabelRequested' }],
+			[{ type: 'focusEditorRequested', line: 3 }, { type: 'focusEditorRequested' }],
 		];
 		for (const [message, expected] of good) {
 			const parsed = parseBloblangWebviewMessage(message);

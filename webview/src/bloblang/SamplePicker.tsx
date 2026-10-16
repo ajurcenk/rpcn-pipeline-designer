@@ -113,7 +113,9 @@ export function SamplePicker({ samples, selected, disabled, onSwitch, onNew, onR
 									e.preventDefault();
 									save();
 								} else if (e.key === 'Escape') {
+									// Esc cancels the rename; it does not reach the panel's Esc (back to the YAML, 4.11).
 									e.preventDefault();
+									e.stopPropagation();
 									close(true);
 								}
 							}}

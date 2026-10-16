@@ -1,6 +1,6 @@
 // The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
 // `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`; 4.17 its `fileName` and
-// `samplesFile`): every message of the second webview,
+// `samplesFile`; 4.11 `focusEditorRequested`, the graph's): every message of the second webview,
 // as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
 // The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
@@ -123,7 +123,9 @@ export type BloblangWebviewMessage =
 	| { readonly type: 'setPathRequested' }
 	| { readonly type: 'retryRequested' }
 	/** Add label (4.16): ask for a label for the unlabelled processor and relink its samples. */
-	| { readonly type: 'addLabelRequested' };
+	| { readonly type: 'addLabelRequested' }
+	/** Esc in the panel (4.11): focus the YAML editor, its cursor unchanged (the graph's message). */
+	| { readonly type: 'focusEditorRequested' };
 
 type Obj = Record<string, unknown>;
 
@@ -279,6 +281,7 @@ export function parseBloblangWebviewMessage(message: unknown): BloblangWebviewMe
 			case 'setPathRequested':
 			case 'retryRequested':
 			case 'addLabelRequested':
+			case 'focusEditorRequested':
 				return { type: message.type };
 			case 'run':
 			case 'inputEdited': {

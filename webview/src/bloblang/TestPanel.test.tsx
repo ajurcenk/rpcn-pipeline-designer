@@ -10,6 +10,8 @@
 // 4.15 (AI-7): no binary, a switch runs nothing and recovery runs the selected sample.
 // Ticket 4.16: the unlabelled processor's note and Add label.
 // Ticket 4.10: the removed processor's notice, and the run when it comes back.
+// Ticket 4.11: the keyboard and screen-reader model (names, the Tab walk, the tabs pattern, Esc, the
+// one announcer, focus on the removed notice), every row of the plan's matrix but FOCUS_CSS (style.test.ts).
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -26,8 +28,8 @@ import {
 	DELETE_LABEL, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL, SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
 import {
-	ADD_LABEL_LABEL, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
-	RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel,
+	ADD_LABEL_LABEL, announcement, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
+	panelName, RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel, TOOLBAR_LABEL,
 } from './TestPanel';
 
 let host: HTMLDivElement;
@@ -353,7 +355,7 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send({ type: 'result', result: PARSE, durationMs: 400, binary: 'b' });
 		expect(pill()).toBe('✕ Syntax error · not run');
 		expect(host.querySelector('.rpcn-bl-pill')?.classList.contains('rpcn-bl-pill-err')).toBe(true);
-		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(card()?.getAttribute('role')).toBeNull(); // 4.11: the announcer says it
 		expect(cardTitle()).toBe(PARSE_ERROR_TITLE);
 		expect(cardTitle()).toBe("Mapping doesn't parse");
 		expect(cardSub()).toBe('mapping line 2, char 10 · orders.yaml line 14');
@@ -384,7 +386,7 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send({ type: 'result', result: OK_META, durationMs: 3, binary: null });
 		await send({ type: 'result', result: { kind: 'failed', message: 'failed assignment (line 2): boom', mappingLine: 2, fileLine: 12 }, durationMs: 1, binary: 'b' });
 		expect(pill()).toBe('✕ Mapping failed on this input');
-		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(card()?.getAttribute('role')).toBeNull(); // 4.11: the announcer says it
 		expect(cardTitle()).toBe('Failed on mapping line 2');
 		expect(cardSub()).toBe('orders.yaml line 12');
 		expect(cardMessage()).toBe('failed assignment (line 2): boom');
@@ -448,7 +450,7 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send(SNAPSHOT);
 		await send({ type: 'result', result: { kind: 'invalidInput', message: 'unable to reference message as structured' }, durationMs: 1, binary: null });
 		expect(pill()).toBe('✕ Input not valid for this mapping');
-		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(card()?.getAttribute('role')).toBeNull(); // 4.11: the announcer says it
 		expect(cardTitle()).toBe(INVALID_INPUT_TITLE);
 		expect(cardTitle()).toBe("This input can't be read by the mapping");
 		expect(cardMessage()).toBe('unable to reference message as structured');
@@ -480,7 +482,7 @@ describe('Bloblang test panel (4.2, 4.7)', () => {
 		await send({ type: 'result', result: OK_B2, durationMs: 1, binary: null });
 		await send({ type: 'result', result: { kind: 'error', message: 'No Redpanda Connect binary.' }, durationMs: 0, binary: null });
 		expect(pill()).toBe('✕ Not run');
-		expect(card()?.getAttribute('role')).toBe('alert');
+		expect(card()?.getAttribute('role')).toBeNull(); // 4.11: the announcer says it
 		expect(cardTitle()).toBe(ERROR_TITLE);
 		expect(cardTitle()).toBe('The test could not run');
 		expect(cardMessage()).toBe('No Redpanda Connect binary.');
@@ -1154,5 +1156,190 @@ describe('Bloblang test panel: renamed config (4.17)', () => {
 		await render({ content: '{"a":1}' }, 'a.yaml', 'a.samples.json');
 		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', removed: true });
 		expect(host.querySelector('[role="region"]')?.textContent).toBe(removedText('a.yaml'));
+	});
+});
+
+describe('Bloblang test panel: keyboard and screen reader (4.11)', () => {
+	const SAMPLE: BloblangSample = { name: 'one', content: '{"a":1}', meta: {} };
+	const OK_TOTAL = {
+		kind: 'ok', content: '{"a":1,"b":3,"total":4}', meta: {},
+		changes: { fields: { added: ['total'], changed: ['b'], removed: [] }, meta: { added: [], changed: [], removed: [] } },
+	} as const;
+	const FAILED = { kind: 'failed', message: 'expected number value, got null', mappingLine: 2, fileLine: 10 } as const;
+	const main = () => host.querySelector<HTMLElement>('main')!;
+	const live = () => host.querySelector('.rpcn-bl-sr[aria-live="polite"]')?.textContent;
+	const focusEditor = () => posted.filter((m) => m.type === 'focusEditorRequested').length;
+
+	/** Presses `key` on the focused element, as a keyboard would (the event bubbles to React's root and the window). */
+	async function press(key: string, init: KeyboardEventInit = {}): Promise<void> {
+		const target = document.activeElement ?? document.body;
+		await act(async () => {
+			target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+		});
+	}
+
+	/** Every element of the panel the Tab key would stop at, in order. */
+	function tabStops(): HTMLElement[] {
+		return [...main().querySelectorAll<HTMLElement>('[tabindex], button, a[href], input, select, textarea')]
+			.filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled);
+	}
+
+	/** A Tab stop as the matrix names it. */
+	const stopName = (el: HTMLElement): string => el.getAttribute('aria-label') ?? (el.id || el.textContent || el.className);
+
+	async function withResult(result: unknown = OK_TOTAL, durationMs = 12): Promise<void> {
+		await render({ content: '{"a":1}' }, 'orders.yaml', 'orders.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		await send({ type: 'result', result, durationMs, binary: null });
+	}
+
+	it('NAMES: the panel, the toolbar, the columns, the tabpanels and the controls are named', async () => {
+		await withResult();
+		expect(main().getAttribute('aria-label')).toBe(panelName('Bloblang: first'));
+		expect(main().getAttribute('aria-label')).toBe('Bloblang test panel: Bloblang: first');
+		const toolbar = host.querySelector('.rpcn-bl-toolbar')!;
+		expect([toolbar.getAttribute('role'), toolbar.getAttribute('aria-label')]).toEqual(['group', TOOLBAR_LABEL]);
+		expect(TOOLBAR_LABEL).toBe('Test controls');
+		expect([...host.querySelectorAll('.rpcn-bl-col')].map((c) => c.getAttribute('aria-label'))).toEqual(['Input', 'Output']);
+		for (const column of ['in', 'out'] as const) {
+			const panel = host.querySelector(`#rpcn-bl-${column}-panel`)!;
+			expect(panel.getAttribute('role')).toBe('tabpanel');
+			expect(host.querySelector(`#${panel.getAttribute('aria-labelledby')}`)?.textContent).toBe('Content');
+			const list = host.querySelector(`.rpcn-bl-${column} [role="tablist"]`)!;
+			expect(host.querySelector(`#${list.getAttribute('aria-labelledby')}`)?.textContent).toBe(column === 'in' ? 'Input' : 'Output');
+		}
+		expect(host.querySelector('textarea')?.getAttribute('aria-label')).toBe('Input content');
+		const pre = host.querySelector<HTMLElement>('.rpcn-bl-output')!;
+		expect([pre.getAttribute('aria-label'), pre.tabIndex]).toEqual(['Output content', 0]);
+		expect(host.querySelector('label[for="rpcn-bl-sample"]')?.textContent).toBe('Sample');
+		expect(host.querySelector('.rpcn-bl-check')?.textContent).toBe('Run on change');
+	});
+
+	it('TAB_WALK: picker, New, Rename, Delete, Run on change, Run, input tab, content, output tab, output content; Go to line when shown', async () => {
+		await withResult();
+		expect(tabStops().map(stopName)).toEqual([
+			'rpcn-bl-sample', 'New sample', 'Rename', 'Delete', 'rpcn-bl-auto', 'Run',
+			'rpcn-bl-in-tab-content', 'Input content', 'rpcn-bl-out-tab-content', 'Output content',
+		]);
+		await send({ type: 'result', result: FAILED, durationMs: 3, binary: null });
+		expect(tabStops().map(stopName).slice(8)).toEqual(['rpcn-bl-out-tab-content', 'Go to line 10', 'Output content']);
+	});
+
+	it.each(['in', 'out'] as const)('TABS_ARROWS (%s): Right and Left switch and focus; Home and End go to the first and the last', async (column) => {
+		await withResult();
+		const content = () => tab(column, 'content') as HTMLElement;
+		const meta = () => tab(column, 'meta') as HTMLElement;
+		const selected = () => [content(), meta()].map((t) => [t.getAttribute('aria-selected'), t.tabIndex]);
+		content().focus();
+		await press('ArrowRight');
+		expect(selected()).toEqual([['false', -1], ['true', 0]]);
+		expect(document.activeElement).toBe(meta());
+		expect(host.querySelector(`#rpcn-bl-${column}-panel`)?.getAttribute('aria-labelledby')).toBe(`rpcn-bl-${column}-tab-meta`);
+		await press('ArrowLeft');
+		expect(selected()).toEqual([['true', 0], ['false', -1]]);
+		expect(document.activeElement).toBe(content());
+		await press('End');
+		expect(document.activeElement).toBe(meta());
+		await press('End');
+		expect(selected()).toEqual([['false', -1], ['true', 0]]);
+		await press('Home');
+		expect(selected()).toEqual([['true', 0], ['false', -1]]);
+		expect(document.activeElement).toBe(content());
+		await press('ArrowLeft');
+		expect(document.activeElement).toBe(meta());
+		expect(focusEditor()).toBe(0);
+	});
+
+	it('ESC: in the textarea, on Run and in the output, Esc posts focusEditorRequested; with a modifier, nothing', async () => {
+		await withResult();
+		for (const el of [host.querySelector('textarea'), host.querySelector('.rpcn-bl-run'), host.querySelector('.rpcn-bl-output')]) {
+			(el as HTMLElement).focus();
+			const before = focusEditor();
+			await press('Escape');
+			expect(focusEditor(), stopName(el as HTMLElement)).toBe(before + 1);
+		}
+		expect(posted.at(-1)).toEqual({ type: 'focusEditorRequested' });
+		const count = focusEditor();
+		for (const modifier of ['shiftKey', 'ctrlKey', 'altKey', 'metaKey']) {
+			await press('Escape', { [modifier]: true });
+		}
+		expect(focusEditor()).toBe(count);
+	});
+
+	it('ESC_RENAME: Esc in the rename field cancels the rename and posts nothing', async () => {
+		await withResult();
+		const before = posted.length;
+		await click([...host.querySelectorAll('.rpcn-bl-samples button')].find((b) => b.textContent === RENAME_LABEL)!);
+		const field = host.querySelector<HTMLInputElement>('#rpcn-bl-sample-name')!;
+		expect(document.activeElement).toBe(field);
+		await press('Escape');
+		expect(host.querySelector('#rpcn-bl-sample-name')).toBeNull();
+		expect(document.activeElement).toBe(host.querySelector('#rpcn-bl-sample'));
+		expect(posted.slice(before)).toEqual([]);
+	});
+
+	it('LIVE_OK: the announcer says the time and the changes in words', async () => {
+		await withResult();
+		expect(live()).toBe('Ran in 12 ms. added total, changed b');
+		await send({ type: 'result', result: OK_B2, durationMs: 4.4, binary: null });
+		expect(live()).toBe('Ran in 4 ms. added b, removed a');
+		await send({ type: 'result', result: { ...OK_B2, changes: { fields: null, meta: { added: ['k'], changed: [], removed: [] } } }, durationMs: 1, binary: null });
+		expect(live()).toBe('Ran in 1 ms. added metadata k');
+		await send({ type: 'result', result: { ...OK_B2, changes: { fields: null, meta: { added: [], changed: [], removed: [] } } }, durationMs: 1, binary: null });
+		expect(live()).toBe('Ran in 1 ms. No changes');
+	});
+
+	it.each([
+		[{ kind: 'parseError', message: 'expected comma', excerpt: '', mappingLine: 2, mappingChar: 10, fileLine: 14, fileChar: 18 }, 'Syntax error, mapping line 2: expected comma'],
+		[FAILED, 'Failed on mapping line 2: expected number value, got null'],
+		[{ kind: 'failed', message: 'boom' }, 'The mapping failed on this input: boom'],
+		[{ kind: 'invalidInput', message: 'invalid character' }, 'Input not valid for this mapping: invalid character'],
+		[{ kind: 'error', message: 'No Redpanda Connect binary' }, 'Not run: No Redpanda Connect binary'],
+		[{ kind: 'deleted' }, 'The mapping deleted this message'],
+	])('LIVE_ERROR: %j is announced as "%s"; the only live region is the announcer', async (result, text) => {
+		await withResult(OK_TOTAL);
+		await send({ type: 'result', result, durationMs: 5, binary: null });
+		expect(live()).toBe(text);
+		expect(announcement({ type: 'result', result: result as never, durationMs: 5, binary: null })).toBe(text);
+		const sr = host.querySelector('.rpcn-bl-sr');
+		expect([...host.querySelectorAll('[role="alert"], [role="status"], [aria-live]')]).toEqual([sr]);
+		expect(host.querySelector('.rpcn-bl-pill')?.hasAttribute('role')).toBe(false);
+	});
+
+	it('LIVE_REPEAT: the same result twice, with another run time, is announced once', async () => {
+		await withResult();
+		const sr = host.querySelector('.rpcn-bl-sr')!;
+		const changes: MutationRecord[] = [];
+		const observer = new MutationObserver((records) => changes.push(...records));
+		observer.observe(sr, { childList: true, characterData: true, subtree: true });
+		await click(host.querySelector('.rpcn-bl-run'));
+		await send({ type: 'result', result: OK_TOTAL, durationMs: 13, binary: null });
+		await act(async () => {
+			await Promise.resolve();
+		});
+		observer.disconnect();
+		expect(live()).toBe('Ran in 12 ms. added total, changed b');
+		expect(changes).toEqual([]);
+		// Another outcome is said, with its run time.
+		await send({ type: 'result', result: OK_B2, durationMs: 14, binary: null });
+		expect(live()).toBe('Ran in 14 ms. added b, removed a');
+	});
+
+	it('REMOVED_FOCUS: with focus in the panel, the removed notice takes focus; back, the input does', async () => {
+		await withResult();
+		host.querySelector<HTMLTextAreaElement>('textarea')!.focus();
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', removed: true });
+		const region = host.querySelector<HTMLElement>(`[role="region"][aria-label="${REMOVED_TITLE}"]`)!;
+		expect(region.tabIndex).toBe(0);
+		expect(document.activeElement).toBe(region);
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		expect(document.activeElement).toBe(host.querySelector('textarea'));
+		// Focus outside the panel stays where it is.
+		const outside = document.createElement('button');
+		document.body.append(outside);
+		outside.focus();
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', removed: true });
+		expect(document.activeElement).toBe(outside);
+		outside.remove();
 	});
 });

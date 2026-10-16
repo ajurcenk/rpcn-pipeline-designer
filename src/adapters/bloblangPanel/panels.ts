@@ -64,6 +64,8 @@
 // told). Placement: a new panel goes into the test group (a group holding a test panel and no text
 // editors or graph) when there is one; else, with the file's graph open, into a new group below the
 // graph's group; else beside the YAML (never into a graph's group). Focus stays in the YAML.
+// Ticket 4.11: `focusEditorRequested` (Esc in the panel, the graph's message) shows the YAML in its
+// editor group and focuses it, with its cursor and selection unchanged; with no editor of it, nothing.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -293,6 +295,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.run({ content: msg.content, meta: msg.meta });
 			} else if (msg?.type === 'goToLine') {
 				await this.owner.goToLine(this.uri, msg.line);
+			} else if (msg?.type === 'focusEditorRequested') {
+				await this.owner.focusEditor(this.uri);
 			} else if (msg?.type === 'installGuideRequested') {
 				await this.owner.actions?.installGuide();
 			} else if (msg?.type === 'setPathRequested') {
@@ -1265,6 +1269,20 @@ export class BloblangPanels implements vscode.Disposable {
 		const range = new vscode.Range(at, at);
 		const editor = await vscode.window.showTextDocument(doc, { viewColumn: editorColumn(uri), preserveFocus: false, selection: range });
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+	}
+
+	/**
+	 * Esc in the panel (4.11): shows `uri` in its editor group (`editorColumnOf`) and the editor takes
+	 * focus; the cursor and selection stay as they were. With no editor or tab of it, nothing happens
+	 * (as the graph's).
+	 */
+	async focusEditor(uri: vscode.Uri): Promise<void> {
+		const column = editorColumnOf(uri);
+		if (column === undefined) {
+			return;
+		}
+		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString()) ?? await vscode.workspace.openTextDocument(uri);
+		await vscode.window.showTextDocument(doc, { viewColumn: column, preserveFocus: false });
 	}
 
 	/** The end-of-line hints' current ranges in `uri` (test seam: decorations can't be read back). */

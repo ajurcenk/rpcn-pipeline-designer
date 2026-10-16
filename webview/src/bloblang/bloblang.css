@@ -1,4 +1,7 @@
-/* The Bloblang test panel inherits the VS Code theme (DESIGN.md): every colour is a theme variable. */
+/* The Bloblang test panel inherits the VS Code theme (DESIGN.md): every colour is a theme variable.
+   Ticket 4.11: every focusable element shows the 1px focusBorder ring on :focus-visible, nothing
+   removes outlines, and the badges, pills, cards, notices, columns, tabs and buttons add the high-contrast border
+   (contrastBorder, transparent in other themes). */
 html, body, #root {
 	margin: 0;
 	padding: 0;
@@ -47,6 +50,7 @@ body {
 	border-radius: 4px;
 	background: var(--vscode-badge-background);
 	color: var(--vscode-badge-foreground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
 }
 .rpcn-bl-pill {
 	display: inline-flex;
@@ -57,6 +61,7 @@ body {
 	white-space: nowrap;
 	background: var(--vscode-badge-background);
 	color: var(--vscode-badge-foreground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
 }
 .rpcn-bl-pill-ok {
 	background: color-mix(in srgb, var(--rpcn-bl-mark) 18%, transparent);
@@ -97,7 +102,7 @@ body {
 }
 .rpcn-bl-run {
 	padding: 4px 12px;
-	border: 1px solid var(--vscode-button-border, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
 	border-radius: 2px;
 	background: var(--vscode-button-background);
 	color: var(--vscode-button-foreground);
@@ -122,6 +127,8 @@ body {
 	grid-template-rows: auto 1fr auto;
 	min-width: 0;
 	min-height: 0;
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	outline-offset: -1px;
 }
 .rpcn-bl-col + .rpcn-bl-col {
 	border-left: 1px solid var(--vscode-panel-border, transparent);
@@ -153,6 +160,8 @@ body {
 	color: var(--vscode-descriptionForeground);
 	font: inherit;
 	cursor: pointer;
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	outline-offset: -1px;
 }
 .rpcn-bl-tab[aria-selected="true"] {
 	color: var(--vscode-editor-foreground);
@@ -165,6 +174,7 @@ body {
 	font-size: 0.85em;
 	background: var(--vscode-badge-background);
 	color: var(--vscode-badge-foreground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
 }
 .rpcn-bl-colbody {
 	min-width: 0;
@@ -187,7 +197,7 @@ body {
 	color: var(--vscode-input-foreground);
 }
 .rpcn-bl-input:focus-visible, .rpcn-bl-run:focus-visible, .rpcn-bl-tab:focus-visible, .rpcn-bl-link:focus-visible,
-.rpcn-bl-auto:focus-visible, .rpcn-bl-meta input:focus-visible {
+.rpcn-bl-auto:focus-visible, .rpcn-bl-meta input:focus-visible, .rpcn-bl-output:focus-visible, .rpcn-bl-removed:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
@@ -264,6 +274,7 @@ body {
 	color: var(--vscode-textLink-foreground);
 	font: inherit;
 	cursor: pointer;
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
 }
 .rpcn-bl-link:hover {
 	color: var(--vscode-textLink-activeForeground);
@@ -295,6 +306,7 @@ body {
 	margin: 12px 16px;
 	padding: 10px 12px;
 	border-radius: 4px;
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
 }
 .rpcn-bl-card-error {
 	border: 1px solid color-mix(in srgb, var(--rpcn-bl-err) 45%, transparent);
@@ -356,6 +368,8 @@ body {
 	padding: 40px 24px;
 	text-align: center;
 	color: var(--vscode-descriptionForeground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	outline-offset: -1px;
 }
 .rpcn-bl-removed-text {
 	margin: 0;
@@ -373,6 +387,8 @@ body {
 	padding: 40px 24px;
 	text-align: center;
 	color: var(--vscode-descriptionForeground);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	outline-offset: -1px;
 }
 .rpcn-bl-nobin-title {
 	margin: 0;
@@ -392,7 +408,7 @@ body {
 }
 .rpcn-bl-nobin-act {
 	padding: 4px 12px;
-	border: 1px solid var(--vscode-button-border, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
 	border-radius: 2px;
 	background: var(--vscode-button-secondaryBackground);
 	color: var(--vscode-button-secondaryForeground);
@@ -497,6 +513,8 @@ body {
 	padding: 6px 16px;
 	border-bottom: 1px solid var(--vscode-panel-border, transparent);
 	background: var(--vscode-editorInfo-background, transparent);
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	outline-offset: -1px;
 }
 .rpcn-bl-labelnote-text {
 	flex: 1 1 240px;
@@ -511,7 +529,7 @@ body {
 }
 .rpcn-bl-btn {
 	padding: 4px 10px;
-	border: 1px solid var(--vscode-button-border, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
 	border-radius: 2px;
 	background: var(--vscode-button-secondaryBackground);
 	color: var(--vscode-button-secondaryForeground);

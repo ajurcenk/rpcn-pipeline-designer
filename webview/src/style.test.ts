@@ -102,3 +102,37 @@ describe('FOCUS (ticket 11, DESIGN pipeline-node-focused)', () => {
 		expect(css).not.toMatch(/outline:\s*(none|0)\b/);
 	});
 });
+
+describe('FOCUS and CONTRAST (ticket 4.11, DESIGN test panel)', () => {
+	const css = readFileSync(new URL('bloblang/bloblang.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	/** The declarations of every rule whose selector list has `selector` as one of its selectors, joined. */
+	const rule = (selector: string) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+		.filter((m) => m[1].split(',').map((s) => s.trim()).includes(selector))
+		.map((m) => m[2]).join('\n');
+	const RING = /outline:\s*1px solid var\(--vscode-focusBorder\)/;
+	const CONTRAST = 'var(--vscode-contrastBorder, transparent)';
+	// Every focusable element of the panel: the content input, Run, the tabs, the links (Go to line,
+	// the metadata rows'), Run on change, the metadata inputs, the output content, the removed and
+	// no-binary regions and the no-binary buttons, the sample picker, the rename field, the buttons.
+	const FOCUSABLE = [
+		'.rpcn-bl-input', '.rpcn-bl-run', '.rpcn-bl-tab', '.rpcn-bl-link', '.rpcn-bl-auto', '.rpcn-bl-meta input', '.rpcn-bl-output',
+		'.rpcn-bl-removed', '.rpcn-bl-nobin', '.rpcn-bl-nobin-act', '.rpcn-bl-sample', '.rpcn-bl-sample-name', '.rpcn-bl-btn',
+	];
+	it.each(FOCUSABLE)('%s shows the 1px focusBorder ring on :focus-visible', (selector) => {
+		expect(rule(`${selector}:focus-visible`)).toMatch(RING);
+	});
+	it('nothing removes outlines', () => {
+		expect(css).not.toMatch(/outline(-style)?:\s*(none|0)\b/);
+	});
+	it.each([
+		'.rpcn-bl-pill', '.rpcn-bl-card', '.rpcn-bl-removed', '.rpcn-bl-nobin', '.rpcn-bl-labelnote', '.rpcn-bl-col',
+		'.rpcn-bl-kind', '.rpcn-bl-badge', '.rpcn-bl-tab', '.rpcn-bl-link',
+	])(
+		'%s adds the 1px contrast border', (selector) => {
+			expect(rule(selector)).toContain(`1px solid ${CONTRAST}`);
+		},
+	);
+	it.each(['.rpcn-bl-run', '.rpcn-bl-btn', '.rpcn-bl-nobin-act'])('%s\'s border falls back to the contrast border', (selector) => {
+		expect(rule(selector)).toContain(`border: 1px solid var(--vscode-button-border, ${CONTRAST})`);
+	});
+});

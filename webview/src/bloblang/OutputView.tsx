@@ -5,6 +5,8 @@
 // are alerts with the binary's message (a parse error and a located failure offer Go to line); a
 // deleted message is a dashed info card. Under an alert, the last `ok` output since the panel opened
 // stays, dimmed, unmarked and labelled; a deleted message dims nothing.
+// Ticket 4.11: the cards are not live regions (the panel's one announcer says each result), and the
+// output content is focusable, so it can be read and scrolled by keyboard.
 
 import type { ReactNode } from 'react';
 import type { BloblangResult } from '../../../src/shared/bloblangProtocol';
@@ -39,7 +41,7 @@ function OkContent({ result, marks }: { readonly result: OkResult; readonly mark
 	const fields = result.changes.fields;
 	const marked = marks ? markedLines(shown, fields ? [...fields.added, ...fields.changed] : []) : new Set<number>();
 	return (
-		<pre className="rpcn-bl-output" aria-label="Output content">
+		<pre className="rpcn-bl-output" aria-label="Output content" tabIndex={0}>
 			{shown.lines.map((line, i) => (
 				<span key={i}>
 					<span className={marked.has(i) ? 'rpcn-bl-line rpcn-bl-mark' : 'rpcn-bl-line'}>{line}</span>
@@ -67,10 +69,10 @@ interface CardProps {
 	readonly hint?: ReactNode;
 }
 
-/** An error card (an alert): its title and subtitle, the message, and Go to line. */
+/** An error card: its title and subtitle, the message, and Go to line. */
 function ErrorCard({ title, subtitle, message, goTo, onGoToLine, hint }: CardProps) {
 	return (
-		<div className="rpcn-bl-card rpcn-bl-card-error" role="alert">
+		<div className="rpcn-bl-card rpcn-bl-card-error">
 			<p className="rpcn-bl-card-head">
 				<span className="rpcn-bl-card-title">{title}</span>
 				{subtitle !== undefined && <small className="rpcn-bl-card-sub">{subtitle}</small>}

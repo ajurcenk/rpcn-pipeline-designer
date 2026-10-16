@@ -127,6 +127,7 @@ Behavioral only. Visual specs are in `DESIGN.md.Components`.
 - **Mouse:** click selects and reveals. Click the chevron to collapse/expand. Hover shows details. Pan and zoom the graph canvas, with a "Fit to view" action `[ASSUMPTION]`.
 - **Keyboard (graph panel)** `[ASSUMPTION]`: `Tab` enters the graph and focuses the first node. Arrow keys move between nodes in flow order and into/out of groups. `Enter` reveals the node's YAML (focus moves to the YAML editor in the left group). `Space` toggles collapse on a group header. `Esc` returns focus to the graph container.
 - **Commands:** "Show graph", "Hide graph", Run and Stop are all available in the Command Palette. Show/Hide graph has no default keybinding; users can bind the commands.
+- **Keyboard (Bloblang test panel):** `Tab` walks the panel in order: the sample picker, **New sample**, **Rename**, **Delete**, Run on change, **Run**, the Input column's selected tab, its content, the Output column's selected tab, **Go to line** when shown (on the error card, above the dimmed last output), and the output content. In each column only the selected tab is a Tab stop; `Left` / `Right` select and focus the other tab, `Home` / `End` the first / last (the ARIA tabs pattern). `Esc` with no modifier, anywhere in the panel, returns focus to the YAML editor in its group with the cursor unchanged; in the rename field `Esc` cancels the rename instead, and an open picker closes first.
 - **Banned:** dragging nodes to edit, inline editing in the graph, forms, modal dialogs, auto-running the pipeline, an in-panel view switcher.
 
 ## Accessibility Floor
@@ -140,6 +141,13 @@ Behavioral. Visual contrast comes from the active VS Code theme (`DESIGN.md`).
 - High-contrast themes are fully supported: `{colors.contrast-border}` outlines every node, group and banner.
 - No color-only signals. Errors and warnings always combine an icon and a border (with distinct icons), and the banner has an icon and text.
 - Reduced motion (VS Code / OS setting) turns off pan and zoom animation `[ASSUMPTION]`.
+- **Bloblang test panel:**
+  - Names: the panel is "Bloblang test panel: <title>", the toolbar is the group "Test controls", the columns are "Input" and "Output", each tabpanel is named by its tab, and every control has a name ("Input content", "Output content", "Go to line N", the metadata rows' keys, values and Remove). The output content can be focused, read and scrolled by keyboard.
+  - Keyboard: as listed above. The no-binary and removed regions take focus when they replace the columns (if focus was in the panel), and focus goes back to the input when they clear.
+  - Announcer: one polite, atomic live region says every result and state, each replacing the last, and a result the same as the last but for its run time is not said again: `Ran in <N> ms. <changes>` (the "Changed:" tags in words, e.g. "added total, changed b", or "No changes"), "The mapping deleted this message", `Syntax error, mapping line L: <message>`, `Failed on mapping line N: <message>` (or `The mapping failed on this input: <message>`), `Input not valid for this mapping: <message>`, `Not run: <message>`, and the no-binary and removed texts. The result cards, the status pill and the Output column are not live regions, so nothing is said twice; only the samples file and rename errors are alerts, answering the user's own action.
+  - Focus: every focusable element shows the `{colors.focus}` ring on keyboard focus; nothing removes it.
+  - High contrast: `{colors.contrast-border}` outlines the badges, pills, cards, notices, columns, tabs, buttons and link buttons.
+  - No colour-only signals: changed lines and metadata rows have a left bar as well as a tint, and the footer lists each change with its sign (`+`, `~`, `−`); every pill has an icon and text.
 
 ## Inspiration & Anti-patterns
 

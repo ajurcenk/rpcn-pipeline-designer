@@ -2,7 +2,7 @@
 // "Changed:" tags, the input metadata, and the saved view state.
 
 import { describe, expect, it } from 'vitest';
-import { changeTags, inputMeta, markedLines, metaRowCount, metaValueText, shownContent } from './changes';
+import { changeTags, changeWords, inputMeta, markedLines, metaRowCount, metaValueText, shownContent } from './changes';
 import { DEFAULT_VIEW_STATE, readViewState } from './host';
 
 describe('Bloblang panel helpers (4.7)', () => {
@@ -46,6 +46,14 @@ describe('Bloblang panel helpers (4.7)', () => {
 		}).map((t) => t.text)).toEqual(['+c', '~b', '−a', '+@out', '~@k', '−@gone']);
 		expect(changeTags({ fields: null, meta: { added: ['out'], changed: [], removed: [] } }).map((t) => t.text)).toEqual(['+@out']);
 		expect(changeTags({ fields: { added: [], changed: [], removed: [] }, meta: { added: [], changed: [], removed: [] } })).toEqual([]);
+	});
+
+	it('words (4.11): the tags in words, metadata keys named so; none: "No changes"', () => {
+		expect(changeWords({
+			fields: { added: ['total'], changed: ['b'], removed: ['a'] },
+			meta: { added: ['out'], changed: [], removed: ['gone'] },
+		})).toBe('added total, changed b, removed a, added metadata out, removed metadata gone');
+		expect(changeWords({ fields: null, meta: { added: [], changed: [], removed: [] } })).toBe('No changes');
 	});
 
 	it('EMPTY_KEY: rows with an empty key are not sent or counted; the last of a repeated key wins', () => {

@@ -35,6 +35,19 @@ colors:
   button-surface: 'var(--vscode-button-background)'
   on-button: 'var(--vscode-button-foreground)'
   contrast-border: 'var(--vscode-contrastBorder, transparent)'
+  # The Bloblang test panel's own tokens (E4).
+  badge-surface: 'var(--vscode-badge-background)'
+  on-badge: 'var(--vscode-badge-foreground)'
+  input-surface: 'var(--vscode-input-background)'
+  on-input: 'var(--vscode-input-foreground)'
+  panel-border: 'var(--vscode-panel-border, transparent)'
+  button-border: 'var(--vscode-button-border, var(--vscode-contrastBorder, transparent))'
+  button-secondary-surface: 'var(--vscode-button-secondaryBackground)'
+  on-button-secondary: 'var(--vscode-button-secondaryForeground)'
+  changed-mark: 'var(--vscode-testing-iconPassed, var(--vscode-charts-green, currentColor))'
+  test-error: 'var(--vscode-errorForeground, var(--vscode-editorError-foreground, currentColor))'
+  test-warning: 'var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, currentColor))'
+  code-block-surface: 'var(--vscode-textCodeBlock-background)'
 typography:
   ui:
     fontFamily: 'var(--vscode-font-family)'
@@ -99,6 +112,50 @@ components:
   graph-toggle:
     icon: 'codicon-type-hierarchy'  # [ASSUMPTION]; label 'Show graph' / 'Hide graph'
     note: 'Native VS Code editor-title action on the YAML editor; no custom styling'
+  # The Bloblang test panel (E4, `webview/src/bloblang/bloblang.css`). Every focusable element:
+  # outline '1px solid {colors.focus}' on keyboard focus, never removed.
+  test-status-pill:
+    background: '{colors.badge-surface}, or its tone (ok {colors.changed-mark}, error {colors.test-error}, warning {colors.test-warning}) at 16-18%'
+    foreground: '{colors.on-surface}'
+    outline: '1px solid {colors.contrast-border}'
+    radius: '999px'
+    note: 'Always an icon (✓ ✕ ⊘) and text; not a live region'
+  test-toolbar:
+    border-bottom: '1px solid {colors.panel-border}'
+    padding: '{spacing.2} {spacing.4}'
+    note: 'role group "Test controls"'
+  test-column:
+    border: '1px solid {colors.panel-border} between the columns'
+    outline: '1px solid {colors.contrast-border}'
+    tabs: 'selected: {colors.on-surface} with a 2px {colors.focus} bottom border; others {colors.on-surface-muted}'
+    badge: '{colors.badge-surface} / {colors.on-badge}'
+  test-input:
+    background: '{colors.input-surface}'
+    foreground: '{colors.on-input}'
+    font: '{typography.code}'
+  test-output:
+    font: '{typography.code}'
+    changed-line: '{colors.changed-mark} at 14% plus a 2px {colors.changed-mark} left bar'
+    note: 'Focusable (tabindex 0)'
+  test-error-card:
+    border: '1px solid {colors.test-error} at 45%'
+    background: '{colors.test-error} at 8%'
+    outline: '1px solid {colors.contrast-border}'
+    message: '{typography.code} on {colors.code-block-surface}'
+    radius: '{rounded.md}'
+  test-info-card:
+    border: '1px dashed {colors.panel-border}'
+    foreground: '{colors.on-surface-muted}'
+    outline: '1px solid {colors.contrast-border}'
+  test-notice:
+    note: 'The no-binary and removed regions and the No label note; focusable regions'
+    foreground: '{colors.on-surface-muted}'
+    outline: '1px solid {colors.contrast-border}'
+  test-button:
+    background: '{colors.button-surface} (Run, Install guide) or {colors.button-secondary-surface}'
+    foreground: '{colors.on-button} or {colors.on-button-secondary}'
+    border: '1px solid {colors.button-border}'
+    radius: '{rounded.sm}'
 ---
 
 ## Brand & Style
@@ -118,7 +175,7 @@ Every color token is a VS Code theme variable, so light, dark, and high-contrast
 - **Error** (`{colors.error}`, `{colors.error-border}`) and **warning** (`{colors.warning}`, `{colors.warning-border}`) are the only signal colors on the graph, and each always comes with its own icon.
 - **Warning** tokens mark lint-warning nodes; the **banner** tokens are used only for the invalid-YAML ("last valid state") banner.
 - **Focus** (`{colors.focus}`) is VS Code's `focusBorder`, so keyboard focus looks the same as everywhere else in the editor.
-- **Contrast border** is present only in high-contrast themes; every node, group, and banner adds it to its outline.
+- **Contrast border** is present only in high-contrast themes; every node, group, and banner adds it to its outline, as do the test panel's badges, pills, cards, notices, columns, tabs and buttons.
 
 Avoid: per-component-type hues (input/processor/output are told apart by position and label, not color), gradients, and any color outside the theme.
 
@@ -149,6 +206,7 @@ Corners are `{rounded.md}` on nodes and group boxes and `{rounded.sm}` on the ba
 - **Graph edge.** A `{colors.edge}` stroke. Edges have no labels, except `switch` cases, which show the case index or `check` excerpt in `{typography.code}` `[ASSUMPTION]`.
 - **Invalid-YAML banner.** A full-width strip across the top of the graph panel, using banner tokens and a `codicon-warning`. Mock: alt state in [mockups/key-editor-and-graph.html](mockups/key-editor-and-graph.html).
 - **Graph empty state.** Centered muted text with link-styled actions, filling the graph panel. Mock: [mockups/key-binary-missing.html](mockups/key-binary-missing.html).
+- **Bloblang test panel.** A header (title, kind badge and `test-status-pill`), the `test-toolbar` (sample controls, Run on change, Run), and two `test-column`s, Input and Output, each with Content / Metadata tabs; the result cards (`test-error-card`, `test-info-card`) and the notices (`test-notice`) replace parts of it. Only theme tokens; every focusable element has the `{colors.focus}` ring, and the badges, pills, cards, notices, columns, tabs and buttons add `{colors.contrast-border}`. Changes are marked by a tint and a left bar, never by colour alone. Mock: [../brief-rpcn-vscode-designer/bloblang-test-panel-prototype.html](../brief-rpcn-vscode-designer/bloblang-test-panel-prototype.html).
 - **Show / Hide graph toggle.** A native editor-title action on the YAML editor, `codicon-type-hierarchy` `[ASSUMPTION]`, tooltip "Show graph" / "Hide graph". No custom chrome. It replaces the earlier Split/Graph/YAML switcher.
 
 ## Do's and Don'ts

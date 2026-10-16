@@ -20,6 +20,7 @@
 // Ticket 4.17: the panel closes with its file's last text tab, follows a rename (a file's, with its
 // samples file, or a folder's), and opens in one test group below the graph (a graph opened later
 // goes above it).
+// Ticket 4.11: Esc in the panel (`focusEditorRequested`) focuses the YAML editor with its cursor unchanged.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -524,6 +525,26 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			message: 'failed assignment (line 1): unable to reference message as structured (with \'this\'): parse as json: invalid character \'o\' in literal null (expecting \'u\')',
 		});
 		assert.deepStrictEqual(api().bloblangPanels.hintRanges(doc.uri), []);
+	});
+
+	test('ESC (4.11): focusEditorRequested focuses the YAML editor in its group, its cursor and selection unchanged', async () => {
+		const editor = await open('esc.yaml', ERRORS_CONFIG);
+		const doc = editor.document;
+		const handle = await show(doc.uri, 'pipeline.processors[1]');
+		const at = doc.getText().indexOf('this.nope');
+		editor.selection = new vscode.Selection(doc.positionAt(at), doc.positionAt(at + 'this.nope'.length));
+		const before = editor.selection;
+		// The panel has focus, as when Esc is pressed in it.
+		handle.panel.reveal(handle.panel.viewColumn, false);
+		assert.ok(await waitFor(() => handle.panel.active, 10_000), 'the test panel is focused');
+
+		await handle.receive({ type: 'focusEditorRequested' });
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor === editor, 10_000), 'the YAML editor is focused');
+		assert.strictEqual(editor.viewColumn, vscode.ViewColumn.One, 'in its own group');
+		assert.ok(editor.selection.isEqual(before), 'the cursor and selection are unchanged');
+		assert.strictEqual(vscode.window.visibleTextEditors.filter((e) => e.document === doc).length, 1, 'no new editor');
+		assert.notStrictEqual(handle.panel.viewColumn, vscode.ViewColumn.One, 'the panel stays in its own group');
+		assert.ok(!doc.isDirty, 'nothing edits the text');
 	});
 
 	test('NO_LONGER_THERE: a lens path that is gone says so, not the cursor message', async () => {

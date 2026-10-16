@@ -39,16 +39,23 @@
 // input once, with Run on change on.
 // Ticket 4.17: the snapshot's `fileName` and `samplesFile`, when present, win over the page's
 // `data-file` and `data-samples` (a rename of the config changes them).
+// Ticket 4.11 (E4 R10): `main` is named "Bloblang test panel: <title>", the toolbar is the "Test
+// controls" group, and each column's Content / Metadata tabs follow the ARIA tabs pattern (only the
+// selected tab is a Tab stop; Left / Right switch, Home / End go to the first / last). Esc with no
+// modifier, anywhere in the panel, posts `focusEditorRequested` (the rename field's Esc cancels the
+// rename instead). One polite atomic region announces every result and state (`announcement`); a
+// result the same as the last one but for its run time is not said again (`announcementKey`). The removed notice takes focus on entry as the
+// no-binary state does.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
 	parseBloblangHostMessage, type BinaryStatus, type BloblangHostMessage, type BloblangSample, type BloblangWebviewMessage, type InputMeta,
 } from '../../../src/shared/bloblangProtocol';
-import { inputMeta, metaRowCount, type MetaRow } from './changes';
+import { changeWords, inputMeta, metaRowCount, type MetaRow } from './changes';
 import { nextSampleName, SamplePicker } from './SamplePicker';
 import type { PanelTab, ViewState } from './host';
 import { InputMetadata, type EditableRow } from './MetadataTable';
-import { DEFAULT_FILE_NAME, OutputBody, ResultFooter, type OkResult } from './OutputView';
+import { DEFAULT_FILE_NAME, DELETED_TITLE, OutputBody, ResultFooter, type OkResult } from './OutputView';
 
 /** How long edits pause before Run on change runs the input. */
 export const RUN_DEBOUNCE_MS = 300;
@@ -83,6 +90,11 @@ export const ADD_LABEL_LABEL = 'Add label';
 /** The removed processor's notice (4.10): its region's name and its text. */
 export const REMOVED_TITLE = 'Processor removed';
 export const removedText = (file: string): string => `This processor was removed from ${file}. Undo the change to bring it back.`;
+
+/** The panel's accessible name (4.11). */
+export const panelName = (title: string): string => `Bloblang test panel: ${title}`;
+/** The toolbar group's name (4.11). */
+export const TOOLBAR_LABEL = 'Test controls';
 
 /** Whether `content` and `rows` are the sample's input. */
 function isSampleInput(sample: BloblangSample, content: string, rows: readonly MetaRow[]): boolean {
@@ -130,6 +142,36 @@ export function statusOf(result: Result): { text: string; tone: Tone } {
 	}
 }
 
+/** What the announcer says for a result (4.11). */
+export function announcement(result: Result): string {
+	const r = result.result;
+	switch (r.kind) {
+		case 'ok':
+			return `Ran in ${Math.round(result.durationMs)} ms. ${changeWords(r.changes)}`;
+		case 'deleted':
+			return DELETED_TITLE;
+		case 'parseError':
+			return `Syntax error, mapping line ${r.mappingLine}: ${r.message}`;
+		case 'failed':
+			return r.mappingLine !== undefined ? `Failed on mapping line ${r.mappingLine}: ${r.message}` : `The mapping failed on this input: ${r.message}`;
+		case 'invalidInput':
+			return `Input not valid for this mapping: ${r.message}`;
+		case 'error':
+			return `Not run: ${r.message}`;
+	}
+}
+
+/**
+ * What makes two announcements the same (4.11): an `ok` result's changes, not its run time, so a
+ * rerun with the same outcome is not said again; any other text as it is.
+ */
+export function announcementKey(result: Result): string {
+	return result.result.kind === 'ok' ? `ok: ${changeWords(result.result.changes)}` : announcement(result);
+}
+
+/** The view the panel shows: the columns, the no-binary state, or the removed notice. */
+type View = 'normal' | 'noBinary' | 'removed';
+
 interface TabsProps {
 	readonly id: string;
 	readonly label: string;
@@ -138,21 +180,43 @@ interface TabsProps {
 	readonly onSelect: (tab: PanelTab) => void;
 }
 
-/** A column's heading and its Content / Metadata tabs; the Metadata tab shows `count`. */
+/** The tab each key goes to from `selected` (4.11): two tabs, so Left and Right both go to the other. */
+const TAB_KEYS: Readonly<Record<string, (selected: PanelTab) => PanelTab>> = {
+	ArrowLeft: (t) => (t === 'content' ? 'meta' : 'content'),
+	ArrowRight: (t) => (t === 'content' ? 'meta' : 'content'),
+	Home: () => 'content',
+	End: () => 'meta',
+};
+
+/**
+ * A column's heading and its Content / Metadata tabs; the Metadata tab shows `count`. The ARIA tabs
+ * pattern (4.11): only the selected tab is a Tab stop, and the arrows, Home and End select and focus.
+ */
 function ColumnHead({ id, label, selected, count, onSelect }: TabsProps) {
+	const tabs = useRef<Partial<Record<PanelTab, HTMLButtonElement | null>>>({});
+	const onKeyDown = (event: ReactKeyboardEvent) => {
+		const to = TAB_KEYS[event.key];
+		if (!to || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+			return;
+		}
+		event.preventDefault();
+		const next = to(selected);
+		onSelect(next);
+		tabs.current[next]?.focus();
+	};
 	return (
 		<div className="rpcn-bl-colhead">
 			<h2 className="rpcn-bl-colname" id={`${id}-name`}>{label}</h2>
-			<div role="tablist" aria-labelledby={`${id}-name`} className="rpcn-bl-tabs">
+			<div role="tablist" aria-labelledby={`${id}-name`} className="rpcn-bl-tabs" onKeyDown={onKeyDown}>
 				<button
-					type="button" role="tab" id={`${id}-tab-content`} aria-controls={`${id}-panel`}
-					className="rpcn-bl-tab" aria-selected={selected === 'content'} onClick={() => onSelect('content')}
+					type="button" role="tab" id={`${id}-tab-content`} aria-controls={`${id}-panel`} ref={(el) => { tabs.current.content = el; }}
+					className="rpcn-bl-tab" aria-selected={selected === 'content'} tabIndex={selected === 'content' ? 0 : -1} onClick={() => onSelect('content')}
 				>
 					{CONTENT_TAB}
 				</button>
 				<button
-					type="button" role="tab" id={`${id}-tab-meta`} aria-controls={`${id}-panel`}
-					className="rpcn-bl-tab" aria-selected={selected === 'meta'} onClick={() => onSelect('meta')}
+					type="button" role="tab" id={`${id}-tab-meta`} aria-controls={`${id}-panel`} ref={(el) => { tabs.current.meta = el; }}
+					className="rpcn-bl-tab" aria-selected={selected === 'meta'} tabIndex={selected === 'meta' ? 0 : -1} onClick={() => onSelect('meta')}
 				>
 					{METADATA_TAB}<span className="rpcn-bl-badge">{count}</span>
 				</button>
@@ -222,8 +286,12 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	/** Whether the last snapshot said the processor was removed (4.10), for timers and host messages. */
 	const removedNow = useRef(false);
 	const main = useRef<HTMLElement>(null);
-	/** Where focus goes once the state has rendered (4.15): the region, the input, or nowhere. */
+	/** Where focus goes once the state has rendered (4.15, 4.11): the region, the input, or nowhere. */
 	const moveFocus = useRef<'region' | 'input' | undefined>(undefined);
+	/** The announcer's last text and its key (4.11): a new text with the same key is not said. */
+	const spoken = useRef({ key: '', text: '' });
+	/** The view as last decided by a host message (4.11), for `viewChanged`. */
+	const viewNow = useRef<View>('normal');
 	/** The mapping's samples, the selected one and the unreadable file's reason, as last known (4.9). */
 	const [samples, setSamples] = useState<{ list: readonly BloblangSample[]; selected: string | null; error?: string }>({ list: [], selected: null });
 	/** The same, for timers and host messages. */
@@ -349,12 +417,6 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 		const before = binaryNow.current;
 		binaryNow.current = status;
 		setBinary(status);
-		// The focused element is still the one about to unmount: decide where focus goes after the render.
-		const focused = document.activeElement;
-		if (noBinaryIn(status) !== noBinaryIn(before)) {
-			const from = noBinaryIn(status) ? main.current : main.current?.querySelector('.rpcn-bl-nobin');
-			moveFocus.current = focused && from?.contains(focused) ? (noBinaryIn(status) ? 'region' : 'input') : undefined;
-		}
 		if (noBinaryIn(status) && !noBinaryIn(before)) {
 			clearTimeout(timer.current);
 			timer.current = undefined;
@@ -362,6 +424,21 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 			setRunning(false);
 		}
 		return noBinaryIn(before) && status === 'ok';
+	}, []);
+
+	/**
+	 * After a host message: when the view changes (4.15, 4.10), focus inside the panel moves to the new
+	 * state's region, or from it back to the input, once rendered. The focused element is still the one
+	 * about to unmount, so this decides now.
+	 */
+	const viewChanged = useCallback(() => {
+		const next: View = removedNow.current ? 'removed' : noBinaryIn(binaryNow.current) ? 'noBinary' : 'normal';
+		if (next === viewNow.current) {
+			return;
+		}
+		viewNow.current = next;
+		const focused = document.activeElement;
+		moveFocus.current = focused && main.current?.contains(focused) ? (next === 'normal' ? 'input' : 'region') : undefined;
 	}, []);
 
 	useEffect(() => {
@@ -382,6 +459,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 				}
 				const taken = takeSamples(message);
 				const recovered = binaryChanged(message.binary);
+				viewChanged();
 				// The kind and source last seen: a run follows a change of either.
 				const seen = JSON.stringify([message.kind, message.source]);
 				const first = lastSource.current === undefined;
@@ -412,7 +490,9 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 				}
 			} else if (message?.type === 'binary') {
 				// Recovery runs the current input once, whatever Run on change says, so the panel is not left empty.
-				if (binaryChanged(message.status)) {
+				const recovered = binaryChanged(message.status);
+				viewChanged();
+				if (recovered) {
 					runNow();
 				}
 			} else if (message?.type === 'result' && (noBinaryIn(binaryNow.current) || removedNow.current)) {
@@ -438,7 +518,20 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 			clearTimeout(timer.current);
 			flushSave();
 		};
-	}, [post, runNow, schedule, binaryChanged, takeSamples, flushSave]);
+	}, [post, runNow, schedule, binaryChanged, viewChanged, takeSamples, flushSave]);
+
+	// Esc with no modifier, anywhere in the panel, returns to the YAML (4.11). The rename field's Esc
+	// is its own (it stops and prevents it); an open <select>'s popup takes its own Esc.
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && !event.defaultPrevented && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+				event.preventDefault();
+				post({ type: 'focusEditorRequested' });
+			}
+		};
+		window.addEventListener('keydown', onKeyDown);
+		return () => window.removeEventListener('keydown', onKeyDown);
+	}, [post]);
 
 	const contentChanged = (text: string) => {
 		setContent(text);
@@ -531,30 +624,35 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 		moveFocus.current = undefined;
 		const root = main.current;
 		const target = to === 'region'
-			? root?.querySelector<HTMLElement>('.rpcn-bl-nobin')
+			? root?.querySelector<HTMLElement>('.rpcn-bl-removed, .rpcn-bl-nobin')
 			: to === 'input'
 				// The content input; on the Metadata tab, Run, or the tab itself while Run is disabled.
 				? ['#rpcn-bl-input', '.rpcn-bl-run:not(:disabled)', '#rpcn-bl-in-tab-meta'].map((q) => root?.querySelector<HTMLElement>(q)).find((el) => el)
 				: undefined;
 		target?.focus();
-	}, [noBinary]);
+	}, [noBinary, removed]);
+
+	// The one announcer's text (4.11): the removed and no-binary states, else the last result.
+	const said = removed ? removedText(fileName ?? DEFAULT_FILE_NAME) : noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : result ? announcement(result) : '';
+	const saidKey = !removed && !noBinary && result ? announcementKey(result) : said;
+	if (saidKey !== spoken.current.key) {
+		spoken.current = { key: saidKey, text: said };
+	}
 
 	return (
-		<main className="rpcn-bl" ref={main}>
+		<main className="rpcn-bl" ref={main} aria-label={panelName(snapshot?.title ?? 'Bloblang')}>
 			<header className="rpcn-bl-header">
 				<div className="rpcn-bl-where">
 					<h1 className="rpcn-bl-title">{snapshot?.title ?? 'Bloblang'}</h1>
 					{snapshot && <span className="rpcn-bl-kind">{snapshot.kind}</span>}
 				</div>
-				{status && !noBinary && !removed && <span className={`rpcn-bl-pill rpcn-bl-pill-${status.tone}`} role="status">{status.text}</span>}
+				{status && !noBinary && !removed && <span className={`rpcn-bl-pill rpcn-bl-pill-${status.tone}`}>{status.text}</span>}
 			</header>
-			{/* The polite live region (4.15): always mounted; the no-binary state is announced once on entry. */}
-			<div className="rpcn-bl-sr" role="status" aria-live="polite" aria-atomic="true">
-				{removed ? removedText(fileName ?? DEFAULT_FILE_NAME) : noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : ''}
-			</div>
+			{/* The one polite live region (4.15, 4.11): always mounted; an unchanged text changes nothing in it, so it is not said again. */}
+			<div className="rpcn-bl-sr" role="status" aria-live="polite" aria-atomic="true">{spoken.current.text}</div>
 			{removed
 				? (
-					<section className="rpcn-bl-removed" role="region" aria-label={REMOVED_TITLE}>
+					<section className="rpcn-bl-removed" role="region" aria-label={REMOVED_TITLE} tabIndex={0}>
 						<p className="rpcn-bl-removed-text">{removedText(fileName ?? DEFAULT_FILE_NAME)}</p>
 					</section>
 				)
@@ -562,7 +660,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 				? <NoBinaryView post={post} />
 				: (
 					<>
-						<div className="rpcn-bl-toolbar">
+						<div className="rpcn-bl-toolbar" role="group" aria-label={TOOLBAR_LABEL}>
 							{hasSamples && (
 								<SamplePicker
 									samples={samples.list} selected={samples.selected} disabled={samples.error !== undefined}
@@ -626,7 +724,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 								</div>
 								<footer className="rpcn-bl-foot">{lineCount(content)}</footer>
 							</section>
-							<section className="rpcn-bl-col rpcn-bl-out" aria-label={OUTPUT_LABEL} aria-live="polite">
+							<section className="rpcn-bl-col rpcn-bl-out" aria-label={OUTPUT_LABEL}>
 								<ColumnHead
 									id="rpcn-bl-out" label={OUTPUT_LABEL} selected={outputTab}
 									count={okResult ? String(Object.keys(okResult.meta).length) : '–'} onSelect={setOutputTab}
