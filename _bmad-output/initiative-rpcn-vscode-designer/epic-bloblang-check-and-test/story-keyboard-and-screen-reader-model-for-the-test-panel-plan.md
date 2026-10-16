@@ -3,7 +3,7 @@ title: 'Keyboard and screen-reader model for the test panel'
 type: 'feature'
 ticket: '11'
 created: '2026-10-16'
-status: 'built'
+status: done
 baseline_revision: '4e49179799cb71ceed47e36c6bdd20545e2c7ad9'
 route: 'full'
 route_source: 'auto'
