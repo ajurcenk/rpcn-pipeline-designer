@@ -3,6 +3,8 @@
 // a valid name (1–100 characters after trimming, unique), Esc and blur cancel, and an invalid name
 // shows its error inline and keeps the field; a change of the selection or of `disabled` cancels it. While the samples file can't be read, every control is
 // disabled. It only reports intents; the panel (`TestPanel.tsx`) keeps the samples.
+// Ticket 4.18: with a previous step (`previousStep`, its title), **From previous step** follows
+// Delete, named "New sample from <previousStep>"; the host runs that step and saves its output.
 
 import { useEffect, useRef, useState } from 'react';
 import { MAX_SAMPLE_NAME_LENGTH, type BloblangSample } from '../../../src/shared/bloblangProtocol';
@@ -11,6 +13,9 @@ export const SAMPLE_LABEL = 'Sample';
 export const NEW_SAMPLE_LABEL = 'New sample';
 export const RENAME_LABEL = 'Rename';
 export const DELETE_LABEL = 'Delete';
+export const FROM_PREVIOUS_LABEL = 'From previous step';
+/** From previous step's accessible name (4.18). */
+export const fromPreviousName = (previousStep: string): string => `New sample from ${previousStep}`;
 /** The picker's option while no sample is selected. */
 export const UNSAVED_INPUT = 'Unsaved input';
 export const NAME_LENGTH_ERROR = `Name must be 1–${MAX_SAMPLE_NAME_LENGTH} characters`;
@@ -45,9 +50,12 @@ export interface SamplePickerProps {
 	/** Renames the selected sample to `to` (trimmed, valid, not its name). */
 	readonly onRename: (to: string) => void;
 	readonly onDelete: () => void;
+	/** The previous step's title (4.18); none: no From previous step. */
+	readonly previousStep?: string;
+	readonly onFromPrevious?: () => void;
 }
 
-export function SamplePicker({ samples, selected, disabled, onSwitch, onNew, onRename, onDelete }: SamplePickerProps) {
+export function SamplePicker({ samples, selected, disabled, onSwitch, onNew, onRename, onDelete, previousStep, onFromPrevious }: SamplePickerProps) {
 	/** The rename field's text; `undefined`: not renaming. */
 	const [draft, setDraft] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
@@ -150,6 +158,14 @@ export function SamplePicker({ samples, selected, disabled, onSwitch, onNew, onR
 				{RENAME_LABEL}
 			</button>
 			<button type="button" className="rpcn-bl-btn rpcn-bl-delete" disabled={disabled || selected === null} onClick={onDelete}>{DELETE_LABEL}</button>
+			{previousStep !== undefined && (
+				<button
+					type="button" className="rpcn-bl-btn rpcn-bl-from-prev" disabled={disabled} aria-label={fromPreviousName(previousStep)}
+					onClick={onFromPrevious}
+				>
+					{FROM_PREVIOUS_LABEL}
+				</button>
+			)}
 		</div>
 	);
 }

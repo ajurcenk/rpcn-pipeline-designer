@@ -66,13 +66,24 @@
 // graph's group; else beside the YAML (never into a graph's group). Focus stays in the YAML.
 // Ticket 4.11: `focusEditorRequested` (Esc in the panel, the graph's message) shows the YAML in its
 // editor group and focuses it, with its cursor and selection unchanged; with no editor of it, nothing.
+// Ticket 4.18 (AD-22): the snapshot names the previous step (`previousStep`: the `mapping` / `mutation`
+// just before the processor in its own list, `previousSteps`), and `sampleFromPreviousRequested` runs
+// the previous steps, from the nearest one with a selected sample up to the one before, each through
+// the AD-21 runner (`runTest`) on the last one's output; the last output becomes a new selected sample
+// "from <previousStep>" (made unique, again once if the name is taken meanwhile), saved and posted as
+// `samples` (the webview runs it). A step that deletes the message or fails, a chain with no sample, a
+// document with unsaved changes (samples are linked to the saved file) or one edited during the runs
+// saves nothing and says so. One such request
+// per panel at a time (another one meanwhile is ignored); the panel's own runs are untouched.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, type BloblangProcessor } from '../../core/bloblangProcessors';
+import {
+	bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, stepTitle, type BloblangProcessor,
+} from '../../core/bloblangProcessors';
 import { documentLabels, labelError, labelInsertion, suggestLabel, type TextInsertion } from '../../core/labelEdit';
 import { mapRange, matchProcessors, parses, type OffsetRange, type TextChange, type TrackedProcessor } from '../../core/processorTracking';
-import { linkOf, samplesFor, type RelinkMove, type SampleChange, type SampleRef } from '../../core/samples';
+import { freeSampleName, inputMetaOf, linkOf, samplesFor, type RelinkMove, type SampleChange, type SampleRef } from '../../core/samples';
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
@@ -118,6 +129,16 @@ export const SAMPLES_USE_IT = 'samples already use it.';
 export const SAMPLES_WAIT_FOR_SAVE = 'This processor\'s samples can\'t be saved until the file is saved.';
 /** Shown when a rename can't move the samples file (4.17): the new config's already exists. */
 export const samplesNotMoved = (name: string): string => `Samples weren't moved: ${name} already exists.`;
+/** From previous step (4.18): the new sample's name before it is made unique, and the messages. */
+export const fromPreviousSampleName = (step: string): string => `from ${step}`;
+export const previousDeleted = (step: string): string => `"${step}" deleted the message; no sample was saved.`;
+export const previousFailed = (step: string, message: string): string => `"${step}" failed: ${message}`;
+export const previousHasNoSample = (step: string): string => `"${step}" has no sample to run.`;
+export const saveFirst = (file: string): string => `Save ${file} first: samples are linked to the saved file.`;
+export const PREVIOUS_FILE_CHANGED = 'The file changed while the previous steps ran; try again.';
+export const samplesUnreadable = (reason: string): string => `The samples file can't be read: ${reason}`;
+/** Why From previous step's sample could not be added (4.18): its name was taken twice meanwhile. */
+export const PREVIOUS_NAME_TAKEN = 'another sample took its name.';
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
 
@@ -159,6 +180,8 @@ interface Current {
 	readonly processor: BloblangProcessor | undefined;
 	/** The document's text when the processor was read: the base of its position map. */
 	readonly text: string;
+	/** Every `mapping` / `mutation` processor of that text (4.18: the previous steps are among them). */
+	readonly processors: readonly BloblangProcessor[];
 }
 
 /** One run's input: the message content and its metadata. */
@@ -231,6 +254,8 @@ class BloblangPanel implements BloblangPanelHandle {
 	private labelling: Promise<void> | undefined;
 	/** While a save moves the samples to the new link (4.10): sample changes wait for it. */
 	private relinking: Promise<void> | undefined;
+	/** While From previous step runs (4.18): another request is ignored. */
+	private seeding = false;
 	/** The path of the processor the panel follows (4.10); while removed, its last one. */
 	path: string;
 	/** Its label (4.10); while removed, its last one. */
@@ -269,6 +294,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		public uri: vscode.Uri,
 		processor: BloblangProcessor,
 		text: string,
+		processors: readonly BloblangProcessor[],
 		readonly panel: vscode.WebviewPanel,
 		private readonly owner: BloblangPanels,
 	) {
@@ -278,7 +304,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.kind = processor.kind;
 		this.source = processor.source;
 		this.range = processor.range;
-		this.last = { processor, text };
+		this.last = { processor, text, processors };
 		this.ref = label !== undefined ? { label, path } : { path };
 		this.saved = this.ref;
 		this.watch = owner.samples.watch(uri);
@@ -313,6 +339,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.change({ type: 'edit', content: msg.content, meta: msg.meta });
 			} else if (msg?.type === 'addLabelRequested') {
 				await this.addLabel();
+			} else if (msg?.type === 'sampleFromPreviousRequested') {
+				await this.sampleFromPrevious();
 			} else if (msg?.type === 'sampleDeleted') {
 				if (await this.owner.confirmDelete(msg.name)) {
 					await this.change({ type: 'delete', name: msg.name }, true);
@@ -355,7 +383,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * Follows the processor matched in `text` (4.10): its path, label, kind, Bloblang, range and title;
 	 * none: the removed state, everything else kept. Synchronous, so the key is current at once.
 	 */
-	follow(found: BloblangProcessor | undefined, text: string): void {
+	follow(found: BloblangProcessor | undefined, text: string, processors: readonly BloblangProcessor[]): void {
 		if (!found) {
 			this.removed = true;
 			this.last = undefined;
@@ -367,7 +395,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.kind = found.kind;
 		this.source = found.source;
 		this.range = found.range;
-		this.last = { processor: found, text };
+		this.last = { processor: found, text, processors };
 		const title = bloblangTitle(found);
 		if (this.panel.title !== title) {
 			this.panel.title = title;
@@ -417,10 +445,10 @@ class BloblangPanel implements BloblangPanelHandle {
 	/** The panel's document changed: a snapshot when its title, kind, Bloblang or removed state changed. */
 	async documentChanged(): Promise<void> {
 		try {
-			const processor = this.processor();
+			const current = this.current();
 			this.updateHint();
 			// While Add label runs, its own snapshot follows the relink.
-			if (!this.labelling && this.sourceKey(processor) !== this.sentSource) {
+			if (!this.labelling && this.sourceKey(current) !== this.sentSource) {
 				await this.postSnapshot();
 			}
 		} catch (e) {
@@ -440,9 +468,15 @@ class BloblangPanel implements BloblangPanelHandle {
 		return this.post({ type: 'binary', status });
 	}
 
-	/** What a snapshot shows: the title, the kind, the Bloblang, whether the offer shows, and the removed state (4.10). */
-	private sourceKey(processor: BloblangProcessor | undefined): string {
-		return JSON.stringify([this.panel.title, this.kind, this.source, this.unlabelled(processor) ? this.ref?.path : undefined, this.removed]);
+	/**
+	 * What a snapshot shows: the title, the kind, the Bloblang, whether the offer shows, the removed
+	 * state (4.10) and the previous step (4.18).
+	 */
+	private sourceKey(current: Current): string {
+		return JSON.stringify([
+			this.panel.title, this.kind, this.source, this.unlabelled(current.processor) ? this.ref?.path : undefined, this.removed,
+			previousStepOf(current),
+		]);
 	}
 
 	/**
@@ -456,10 +490,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	private async postSnapshot(): Promise<void> {
 		// A snapshot asked for during Add label shows its outcome (4.16).
 		await this.labelling;
-		const processor = this.processor();
+		const current = this.current();
 		const { kind, source, removed } = this;
-		this.sentSource = this.sourceKey(processor);
-		const unlabelled = this.unlabelled(processor);
+		this.sentSource = this.sourceKey(current);
+		const unlabelled = this.unlabelled(current.processor);
+		const previousStep = previousStepOf(current);
 		const samples = await this.samples();
 		const samplesFile = samplesUri(this.uri);
 		await this.post({
@@ -470,7 +505,126 @@ class BloblangPanel implements BloblangPanelHandle {
 			// The names now (4.17: a rename changes them; the page's are the first paint's).
 			fileName: path.posix.basename(this.uri.path),
 			...(samplesFile ? { samplesFile: path.posix.basename(samplesFile.path) } : {}),
+			...(previousStep !== undefined ? { previousStep } : {}),
 		});
+	}
+
+	/**
+	 * From previous step (4.18): one at a time (a request meanwhile is ignored). Runs the previous
+	 * steps from the nearest one with a selected sample, each on the last one's output, and saves the
+	 * last output as a new sample, selected; a deleted message, a failure or no sample saves nothing.
+	 */
+	private async sampleFromPrevious(): Promise<void> {
+		if (this.seeding) {
+			return;
+		}
+		this.seeding = true;
+		try {
+			await this.seed();
+		} finally {
+			this.seeding = false;
+		}
+	}
+
+	private async seed(): Promise<void> {
+		const current = this.current();
+		const steps = current.processor ? previousSteps(current.processors, this.path) : [];
+		if (steps.length === 0 || samplesUri(this.uri) === undefined) {
+			// Nothing to offer any more: the webview gets the panel's state.
+			await this.postSnapshot();
+			return;
+		}
+		const doc = this.document();
+		if (!doc || doc.isDirty) {
+			// Entries are linked to the saved file (AD-22): an unsaved text's links may name others.
+			this.owner.tell(saveFirst(path.posix.basename(this.uri.path)));
+			return;
+		}
+		const version = doc.version;
+		const previous = stepTitle(steps[0]);
+		const state = await this.owner.samples.read(this.uri);
+		if (state.kind === 'unreadable') {
+			this.owner.tell(samplesUnreadable(state.reason), 'error');
+			return;
+		}
+		let input: TestInput | undefined;
+		let start = -1;
+		for (let i = 0; i < steps.length && !input; i++) {
+			const { samples, selected } = samplesFor(state.file, linkOfProcessor(steps[i]));
+			const sample = samples.find((s) => s.name === selected);
+			if (sample) {
+				input = { content: sample.content, meta: sample.meta };
+				start = i;
+			}
+		}
+		if (!input) {
+			this.owner.tell(previousHasNoSample(previous));
+			return;
+		}
+		for (const step of steps.slice(0, start + 1).reverse()) {
+			const outcome = await this.owner.runTest(this.uri, { ...current, processor: step }, step.path, input);
+			if (this.disposed) {
+				return;
+			}
+			const result = outcome.result;
+			if (result.kind === 'deleted') {
+				this.owner.tell(previousDeleted(stepTitle(step)), 'error');
+				return;
+			}
+			if (result.kind !== 'ok') {
+				this.owner.tell(previousFailed(stepTitle(step), result.message), 'error');
+				return;
+			}
+			input = { content: result.content, meta: inputMetaOf(result.meta) };
+		}
+		const after = this.document();
+		if (!after || after.version !== version) {
+			// The runs used the text as it was: their output may not be the steps' any more.
+			this.owner.tell(PREVIOUS_FILE_CHANGED);
+			return;
+		}
+		await this.addSeeded(fromPreviousSampleName(previous), input);
+	}
+
+	/**
+	 * Adds `input` as a new selected sample named `base`, made unique against the file as it is then
+	 * (4.18); a name taken meanwhile is made unique again once. Written: the panel gets `samples`.
+	 */
+	private async addSeeded(base: string, input: TestInput): Promise<void> {
+		await this.labelling;
+		await this.relinking;
+		const ref = this.ref;
+		if (!ref) {
+			this.owner.tell(SAMPLES_WAIT_FOR_SAVE);
+			await this.postSamples();
+			return;
+		}
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const state = await this.owner.samples.read(this.uri);
+			if (state.kind === 'unreadable') {
+				this.owner.tell(samplesUnreadable(state.reason), 'error');
+				await this.postSamples();
+				return;
+			}
+			const name = freeSampleName(base, samplesFor(state.file, ref).samples);
+			const outcome = await this.owner.samples.update(this.uri, ref, { type: 'add', sample: { name, content: input.content, meta: input.meta } });
+			if (outcome === 'written') {
+				await this.postSamples();
+				return;
+			}
+			if (typeof outcome === 'object') {
+				await this.owner.samplesFailed(this.uri, outcome.failed);
+				return;
+			}
+			if (outcome === 'unreadable') {
+				// It became unreadable after the read: the next read says why.
+				continue;
+			}
+			// 'unchanged': the name was taken between the read and the write.
+		}
+		const state = await this.owner.samples.read(this.uri);
+		this.owner.tell(state.kind === 'unreadable' ? samplesUnreadable(state.reason) : couldNotSaveSamples(PREVIOUS_NAME_TAKEN), 'error');
+		await this.postSamples();
 	}
 
 	/** Posts a snapshot (4.10: after a save moved its samples link). */
@@ -678,13 +832,14 @@ class BloblangPanel implements BloblangPanelHandle {
 	private current(): Current {
 		const doc = this.document();
 		if (!doc || this.removed) {
-			return { processor: undefined, text: '' };
+			return { processor: undefined, text: '', processors: [] };
 		}
 		const parsed = parsedDocument(doc).parsed;
 		if (!parses(parsed)) {
-			return this.last ?? { processor: undefined, text: '' };
+			return this.last ?? { processor: undefined, text: '', processors: [] };
 		}
-		return { processor: bloblangProcessorByPath(bloblangProcessors(parsed), this.path), text: doc.getText() };
+		const processors = bloblangProcessors(parsed);
+		return { processor: bloblangProcessorByPath(processors, this.path), text: doc.getText(), processors };
 	}
 
 	/** Whether its open document doesn't parse now (4.10: everything stays as it is). */
@@ -972,9 +1127,10 @@ export class BloblangPanels implements vscode.Disposable {
 		if (parses(parsed)) {
 			try {
 				const wasLive = new Set(entries.filter((entry) => !entry.removed && !entry.isReset));
-				const found = matchProcessors(bloblangProcessors(parsed), entries.map((entry) => entry.tracked()));
+				const processors = bloblangProcessors(parsed);
+				const found = matchProcessors(processors, entries.map((entry) => entry.tracked()));
 				const text = doc.getText();
-				entries.forEach((entry, i) => entry.follow(found[i], text));
+				entries.forEach((entry, i) => entry.follow(found[i], text, processors));
 				if (!doc.isDirty) {
 					entries.forEach((entry) => entry.markSaved());
 				}
@@ -1153,9 +1309,8 @@ export class BloblangPanels implements vscode.Disposable {
 			return open;
 		}
 		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-		const processor = doc && this.options.detection.isDetected(uri)
-			? bloblangProcessorByPath(bloblangProcessors(parsedDocument(doc).parsed), processorPath)
-			: undefined;
+		const processors = doc && this.options.detection.isDetected(uri) ? bloblangProcessors(parsedDocument(doc).parsed) : [];
+		const processor = bloblangProcessorByPath(processors, processorPath);
 		if (!processor) {
 			this.tell(NO_LONGER_THERE);
 			return undefined;
@@ -1173,7 +1328,7 @@ export class BloblangPanels implements vscode.Disposable {
 				localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')],
 			},
 		);
-		const entry = new BloblangPanel(uri, processor, doc!.getText(), panel, this);
+		const entry = new BloblangPanel(uri, processor, doc!.getText(), processors, panel, this);
 		if (doc!.isDirty) {
 			this.dirty.add(uri.toString());
 		}
@@ -1364,6 +1519,17 @@ export function positionIn(text: string, offset: number): FilePosition {
 		}
 	}
 	return { line, char: at - start + 1 };
+}
+
+/** The previous step's title (4.18): of the processor just before `current`'s in its own list; none: no such step. */
+function previousStepOf(current: Current): string | undefined {
+	const step = current.processor ? previousSteps(current.processors, current.processor.path)[0] : undefined;
+	return step ? stepTitle(step) : undefined;
+}
+
+/** What links a processor to its samples (4.18): its label, else its path (AD-22). */
+function linkOfProcessor(processor: BloblangProcessor): SampleRef {
+	return processor.label !== undefined ? { label: processor.label, path: processor.path } : { path: processor.path };
 }
 
 /** A samples link as messages name it (4.10): its label, else its path. */

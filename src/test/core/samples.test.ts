@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import {
-	applySampleChange, entryFor, hasLabelEntry, linkOf, parseSamplesFile, relinkAll, relinkSamples, sampleCount, samplesFileName, samplesFor, serializeSamplesFile,
+	applySampleChange, entryFor, freeSampleName, hasLabelEntry, inputMetaOf, linkOf, parseSamplesFile, relinkAll, relinkSamples, sampleCount, samplesFileName, samplesFor, serializeSamplesFile,
 	type SampleChange, type SampleRef, type SamplesFile,
 } from '../../core/samples';
 import { MAX_SAMPLE_NAME_LENGTH } from '../../shared/bloblangProtocol';
@@ -215,5 +215,21 @@ suite('core/samples (4.9, AD-22)', () => {
 		assert.deepStrictEqual(unlabelled.file?.mappings[2], entry(P(2), 'x'));
 		// The same link: nothing to do.
 		assert.deepStrictEqual(relinkAll(file, [{ from: P(0), to: P(0) }], []), { file: undefined, applied: [false], hadEntry: [true] });
+	});
+
+	test('FROM_PREVIOUS (4.18): a free name, cut to fit; output metadata as a sample\'s', () => {
+		assert.strictEqual(freeSampleName('from x', []), 'from x');
+		assert.strictEqual(freeSampleName('from x', [{ name: 'from x' }]), 'from x 2');
+		assert.strictEqual(freeSampleName('from x', [{ name: 'from x' }, { name: 'from x 2' }, { name: 'from x 4' }]), 'from x 3');
+		const long = `from ${'y'.repeat(200)}`;
+		const first = freeSampleName(long, []);
+		assert.strictEqual(first, long.slice(0, MAX_SAMPLE_NAME_LENGTH));
+		const second = freeSampleName(long, [{ name: first }]);
+		assert.strictEqual(second, `${long.slice(0, MAX_SAMPLE_NAME_LENGTH - 2)} 2`);
+		assert.strictEqual(second.length, MAX_SAMPLE_NAME_LENGTH);
+		assert.deepStrictEqual(inputMetaOf({ s: 'x', n: 1.5, t: true, z: null, a: [1, 'two'], o: { p: { q: [] } } }), {
+			s: 'x', n: '1.5', t: 'true', z: 'null', a: '[1,"two"]', o: '{"p":{"q":[]}}',
+		});
+		assert.deepStrictEqual(inputMetaOf({}), {});
 	});
 });

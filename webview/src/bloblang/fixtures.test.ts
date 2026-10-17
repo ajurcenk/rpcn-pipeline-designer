@@ -37,6 +37,8 @@ describe('Bloblang panel fixtures (4.4)', () => {
 		expect(messages.some((m) => m.type === 'snapshot' && m.removed === true)).toBe(true);
 		// 4.17: a snapshot carrying the file's and samples file's names.
 		expect(messages.some((m) => m.type === 'snapshot' && m.fileName !== undefined && m.samplesFile !== undefined)).toBe(true);
+		// 4.18: a snapshot naming the previous step.
+		expect(messages.some((m) => m.type === 'snapshot' && m.previousStep !== undefined)).toBe(true);
 		const ok = messages.find((m) => m.type === 'result' && m.result.kind === 'ok');
 		expect(ok?.type === 'result' && ok.result.kind === 'ok' && ok.result.changes.fields).toEqual({ added: ['c'], changed: ['b'], removed: [] });
 		const failed = messages.find((m) => m.type === 'result' && m.result.kind === 'failed');

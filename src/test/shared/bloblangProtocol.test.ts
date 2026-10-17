@@ -42,6 +42,8 @@ const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 	{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root = this', binary: 'ok', samples: SAMPLES, selected: null, removed: true },
 	// 4.17: the file's and samples file's names.
 	{ type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, fileName: 'b.yaml', samplesFile: 'b.samples.json' },
+	// 4.18: the previous step's title.
+	{ type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, previousStep: 'pipeline.processors[0]' },
 	...(['ok', 'missing', 'invalid', 'unresolved'] as const).map((status): BloblangHostMessage => ({ type: 'binary', status })),
 ];
 
@@ -117,6 +119,9 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			snapshotWith({ fileName: 1 }),
 			snapshotWith({ samplesFile: '' }),
 			snapshotWith({ samplesFile: null }),
+			snapshotWith({ previousStep: '' }),
+			snapshotWith({ previousStep: 1 }),
+			snapshotWith({ previousStep: null }),
 			{ type: 'binary' },
 			{ type: 'binary', status: 'broken' },
 			// result envelope
@@ -187,6 +192,7 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			[{ type: 'retryRequested', extra: 1 }, { type: 'retryRequested' }],
 			[{ type: 'addLabelRequested', label: 'x' }, { type: 'addLabelRequested' }],
 			[{ type: 'focusEditorRequested', line: 3 }, { type: 'focusEditorRequested' }],
+			[{ type: 'sampleFromPreviousRequested', name: 'x' }, { type: 'sampleFromPreviousRequested' }],
 		];
 		for (const [message, expected] of good) {
 			const parsed = parseBloblangWebviewMessage(message);

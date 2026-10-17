@@ -28,6 +28,9 @@
 // a confirmed delete. An edit of a selected sample posts `inputEdited` after the run's pause (and before
 // any other sample intent). While the file can't be read (`samplesError`), the controls are disabled.
 // The selected sample's input is mirrored into the view state, as any input.
+// Ticket 4.18: while the snapshot names a previous step (`previousStep`), the sample controls end with
+// **From previous step**, which posts `sampleFromPreviousRequested` (after a pending edit, as the other
+// sample intents); the host's `samples` with the new sample selected follows, and it runs (a switch).
 // Ticket 4.16: while the snapshot says the processor is unlabelled (`unlabelledPath`) and the config
 // has a samples file, a note under the toolbar says its samples are linked to its position, with
 // **Add label**, which posts `addLabelRequested` (the host asks for the name and sends a new snapshot).
@@ -596,6 +599,12 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 		post({ type: 'sampleRenamed', from: selected, to });
 	};
 
+	/** From previous step (4.18): the host runs the previous steps and saves the output as a new sample. */
+	const sampleFromPrevious = () => {
+		flushSave();
+		post({ type: 'sampleFromPreviousRequested' });
+	};
+
 	const deleteSample = () => {
 		const { selected } = samplesNow.current;
 		if (selected === null) {
@@ -665,6 +674,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 								<SamplePicker
 									samples={samples.list} selected={samples.selected} disabled={samples.error !== undefined}
 									onSwitch={switchSample} onNew={newSample} onRename={renameSample} onDelete={deleteSample}
+									previousStep={snapshot?.previousStep} onFromPrevious={sampleFromPrevious}
 								/>
 							)}
 							<span className="rpcn-bl-spacer" />

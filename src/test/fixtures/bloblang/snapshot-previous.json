@@ -1,0 +1,12 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: enrich",
+  "kind": "mapping",
+  "source": "root.total = this.price * this.qty",
+  "binary": "ok",
+  "samples": [],
+  "selected": null,
+  "fileName": "orders.yaml",
+  "samplesFile": "orders.samples.json",
+  "previousStep": "normalize"
+}

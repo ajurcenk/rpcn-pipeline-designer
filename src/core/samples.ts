@@ -7,9 +7,12 @@
 // store (`src/adapters/bloblangPanel/sampleStore.ts`) reads and writes the file. Ticket 4.16: the
 // lens's count (`sampleCount`) and the relink of an unlabelled entry to a new label (`relinkSamples`);
 // ticket 4.10 generalizes the relink to any pair of links (label or path, either way) and adds a
-// config's save relink, all its panels' moves in one step (`relinkAll`).
+// config's save relink, all its panels' moves in one step (`relinkAll`). Ticket 4.18: a free name
+// for a new sample (`freeSampleName`) and a run's output metadata as a sample's (`inputMetaOf`).
 
-import { isSampleName, type BloblangSample, type InputMeta } from '../shared/bloblangProtocol';
+import {
+	isSampleName, MAX_SAMPLE_NAME_LENGTH, type BloblangSample, type InputMeta, type ResultMeta,
+} from '../shared/bloblangProtocol';
 
 export const SAMPLES_FILE_VERSION = 1;
 
@@ -192,6 +195,28 @@ export function entryFor(file: SamplesFile | undefined, ref: SampleRef): SampleE
 export function samplesFor(file: SamplesFile | undefined, ref: SampleRef): Pick<SampleEntry, 'samples' | 'selected'> {
 	const entry = entryFor(file, ref);
 	return entry ? { samples: entry.samples, selected: entry.selected } : { samples: [], selected: null };
+}
+
+/**
+ * `base` as a sample name not among `samples` (4.18): `base`, else `base 2`, `base 3`, …; `base` is cut
+ * so that the name fits MAX_SAMPLE_NAME_LENGTH characters.
+ */
+export function freeSampleName(base: string, samples: readonly Pick<BloblangSample, 'name'>[]): string {
+	const names = new Set(samples.map((s) => s.name));
+	const fit = (suffix: string) => `${base.slice(0, MAX_SAMPLE_NAME_LENGTH - suffix.length)}${suffix}`;
+	let name = fit('');
+	for (let n = 2; names.has(name); n++) {
+		name = fit(` ${n}`);
+	}
+	return name;
+}
+
+/** A run's output metadata as a sample's (4.18): strings as they are, any other value as its JSON text. */
+export function inputMetaOf(meta: ResultMeta): InputMeta {
+	return Object.fromEntries(Object.keys(meta).map((key) => {
+		const value = meta[key];
+		return [key, typeof value === 'string' ? value : JSON.stringify(value)];
+	}));
 }
 
 function sameMeta(a: InputMeta, b: InputMeta): boolean {

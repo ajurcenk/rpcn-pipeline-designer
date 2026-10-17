@@ -1,6 +1,7 @@
 // The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
 // `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`; 4.17 its `fileName` and
-// `samplesFile`; 4.11 `focusEditorRequested`, the graph's): every message of the second webview,
+// `samplesFile`; 4.11 `focusEditorRequested`, the graph's; 4.18 the snapshot's `previousStep` and
+// `sampleFromPreviousRequested`): every message of the second webview,
 // as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
 // The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
@@ -84,6 +85,8 @@ export type BloblangHostMessage =
 	 * the panel shows the removed notice (title, kind and source are the last ones it had).
 	 * `fileName` and `samplesFile` (4.17): the config's file name and its samples file's name now
 	 * (a rename changes them); the webview prefers them over the page's `data-file` and `data-samples`.
+	 * `previousStep` (4.18): the title (label, else path) of the `mapping` / `mutation` just before
+	 * the processor in its own list, when there is one (the panel offers From previous step).
 	 */
 	| {
 		readonly type: 'snapshot';
@@ -98,6 +101,7 @@ export type BloblangHostMessage =
 		readonly removed?: true;
 		readonly fileName?: string;
 		readonly samplesFile?: string;
+		readonly previousStep?: string;
 	}
 	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
 	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
@@ -125,7 +129,12 @@ export type BloblangWebviewMessage =
 	/** Add label (4.16): ask for a label for the unlabelled processor and relink its samples. */
 	| { readonly type: 'addLabelRequested' }
 	/** Esc in the panel (4.11): focus the YAML editor, its cursor unchanged (the graph's message). */
-	| { readonly type: 'focusEditorRequested' };
+	| { readonly type: 'focusEditorRequested' }
+	/**
+	 * From previous step (4.18): run the previous steps from the nearest one with a selected sample
+	 * and save the last output as a new sample of this processor.
+	 */
+	| { readonly type: 'sampleFromPreviousRequested' };
 
 type Obj = Record<string, unknown>;
 
@@ -231,7 +240,7 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 					&& isBinaryStatus(message.binary) && isSamples(message.samples, message.selected, message.samplesError)
 					&& (message.unlabelledPath === undefined || (isString(message.unlabelledPath) && message.unlabelledPath !== ''))
 					&& (message.removed === undefined || message.removed === true)
-					&& isOptionalName(message.fileName) && isOptionalName(message.samplesFile);
+					&& isOptionalName(message.fileName) && isOptionalName(message.samplesFile) && isOptionalName(message.previousStep);
 				break;
 			case 'result':
 				ok = isResult(message.result)
@@ -282,6 +291,7 @@ export function parseBloblangWebviewMessage(message: unknown): BloblangWebviewMe
 			case 'retryRequested':
 			case 'addLabelRequested':
 			case 'focusEditorRequested':
+			case 'sampleFromPreviousRequested':
 				return { type: message.type };
 			case 'run':
 			case 'inputEdited': {

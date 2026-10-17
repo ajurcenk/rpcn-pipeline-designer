@@ -10,6 +10,7 @@
 // 4.15 (AI-7): no binary, a switch runs nothing and recovery runs the selected sample.
 // Ticket 4.16: the unlabelled processor's note and Add label.
 // Ticket 4.10: the removed processor's notice, and the run when it comes back.
+// Ticket 4.18: From previous step (its presence, name and post, after a pending edit).
 // Ticket 4.11: the keyboard and screen-reader model (names, the Tab walk, the tabs pattern, Esc, the
 // one announcer, focus on the removed notice), every row of the plan's matrix but FOCUS_CSS (style.test.ts).
 
@@ -25,7 +26,8 @@ import {
 	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE,
 } from './OutputView';
 import {
-	DELETE_LABEL, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL, SAMPLE_LABEL, UNSAVED_INPUT,
+	DELETE_LABEL, FROM_PREVIOUS_LABEL, fromPreviousName, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL,
+	SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
 import {
 	ADD_LABEL_LABEL, announcement, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
@@ -990,6 +992,52 @@ describe('Bloblang test panel: saved samples (4.9)', () => {
 		expect(input()).toBe('{"a":1}');
 	});
 
+	it('FROM_PREVIOUS (4.18): after Delete, named for the previous step; posts the request after a pending edit; the new sample runs', async () => {
+		vi.useFakeTimers();
+		await render({ runOnChange: false }, 'orders.yaml', FILE);
+		await send(withSamples([A, B], 'a'));
+		expect(host.querySelector('.rpcn-bl-from-prev')).toBeNull();
+		await send({ ...withSamples([A, B], 'a'), previousStep: 'normalize' });
+		const buttons = [...host.querySelectorAll<HTMLButtonElement>('.rpcn-bl-samples button')];
+		expect(buttons.map((b) => b.textContent)).toEqual([NEW_SAMPLE_LABEL, RENAME_LABEL, DELETE_LABEL, FROM_PREVIOUS_LABEL]);
+		const from = buttons[3];
+		expect(from.getAttribute('aria-label')).toBe(fromPreviousName('normalize'));
+		expect(from.getAttribute('aria-label')).toBe('New sample from normalize');
+		expect(from.disabled).toBe(false);
+		// A pending edit of the selected sample goes first.
+		await type('{"a":9}');
+		await click(from);
+		expect(intents()).toEqual([
+			{ type: 'inputEdited', content: '{"a":9}', meta: { k: 'v' } },
+			{ type: 'sampleFromPreviousRequested' },
+		]);
+		// The host's samples with the new sample selected: it becomes the input and runs.
+		const seeded: BloblangSample = { name: 'from normalize', content: '{"n":1}', meta: { x: 'y' } };
+		await send({ type: 'samples', samples: [{ ...A, content: '{"a":9}' }, B, seeded], selected: seeded.name });
+		expect(picker()!.value).toBe(seeded.name);
+		expect(input()).toBe('{"n":1}');
+		expect(runs().at(-1)).toEqual({ type: 'run', content: '{"n":1}', meta: { x: 'y' } });
+		// No previous step any more: the button goes.
+		await send({ ...withSamples([A, B], 'a') });
+		expect(host.querySelector('.rpcn-bl-from-prev')).toBeNull();
+	});
+
+	it('FROM_PREVIOUS_HIDDEN (4.18): disabled with an unreadable file; hidden with no binary, while removed and for an untitled config', async () => {
+		await render({}, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, previousStep: 'p', samplesError: 'bad' });
+		expect(host.querySelector<HTMLButtonElement>('.rpcn-bl-from-prev')?.disabled).toBe(true);
+		await send({ ...SNAPSHOT, previousStep: 'p', binary: 'missing' });
+		expect(host.querySelector('.rpcn-bl-from-prev')).toBeNull();
+		await send({ ...SNAPSHOT, previousStep: 'p', removed: true });
+		expect(host.querySelector('.rpcn-bl-from-prev')).toBeNull();
+		await act(async () => root.unmount());
+		root = createRoot(host);
+		await render({}, 'untitled');
+		await send({ ...SNAPSHOT, previousStep: 'p' });
+		expect(host.querySelector('.rpcn-bl-from-prev')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-samples')).toBeNull();
+	});
+
 	it('AI-7 with 4.15: with no binary a switch runs nothing; recovery runs the selected sample once', async () => {
 		vi.useFakeTimers();
 		await render({ runOnChange: true }, 'orders.yaml', FILE);
@@ -1223,6 +1271,12 @@ describe('Bloblang test panel: keyboard and screen reader (4.11)', () => {
 		]);
 		await send({ type: 'result', result: FAILED, durationMs: 3, binary: null });
 		expect(tabStops().map(stopName).slice(8)).toEqual(['rpcn-bl-out-tab-content', 'Go to line 10', 'Output content']);
+	});
+
+	it('TAB_WALK_PREVIOUS (4.18): From previous step is a Tab stop after Delete', async () => {
+		await render({ content: '{"a":1}' }, 'orders.yaml', 'orders.samples.json');
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', previousStep: 'normalize' });
+		expect(tabStops().map(stopName).slice(0, 6)).toEqual(['rpcn-bl-sample', 'New sample', 'Rename', 'Delete', 'New sample from normalize', 'rpcn-bl-auto']);
 	});
 
 	it.each(['in', 'out'] as const)('TABS_ARROWS (%s): Right and Left switch and focus; Home and End go to the first and the last', async (column) => {

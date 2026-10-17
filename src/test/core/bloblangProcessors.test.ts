@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors } from '../../core/bloblangProcessors';
+import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, stepTitle } from '../../core/bloblangProcessors';
 import { componentCatalogue } from '../../core/catalogue';
 import { buildPipelineModel, nodeAt } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
@@ -349,5 +349,57 @@ suite('core/bloblangProcessors positions and ids (4.3)', () => {
 		const [p] = processorsOf(text);
 		assert.strictEqual(p.positions.text, p.source);
 		assert.deepStrictEqual([p.positions.offsetAt(1, 1), p.positions.offsetAt(4, 4)], [text.indexOf('1.0'), text.indexOf('1.0')]);
+	});
+
+	test('PREVIOUS_STEPS (4.18): the mappings / mutations just before, nearest first, in the same list only', () => {
+		const text = [
+			'pipeline:',
+			'  processors:',
+			'    - label: a',
+			'      mapping: root = 1',
+			'    - mutation: root.b = 2',
+			'    - label: c',
+			'      mapping: root.c = 3',
+			'    - log:',
+			'        message: hi',
+			'    - mapping: root = this',
+			'    - try:',
+			'        - mapping: root.t = 1',
+			'        - mapping: root.u = 2',
+			'    - switch:',
+			'        - processors:',
+			'            - mapping: root.s = 1',
+			'            - mapping: root.s = 2',
+			'processor_resources:',
+			'  - label: r1',
+			'    mapping: root = 1',
+			'  - label: r2',
+			'    mapping: root = 2',
+			'---',
+			'pipeline:',
+			'  processors:',
+			'    - mapping: root = 1',
+			'    - mapping: root = 2',
+			'',
+		].join('\n');
+		const found = processorsOf(text);
+		const steps = (path: string) => previousSteps(found, path).map((p) => p.path);
+		// SEED + CHAIN: nearest first, up to the start of the list.
+		assert.deepStrictEqual(steps('pipeline.processors[2]'), ['pipeline.processors[1]', 'pipeline.processors[0]']);
+		assert.deepStrictEqual(steps('pipeline.processors[1]'), ['pipeline.processors[0]']);
+		// NO_PREVIOUS: the first item, a previous item of another kind, a resource.
+		assert.deepStrictEqual(steps('pipeline.processors[0]'), []);
+		assert.deepStrictEqual(steps('pipeline.processors[4]'), []);
+		assert.deepStrictEqual(steps('processor_resources[1]'), []);
+		// NESTED: a try: list and a switch case's processors, never the outer list.
+		assert.deepStrictEqual(steps('pipeline.processors[5].try[1]'), ['pipeline.processors[5].try[0]']);
+		assert.deepStrictEqual(steps('pipeline.processors[5].try[0]'), []);
+		assert.deepStrictEqual(steps('pipeline.processors[6].switch[0].processors[1]'), ['pipeline.processors[6].switch[0].processors[0]']);
+		// A later document's list.
+		assert.deepStrictEqual(steps('documents[1].pipeline.processors[1]'), ['documents[1].pipeline.processors[0]']);
+		// A path that names no list item.
+		assert.deepStrictEqual(steps('pipeline'), []);
+		// The title: the label, else the path.
+		assert.deepStrictEqual(previousSteps(found, 'pipeline.processors[2]').map(stepTitle), ['pipeline.processors[1]', 'a']);
 	});
 });

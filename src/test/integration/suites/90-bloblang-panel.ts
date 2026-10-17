@@ -21,6 +21,8 @@
 // samples file, or a folder's), and opens in one test group below the graph (a graph opened later
 // goes above it).
 // Ticket 4.11: Esc in the panel (`focusEditorRequested`) focuses the YAML editor with its cursor unchanged.
+// Ticket 4.18: From previous step (`sampleFromPreviousRequested`) on the fake `run`, and the
+// snapshot's `previousStep`; a run seam for non-string output metadata.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,11 +31,13 @@ import { parse } from 'yaml';
 import {
 	ADD_LABEL_TITLE, addLabelPrompt, BLOBLANG_VIEW_TYPE, BloblangPanels, couldNotAddLabel, couldNotMoveSamples, couldNotSaveSamples, deleteSampleMessage,
 	LABEL_PROCESSOR_CHANGED, labelInSamples, labelSamplesNotSaved, labelSamplesUnreadable, SAMPLES_USE_IT, SAMPLES_WAIT_FOR_SAVE,
-	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, samplesNotMoved, TEST_MAPPING_COMMAND, type BloblangPanelHandle, type LabelRequest,
+	NO_LONGER_THERE, NO_MAPPING_AT_CURSOR, PREVIOUS_FILE_CHANGED, PREVIOUS_NAME_TAKEN, previousDeleted, previousFailed, previousHasNoSample, saveFirst,
+	samplesNotMoved, samplesUnreadable, TEST_MAPPING_COMMAND,
+	type BloblangPanelHandle, type LabelRequest, type MappingTestRunner,
 } from '../../../adapters/bloblangPanel/panels';
 import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
-import { NO_BINARY_MESSAGE } from '../../../adapters/redpandaConnect/bloblang';
+import { NO_BINARY_MESSAGE, runMappingTest } from '../../../adapters/redpandaConnect/bloblang';
 import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
 import { TEST_MAPPING_LENS_TITLE, testMappingLensTitle } from '../../../adapters/vscode/bloblangLens';
 import { LABEL_IN_SAMPLES_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR } from '../../../core/labelEdit';
@@ -603,7 +607,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	 */
 	function testBloblangPanels(
 		actions: BinaryActions | undefined, confirmDelete?: (name: string) => Promise<boolean>, showMessage?: (message: string, kind?: 'info' | 'error') => void,
-		askLabel?: (request: LabelRequest) => Promise<string | undefined>,
+		askLabel?: (request: LabelRequest) => Promise<string | undefined>, run?: MappingTestRunner,
 	) {
 		const log: string[] = [];
 		const panels = new BloblangPanels({
@@ -616,6 +620,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			...(confirmDelete ? { confirmDelete } : {}),
 			...(showMessage ? { showMessage } : {}),
 			...(askLabel ? { askLabel } : {}),
+			...(run ? { run } : {}),
 		});
 		return { panels, log };
 	}
@@ -2062,5 +2067,341 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		await vscode.commands.executeCommand('vscode.open', notes);
 		assert.ok(await waitFor(() => textTabs(notes).length > 0, 10_000));
 		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group is locked');
+	});
+
+	// From previous step (4.18).
+	const PREVIOUS_CONFIG = [
+		'input:',
+		'  stdin: {}',
+		'pipeline:',
+		'  processors:',
+		'    - label: seed',
+		'      mapping: meta x = "y"',
+		'    - label: plain',
+		'      mapping: root.c = 4',
+		'    - label: tail',
+		'      mapping: root = this',
+		'    - log:',
+		'        message: hi',
+		'    - mapping: root = this',
+		'    - try:',
+		'        - mapping: root.t = 1',
+		'        - mapping: root.u = 2',
+		'    - switch:',
+		'        - check: this.a > 0',
+		'          processors:',
+		'            - label: case_a',
+		'              mapping: root.s = 1',
+		'            - mapping: root.s = 2',
+		'    - label: gone',
+		'      mapping: root = deleted()',
+		'    - label: after_gone',
+		'      mapping: root = this',
+		'    - label: broken',
+		'      mapping: root.b = this.nope.or("FAIL_ME")',
+		'    - label: after_broken',
+		'      mapping: root = this',
+		'    - label: slow',
+		'      mapping: root.s = "SLOW_RUN"',
+		'    - label: after_slow',
+		'      mapping: root = this',
+		'processor_resources:',
+		'  - label: res_a',
+		'    mapping: root = this',
+		'  - label: res_b',
+		'    mapping: root = this',
+		'output:',
+		'  stdout: {}',
+		'',
+	].join('\n');
+	const AT = (i: number) => `pipeline.processors[${i}]`;
+	const TRY_1 = 'pipeline.processors[5].try[1]';
+	const TRY_0 = 'pipeline.processors[5].try[0]';
+	const CASE_1 = 'pipeline.processors[6].switch[0].processors[1]';
+	/** A samples file with one selected sample `s` per link (a label, or a path starting `pipeline.`). */
+	const writeSamples = (name: string, links: Record<string, string>) => fs.writeFileSync(samplesFile(name), JSON.stringify({
+		version: 1,
+		mappings: Object.entries(links).map(([link, content]) => ({
+			...(link.startsWith('pipeline.') ? { path: link } : { label: link }), selected: 's', samples: [sample('s', content)],
+		})),
+	}));
+	/** The entry of `link` in the samples file beside `name`. */
+	const entryOf = (name: string, link: string) => (readSamples(samplesFile(name)).mappings as { label?: string; path?: string; samples: unknown[] }[])
+		.find((m) => m.label === link || (m.label === undefined && m.path === link));
+	/**
+	 * A test BloblangPanels recording what it shows and the Bloblang of each run (`ran`), on `run`, else
+	 * on the real runner (the fake binary). The real webview runs a sample the host posts, so a run of
+	 * the panel's own Bloblang may follow: `stepRuns` leaves those out.
+	 */
+	function previousPanels(run: MappingTestRunner = runMappingTest) {
+		const shown: [string, string | undefined][] = [];
+		const ran: string[] = [];
+		const recording: MappingTestRunner = (state, kind, source, ...rest) => {
+			ran.push(source);
+			return run(state, kind, source, ...rest);
+		};
+		const { panels } = testBloblangPanels(undefined, async () => true, (message, kind) => shown.push([message, kind]), undefined, recording);
+		const stepRuns = (from: number, own: string) => ran.slice(from).filter((source) => source !== own);
+		return { panels, shown, ran, stepRuns };
+	}
+	async function readyPanel(panels: BloblangPanels, uri: vscode.Uri, processorPath: string): Promise<BloblangPanelHandle> {
+		const handle = (await panels.show(uri, processorPath))!;
+		assert.ok(handle, `no panel for ${processorPath}`);
+		await handle.receive({ type: 'ready' });
+		return handle;
+	}
+
+	test('SEED + NAME_TAKEN + CHAIN (4.18): the previous step\'s output becomes a selected sample "from <step>", saved and posted; a chain runs in order', async () => {
+		const doc = (await open('previous.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous.yaml', { seed: '{"a":1}' });
+		const { panels, shown, ran, stepRuns } = previousPanels();
+		try {
+			// SEED: [0] has a selected sample, the panel is on [1].
+			const plain = await readyPanel(panels, doc.uri, AT(1));
+			assert.strictEqual(lastSnapshot(plain)?.previousStep, 'seed');
+			const before = ran.length;
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(stepRuns(before, 'root.c = 4'), ['meta x = "y"'], 'one run: the previous step');
+			const fromSeed = sample('from seed', '{"b":2}', { x: 'y' });
+			assert.deepStrictEqual(entryOf('previous.yaml', 'plain'), { label: 'plain', selected: 'from seed', samples: [fromSeed] });
+			assert.deepStrictEqual(samplesMessages(plain).at(-1), { type: 'samples', samples: [fromSeed], selected: 'from seed' });
+			assert.deepStrictEqual(results(plain), [], 'the panel\'s own run loop posts nothing');
+			assert.deepStrictEqual(entryOf('previous.yaml', 'seed'), { label: 'seed', selected: 's', samples: [sample('s', '{"a":1}')] }, 'the seed entry is unchanged');
+
+			// NAME_TAKEN
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(entryOf('previous.yaml', 'plain'), {
+				label: 'plain', selected: 'from seed 2', samples: [fromSeed, { ...fromSeed, name: 'from seed 2' }],
+			});
+			plain.panel.dispose();
+
+			// CHAIN: [0] has a sample, [1] none (a fresh file), the panel on [2]: [0] then [1], [1]'s output saved.
+			writeSamples('previous.yaml', { seed: '{"a":1}' });
+			const tail = await readyPanel(panels, doc.uri, AT(2));
+			assert.strictEqual(lastSnapshot(tail)?.previousStep, 'plain');
+			const start = ran.length;
+			await tail.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(stepRuns(start, 'root = this'), ['meta x = "y"', 'root.c = 4'], 'two runs: seed, then plain');
+			// plain's output content, with the metadata seed set (carried into plain's input).
+			assert.deepStrictEqual(entryOf('previous.yaml', 'tail'), {
+				label: 'tail', selected: 'from plain', samples: [sample('from plain', '{"a":1,"b":3,"c":4}', { x: 'y' })],
+			});
+			assert.deepStrictEqual(shown, []);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('DELETED + FAILED + NO_SAMPLE (4.18): nothing is saved, and the message names the step', async () => {
+		const doc = (await open('previous-errors.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-errors.yaml', { gone: '{"a":1}', broken: '{"a":1}' });
+		const bytes = () => fs.readFileSync(samplesFile('previous-errors.yaml'), 'utf8');
+		const { panels, shown, ran, stepRuns } = previousPanels();
+		try {
+			const saved = bytes();
+			const afterGone = await readyPanel(panels, doc.uri, AT(8));
+			assert.strictEqual(lastSnapshot(afterGone)?.previousStep, 'gone');
+			await afterGone.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(shown.at(-1), [previousDeleted('gone'), 'error']);
+			assert.strictEqual(previousDeleted('gone'), '"gone" deleted the message; no sample was saved.');
+
+			const afterBroken = await readyPanel(panels, doc.uri, AT(10));
+			await afterBroken.receive({ type: 'sampleFromPreviousRequested' });
+			const [message, kind] = shown.at(-1)!;
+			assert.strictEqual(kind, 'error');
+			assert.ok(message.startsWith('"broken" failed: ') && message.includes('fake failure'), message);
+			assert.strictEqual(previousFailed('broken', 'm'), '"broken" failed: m');
+			assert.strictEqual(bytes(), saved, 'nothing saved');
+			assert.deepStrictEqual([...samplesMessages(afterGone), ...samplesMessages(afterBroken)], []);
+
+			// NO_SAMPLE: no step of the chain has a sample.
+			const plain = await readyPanel(panels, doc.uri, AT(1));
+			const before = ran.length;
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(shown.at(-1), [previousHasNoSample('seed'), 'info']);
+			assert.strictEqual(previousHasNoSample('seed'), '"seed" has no sample to run.');
+			assert.deepStrictEqual(stepRuns(before, 'root.c = 4'), [], 'nothing runs');
+			assert.strictEqual(bytes(), saved, 'nothing saved');
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('NO_PREVIOUS + NESTED + UPDATES (4.18): no previousStep for a first item, after another kind or for a resource; nested lists only; it follows edits', async () => {
+		const doc = (await open('previous-nested.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-nested.yaml', { [AT(4)]: '{"a":1}' });
+		const { panels, shown } = previousPanels();
+		try {
+			// NO_PREVIOUS
+			for (const at of [AT(0), AT(4), 'processor_resources[1]', TRY_0]) {
+				const handle = await readyPanel(panels, doc.uri, at);
+				assert.ok(lastSnapshot(handle) && !('previousStep' in lastSnapshot(handle)!), `${at}: ${JSON.stringify(lastSnapshot(handle))}`);
+				const before = handle.posted.length;
+				await handle.receive({ type: 'sampleFromPreviousRequested' });
+				assert.strictEqual(handle.posted.at(-1)?.type, 'snapshot', `${at}: the panel's state goes back`);
+				assert.ok(handle.posted.length === before + 1);
+			}
+			assert.deepStrictEqual(shown, []);
+
+			// NESTED: the try: list's own previous step only (AT(4), outside it, has a sample).
+			const inTry = await readyPanel(panels, doc.uri, TRY_1);
+			assert.strictEqual(lastSnapshot(inTry)?.previousStep, TRY_0);
+			await inTry.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(shown.at(-1), [previousHasNoSample(TRY_0), 'info']);
+			writeSamples('previous-nested.yaml', { [AT(4)]: '{"a":1}', [TRY_0]: '{"a":1}' });
+			await inTry.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(entryOf('previous-nested.yaml', TRY_1), {
+				path: TRY_1, selected: `from ${TRY_0}`, samples: [sample(`from ${TRY_0}`, '{"b":2}')],
+			});
+			const inCase = await readyPanel(panels, doc.uri, CASE_1);
+			assert.strictEqual(lastSnapshot(inCase)?.previousStep, 'case_a');
+
+			// UPDATES: a renamed previous step, then one of another kind.
+			const plain = await readyPanel(panels, doc.uri, AT(1));
+			await setText(doc, PREVIOUS_CONFIG.replace('label: seed\n', 'label: seed2\n'));
+			assert.ok(await waitFor(() => lastSnapshot(plain)?.previousStep === 'seed2', 5_000), JSON.stringify(lastSnapshot(plain)));
+			await setText(doc, PREVIOUS_CONFIG.replace('label: seed\n      mapping: meta x = "y"\n', 'label: seed\n      log:\n        message: x\n'));
+			assert.ok(await waitFor(() => lastSnapshot(plain) !== undefined && lastSnapshot(plain)!.previousStep === undefined, 5_000), JSON.stringify(lastSnapshot(plain)));
+		} finally {
+			panels.dispose();
+			await setText(doc, PREVIOUS_CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('BUSY (4.18): a second request while one runs is ignored', async () => {
+		const doc = (await open('previous-busy.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-busy.yaml', { slow: '{"a":1}' });
+		const { panels, ran, stepRuns } = previousPanels();
+		try {
+			const handle = await readyPanel(panels, doc.uri, AT(12));
+			assert.strictEqual(lastSnapshot(handle)?.previousStep, 'slow');
+			const before = ran.length;
+			const first = handle.receive({ type: 'sampleFromPreviousRequested' });
+			const second = handle.receive({ type: 'sampleFromPreviousRequested' });
+			await Promise.all([first, second]);
+			const slow = 'root.s = "SLOW_RUN"';
+			assert.deepStrictEqual(stepRuns(before, 'root = this'), [slow], 'one run');
+			assert.deepStrictEqual(entryOf('previous-busy.yaml', 'after_slow')?.samples, [sample('from slow', '{"b":2}')]);
+			// Once it is done, another request runs again.
+			await handle.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(stepRuns(before, 'root = this'), [slow, slow]);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('META + CHAIN_INPUT (4.18): non-string output metadata is saved as JSON text; each step gets the previous output', async () => {
+		const doc = (await open('previous-meta.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-meta.yaml', { seed: '{"a":1}' });
+		const calls: [string, string, Record<string, string>][] = [];
+		const run: MappingTestRunner = async (_state, _kind, source, content, meta) => {
+			if (source !== 'root = this') {
+				// Not the panel's own runs (the real webview runs the sample it is sent).
+				calls.push([source, content, { ...meta }]);
+			}
+			return {
+				result: {
+					kind: 'ok', content: `${content}+`, meta: { ...meta, [`n${calls.length}`]: calls.length, o: { p: [1, 'two'] }, s: 'x', z: null },
+					changes: { fields: null, meta: { added: [], changed: [], removed: [] } },
+				},
+				durationMs: 1, binary: null,
+			};
+		};
+		const { panels } = previousPanels(run);
+		try {
+			const tail = await readyPanel(panels, doc.uri, AT(2));
+			await tail.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(calls, [
+				['meta x = "y"', '{"a":1}', {}],
+				['root.c = 4', '{"a":1}+', { n1: '1', o: '{"p":[1,"two"]}', s: 'x', z: 'null' }],
+			]);
+			assert.deepStrictEqual(entryOf('previous-meta.yaml', 'tail')?.samples, [
+				sample('from plain', '{"a":1}++', { n1: '1', o: '{"p":[1,"two"]}', s: 'x', z: 'null', n2: '2' }),
+			]);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('UNSAVED + CHANGED_DURING (4.18): unsaved changes run nothing; an edit during the runs saves nothing; both say why', async () => {
+		const doc = (await open('previous-unsaved.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-unsaved.yaml', { seed: '{"a":1}', slow: '{"a":1}' });
+		const bytes = () => fs.readFileSync(samplesFile('previous-unsaved.yaml'), 'utf8');
+		const saved = bytes();
+		const { panels, shown, ran, stepRuns } = previousPanels();
+		try {
+			const plain = await readyPanel(panels, doc.uri, AT(1));
+			const afterSlow = await readyPanel(panels, doc.uri, AT(12));
+			// UNSAVED: a processor inserted above; the panel follows plain to [2].
+			await setText(doc, PREVIOUS_CONFIG.replace('    - label: seed\n', '    - mapping: root = 0\n    - label: seed\n'));
+			assert.ok(doc.isDirty);
+			assert.ok(await waitFor(() => plain.path === AT(2), 5_000), plain.path);
+			let before = ran.length;
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(shown.at(-1), [saveFirst('previous-unsaved.yaml'), 'info']);
+			assert.strictEqual(saveFirst('previous-unsaved.yaml'), 'Save previous-unsaved.yaml first: samples are linked to the saved file.');
+			assert.deepStrictEqual(stepRuns(before, 'root.c = 4'), [], 'nothing runs');
+			assert.strictEqual(bytes(), saved, 'nothing saved');
+			await setText(doc, PREVIOUS_CONFIG);
+			assert.ok(await doc.save());
+
+			// CHANGED_DURING: an edit while the slow previous step runs.
+			before = ran.length;
+			const request = afterSlow.receive({ type: 'sampleFromPreviousRequested' });
+			assert.ok(await waitFor(() => stepRuns(before, 'root = this').length === 1, 5_000), 'the slow step runs');
+			await setText(doc, `${PREVIOUS_CONFIG}# edited\n`);
+			await request;
+			assert.deepStrictEqual(shown.at(-1), [PREVIOUS_FILE_CHANGED, 'info']);
+			assert.strictEqual(bytes(), saved, 'nothing saved');
+		} finally {
+			panels.dispose();
+			await setText(doc, PREVIOUS_CONFIG);
+			assert.ok(await doc.save());
+		}
+	});
+
+	test('NAME_RACE + UNREADABLE (4.18): a name taken meanwhile is made unique again once, else the error; an unreadable file says so', async () => {
+		const doc = (await open('previous-race.yaml', PREVIOUS_CONFIG)).document;
+		writeSamples('previous-race.yaml', { seed: '{"a":1}' });
+		const { panels, shown } = previousPanels();
+		const store = panels.samples;
+		const update = store.update.bind(store);
+		/** How many more adds a sample of the same name lands just before. */
+		let races = 1;
+		(store as { update: typeof store.update }).update = async (uri, ref, change) => {
+			if (change.type === 'add' && races > 0) {
+				races--;
+				await update(uri, ref, { type: 'add', sample: sample(change.sample.name, 'other') });
+			}
+			return update(uri, ref, change);
+		};
+		try {
+			const plain = await readyPanel(panels, doc.uri, AT(1));
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			const fromSeed2 = sample('from seed 2', '{"b":2}', { x: 'y' });
+			assert.deepStrictEqual(entryOf('previous-race.yaml', 'plain'), {
+				label: 'plain', selected: 'from seed 2', samples: [sample('from seed', 'other'), fromSeed2],
+			});
+			assert.deepStrictEqual(samplesMessages(plain).at(-1)?.selected, 'from seed 2');
+			assert.strictEqual(shown.length, 0);
+
+			// Taken on both tries: nothing of ours is saved, and the error says why.
+			races = 2;
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(shown.at(-1), [couldNotSaveSamples(PREVIOUS_NAME_TAKEN), 'error']);
+			const names = (entryOf('previous-race.yaml', 'plain')?.samples as { name: string; content: string }[]).map((x) => [x.name, x.content]);
+			assert.deepStrictEqual(names, [['from seed', 'other'], ['from seed 2', '{"b":2}'], ['from seed 3', 'other'], ['from seed 4', 'other']]);
+
+			// UNREADABLE
+			fs.writeFileSync(samplesFile('previous-race.yaml'), '{');
+			await plain.receive({ type: 'sampleFromPreviousRequested' });
+			const [message, kind] = shown.at(-1)!;
+			assert.strictEqual(kind, 'error');
+			assert.ok(message.startsWith('The samples file can\'t be read: '), message);
+			assert.strictEqual(samplesUnreadable('r'), 'The samples file can\'t be read: r');
+		} finally {
+			panels.dispose();
+		}
 	});
 });

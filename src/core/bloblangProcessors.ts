@@ -5,6 +5,7 @@
 // and its decoded Bloblang (`Scalar.value`). Since ticket 4.3 each also carries its
 // Bloblang-to-document position map (src/core/bloblangPositions.ts) and, given the document's
 // PipelineModel, its graph node's AD-7 id (through `nodeAt`, never a copied rule).
+// Ticket 4.18: the previous steps of a processor in its own list (`previousSteps`).
 
 import { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { BloblangProcessorKind } from '../shared/bloblangProtocol';
@@ -80,6 +81,37 @@ export function bloblangProcessorAt(processors: readonly BloblangProcessor[], of
 /** The processor of `processors` at `path`, if any. */
 export function bloblangProcessorByPath(processors: readonly BloblangProcessor[], path: string): BloblangProcessor | undefined {
 	return processors.find((p) => p.path === path);
+}
+
+/** A processor's title, as its panel names it: its label, else its path (4.18). */
+export function stepTitle(processor: Pick<BloblangProcessor, 'label' | 'path'>): string {
+	return processor.label ?? processor.path;
+}
+
+/**
+ * The steps before the processor at `path` in its own list (4.18), nearest first: for `<list>[n]`,
+ * `<list>[n-1]`, `<list>[n-2]`, … while each is one of `processors` (a `mapping` or `mutation`);
+ * the first item of another kind, or the start of the list, ends them. None for a `processor_resources`
+ * item (resources are not a sequence of steps) or a path that names no list item.
+ */
+export function previousSteps(processors: readonly BloblangProcessor[], path: string): BloblangProcessor[] {
+	const match = /^(.*)\[(\d+)\]$/.exec(path);
+	if (!match) {
+		return [];
+	}
+	const [, list, index] = match;
+	if (list.split('.').pop() === 'processor_resources') {
+		return [];
+	}
+	const out: BloblangProcessor[] = [];
+	for (let i = Number(index) - 1; i >= 0; i--) {
+		const step = bloblangProcessorByPath(processors, `${list}[${i}]`);
+		if (!step) {
+			break;
+		}
+		out.push(step);
+	}
+	return out;
 }
 
 /** `pipeline.processors[0]` from `['pipeline', 'processors', 0]` (a first `documents[i]` step is kept as is). */
