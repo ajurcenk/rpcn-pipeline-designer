@@ -3,7 +3,7 @@ title: 'Sample from the previous step'
 type: 'feature'
 ticket: '18'
 created: '2026-10-17'
-status: 'built'
+status: done
 baseline_revision: 'c978f31d2977f678e3e8758d0686b1712113b282'
 route: 'full'
 route_source: 'auto'
