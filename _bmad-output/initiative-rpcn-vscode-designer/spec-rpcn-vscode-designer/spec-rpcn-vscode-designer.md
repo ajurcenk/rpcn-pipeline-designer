@@ -87,6 +87,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - **CAP-17 — Saved sample inputs** *(second release)*
   - **intent:** A mapping's sample messages persist with the pipeline, so tests can be repeated and reviewed.
   - **success:** Each mapping has named samples (content and metadata) stored as a workspace file next to the config, which can be committed and reopens with the panel; adding, editing and switching samples works from the panel, and switching re-runs the mapping.
+  - Note (2026-10-17, epic E4 R14): a sample can also be seeded from the previous step, by running the previous `mapping` / `mutation` processor on its own selected sample with the binary. The panel's runs still apply only the processor under test.
 
 ## Constraints
 

@@ -172,13 +172,24 @@ hitl = false
 risk = "low"
 
 [[entry]]
+id = 18
+type = "story"
+title = "Sample from the previous step"
+description = "A \"From previous step\" action in the test panel runs the previous `mapping` / `mutation` processor in the same processor list on its selected sample, with the binary and the AD-21 one-message runner, and saves the output content and metadata as a new sample of the current mapping. When the previous step has no sample it chains back through earlier consecutive mapping/mutation steps; a deleted message or a failure is reported and nothing is saved; with no previous mapping/mutation the action is unavailable."
+verify = "Integration tests with the fake binary seed a sample from the previous mapping, chain over two steps, and cover a deleted and a failing previous step and a processor with no previous mapping/mutation; a webview test covers the action."
+covers = ["R14"]
+after = [11]
+hitl = false
+risk = "medium"
+
+[[entry]]
 id = 13
 type = "story"
 title = "Refactor sweep"
 description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during the epic; new scope becomes backlog stories."
 verify = "The suites, the corpus harness and CI pass with at least as many tests as before, and each deferred finding is fixed or moved to a named ticket."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 16, 10, 17, 11, 12]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 15, 9, 16, 10, 17, 11, 12, 18]
 hitl = false
 risk = "low"
 
