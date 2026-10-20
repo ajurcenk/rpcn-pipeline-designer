@@ -3,7 +3,7 @@ title: 'Test panel checks by hand'
 type: 'chore'
 ticket: '14'
 created: '2026-10-20'
-status: 'built'
+status: done
 baseline_revision: '798e1d084865fbaa76a62d48c97d4ef1c4451f4e'
 route: 'oneshot'
 route_source: 'auto'
