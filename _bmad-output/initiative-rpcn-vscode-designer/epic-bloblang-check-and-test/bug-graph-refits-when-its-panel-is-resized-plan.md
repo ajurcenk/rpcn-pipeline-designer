@@ -3,7 +3,7 @@ title: 'Graph refits when its panel is resized'
 type: 'bugfix'
 ticket: '19'
 created: '2026-10-20'
-status: 'built'
+status: done
 baseline_revision: 'a9b5df27084dc45729e5ba055c75625a4c1194ad'
 route: 'full'
 route_source: 'auto'
