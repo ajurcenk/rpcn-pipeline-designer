@@ -17,6 +17,11 @@
 // is named by `nodeAnnouncement`. React Flow's own keyboard handling is off. The focused node is
 // view state, kept with the collapse state; a node that goes passes focus to its nearest visible
 // ancestor (`focusTarget`). A host `selection` never moves focus.
+// Resize (ticket 4.19): when the container's size settles after a change (a test panel opened
+// below, a divider dragged), the graph fits again with the first fit's rule, unless the user has
+// panned or zoomed since the last fit (a move started by pointer, wheel or touch; a fit, a restore
+// or a keyboard reveal is not one). That mark is saved with the viewport. The Fit to view button,
+// after the graph region in the Tab order, fits the graph and clears the mark.
 
 import { Background, ReactFlow, type AriaLabelConfig, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MutableRefObject } from 'react';
@@ -59,6 +64,10 @@ function prefersReducedMotion(): boolean {
 /** Fit to view never shrinks the graph below this, so labels stay readable; pan for the rest. */
 const MIN_FIT_ZOOM = 0.75;
 const VIEW_MARGIN = 16;
+/** How long the container's size must stay the same before the graph fits again (ticket 4.19). */
+const REFIT_DELAY = 150;
+/** The Fit to view button's name and tooltip (ticket 4.19). */
+export const FIT_TO_VIEW = 'Fit to view';
 
 /**
  * Fits the graph into the view between MIN_FIT_ZOOM and 100%, at once (no animation); a graph
@@ -118,6 +127,14 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	const [instance, setInstance] = useState<ReactFlowInstance<ViewNode, Edge> | undefined>(undefined);
 	const [savedViewport] = useState(() => loadViewState().viewport);
 	const placed = useRef(false);
+	/** Whether the user has panned or zoomed since the last fit; a restored viewport keeps its mark. */
+	const userMoved = useRef(savedViewport !== undefined && loadViewState().userMoved === true);
+	/** Fits the graph (`fitReadable`) and marks the view untouched. */
+	const fit = useCallback((target: ReactFlowInstance<ViewNode, Edge>, width: number) => {
+		userMoved.current = false;
+		saveViewState({ userMoved: false });
+		fitReadable(target, width);
+	}, []);
 	useEffect(() => {
 		if (!instance || !laidOut) {
 			return;
@@ -130,9 +147,9 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 		if (action === 'restore' && savedViewport) {
 			void instance.setViewport(savedViewport);
 		} else {
-			fitReadable(instance, window.innerWidth);
+			fit(instance, window.innerWidth);
 		}
-	}, [instance, laidOut, savedViewport]);
+	}, [instance, laidOut, savedViewport, fit]);
 	// The drawn node to highlight (VIEW_HIGHLIGHT), against the model and collapse state drawn.
 	// The markers (VIEW_MARKERS), against the same drawing.
 	const marked = useMemo(() => (laidOut ? markStatus(laidOut, nodeStatus) : []), [laidOut, nodeStatus]);
@@ -140,6 +157,47 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 
 	// Keyboard focus (ticket 3.11): the last focused node and its ancestors, nearest first.
 	const container = useRef<HTMLDivElement>(null);
+
+	// Resize (ticket 4.19): one refit after the container's size settles, into its new width. Before
+	// the first placement, after a user move, or while the container has no size, nothing.
+	const lastSize = useRef<{ readonly width: number; readonly height: number } | undefined>(undefined);
+	useEffect(() => {
+		const el = container.current;
+		if (!el || !instance) {
+			return undefined;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const observer = new ResizeObserver((entries) => {
+			const entry = entries.at(-1);
+			if (!entry) {
+				return;
+			}
+			const { width, height } = entry.contentRect;
+			// The first report (a browser sends one on `observe`) is the baseline, never a change.
+			const last = lastSize.current;
+			lastSize.current = { width, height };
+			if (!last || (width === last.width && height === last.height)) {
+				return;
+			}
+			clearTimeout(timer);
+			timer = setTimeout(() => {
+				if (placed.current && !userMoved.current && width > 0 && height > 0) {
+					fit(instance, width);
+				}
+			}, REFIT_DELAY);
+		});
+		observer.observe(el);
+		return () => {
+			observer.disconnect();
+			clearTimeout(timer);
+		};
+	}, [instance, fit]);
+	/** A move started by pointer, wheel or touch (a non-null event) is the user's; a fit's or a reveal's is not. */
+	const markMoved = useCallback((event: MouseEvent | TouchEvent | null) => {
+		if (event) {
+			userMoved.current = true;
+		}
+	}, []);
 	const [focused, setFocused] = useState<readonly string[] | undefined>(() => loadViewState().focused);
 	useEffect(() => {
 		if (focused) {
@@ -287,49 +345,65 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 		}
 	};
 
+	const fitToView = () => {
+		if (instance && placed.current) {
+			fit(instance, container.current?.clientWidth ?? window.innerWidth);
+		}
+	};
+
 	return (
-		<div
-			ref={container}
-			className="rpcn-graph"
-			role="region"
-			aria-label={GRAPH_NAME}
-			aria-describedby={describedBy}
-			// The nodes hold the Tab stop; with none, the container does (TAB_IN). Esc focuses it.
-			tabIndex={roving === undefined ? 0 : -1}
-			onKeyDown={onKeyDown}
-			onFocus={onFocus}
-			onBlur={onBlur}
-		>
-			{laidOut && (
-				<ToggleContext.Provider value={toggle}>
-					<ActivateContext.Provider value={(id) => onActivate(id, 'click')}>
-						<ReactFlow
-							nodes={named}
-							edges={laidOut.edges}
-							nodeTypes={nodeTypes}
-							onNodeClick={(_, node) => onActivate(node.id, 'click')}
-							nodesDraggable={false}
-							nodesConnectable={false}
-							nodesFocusable
-							edgesFocusable={false}
-							elementsSelectable={false}
-							disableKeyboardA11y
-							panActivationKeyCode={null}
-							deleteKeyCode={null}
-							selectionKeyCode={null}
-							multiSelectionKeyCode={null}
-							ariaLabelConfig={NO_DESCRIPTIONS}
-							minZoom={0.25}
-							maxZoom={2}
-							onInit={setInstance}
-							onMoveEnd={(_, { x, y, zoom }) => saveViewState({ viewport: { x, y, zoom } })}
-							proOptions={{ hideAttribution: true }}
-						>
-							<Background />
-						</ReactFlow>
-					</ActivateContext.Provider>
-				</ToggleContext.Provider>
+		<>
+			<div
+				ref={container}
+				className="rpcn-graph"
+				role="region"
+				aria-label={GRAPH_NAME}
+				aria-describedby={describedBy}
+				// The nodes hold the Tab stop; with none, the container does (TAB_IN). Esc focuses it.
+				tabIndex={roving === undefined ? 0 : -1}
+				onKeyDown={onKeyDown}
+				onFocus={onFocus}
+				onBlur={onBlur}
+			>
+				{laidOut && (
+					<ToggleContext.Provider value={toggle}>
+						<ActivateContext.Provider value={(id) => onActivate(id, 'click')}>
+							<ReactFlow
+								nodes={named}
+								edges={laidOut.edges}
+								nodeTypes={nodeTypes}
+								onNodeClick={(_, node) => onActivate(node.id, 'click')}
+								nodesDraggable={false}
+								nodesConnectable={false}
+								nodesFocusable
+								edgesFocusable={false}
+								elementsSelectable={false}
+								disableKeyboardA11y
+								panActivationKeyCode={null}
+								deleteKeyCode={null}
+								selectionKeyCode={null}
+								multiSelectionKeyCode={null}
+								ariaLabelConfig={NO_DESCRIPTIONS}
+								minZoom={0.25}
+								maxZoom={2}
+								onInit={setInstance}
+								onMoveStart={markMoved}
+								onMove={markMoved}
+								onMoveEnd={(_, { x, y, zoom }) => saveViewState({ viewport: { x, y, zoom }, userMoved: userMoved.current })}
+								proOptions={{ hideAttribution: true }}
+							>
+								<Background />
+							</ReactFlow>
+						</ActivateContext.Provider>
+					</ToggleContext.Provider>
+				)}
+			</div>
+			{/* Outside the graph region, so it never joins the nodes' roving Tab stop: Tab reaches it next. */}
+			{instance && laidOut && laidOut.nodes.length > 0 && (
+				<button type="button" className="rpcn-fit-view" aria-label={FIT_TO_VIEW} title={FIT_TO_VIEW} onClick={fitToView}>
+					<span className="codicon codicon-screen-full" aria-hidden="true" />
+				</button>
 			)}
-		</div>
+		</>
 	);
 }

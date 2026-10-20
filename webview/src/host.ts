@@ -1,5 +1,5 @@
 // The webview's only channel to the host (AD-3, AD-5): it posts user intents and nothing else,
-// and keeps its view state (collapsed groups, viewport, the focused node) with `setState` so it survives a reload.
+// and keeps its view state (collapsed groups, viewport and whether the user moved it, the focused node) with `setState` so it survives a reload.
 
 import type { WebviewMessage } from '../../src/shared/protocol';
 import { parseViewport, type Viewport } from './state';
@@ -12,6 +12,11 @@ export interface ViewState {
 	readonly viewport?: Viewport;
 	/** The node holding the graph's Tab stop, then its ancestors, nearest first (ticket 3.11). */
 	readonly focused?: readonly string[];
+	/**
+	 * Whether the user has panned or zoomed since the last fit (ticket 4.19), saved with `viewport`:
+	 * a resize then keeps the view instead of fitting again. Absent: untouched.
+	 */
+	readonly userMoved?: boolean;
 }
 
 interface VsCodeApi {
@@ -35,13 +40,14 @@ export function loadViewState(): ViewState {
 	if (typeof state !== 'object' || state === null) {
 		return {};
 	}
-	const { collapsed, viewport, focused } = state as Record<string, unknown>;
+	const { collapsed, viewport, focused, userMoved } = state as Record<string, unknown>;
 	const saved = parseViewport(viewport);
 	const strings = (value: unknown[]) => value.filter((id): id is string => typeof id === 'string');
 	return {
 		...(Array.isArray(collapsed) ? { collapsed: strings(collapsed) } : {}),
 		...(saved ? { viewport: saved } : {}),
 		...(Array.isArray(focused) ? { focused: strings(focused) } : {}),
+		...(typeof userMoved === 'boolean' ? { userMoved } : {}),
 	};
 }
 

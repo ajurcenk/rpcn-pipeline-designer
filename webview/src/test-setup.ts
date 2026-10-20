@@ -12,6 +12,8 @@ export interface VsCodeStub {
 declare global {
 	var vscodeStub: VsCodeStub;
 	var IS_REACT_ACT_ENVIRONMENT: boolean;
+	/** Reports a new size of an element to the stubbed `ResizeObserver`s watching it (ticket 4.19). */
+	var resizeStub: { trigger(element: Element, size: { readonly width: number; readonly height: number }): void };
 }
 
 if (typeof window !== 'undefined') {
@@ -29,11 +31,44 @@ if (typeof window !== 'undefined') {
 	// React's act() warns unless the environment says it is a test.
 	globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-	if (typeof globalThis.ResizeObserver === 'undefined') {
-		globalThis.ResizeObserver = class {
-			observe(): void { /* no layout in happy-dom */ }
-			unobserve(): void { /* nothing observed */ }
-			disconnect(): void { /* nothing observed */ }
+	{
+		// No layout in happy-dom. As a browser does, each observed element is reported once after
+		// `observe`, here with a fractional size (INITIAL_SIZE, as at a non-integer zoom); later sizes
+		// only when a test calls `resizeStub.trigger`. Always installed, over happy-dom's own (which
+		// reports nothing), so tests control it.
+		const INITIAL_SIZE = { width: 800.5, height: 600.25 };
+		const observers = new Set<StubResizeObserver>();
+		const report = (observer: StubResizeObserver, element: Element, { width, height }: { width: number; height: number }) => {
+			const entry = { target: element, contentRect: { x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height } };
+			observer.callback([entry as unknown as ResizeObserverEntry], observer as unknown as ResizeObserver);
+		};
+		class StubResizeObserver {
+			readonly observed = new Set<Element>();
+			constructor(readonly callback: ResizeObserverCallback) {}
+			observe(element: Element): void {
+				this.observed.add(element);
+				observers.add(this);
+				queueMicrotask(() => {
+					if (this.observed.has(element)) {
+						report(this, element, INITIAL_SIZE);
+					}
+				});
+			}
+			unobserve(element: Element): void {
+				this.observed.delete(element);
+			}
+			disconnect(): void {
+				this.observed.clear();
+				observers.delete(this);
+			}
+		}
+		globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+		globalThis.resizeStub = {
+			trigger(element, size) {
+				for (const observer of [...observers].filter((o) => o.observed.has(element))) {
+					report(observer, element, size);
+				}
+			},
 		};
 	}
 	if (typeof globalThis.DOMMatrixReadOnly === 'undefined') {
