@@ -194,12 +194,24 @@ hitl = false
 risk = "low"
 
 [[entry]]
+id = 19
+type = "bug"
+title = "Graph refits when its panel is resized"
+description = "Opening a test panel puts it in a group below the graph (4.17), which halves the graph panel's height; the graph was fitted once to the tall panel and is never refitted, so its nodes end up below the visible area and the canvas looks empty. The graph webview refits its view when its container is resized, as long as the user has not panned or zoomed since the last fit."
+verify = "Webview tests resize the graph's container and check the view is refitted when untouched and kept after a pan or zoom; the user sees the nodes after opening a test panel below the graph."
+covers = ["R8"]
+after = [13]
+hitl = false
+risk = "low"
+severity = "P2"
+
+[[entry]]
 id = 14
 type = "story"
 title = "Test panel checks by hand"
 description = "The user tests a mapping from an empty sample to a passing and a failing run, checks live syntax errors and the graph marker, and checks the panel on VS Code 1.141 and 1.100 in light, dark and high-contrast themes; findings become backlog stories."
 verify = "The plan records each check with the date, VS Code version and the user's result."
 covers = ["R10"]
-after = [13]
+after = [19]
 hitl = true
 risk = "low"

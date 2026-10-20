@@ -10,6 +10,7 @@ refined: false
 hitl: false
 risk: low
 estimate: ""
+status: done
 ---
 
 # The graph forgets a rename that never completes
@@ -47,3 +48,4 @@ When this story is done, a rename that never completes stops affecting tab close
 ## Notes
 
 - **Candidate approach:** drop a pending rename after a timeout, or when its old URI is gone and no `onDidRenameFiles` came. `onWillRenameFiles` can be fired in a test with a `WorkspaceEdit` whose rename fails (the target exists).
+- **Resolution:** done by 4.13, the refactor sweep (2026-10-17): a pending rename expires 30 s after its announcement in both the graph and the test-panel registries (`PendingRenames` in `src/adapters/graphPanel/tabs.ts`); RENAME_NEVER in suites 84 and 90.

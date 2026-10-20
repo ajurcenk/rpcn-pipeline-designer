@@ -6,7 +6,7 @@ import type { GraphPanelHandle, GraphPanels } from '../../../adapters/graphPanel
 import type { HostMessage, NodeStatusById } from '../../../shared/protocol';
 import { waitFor } from '../helpers';
 import {
-	graphDir, live, settle, SWITCH, MAPPING_ID, VALID, withGraph, insert, open, showGraph, testPanels, fakeMemento, loseBinary,
+	graphDir, ids, live, settle, SWITCH, MAPPING_ID, VALID, withGraph, insert, open, showGraph, testPanels, fakeMemento, loseBinary,
 	restoreBinary, useGraphSuite,
 } from '../graphHelpers';
 import { api } from '../schemaHarness';
@@ -155,7 +155,7 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 		/** "Graph …" lines: a panel's own errors (not "Show graph:" / "Hide graph:"). */
 		const graphErrors = (lines: readonly string[]) => lines.filter((l) => l.startsWith('Graph '));
 
-		test('Hide graph while ready awaits its document: no post after dispose, no error line', async () => {
+		test('Hide graph while ready\'s snapshot is on its way: nothing posted after it, no error line', async () => {
 			const doc = await open('dispose-ready.yaml', VALID);
 			const lines: string[] = [];
 			const panels = testPanels({ log: (l) => lines.push(l) });
@@ -163,14 +163,16 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				const handle = (await panels.show(doc.uri))!;
 				await panels.idle();
 				const count = handle.posted.length;
+				// `ready` takes the open document as it is (4.13): its snapshot is handed to the webview at
+				// once, and Hide's synchronous part disposes the panel while that post is awaited.
 				const ready = handle.receive({ type: 'ready' });
-				// Its synchronous part disposes the panel while ready is suspended.
 				const hidden = panels.hide(doc.uri);
 				await ready;
 				await hidden;
 				// A tab close (the ×) during an update is the same disposal.
 				await settle();
-				assert.strictEqual(handle.posted.length, count, `posted after dispose: ${JSON.stringify(handle.posted.slice(count).map((m) => m.type))}`);
+				assert.deepStrictEqual(handle.posted.slice(count).map((m) => m.type), ['snapshot'], 'only the snapshot, posted before the dispose');
+				assert.strictEqual(panels.panelFor(doc.uri), undefined, 'the panel is gone');
 				assert.deepStrictEqual(graphErrors(lines), []);
 			} finally {
 				panels.dispose();
@@ -238,6 +240,69 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				panels.dispose();
 			}
 		});
+	});
+
+	test('READY_CLOSED (4.13): a ready after the YAML\'s document closed posts the last model and leaves it closed; with no last model, nothing', async () => {
+		const panels = testPanels({ ignoreWebviewMessages: true });
+		const isOpen = (uri: vscode.Uri) => vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString());
+		/**
+		 * Opens `name` with `text` as a user would (`vscode.diff`): a document an extension opened stays
+		 * open for minutes after its editor closes. In a diff editor the file has no text tab, so its graph
+		 * outlives the document's close.
+		 */
+		async function diffed(name: string, text: string) {
+			const uri = vscode.Uri.file(path.join(dir, name));
+			fs.writeFileSync(uri.fsPath, text);
+			const left = vscode.Uri.file(path.join(dir, `${name}.left.txt`));
+			fs.writeFileSync(left.fsPath, '');
+			const show = () => vscode.commands.executeCommand('vscode.diff', left, uri, 'diff', { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+			await show();
+			assert.ok(await waitFor(() => isOpen(uri), 5_000));
+			const handle = (await panels.show(uri))!;
+			await panels.idle();
+			await handle.lockSettled;
+			return {
+				uri,
+				handle,
+				async close() {
+					await show();
+					await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+					assert.ok(await waitFor(() => !isOpen(uri), 20_000), 'the document closed');
+				},
+			};
+		}
+		try {
+			// READY_CLOSED: the last model, no parse error; the document stays closed.
+			const valid = await diffed('ready-closed.yaml', VALID);
+			await valid.handle.receive({ type: 'ready' });
+			const open = valid.handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+			assert.ok(open?.type === 'snapshot' && open.model, 'a snapshot with the model while open');
+			await valid.close();
+			const count = valid.handle.posted.length;
+			await valid.handle.receive({ type: 'ready' });
+			const after = valid.handle.posted.slice(count);
+			assert.deepStrictEqual(after.map((m) => m.type), ['snapshot']);
+			const snapshot = after[0];
+			assert.ok(snapshot.type === 'snapshot');
+			assert.deepStrictEqual(ids(snapshot.model ?? undefined), ids(open.model), 'the last model');
+			assert.strictEqual(snapshot.parseError, undefined, 'no parse error');
+			await settle();
+			assert.ok(!isOpen(valid.uri), 'the document stays closed');
+
+			// No last model (the YAML never parsed): nothing is posted.
+			const broken = await diffed('ready-closed-broken.yaml', 'input: [\n');
+			await broken.handle.receive({ type: 'ready' });
+			const brokenOpen = broken.handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+			assert.ok(brokenOpen?.type === 'snapshot' && brokenOpen.model === null && brokenOpen.parseError, 'a parse error and no model while open');
+			await broken.close();
+			const brokenCount = broken.handle.posted.length;
+			await broken.handle.receive({ type: 'ready' });
+			await settle();
+			assert.deepStrictEqual(broken.handle.posted.slice(brokenCount).map((m) => m.type), [], 'nothing posted');
+			assert.ok(!isOpen(broken.uri), 'the document stays closed');
+		} finally {
+			panels.dispose();
+		}
 	});
 
 	suite('F7_RENAME', () => {

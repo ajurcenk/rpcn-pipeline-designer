@@ -89,7 +89,7 @@ import {
 } from '../../shared/bloblangProtocol';
 import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
-import { hasTextTab, isTextTabOf, renamedThrough, within, type Rename } from '../graphPanel/tabs';
+import { hasTextTab, isTextTabOf, PENDING_RENAME_MS, PendingRenames, renamedThrough, until } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
@@ -100,6 +100,10 @@ import { SampleStore, samplesUri } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export { BLOBLANG_VIEW_TYPE };
+/** How long a new test panel's placement waits for focus to be back in the YAML, per try (4.13). */
+const FOCUS_WAIT_MS = 500;
+/** How long, once focus is back in the YAML, the placement lets a late focus change arrive before it re-checks (4.13). */
+const FOCUS_SETTLE_MS = 100;
 /** Shown when Test mapping finds no mapping or mutation processor at the cursor. */
 export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor.';
 /** Shown when the CodeLens's processor is not in the open, detected document any more. */
@@ -226,6 +230,11 @@ export interface BloblangPanelsOptions {
 	 * `undefined`: no graph is known.
 	 */
 	readonly graphColumn?: (config: vscode.Uri) => vscode.ViewColumn | undefined;
+	/**
+	 * Test seam (4.13, RENAME_NEVER): how long an announced rename that is never reported stays
+	 * pending. `undefined`: `PENDING_RENAME_MS`.
+	 */
+	readonly pendingRenameMs?: number;
 }
 
 /** What Add label's input box shows and checks (4.16). */
@@ -926,8 +935,11 @@ export class BloblangPanels implements vscode.Disposable {
 	private readonly panels = new Set<BloblangPanel>();
 	/** The documents with panels that have unsaved changes, from change and save events (4.10). */
 	private readonly dirty = new Set<string>();
-	/** Renames announced by `onWillRenameFiles` and not done yet (4.17): their files' tabs closing is no close. */
-	private pendingRenames: Rename[] = [];
+	/**
+	 * Renames announced by `onWillRenameFiles` and not done yet (4.17): their files' tabs closing is no
+	 * close. One never reported expires (4.13).
+	 */
+	private readonly pendingRenames: PendingRenames;
 	/** Panel creations run one at a time (4.17): each one's placement sees the groups the last one left. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private readonly subscriptions: vscode.Disposable[];
@@ -938,6 +950,7 @@ export class BloblangPanels implements vscode.Disposable {
 
 	constructor(private readonly options: BloblangPanelsOptions) {
 		this.samples = new SampleStore((line) => this.log(line));
+		this.pendingRenames = new PendingRenames(options.pendingRenameMs ?? PENDING_RENAME_MS);
 		this.subscriptions = [
 			// An outside edit of a samples file (4.9): its config's panels get `samples`.
 			this.samples.onDidChange((config) => {
@@ -1001,7 +1014,7 @@ export class BloblangPanels implements vscode.Disposable {
 			// TAB_CLOSE (4.17): a panel whose file had a text tab and has none left closes.
 			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
 			vscode.workspace.onWillRenameFiles((e) => {
-				this.pendingRenames.push(...e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
+				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
 			}),
 			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
@@ -1009,7 +1022,7 @@ export class BloblangPanels implements vscode.Disposable {
 
 	/** Whether a pending rename renames `key` (the file itself, or a folder holding it) (4.17). */
 	private renaming(key: string): boolean {
-		return this.pendingRenames.some((r) => key === r.from || within(key, r.from));
+		return this.pendingRenames.renaming(key);
 	}
 
 	/**
@@ -1022,7 +1035,7 @@ export class BloblangPanels implements vscode.Disposable {
 			const key = entry.uri.toString();
 			if (hasTextTab(key)) {
 				entry.hadTab = true;
-			} else if (entry.hadTab && !this.renaming(key) && !this.pendingRenames.some((r) => key === r.to || within(key, r.to))) {
+			} else if (entry.hadTab && !this.renaming(key) && !this.pendingRenames.creating(key)) {
 				entry.panel.dispose();
 			}
 		}
@@ -1036,7 +1049,7 @@ export class BloblangPanels implements vscode.Disposable {
 	 */
 	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
 		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
-		this.pendingRenames = this.pendingRenames.filter((p) => !renames.some((r) => r.from === p.from && r.to === p.to));
+		this.pendingRenames.report(renames);
 		const moved = (key: string) => renamedThrough(key, renames);
 		const entries = [...this.panels];
 		const staying = new Set(entries.filter((entry) => moved(entry.uri.toString()) === undefined).map((entry) => entry.key));
@@ -1348,13 +1361,37 @@ export class BloblangPanels implements vscode.Disposable {
 		const returnTo = !placed.movedFocus || yamlColumn === undefined ? undefined
 			: placed.created !== undefined && yamlColumn >= placed.created ? (yamlColumn + 1) as vscode.ViewColumn : yamlColumn;
 		if (doc && returnTo !== undefined) {
-			try {
-				await vscode.window.showTextDocument(doc, { viewColumn: returnTo, preserveFocus: false });
-			} catch (e) {
-				this.log(`Test mapping: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
-			}
+			await this.returnFocus(doc, returnTo);
 		}
 		return entry;
+	}
+
+	/**
+	 * Gives focus back to `doc` in `column` (4.17) and confirms it (4.13, PLACE_FOCUS; the bug-15
+	 * pattern): it waits up to `FOCUS_WAIT_MS` for the YAML to be the active editor in that column,
+	 * then `FOCUS_SETTLE_MS` more and checks again, since the new group's late activation can take
+	 * focus after the return; if focus is not there, it is returned once more and confirmed again
+	 * (about 1 s in all). A miss after that is logged.
+	 */
+	private async returnFocus(doc: vscode.TextDocument, column: vscode.ViewColumn): Promise<void> {
+		const focused = () => {
+			const active = vscode.window.activeTextEditor;
+			return active?.document === doc && active.viewColumn === column;
+		};
+		try {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				await vscode.window.showTextDocument(doc, { viewColumn: column, preserveFocus: false });
+				if (await until(focused, FOCUS_WAIT_MS)) {
+					await new Promise((r) => setTimeout(r, FOCUS_SETTLE_MS));
+					if (focused()) {
+						return;
+					}
+				}
+			}
+			this.log('Test mapping: focus did not stay in the YAML.');
+		} catch (e) {
+			this.log(`Test mapping: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
+		}
 	}
 
 	/**

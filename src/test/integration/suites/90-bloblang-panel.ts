@@ -1338,33 +1338,18 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return doc.getText().lastIndexOf('\n', at) + 1;
 	};
 	/** Opens the graph on `doc` when `graph`: the graph checks that it still renders after the edits. */
-	async function maybeGraph(doc: vscode.TextDocument, graph: boolean): Promise<{ readonly works: () => Promise<void>; readonly settled: () => Promise<void> }> {
+	async function maybeGraph(doc: vscode.TextDocument, graph: boolean): Promise<{ readonly works: () => Promise<void> }> {
 		if (!graph) {
-			return { works: async () => undefined, settled: async () => undefined };
+			return { works: async () => undefined };
 		}
 		const handle = (await api().graphPanels.show(doc.uri))!;
 		await handle.lockSettled;
 		await handle.receive({ type: 'ready' });
 		const from = handle.posted.length;
-		const snapshots = () => handle.posted.filter((m) => m.type === 'snapshot').length;
 		return {
 			works: async () => {
 				assert.ok(await waitFor(() => handle.posted.slice(from).some((m) => m.type === 'model'), 10_000), 'the graph renders the edits');
 				assert.strictEqual(api().graphPanels.panelFor(doc.uri), handle, 'the graph is still open');
-			},
-			// Waits until the real webview posted its own `ready` (a second snapshot) and no other for 1 s:
-			// it posts one on every load (also when the layout around it changes), and a `ready` after the
-			// test closed the document reopens it (`openTextDocument`), which then stays open for minutes.
-			settled: async () => {
-				let count = -1;
-				let since = Date.now();
-				assert.ok(await waitFor(() => {
-					if (snapshots() !== count) {
-						count = snapshots();
-						since = Date.now();
-					}
-					return count >= 2 && Date.now() - since >= 1_000;
-				}, 15_000), `the graph webview did not settle: ${snapshots()} snapshots`);
 			},
 		};
 	}
@@ -1743,14 +1728,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			};
 			let doc = await opened();
 			const { panels } = labelPanels();
-			const graphed = await maybeGraph(doc, graph);
+			await maybeGraph(doc, graph);
 			try {
 				const handle = (await panels.show(doc.uri, P(1)))!;
 				await handle.receive({ type: 'ready' });
 				await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
 				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
 				await showDiff();
-				await graphed.settled();
 				await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 				assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 				doc = await opened();
@@ -1898,6 +1882,56 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		await handle.receive({ type: 'sampleAdded', name: 'two' });
 		await samplesRead(samplesFile('rename-b.yaml'), [{ ...entry, selected: 'two', samples: [...entry.samples, sample('two')] }]);
 		assert.ok(!fs.existsSync(samplesFile('rename-a.yaml')));
+	});
+
+	test('RENAME_NEVER (4.13): a rename announced and never reported blocks the tab close until it expires; then the last tab closes the panel', async () => {
+		const limit = 3_000;
+		// A registry of the test's own hears the test's announcement; VS Code reports nothing for it.
+		const will = new vscode.EventEmitter<vscode.FileWillRenameEvent>();
+		const workspace = vscode.workspace as { onWillRenameFiles: unknown };
+		const original = workspace.onWillRenameFiles;
+		workspace.onWillRenameFiles = will.event;
+		let panels: BloblangPanels;
+		try {
+			panels = new BloblangPanels({
+				extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
+				log: () => undefined,
+				binary: api().redpandaConnect,
+				actions: undefined,
+				storageDir: path.join(dir, 'storage'),
+				detection: api().detection,
+				pendingRenameMs: limit,
+			});
+		} finally {
+			workspace.onWillRenameFiles = original;
+		}
+		try {
+			const doc = (await open('rename-never.yaml', CONFIG)).document;
+			const handle = (await panels.show(doc.uri, FIRST))!;
+			assert.ok(handle);
+			const gone = disposal(handle);
+			will.fire({
+				files: [{ oldUri: doc.uri, newUri: vscode.Uri.file(path.join(dir, 'rename-never-b.yaml')) }],
+				waitUntil: () => undefined,
+				token: new vscode.CancellationTokenSource().token,
+			} as vscode.FileWillRenameEvent);
+			const announced = Date.now();
+			// Before the time limit: the last tab's close is no close.
+			await vscode.window.tabGroups.close(textTabs(doc.uri)[0]);
+			await settle();
+			assert.ok(!gone(), 'the pending rename keeps the panel');
+			assert.ok(Date.now() - announced < limit, 'the control ran before the time limit');
+			await vscode.window.showTextDocument(doc.uri, { viewColumn: vscode.ViewColumn.One, preview: false });
+			assert.ok(await waitFor(() => textTabs(doc.uri).length === 1, 10_000));
+			// Past the time limit, the rename no longer counts.
+			assert.ok(await waitFor(() => Date.now() - announced >= limit + 100, limit + 1_000));
+			await vscode.window.tabGroups.close(textTabs(doc.uri)[0]);
+			assert.ok(await waitFor(() => gone(), 10_000), 'the panel closed with its last tab');
+			assert.strictEqual(panels.panelFor(doc.uri, FIRST), undefined);
+		} finally {
+			panels.dispose();
+			will.dispose();
+		}
 	});
 
 	test('RENAME_DIRTY + AI-7 (4.17): a rename with unsaved edits above the processor keeps the panel on it; the save then moves its samples', async () => {

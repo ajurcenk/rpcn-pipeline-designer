@@ -37,7 +37,7 @@ import { GraphPanel, type GraphPanelHandle } from './graphPanel';
 import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
-import { hasTextTab, isTextTabOf, openDocument, renamedThrough, until, within, type Rename } from './tabs';
+import { hasTextTab, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, until, within, type Rename } from './tabs';
 
 export { MAX_POSTED, type GraphPanelHandle } from './graphPanel';
 export { hostStatusOf, statusDiagnostics, type GraphBinary, type GraphSchema } from './status';
@@ -118,6 +118,11 @@ export interface GraphPanelsOptions {
 	 * `receive()` drives the protocol (no late `snapshot` for the real webview's `ready`). Default false.
 	 */
 	readonly ignoreWebviewMessages?: boolean;
+	/**
+	 * Test seam (4.13, RENAME_NEVER): how long an announced rename that is never reported stays
+	 * pending. `undefined`: `PENDING_RENAME_MS`.
+	 */
+	readonly pendingRenameMs?: number;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -149,8 +154,11 @@ export class GraphPanels implements vscode.Disposable {
 	private readonly seen = new Set<string>();
 	/** Hidden files (`uri.toString()`), read from the memento once and written on every change. */
 	private readonly hidden: Set<string>;
-	/** Renames announced by `onWillRenameFiles` and not done yet: their files' tabs closing is no close. */
-	private pendingRenames: Rename[] = [];
+	/**
+	 * Renames announced by `onWillRenameFiles` and not done yet: their files' tabs closing is no close.
+	 * One never reported expires (4.13), and its unreported `renamedDriving` entries go with it.
+	 */
+	private readonly pendingRenames: PendingRenames;
 	/**
 	 * Renamed files whose driving editor was in a column, by new `uri.toString()`: the editor of the
 	 * new URI in that column becomes the driving one once it is visible (F7_RENAME), and again when
@@ -166,6 +174,7 @@ export class GraphPanels implements vscode.Disposable {
 	constructor(private readonly options: GraphPanelsOptions) {
 		const stored = options.memento?.get<unknown>(HIDDEN_GRAPHS_STATE);
 		this.hidden = new Set(Array.isArray(stored) ? stored.filter((k): k is string => typeof k === 'string') : []);
+		this.pendingRenames = new PendingRenames(options.pendingRenameMs ?? PENDING_RENAME_MS, Date.now, (expired) => this.renamesExpired(expired));
 		// One subscription per event for all panels: an event goes to the panel of its file, if one
 		// is open (OTHER_DOC, OTHER_FILE, CLOSED). Events with no content change (dirty state, save)
 		// send nothing.
@@ -207,13 +216,15 @@ export class GraphPanels implements vscode.Disposable {
 			}),
 			options.schema.onDidChange(() => this.hostChanged()),
 			vscode.window.onDidChangeVisibleTextEditors((visible) => {
+				// A rename never reported no longer holds a column for its new name (4.13).
+				this.pendingRenames.prune();
 				this.adoptRenamedDriving(visible);
 				for (const [key, editor] of [...this.driving]) {
 					if (!visible.includes(editor)) {
 						this.driving.delete(key);
 						// VS Code closes a renaming file's editors before it reports the rename: its column
 						// is kept for the new URI's editor (F7_RENAME).
-						const to = renamedThrough(key, this.pendingRenames);
+						const to = renamedThrough(key, this.pendingRenames.all);
 						if (to !== undefined && editor.viewColumn !== undefined) {
 							this.renamedDriving.set(to, { column: editor.viewColumn, reported: false });
 						}
@@ -225,7 +236,7 @@ export class GraphPanels implements vscode.Disposable {
 			// file had a text tab and has none left closes.
 			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
 			vscode.workspace.onWillRenameFiles((e) => {
-				this.pendingRenames.push(...e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
+				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
 			}),
 			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
@@ -288,7 +299,7 @@ export class GraphPanels implements vscode.Disposable {
 				continue;
 			}
 			this.seen.add(key);
-			if (this.pendingRenames.some((r) => key === r.to || within(key, r.to))) {
+			if (this.pendingRenames.creating(key)) {
 				continue;
 			}
 			if (this.shouldAutoOpen(doc)) {
@@ -316,7 +327,7 @@ export class GraphPanels implements vscode.Disposable {
 			const key = graph.uri.toString();
 			if (hasTextTab(key)) {
 				graph.hadTab = true;
-			} else if (graph.hadTab && !this.pendingRenames.some((r) => key === r.from || within(key, r.from))) {
+			} else if (graph.hadTab && !this.pendingRenames.renaming(key)) {
 				graph.panel.dispose();
 			}
 		}
@@ -330,7 +341,7 @@ export class GraphPanels implements vscode.Disposable {
 	 */
 	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
 		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
-		this.pendingRenames = this.pendingRenames.filter((p) => !renames.some((r) => r.from === p.from && r.to === p.to));
+		this.pendingRenames.report(renames);
 		const moved = (key: string) => renamedThrough(key, renames);
 		const panels = [...this.panels];
 		this.panels.clear();
@@ -389,6 +400,18 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		this.updateContext();
 		this.tabsChanged();
+	}
+
+	/**
+	 * Renames announced and never reported expired (4.13): the columns kept for their new names, not
+	 * reported either, go; a later file of that name is no renamed file.
+	 */
+	private renamesExpired(expired: readonly Rename[]): void {
+		for (const [key, entry] of [...this.renamedDriving]) {
+			if (!entry.reported && expired.some((r) => key === r.to || within(key, r.to))) {
+				this.renamedDriving.delete(key);
+			}
+		}
 	}
 
 	/** The renamed files whose new editor is visible now get it as their driving editor (F7_RENAME). */

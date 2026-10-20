@@ -72,3 +72,65 @@ export function isTextTabOf(tab: vscode.Tab | undefined, key: string): boolean {
 export function openDocument(key: string): vscode.TextDocument | undefined {
 	return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
 }
+
+/** How long an announced rename stays pending when it is never reported (ticket 4.13). */
+export const PENDING_RENAME_MS = 30_000;
+
+/**
+ * Renames announced by `onWillRenameFiles` and not reported yet, for the graph and test-panel
+ * registries (ticket 4.13). An entry goes when its rename is reported (`report`), or `expiryMs`
+ * after its announcement, whichever comes first: a rename that is announced and never reported (it
+ * failed, or was cancelled) does not keep its files' tab closes from counting. Expired entries are
+ * dropped whenever the registry reads or changes the set (`all`, `prune`), and handed to `onExpired`.
+ */
+export class PendingRenames {
+	private entries: { readonly rename: Rename; readonly at: number }[] = [];
+
+	constructor(
+		private readonly expiryMs: number = PENDING_RENAME_MS,
+		/** The clock (test seam): `Date.now` in production. */
+		private readonly now: () => number = Date.now,
+		/** Hears the renames that expired unreported, once each. */
+		private readonly onExpired?: (expired: readonly Rename[]) => void,
+	) {}
+
+	/** `renames` are announced now. */
+	announce(renames: readonly Rename[]): void {
+		this.prune();
+		const at = this.now();
+		this.entries.push(...renames.map((rename) => ({ rename, at })));
+	}
+
+	/** `renames` were reported: their entries go. */
+	report(renames: readonly Rename[]): void {
+		this.prune();
+		this.entries = this.entries.filter(({ rename: p }) => !renames.some((r) => r.from === p.from && r.to === p.to));
+	}
+
+	/** The pending renames, in announcement order, after the expired ones are dropped. */
+	get all(): readonly Rename[] {
+		this.prune();
+		return this.entries.map((e) => e.rename);
+	}
+
+	/** Whether a pending rename renames `key` (the file itself, or a folder holding it). */
+	renaming(key: string): boolean {
+		return this.all.some((r) => key === r.from || within(key, r.from));
+	}
+
+	/** Whether a pending rename creates `key` (the file itself, or a folder holding it). */
+	creating(key: string): boolean {
+		return this.all.some((r) => key === r.to || within(key, r.to));
+	}
+
+	/** Drops the entries announced `expiryMs` ago or more, and tells `onExpired`. */
+	prune(): void {
+		const now = this.now();
+		const expired = this.entries.filter((e) => now - e.at >= this.expiryMs);
+		if (expired.length === 0) {
+			return;
+		}
+		this.entries = this.entries.filter((e) => now - e.at < this.expiryMs);
+		this.onExpired?.(expired.map((e) => e.rename));
+	}
+}

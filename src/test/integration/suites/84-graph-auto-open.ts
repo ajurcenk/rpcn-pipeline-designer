@@ -395,4 +395,62 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 		assert.deepStrictEqual(ids(last.model), ['path:input', 'path:pipeline.processors[0]', 'path:output']);
 		await api().graphPanels.show(newB);
 	});
+
+	test('RENAME_NEVER (4.13): a rename announced and never reported blocks tab close and auto-open until it expires; then both work', async () => {
+		const limit = 3_000;
+		// The registry hears the test's own announcement; VS Code reports nothing for it.
+		const will = new vscode.EventEmitter<vscode.FileWillRenameEvent>();
+		const workspace = vscode.workspace as { onWillRenameFiles: unknown };
+		const original = workspace.onWillRenameFiles;
+		workspace.onWillRenameFiles = will.event;
+		let panels: GraphPanels;
+		try {
+			panels = testPanels({ autoOpen: () => true, detection: api().detection, pendingRenameMs: limit });
+		} finally {
+			workspace.onWillRenameFiles = original;
+		}
+		const tabOf = (uri: vscode.Uri) => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+			.find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+		try {
+			const doc = await open('never-a.yaml', VALID);
+			const handle = await autoOpened(doc, panels);
+			let gone = false;
+			handle.panel.onDidDispose(() => (gone = true));
+			// Two renames of the file are announced: one new name is the control, the other is shown after the expiry.
+			const control = vscode.Uri.file(path.join(dir, 'never-b.yaml'));
+			const later = vscode.Uri.file(path.join(dir, 'never-c.yaml'));
+			will.fire({
+				files: [{ oldUri: doc.uri, newUri: control }, { oldUri: doc.uri, newUri: later }],
+				waitUntil: () => undefined,
+				token: new vscode.CancellationTokenSource().token,
+			} as vscode.FileWillRenameEvent);
+			const announced = Date.now();
+			// Before the time limit: a new name does not auto-open, and the last tab's close is no close.
+			const shownEarly = await open('never-b.yaml', VALID);
+			await settle();
+			await panels.idle();
+			assert.strictEqual(panels.panelFor(shownEarly.uri), undefined, 'a pending rename\'s new name does not auto-open');
+			assert.ok(tabOf(doc.uri), 'the old name\'s tab');
+			await vscode.window.tabGroups.close(tabOf(doc.uri)!);
+			await settle();
+			assert.ok(!gone, 'the pending rename keeps the graph');
+			assert.ok(Date.now() - announced < limit, 'the control ran before the time limit');
+			await vscode.window.showTextDocument(doc.uri, { viewColumn: vscode.ViewColumn.One, preview: false });
+			assert.ok(await waitFor(() => tabOf(doc.uri) !== undefined, 10_000));
+			// Past the time limit, the rename no longer counts.
+			assert.ok(await waitFor(() => Date.now() - announced >= limit + 100, limit + 1_000));
+			// AUTO: the other new name, shown for the first time, is no renamed file: its graph auto-opens.
+			const shownLate = await open('never-c.yaml', VALID);
+			await autoOpened(shownLate, panels);
+			assert.strictEqual(later.toString(), shownLate.uri.toString());
+			// TAB_CLOSE: the old name's last tab closes its graph.
+			await vscode.window.tabGroups.close(tabOf(doc.uri)!);
+			assert.ok(await waitFor(() => gone, 10_000), 'the graph closed with its last tab');
+			assert.strictEqual(panels.panelFor(doc.uri), undefined);
+			assert.strictEqual(control.toString(), shownEarly.uri.toString());
+		} finally {
+			panels.dispose();
+			will.dispose();
+		}
+	});
 });

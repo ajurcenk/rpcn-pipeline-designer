@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { renamedKey, renamedThrough } from '../../../adapters/graphPanel/tabs';
+import { PENDING_RENAME_MS, PendingRenames, renamedKey, renamedThrough, type Rename } from '../../../adapters/graphPanel/tabs';
 
 const k = (p: string) => `file:///d/${p}`;
 
@@ -40,5 +40,77 @@ suite('adapters/graphPanel tabs: renames (3.10, F7)', () => {
 	test('renamedThrough: a rename back to the original name is a rename to the same key', () => {
 		const back = [{ from: k('a.yaml'), to: k('t.yaml') }, { from: k('t.yaml'), to: k('a.yaml') }];
 		assert.strictEqual(renamedThrough(k('a.yaml'), back), k('a.yaml'));
+	});
+});
+
+suite('adapters/graphPanel tabs: pending renames (4.13)', () => {
+	/** A PendingRenames on a fake clock, with the expired renames it reported. */
+	function pending(expiryMs = 1_000) {
+		const clock = { now: 0 };
+		const expired: Rename[][] = [];
+		const renames = new PendingRenames(expiryMs, () => clock.now, (gone) => expired.push([...gone]));
+		return { renames, clock, expired };
+	}
+	const ab = { from: k('a.yaml'), to: k('b.yaml') };
+	const cd = { from: k('c'), to: k('d') };
+
+	test('the default time limit is 30 s', () => {
+		assert.strictEqual(PENDING_RENAME_MS, 30_000);
+	});
+
+	test('RENAME_OK: an announced rename is pending until it is reported; renaming and creating match files and folders', () => {
+		const { renames, clock, expired } = pending();
+		renames.announce([ab, cd]);
+		assert.deepStrictEqual(renames.all, [ab, cd]);
+		assert.ok(renames.renaming(k('a.yaml')));
+		assert.ok(renames.renaming(k('c/x.yaml')), 'a file in a renamed folder');
+		assert.ok(!renames.renaming(k('ab.yaml')));
+		assert.ok(renames.creating(k('b.yaml')));
+		assert.ok(renames.creating(k('d/x.yaml')));
+		assert.ok(!renames.creating(k('a.yaml')));
+		clock.now = 999;
+		renames.report([ab]);
+		assert.deepStrictEqual(renames.all, [cd], 'only the reported one goes');
+		assert.deepStrictEqual(expired, []);
+	});
+
+	test('a report matches from and to exactly: another rename of the same file stays', () => {
+		const { renames } = pending();
+		renames.announce([ab]);
+		renames.report([{ from: k('a.yaml'), to: k('z.yaml') }]);
+		assert.deepStrictEqual(renames.all, [ab]);
+	});
+
+	test('RENAME_NEVER: an unreported rename expires at the time limit, once, and is handed to onExpired', () => {
+		const { renames, clock, expired } = pending();
+		renames.announce([ab]);
+		clock.now = 500;
+		renames.announce([cd]);
+		clock.now = 999;
+		assert.deepStrictEqual(renames.all, [ab, cd], 'not yet');
+		clock.now = 1_000;
+		assert.deepStrictEqual(renames.all, [cd], 'the first expired');
+		assert.ok(!renames.renaming(k('a.yaml')));
+		assert.ok(!renames.creating(k('b.yaml')));
+		assert.deepStrictEqual(expired, [[ab]]);
+		clock.now = 1_500;
+		renames.prune();
+		assert.deepStrictEqual(renames.all, []);
+		assert.deepStrictEqual(expired, [[ab], [cd]], 'each once');
+		// A late report of an expired rename changes nothing.
+		renames.report([ab]);
+		assert.deepStrictEqual(expired, [[ab], [cd]]);
+	});
+
+	test('a rename announced again after it expired is pending again, from its new announcement', () => {
+		const { renames, clock } = pending();
+		renames.announce([ab]);
+		clock.now = 1_000;
+		renames.announce([ab]);
+		assert.deepStrictEqual(renames.all, [ab]);
+		clock.now = 1_999;
+		assert.deepStrictEqual(renames.all, [ab]);
+		clock.now = 2_000;
+		assert.deepStrictEqual(renames.all, []);
 	});
 });

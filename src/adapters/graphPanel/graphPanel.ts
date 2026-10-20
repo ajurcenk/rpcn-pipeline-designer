@@ -114,7 +114,12 @@ export class GraphPanel implements GraphPanelHandle {
 		try {
 			const msg = parseWebviewMessage(message);
 			if (msg?.type === 'ready') {
-				await this.postSnapshot(await this.document());
+				// Only a document already open (4.13): a `ready` never reopens a closed one, which would
+				// then stay open for minutes. Closed, the last model and status, if any (READY_CLOSED).
+				const doc = openDocument(this.uri.toString());
+				if (doc || this.lastModel) {
+					await this.postSnapshot(doc);
+				}
 			} else if (msg?.type === 'nodeActivated') {
 				await this.activate(msg.nodeId);
 			} else if (msg?.type === 'bannerClicked') {
@@ -136,22 +141,28 @@ export class GraphPanel implements GraphPanelHandle {
 	/**
 	 * The webview's complete state, `snapshot`, for `doc` (`ready`, and a schema back while the
 	 * YAML does not parse). A snapshot sets the live region's baseline and announces nothing (F4).
+	 * With no `doc` (`ready` after the document closed, 4.13): the last valid model, the node
+	 * status it still holds and the last selection, and no parse error.
 	 */
-	private async postSnapshot(doc: vscode.TextDocument): Promise<void> {
+	private async postSnapshot(doc: vscode.TextDocument | undefined): Promise<void> {
 		// Read after any await, with the catalogue, so a change meanwhile is not overwritten.
 		const hostStatus = this.hostStatus();
-		const state = this.state(doc);
-		const catalogue = this.built?.catalogue;
+		const state = doc ? this.state(doc) : {};
+		const catalogue = doc ? this.built?.catalogue : this.catalogue();
 		// While the YAML is broken the highlight stays as it was (BROKEN, SNAPSHOT).
 		const selection = state.model ? this.cursorNode(state.model) : this.sentSelection;
 		this.sentSelection = selection;
 		// While the YAML is broken, the frozen status (SNAPSHOT).
-		const status = state.model ? this.computeStatus(doc, state.model) : undefined;
+		const status = doc && state.model ? this.computeStatus(doc, state.model) : undefined;
 		// While the YAML is broken, the last valid model of this panel (FIRST_BROKEN, RECREATED);
 		// with no schema, none (MISSING).
 		const model = catalogue ? state.model ?? this.lastModel : null;
 		this.sentHost = JSON.stringify(hostStatus);
-		this.modelCatalogue = model ? catalogue : undefined;
+		// The last model without a document was built with an earlier catalogue: what the webview's
+		// model was built with is unchanged (a later schema still sends one).
+		if (doc || !model) {
+			this.modelCatalogue = model ? catalogue : undefined;
+		}
 		// The snapshot's status supersedes any status post still in flight (F1_RACE).
 		const serialised = status ?? JSON.stringify(this.status);
 		const seq = ++this.statusPosts;
