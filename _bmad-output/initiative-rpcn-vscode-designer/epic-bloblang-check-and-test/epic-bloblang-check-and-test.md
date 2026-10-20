@@ -42,7 +42,7 @@ A developer checks and tests a mapping next to its YAML instead of copying it in
 2. Test mapping opens that mapping's panel, and for 100% of corpus mappings with a sample on v4.100.0 and v4.112.0 the panel's output, error or "deleted" matches the binary's recorded run of the AD-21 one-message pipeline, and every parse error matches `blobl` (corpus harness in CI).
 3. Samples are saved next to the config, are there after a window reload, and stay attached to their mapping when processors are reordered.
 4. With no binary the panel shows Install guide, Set path and Retry, and runs after Set path without reopening the file.
-5. The panel works by keyboard and screen reader, the CI `.vsix` carries it, and the user passes a hands-on check on VS Code 1.141 and 1.100 in light, dark and high-contrast themes.
+5. The panel works by keyboard and screen reader, the CI `.vsix` carries it, and the user passes a hands-on check on VS Code stable (1.141 / 1.142) in light, dark and high-contrast themes (1.100 dropped, user decision 2026-10-20).
 
 ## Boundaries
 
@@ -82,4 +82,5 @@ Capability boundary: Bloblang check (CAP-15) and test (CAP-16, CAP-17) for `mapp
 - Decision (user, 2026-10-16, after the 4.12 CI runs): in CI the 1.100.0 floor VS Code run is non-blocking (it reports but does not fail the build), and the corpus harness, webview tests and packaging run whatever the VS Code tests did, so floor timing flakes no longer hide the parity check. Stabilising the flaky panel/graph tests goes to the refactor sweep (13).
 - Decision (user, 2026-10-17, before 4.13): new requirement R14, a sample seeded from the previous step, as entry 18 "Sample from the previous step", built after 11 and before the refactor sweep (13 waits on it). It runs the previous mapping/mutation step with the binary; running the whole pipeline (side effects of earlier processors) and inferring a sample statically from expressions were rejected.
 - Decision (user, 2026-10-19, 4.13 manual check): the graph is not refitted when a test panel below it halves its height, so its nodes fall below the visible area. This is pre-existing in the webview and was made visible by 4.17's placement. It becomes bug entry 19, "Graph refits when its panel is resized", after 13 and before the hands-on checks (14 waits on it).
+- Decision (user, 2026-10-20): the hands-on checks (entry 14, Done when 5) are done on VS Code stable only (1.141 / 1.142), not on 1.100; the 1.100 floor stays a non-blocking CI run. The CI focus flakiness found after 4.19 is pre-existing and goes to backlog bug 19, "Focus-dependent integration tests are flaky in CI".
 - Note: the open question on metadata in and out is answered by AD-21 (spike 4.1); the `blobl server` unknown is answered (it exists on v4.100.0 but is not used).
