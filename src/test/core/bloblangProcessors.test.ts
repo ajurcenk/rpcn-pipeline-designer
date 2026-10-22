@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, stepTitle } from '../../core/bloblangProcessors';
+import { bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, processorsOnly, stepTitle } from '../../core/bloblangProcessors';
 import { componentCatalogue } from '../../core/catalogue';
 import { buildPipelineModel, nodeAt } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
@@ -37,7 +37,7 @@ const processorsOf = (text: string) => bloblangProcessors(parseYaml(text));
 
 suite('core/bloblangProcessors (4.2)', () => {
 	test('LENS: every mapping and mutation processor of a processors list, at any depth, resources included', () => {
-		const found = processorsOf(CONFIG);
+		const found = processorsOnly(processorsOf(CONFIG));
 		assert.deepStrictEqual(found.map((p) => [p.path, p.kind, p.label, p.source]), [
 			['input.processors[0]', 'mutation', undefined, 'root.in = true'],
 			['pipeline.processors[0]', 'mapping', 'first', 'root.b = this.a + 1\nroot.c = "x"\n'],
@@ -45,18 +45,20 @@ suite('core/bloblangProcessors (4.2)', () => {
 			['pipeline.processors[3]', 'mapping', undefined, 'root = "q"'],
 			['processor_resources[0]', 'mapping', 'shared', 'root = this'],
 		]);
-		// The generate input's own `mapping` field is not a processor.
+		// The generate input's own `mapping` field is not a processor (22: it is a `generate` entry).
 		assert.ok(!found.some((p) => p.source.includes('not a processor')));
+		assert.deepStrictEqual(processorsOf(CONFIG).filter((p) => p.kind === 'generate').map((p) => [p.path, p.source]),
+			[['input.generate', 'root = "not a processor"']]);
 	});
 
-	test('the key range is the mapping / mutation key token', () => {
+	test('the key range is the mapping / mutation key token (generate: its mapping key)', () => {
 		for (const p of processorsOf(CONFIG)) {
-			assert.strictEqual(CONFIG.slice(p.keyRange[0], p.keyRange[1]), p.kind);
+			assert.strictEqual(CONFIG.slice(p.keyRange[0], p.keyRange[1]), p.kind === 'generate' ? 'mapping' : p.kind);
 		}
 	});
 
 	test('the processor at an offset: anywhere in its map; none outside every processor', () => {
-		const found = processorsOf(CONFIG);
+		const found = processorsOnly(processorsOf(CONFIG));
 		const at = (needle: string) => bloblangProcessorAt(found, CONFIG.indexOf(needle))?.path;
 		assert.strictEqual(at('label: first'), 'pipeline.processors[0]');
 		assert.strictEqual(at('root.c'), 'pipeline.processors[0]');
@@ -79,7 +81,6 @@ suite('core/bloblangProcessors (4.2)', () => {
 	test('nothing for no parse, no processors, or a mapping field outside a processors list', () => {
 		assert.deepStrictEqual(bloblangProcessors(undefined), []);
 		assert.deepStrictEqual(processorsOf(''), []);
-		assert.deepStrictEqual(processorsOf('input:\n  generate:\n    mapping: root = 1\n'), []);
 		assert.deepStrictEqual(processorsOf('pipeline:\n  processors:\n    - bloblang: root = 1\n'), []);
 	});
 
@@ -307,6 +308,7 @@ suite('core/bloblangProcessors positions and ids (4.3)', () => {
 			'',
 		].join('\n');
 		assert.deepStrictEqual(withModel(text).map((p) => [p.path, p.id]), [
+			['input.generate', 'label:dup'],
 			['input.processors[0]', 'label:in_map'],
 			['pipeline.processors[0]', 'path:pipeline.processors[0]'],
 			['pipeline.processors[1]', 'path:pipeline.processors[1]'],
@@ -314,6 +316,7 @@ suite('core/bloblangProcessors positions and ids (4.3)', () => {
 			['processor_resources[0]', 'res:processor:dup'],
 		]);
 		assert.deepStrictEqual(withModel(CONFIG).map((p) => p.id), [
+			'path:input',
 			'path:input.processors[0]',
 			'label:first',
 			'path:pipeline.processors[1].switch[0].processors[0]',
@@ -328,7 +331,7 @@ suite('core/bloblangProcessors positions and ids (4.3)', () => {
 			+ 'pipeline:\n  processors:\n    - label: a\n      mapping: root = 2\n').map((p) => [p.path, p.id]),
 		[['input.processors[0]', undefined], ['pipeline.processors[0]', 'label:a']]);
 		// No model, or a second document (the graph is the first's): no id.
-		assert.deepStrictEqual(processorsOf(CONFIG).map((p) => p.id), [undefined, undefined, undefined, undefined, undefined]);
+		assert.deepStrictEqual(processorsOf(CONFIG).map((p) => p.id), [undefined, undefined, undefined, undefined, undefined, undefined]);
 		assert.deepStrictEqual(withModel('pipeline:\n  processors:\n    - label: a\n      mapping: root = 1\n---\n'
 			+ 'processor_resources:\n  - label: a\n    mapping: root = 2\n').map((p) => p.id), ['label:a', undefined]);
 	});
@@ -401,5 +404,98 @@ suite('core/bloblangProcessors positions and ids (4.3)', () => {
 		assert.deepStrictEqual(steps('pipeline'), []);
 		// The title: the label, else the path.
 		assert.deepStrictEqual(previousSteps(found, 'pipeline.processors[2]').map(stepTitle), ['pipeline.processors[1]', 'a']);
+	});
+});
+
+suite('core/bloblangProcessors generate mappings (22)', () => {
+	const TEXT = [
+		'input:',
+		'  label: gen',
+		'  generate:',
+		'    interval: 1s',
+		'    mapping: |',
+		'      root = this.',
+		'  processors:',
+		'    - label: gen_proc',
+		'      mapping: root = 1',
+		'output:',
+		'  drop: {}',
+		'---',
+		'input:',
+		'  broker:',
+		'    inputs:',
+		'      - generate:',
+		'          mapping: root = 1',
+		'      - label: second',
+		'        generate:',
+		'          count: 1',
+		'          mapping: \'root = "x" +\'',
+		'      - broker:',
+		'          inputs:',
+		'            - generate:',
+		'                mapping: root = 2',
+		'      - stdin: {}',
+		'',
+	].join('\n');
+
+	test('TOP / BROKER / QUOTED: found at input and broker.inputs[i] (nested too), a block or a quoted scalar', () => {
+		const found = roundTripped(TEXT).filter((p) => p.kind === 'generate');
+		assert.deepStrictEqual(found.map((p) => [p.path, p.label, p.source]), [
+			['input.generate', 'gen', 'root = this.\n'],
+			['documents[1].input.broker.inputs[0].generate', undefined, 'root = 1'],
+			['documents[1].input.broker.inputs[1].generate', 'second', 'root = "x" +'],
+			['documents[1].input.broker.inputs[2].broker.inputs[0].generate', undefined, 'root = 2'],
+		]);
+		for (const p of found) {
+			assert.strictEqual(TEXT.slice(p.keyRange[0], p.keyRange[1]), 'mapping');
+			assert.ok(TEXT.slice(p.range[0], p.range[1]).includes('mapping:'), p.path);
+		}
+		// The quoted scalar maps at the right column: char 12 is the `+`.
+		assert.strictEqual(found[2].positions.offsetAt(1, 12), TEXT.indexOf("+'"));
+		assert.strictEqual(found[0].positions.offsetAt(1, 8), TEXT.indexOf('this.'));
+	});
+
+	test('ID: the input\'s node (and a broker child\'s), a generate component', () => {
+		const text = [
+			'input:',
+			'  broker:',
+			'    inputs:',
+			'      - label: one',
+			'        generate:',
+			'          mapping: root = 1',
+			'      - generate:',
+			'          mapping: root = 2',
+			'output:',
+			'  drop: {}',
+			'',
+		].join('\n');
+		const found = withModel(text);
+		assert.deepStrictEqual(found.map((p) => [p.path, p.kind, p.id]), [
+			['input.broker.inputs[0].generate', 'generate', 'label:one'],
+			['input.broker.inputs[1].generate', 'generate', 'path:input.broker.inputs[1]'],
+		]);
+		assert.deepStrictEqual(withModel('input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n').map((p) => [p.path, p.id]),
+			[['input.generate', 'path:input']]);
+	});
+
+	test('nothing outside an input, with no mapping key, or a generate that is not a map', () => {
+		const none = (text: string) => assert.deepStrictEqual(processorsOf(text).filter((p) => p.kind === 'generate'), [], text);
+		none('input:\n  generate:\n    count: 1\n');
+		none('input:\n  generate: root = 1\n');
+		none('output:\n  generate:\n    mapping: root = 1\n');
+		none('input_resources:\n  - generate:\n      mapping: root = 1\n');
+		none('input:\n  sequence:\n    inputs:\n      - generate:\n          mapping: root = 1\n');
+		none('pipeline:\n  processors:\n    - generate:\n        mapping: root = 1\n');
+		none('input:\n  broker:\n    inputs:\n      generate:\n        mapping: root = 1\n');
+	});
+
+	test('NO_LENS: processorsOnly leaves generate out, and the cursor in it finds no processor', () => {
+		const found = processorsOf(TEXT);
+		const processors = processorsOnly(found);
+		assert.ok(found.some((p) => p.kind === 'generate'));
+		assert.strictEqual(processors.length, found.filter((p) => p.kind !== 'generate').length);
+		assert.strictEqual(bloblangProcessorAt(processors, TEXT.indexOf('root = this.')), undefined);
+		assert.strictEqual(bloblangProcessorAt(processors, TEXT.indexOf('root = 1')), processors[0]);
+		assert.deepStrictEqual(previousSteps(processors, 'input.processors[0]'), []);
 	});
 });

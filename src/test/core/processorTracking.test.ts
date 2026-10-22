@@ -325,4 +325,55 @@ suite('core/processorTracking (4.10, AD-1)', () => {
 		labelled.edit(CONFIG.replace('mapping: root = this', 'mutation: root = this'));
 		assert.deepStrictEqual([first.removed, first.path], [false, P(0)]);
 	});
+
+	test('TRACK (22): a generate input and a processor never match each other, by label, overlap or path', () => {
+		const text = [
+			'input:',
+			'  label: x',
+			'  generate:',
+			'    mapping: root = this',
+			'pipeline:',
+			'  processors:',
+			'    - label: x',
+			'      mapping: root = this',
+			'',
+		].join('\n');
+		const doc = new Doc(text);
+		const processor = doc.open(P(0));
+		const generate = doc.open('input.generate');
+		doc.edit(`# a comment\n${text}`);
+		assert.deepStrictEqual(doc.paths(), [P(0), 'input.generate']);
+		// The processor's lines go: its panel is removed; the generate panel keeps its own entry.
+		doc.edit(doc.text.replace('    - label: x\n      mapping: root = this\n', '    - log:\n        message: hi\n'));
+		assert.deepStrictEqual([processor.removed, generate.path], [true, 'input.generate']);
+		// The same with no generate panel, so the generate entry (label x, same Bloblang) is unclaimed:
+		// the processor's panel is still removed, never on the generate input.
+		const alone = new Doc(text);
+		const only = alone.open(P(0));
+		alone.edit(text.replace('    - label: x\n      mapping: root = this\n', '    - log:\n        message: hi\n'));
+		assert.deepStrictEqual([only.removed, only.path], [true, undefined]);
+		// The generate input goes: its panel is removed, never the processor's that comes back.
+		const other = new Doc(text);
+		const gen = other.open('input.generate');
+		other.edit(text.replace('  label: x\n  generate:\n    mapping: root = this\n', '  stdin: {}\n'));
+		assert.ok(gen.removed);
+		// Reset to a samples link with the shared label: the processor of its own side.
+		const reset = new Doc(text);
+		const proc = reset.open(P(0));
+		proc.reset({ label: 'x', path: P(0) });
+		reset.match();
+		assert.strictEqual(proc.path, P(0));
+		const g = reset.open('input.generate');
+		g.reset({ label: 'x', path: 'input.generate' });
+		proc.reset({ label: 'x', path: P(0) });
+		reset.match();
+		assert.deepStrictEqual(reset.paths(), [P(0), 'input.generate']);
+		const gReset = new Doc(text.replace('  label: x\n  generate:\n    mapping: root = this\n', '  stdin: {}\n'));
+		const lost = new Panel({ ...processors(text).find((p) => p.kind === 'generate')! });
+		lost.reset({ label: 'x', path: 'input.generate' });
+		gReset.panels.push(lost);
+		gReset.match();
+		assert.ok(lost.removed, 'no generate entry: never the processor labelled x');
+	});
 });
+

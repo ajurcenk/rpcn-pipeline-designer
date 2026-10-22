@@ -39,13 +39,13 @@
 // Both pinned versions currently record identical graphs (their catalogue slots match).
 // Needs no binary either. The layout checks cover both record kinds.
 //
-// Bloblang positions and ids (ticket 4.3): every corpus `mapping` / `mutation` processor's
-// position map round-trips (each decoded character maps to an offset holding it, or the start of
+// Bloblang positions and ids (ticket 4.3): every corpus `mapping` / `mutation` processor's (and,
+// since ticket 22, `generate` input mapping's, whose node is the input's) position map round-trips (each decoded character maps to an offset holding it, or the start of
 // its escape or fold) and, given the PipelineModel of each version's catalogue, it has an id, its
 // node's (through nodeAt). Needs no binary and no records.
 //
 // Bloblang parity (ticket 4.12, R11, AD-21): every corpus `mapping` / `mutation` processor (as
-// `bloblangProcessors` finds them) has samples in test/corpus/<name>.samples.json (AD-22's format,
+// `bloblangProcessors` finds them, `generate` input mappings left out by `processorsOnly`) has samples in test/corpus/<name>.samples.json (AD-22's format,
 // linked by label, else by path; a sample carries the metadata its mapping reads). Record mode runs,
 // per pinned version, the harness's own copy of the AD-21 one-message pipeline
 // (test/corpus/bloblangReference.ts, not the extension's `testConfig`) on every sample, and
@@ -81,7 +81,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLintArgs } from '../../src/core/args';
 import { componentCatalogue, type ComponentCatalog } from '../../src/core/catalogue';
 import { buildPipelineModel, nodeAt } from '../../src/core/graph';
-import { bloblangProcessors } from '../../src/core/bloblangProcessors';
+import { bloblangProcessors, processorsOnly } from '../../src/core/bloblangProcessors';
 import { detect } from '../../src/core/detection';
 import { parseYaml } from '../../src/core/yamlPath';
 import type { PipelineModel } from '../../src/shared/protocol';
@@ -228,8 +228,10 @@ function describeDrift(config: string, ver: string, expected: LintRecord, actual
 		'If the change is intended, run `npm run test:corpus:record`.'].join('\n');
 }
 
-/** Configs with at least one `mapping` / `mutation` processor (4.3, 4.12). */
-const withBloblang = configs.filter((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8'))).length > 0);
+/** Configs with at least one `mapping` / `mutation` processor (4.3, 4.12): the parity configs. */
+const withBloblang = configs.filter((c) => processorsOnly(bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8')))).length > 0);
+/** Configs with any Bloblang the finder returns, `generate` input mappings included (ticket 22): the round-trip configs. */
+const withAnyBloblang = configs.filter((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8'))).length > 0);
 
 /** The env var the harness fixture's mapping reads; never set, so `run` stops on lint and `blobl` fails. */
 const UNSET_ENV_VAR = 'RPCN_CORPUS_UNSET_4_12';
@@ -552,13 +554,15 @@ describe('graph accuracy (corpus config → extension PipelineModel, R12)', () =
 	});
 });
 
-describe('Bloblang positions and ids (corpus config → mapping / mutation processors, 4.3)', () => {
-	it('the corpus has mapping and mutation processors to check', () => {
+describe('Bloblang positions and ids (corpus config → mapping / mutation processors, 4.3; generate mappings, 22)', () => {
+	it('the corpus has mapping and mutation processors, and generate mappings, to check', () => {
 		expect(withBloblang.length).toBeGreaterThan(0);
+		expect(withAnyBloblang.some((c) => bloblangProcessors(parseYaml(fs.readFileSync(path.join(CORPUS, c), 'utf8')))
+			.some((p) => p.kind === 'generate'))).toBe(true);
 	});
 
-	for (const config of withBloblang) {
-		it(`${config}: every mapping / mutation round-trips, and its id is its graph node's`, () => {
+	for (const config of withAnyBloblang) {
+		it(`${config}: every mapping / mutation / generate mapping round-trips, and its id is its graph node's`, () => {
 			const text = fs.readFileSync(path.join(CORPUS, config), 'utf8');
 			const parsed = parseYaml(text);
 			const found = bloblangProcessors(parsed);
@@ -631,7 +635,7 @@ function readSamples(config: string): SamplesFile | undefined {
 function bloblangCases(config: string) {
 	const text = fs.readFileSync(path.join(CORPUS, config), 'utf8');
 	const samples = readSamples(config);
-	const processors = bloblangProcessors(parseYaml(text)).filter((p) => !p.path.startsWith('documents['));
+	const processors = processorsOnly(bloblangProcessors(parseYaml(text))).filter((p) => !p.path.startsWith('documents['));
 	return {
 		text,
 		processors: processors.map((p) => ({

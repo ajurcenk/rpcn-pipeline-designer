@@ -79,7 +79,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, stepTitle, type BloblangProcessor,
+	bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, processorsOnly, stepTitle, type BloblangProcessor,
 } from '../../core/bloblangProcessors';
 import { documentLabels, labelError, labelInsertion, suggestLabel, type TextInsertion } from '../../core/labelEdit';
 import { mapRange, matchProcessors, parses, type OffsetRange, type TextChange, type TrackedProcessor } from '../../core/processorTracking';
@@ -848,7 +848,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (!parses(parsed)) {
 			return this.last ?? { processor: undefined, text: '', processors: [] };
 		}
-		const processors = bloblangProcessors(parsed);
+		const processors = processorsOnly(bloblangProcessors(parsed));
 		return { processor: bloblangProcessorByPath(processors, this.path), text: doc.getText(), processors };
 	}
 
@@ -1141,7 +1141,7 @@ export class BloblangPanels implements vscode.Disposable {
 		if (parses(parsed)) {
 			try {
 				const wasLive = new Set(entries.filter((entry) => !entry.removed && !entry.isReset));
-				const processors = bloblangProcessors(parsed);
+				const processors = processorsOnly(bloblangProcessors(parsed));
 				const found = matchProcessors(processors, entries.map((entry) => entry.tracked()));
 				const text = doc.getText();
 				entries.forEach((entry, i) => entry.follow(found[i], text, processors));
@@ -1261,7 +1261,7 @@ export class BloblangPanels implements vscode.Disposable {
 				return undefined;
 			}
 			const processor = editor && doc && this.options.detection.isDetected(doc.uri)
-				? bloblangProcessorAt(bloblangProcessors(parsedDocument(doc).parsed), doc.offsetAt(editor.selection.active))
+				? bloblangProcessorAt(processorsOnly(bloblangProcessors(parsedDocument(doc).parsed)), doc.offsetAt(editor.selection.active))
 				: undefined;
 			if (!doc || !processor) {
 				this.tell(NO_MAPPING_AT_CURSOR);
@@ -1323,7 +1323,7 @@ export class BloblangPanels implements vscode.Disposable {
 			return open;
 		}
 		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-		const processors = doc && this.options.detection.isDetected(uri) ? bloblangProcessors(parsedDocument(doc).parsed) : [];
+		const processors = doc && this.options.detection.isDetected(uri) ? processorsOnly(bloblangProcessors(parsedDocument(doc).parsed)) : [];
 		const processor = bloblangProcessorByPath(processors, processorPath);
 		if (!processor) {
 			this.tell(NO_LONGER_THERE);

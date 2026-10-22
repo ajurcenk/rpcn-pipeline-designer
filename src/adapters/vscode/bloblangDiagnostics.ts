@@ -1,6 +1,6 @@
 // Live Bloblang syntax diagnostics (ticket 4.5, AD-14, AD-21). While a detected `file:` config is
-// edited, 300 ms after the last change, every `mapping` / `mutation` processor whose decoded
-// Bloblang changed is parsed by the binary (`parseMapping`: `blobl --file`, stdin closed). Parse
+// edited, 300 ms after the last change, every `mapping` / `mutation` processor and (ticket 22)
+// `generate` input mapping whose decoded Bloblang changed is parsed by the binary (`parseMapping`: `blobl --file`, stdin closed). Parse
 // errors go to our own collection (`redpanda-connect-bloblang`, source `Bloblang`, Error) on the one
 // character the 4.3 position map gives for the binary's `line L char C`. Other failures (an unset
 // `${VAR}`, a timeout) give no diagnostic and one output-channel line per distinct message.

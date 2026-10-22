@@ -6,6 +6,10 @@
 // Bloblang-to-document position map (src/core/bloblangPositions.ts) and, given the document's
 // PipelineModel, its graph node's AD-7 id (through `nodeAt`, never a copied rule).
 // Ticket 4.18: the previous steps of a processor in its own list (`previousSteps`).
+// Ticket 22: a third kind, `generate`: the `mapping` of a `generate` input at `input` or at a
+// broker's `inputs[i]` below it (`input.broker.inputs[i]`, nested brokers too), for the live parse
+// (4.5) and the graph marker (4.6) only. The processor-only features (the lens, the Test mapping
+// command, the panel and its samples) take `processorsOnly` of the list.
 
 import { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { BloblangProcessorKind } from '../shared/bloblangProtocol';
@@ -14,9 +18,13 @@ import { bloblangPositions, type BloblangPositions } from './bloblangPositions';
 import { nodeAt } from './nodeAt';
 import type { PathStep, ParsedYaml } from './yamlPath';
 
-/** The processor kinds a test run supports (AD-21): a `mutation` keeps the input's fields. */
+/**
+ * The Bloblang kinds: the processors a test run supports (AD-21; a `mutation` keeps the input's
+ * fields), and a `generate` input's `mapping` (ticket 22).
+ */
 export type BloblangKind = BloblangProcessorKind;
 
+/** The processor kinds, as their component keys. */
 export const BLOBLANG_KINDS: readonly BloblangKind[] = ['mapping', 'mutation'];
 
 /**
@@ -29,20 +37,22 @@ export interface BloblangProcessor {
 	/**
 	 * The processor's YAML path, as in AD-7 ids without the `path:` prefix:
 	 * `pipeline.processors[0]`, `processor_resources[1]`; prefixed `documents[i].` past the first document.
+	 * A `generate` entry's is its `generate` map's: `input.generate`, `input.broker.inputs[1].generate`.
 	 */
 	readonly path: string;
 	readonly kind: BloblangKind;
-	/** The processor's `label`, when it has a non-empty string one. */
+	/** The processor's `label`, when it has a non-empty string one (`generate`: the input's own `label`). */
 	readonly label?: string;
-	/** UTF-16 offsets `[start, end)` of the `mapping` / `mutation` key token. */
+	/** UTF-16 offsets `[start, end)` of the `mapping` / `mutation` key token (`generate`: its `mapping` key). */
 	readonly keyRange: readonly [number, number];
-	/** UTF-16 offsets `[start, end)` of the whole processor map. */
+	/** UTF-16 offsets `[start, end)` of the whole processor map (`generate`: the `generate` map). */
 	readonly range: readonly [number, number];
 	/** The Bloblang, decoded from its YAML scalar (an empty or non-scalar value gives `''`). */
 	readonly source: string;
 	/**
 	 * The AD-7 id of the processor's PipelineModel node: the node `nodeAt` gives at the key, when
-	 * it is a node of the processor's kind. None with no model, or when the graph has no such node.
+	 * it is a node of the processor's kind (`generate`: the input's node, a `generate` component).
+	 * None with no model, or when the graph has no such node.
 	 */
 	readonly id?: string;
 	/** From the binary's mapping-relative `line L char C` to UTF-16 document offsets (AD-21). */
@@ -50,8 +60,8 @@ export interface BloblangProcessor {
 }
 
 /**
- * Every `mapping` / `mutation` processor of `parsed`, in document order; `model` (the first
- * document's PipelineModel) gives their ids. Never throws.
+ * Every `mapping` / `mutation` processor and `generate` input mapping of `parsed`, in document
+ * order; `model` (the first document's PipelineModel) gives their ids. Never throws.
  */
 export function bloblangProcessors(parsed: ParsedYaml | undefined, model?: PipelineModel): BloblangProcessor[] {
 	const out: BloblangProcessor[] = [];
@@ -65,6 +75,14 @@ export function bloblangProcessors(parsed: ParsedYaml | undefined, model?: Pipel
 		return out;
 	}
 	return out.sort((a, b) => a.keyRange[0] - b.keyRange[0]);
+}
+
+/** A `mapping` / `mutation` processor: what the panel can test. */
+export type TestableProcessor = BloblangProcessor & { readonly kind: Exclude<BloblangKind, 'generate'> };
+
+/** The `mapping` / `mutation` processors of `found`: what the lens, the command and the panel use (ticket 22). */
+export function processorsOnly(found: readonly BloblangProcessor[]): TestableProcessor[] {
+	return found.filter((p): p is TestableProcessor => p.kind !== 'generate');
 }
 
 /** The processor of `processors` whose map holds `offset` (the innermost one), if any. */
@@ -132,6 +150,11 @@ function visit(node: unknown, steps: readonly PathStep[], processorItem: boolean
 			if (found) {
 				out.push(found);
 			}
+		} else if (isInputPath(steps)) {
+			const found = generateOf(node, steps, context);
+			if (found) {
+				out.push(found);
+			}
 		}
 		for (const pair of node.items) {
 			if (!isScalar(pair.key)) {
@@ -149,6 +172,34 @@ function visit(node: unknown, steps: readonly PathStep[], processorItem: boolean
 	}
 }
 
+/**
+ * Whether `steps` is where an input's map sits: a document's `input`, or `broker.inputs[i]` below
+ * one (at any depth of brokers).
+ */
+function isInputPath(steps: readonly PathStep[]): boolean {
+	const rest = typeof steps[0] === 'string' && /^documents\[\d+\]$/.test(steps[0]) ? steps.slice(1) : steps;
+	let end = rest.length;
+	while (end >= 4 && typeof rest[end - 1] === 'number' && rest[end - 2] === 'inputs' && rest[end - 3] === 'broker') {
+		end -= 3;
+	}
+	return end === 1 && rest[0] === 'input';
+}
+
+/** An input map's `generate.mapping`, when its `generate` is a map with a `mapping` key. */
+function generateOf(input: YAMLMap, steps: readonly PathStep[], context: Context): BloblangProcessor | undefined {
+	const generatePair = input.items.find((p) => isScalar(p.key) && p.key.value === 'generate');
+	const generate = generatePair?.value;
+	if (!isMap(generate) || !generate.range) {
+		return undefined;
+	}
+	const pair = generate.items.find((p) => isScalar(p.key) && p.key.value === 'mapping');
+	const key = pair?.key;
+	if (!pair || !isScalar(key) || !key.range) {
+		return undefined;
+	}
+	return entryOf('generate', input, key.range, pair.value, generate.range, pathText([...steps, 'generate']), context);
+}
+
 /** A processor item's `mapping` / `mutation`: the first such key of the map. */
 function processorOf(map: YAMLMap, steps: readonly PathStep[], context: Context): BloblangProcessor | undefined {
 	const path = pathText(steps);
@@ -161,25 +212,39 @@ function processorOf(map: YAMLMap, steps: readonly PathStep[], context: Context)
 		if (!isScalar(key) || !key.range || !BLOBLANG_KINDS.includes(String(key.value) as BloblangKind)) {
 			continue;
 		}
-		const value = pair.value;
-		const source = isScalar(value) && value.value !== null && value.value !== undefined ? String(value.value) : '';
-		const labelPair = map.items.find((p) => isScalar(p.key) && p.key.value === 'label');
-		const label = labelPair && isScalar(labelPair.value) && typeof labelPair.value.value === 'string' && labelPair.value.value !== ''
-			? labelPair.value.value
-			: undefined;
-		const kind = String(key.value) as BloblangKind;
-		const nodeId = context.model ? nodeAt(context.model, key.range[0]) : undefined;
-		const node = nodeId === undefined ? undefined : context.model?.nodes.find((n) => n.id === nodeId);
-		return {
-			path,
-			kind,
-			...(label !== undefined ? { label } : {}),
-			keyRange: [key.range[0], key.range[1]],
-			range: [range[0], range[1]],
-			source,
-			...(node?.component === kind ? { id: node.id } : {}),
-			positions: bloblangPositions(context.text, value, key.range[0], source),
-		};
+		return entryOf(String(key.value) as BloblangKind, map, key.range, pair.value, range, path, context);
 	}
 	return undefined;
+}
+
+/**
+ * The entry of a `kind` Bloblang `value` under the key at `keyRange`: its label is `owner`'s (the
+ * processor's or the input's map), its range `range`.
+ */
+function entryOf(
+	kind: BloblangKind,
+	owner: YAMLMap,
+	keyRange: readonly number[],
+	value: unknown,
+	range: readonly number[],
+	path: string,
+	context: Context,
+): BloblangProcessor {
+	const source = isScalar(value) && value.value !== null && value.value !== undefined ? String(value.value) : '';
+	const labelPair = owner.items.find((p) => isScalar(p.key) && p.key.value === 'label');
+	const label = labelPair && isScalar(labelPair.value) && typeof labelPair.value.value === 'string' && labelPair.value.value !== ''
+		? labelPair.value.value
+		: undefined;
+	const nodeId = context.model ? nodeAt(context.model, keyRange[0]) : undefined;
+	const node = nodeId === undefined ? undefined : context.model?.nodes.find((n) => n.id === nodeId);
+	return {
+		path,
+		kind,
+		...(label !== undefined ? { label } : {}),
+		keyRange: [keyRange[0], keyRange[1]],
+		range: [range[0], range[1]],
+		source,
+		...(node?.component === kind ? { id: node.id } : {}),
+		positions: bloblangPositions(context.text, value, keyRange[0], source),
+	};
 }

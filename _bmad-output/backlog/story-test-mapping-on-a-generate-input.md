@@ -51,4 +51,5 @@ The Bloblang test panel (epic 4, CAP-16) covers `mapping` and `mutation` process
   - samples are hidden for generate panels;
   - live syntax errors and the graph marker are split out into story 22, which is built first;
   - **run method:** the generate mapping runs as a `mapping` processor on one empty message (`this` null), so run-time errors come back like a processor's (`failed assignment (line N)`, Go to line, deleted).
+- From story 22's review (2026-10-22): `BloblangProcessorKind` already includes `generate`. `testConfig` / `runMappingTest`, the panel types and `labelInsertion` accept it by type but would build an invalid `- generate:` processor, so this story must route `generate` through the empty-message `mapping` run and hide Add label for it.
 - Why the run method: a spike on 4.112.0 showed a failing generate *input* logging "Failed to read message: failed assignment (line 1) …" and retrying every second until the timeout.

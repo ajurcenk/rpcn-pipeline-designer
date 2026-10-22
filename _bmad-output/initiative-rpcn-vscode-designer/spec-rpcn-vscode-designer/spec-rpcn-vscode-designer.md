@@ -77,8 +77,8 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
   - **success:** A corpus of real configs (Apache-2.0 configs from the public `redpanda-data/connect` repository, with source and license recorded per file) exists early; automated tests against the minimum supported binary (v4.100.0) and a pinned current one (v4.112.0) in CI check every corpus config for graph accuracy and for editor diagnostics matching `rpk connect lint` output.
 
 - **CAP-15 — Live Bloblang syntax diagnostics** *(second release)*
-  - **intent:** Developers see Bloblang syntax errors in `mapping` and `mutation` processors while they type, as their binary reports them.
-  - **success:** The `mapping` / `mutation` field of every `mapping` and `mutation` processor, nested ones included, is parsed by the developer's binary as the YAML changes; each parse error appears as an editor diagnostic at the matching YAML line and column with the binary's message; the diagnostic clears once the mapping parses; other Bloblang fields get none.
+  - **intent:** Developers see Bloblang syntax errors in `mapping` and `mutation` processors, and in `generate` inputs' `mapping`, while they type, as their binary reports them.
+  - **success:** The `mapping` / `mutation` field of every `mapping` and `mutation` processor, nested ones included, and the `mapping` of a `generate` input (`input.generate`, or a `broker`'s `inputs[i].generate`), is parsed by the developer's binary as the YAML changes; each parse error appears as an editor diagnostic at the matching YAML line and column with the binary's message; the diagnostic clears once the mapping parses; other Bloblang fields get none.
 
 - **CAP-16 — Bloblang test panel** *(second release)*
   - **intent:** Developers run one `mapping` or `mutation` against a sample message beside the editor and see what it produces or why it fails.
@@ -101,7 +101,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Minimum supported Redpanda Connect version is v4.100.0.
 - Bloblang checks and test runs execute only on the developer's binary; no bundled Bloblang engine (the docs playground's Wasm build is not used).
 - A test runs the mapping alone on the sample: the sample is the message as it reaches that processor; earlier processors are not applied.
-- CAP-15–17 cover `mapping` and `mutation` processors only.
+- CAP-15–17 cover `mapping` and `mutation` processors only; CAP-15 also covers `generate` inputs' `mapping` (ticket 22), which have no test lens or panel yet.
 - Delivered as a CI-built `.vsix` installed by hand; nothing is published to a registry in the POC.
 - Scope unit is single-file configs plus resource files.
 - POC stakes: sized for typical configs, SemVer 0.x.
@@ -116,7 +116,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Large configs (thousands of lines).
 - Lint while typing.
 - A Bloblang language server, and Bloblang diagnostics outside CAP-15 (completion and hover are in CAP-4).
-- Bloblang checks or tests for anything but `mapping` / `mutation` processors: `check`, `request_map` / `result_map`, other `*_map` / `*_mapping` fields, `${! }` interpolations, `.blobl` files.
+- Bloblang checks or tests for anything but `mapping` / `mutation` processors and (live syntax errors only) `generate` inputs' `mapping`: `check`, `request_map` / `result_map`, other `*_map` / `*_mapping` fields, `${! }` interpolations, `.blobl` files.
 - Capturing test messages from a run, or running a mapping after the pipeline's earlier processors.
 - A bundled Bloblang engine for use without a binary.
 - A default keybinding for Show / Hide graph.

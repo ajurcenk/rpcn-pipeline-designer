@@ -303,6 +303,36 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(api().outputLines()[api().outputLines().length - 1], `Test mapping: ${NO_MAPPING_AT_CURSOR}`);
 	});
 
+	test('NO_LENS (ticket 22): a generate input\'s mapping gets no lens, and Test mapping at its cursor says there is nothing to test', async () => {
+		const text = [
+			'input:',
+			'  label: gen',
+			'  generate:',
+			'    count: 1',
+			'    mapping: root = {"a": 1}',
+			'pipeline:',
+			'  processors:',
+			'    - mapping: root = this',
+			'output:',
+			'  stdout: {}',
+			'',
+		].join('\n');
+		const editor = await open('generate.yaml', text);
+		const doc = editor.document;
+		const lenses = (await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', doc.uri))
+			.filter((l) => l.command?.command === TEST_MAPPING_COMMAND);
+		assert.deepStrictEqual(lenses.map((l) => [l.range.start.line, l.command?.arguments?.[1]]), [[7, 'pipeline.processors[0]']]);
+		const at = doc.positionAt(text.indexOf('{"a"'));
+		editor.selection = new vscode.Selection(at, at);
+		// The command reads the active editor's cursor: it must be this one, in the generate mapping.
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc
+			&& vscode.window.activeTextEditor.selection.active.isEqual(at), 10_000), 'the YAML editor is active, its cursor in the generate mapping');
+		const handle = await vscode.commands.executeCommand<BloblangPanelHandle | undefined>(TEST_MAPPING_COMMAND);
+		assert.strictEqual(handle, undefined);
+		assert.strictEqual(api().bloblangPanels.size, 0);
+		assert.strictEqual(api().outputLines()[api().outputLines().length - 1], `Test mapping: ${NO_MAPPING_AT_CURSOR}`);
+	});
+
 	test('RUN_OK / CONTENT_ESCAPE: the mapping\'s output for a mapping and a mutation; the input reaches the config unchanged; the temp file is removed', async () => {
 		const doc = (await open('ok.yaml', CONFIG)).document;
 		const mapping = await show(doc.uri, FIRST);

@@ -4,6 +4,7 @@
 // positions, and the boundaries the entry meets: lint on save (2.4) hides its duplicate and keeps
 // the rest, and a 4.2 test run still works while a parse is in flight. Ticket 6: the errors mark
 // their processors' nodes in the real graph panel (AD-17), seen through its posted `nodeStatus`.
+// Ticket 22: a `generate` input's mapping (at `input` and in a broker's `inputs`) too.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -51,6 +52,38 @@ const MESSAGE = 'expected fake thing';
 /** CONFIG with its block mapping labelled `blk`. */
 const LABELLED = CONFIG.replace('    - mapping: |', '    - label: blk\n      mapping: |');
 const BLOCK_ID = 'label:blk';
+
+/** A config whose input is a `generate` with a block mapping (ticket 22). */
+const GENERATE = [
+	'input:',
+	'  generate:',
+	'    interval: 1s',
+	'    mapping: |',
+	'      root = this.a',
+	'      root.b = 1',
+	'pipeline:',
+	'  processors:',
+	'    - mapping: root.d = 1',
+	'output:',
+	'  stdout: {}',
+	'',
+].join('\n');
+/** The input node (with GENERATE a generate, with BROKER the broker). */
+const GENERATE_ID = 'path:input';
+/** A broker whose second input is a `generate` with a single-quoted mapping (ticket 22). */
+const BROKER = [
+	'input:',
+	'  broker:',
+	'    inputs:',
+	'      - stdin: {}',
+	'      - generate:',
+	'          count: 1',
+	`          mapping: 'root = "x"'`,
+	'output:',
+	'  stdout: {}',
+	'',
+].join('\n');
+const BROKER_CHILD_ID = 'path:input.broker.inputs[1]';
 
 /** A node's status for its own messages; a group's for rolled-up ones. */
 const own = (...messages: string[]): NodeStatus => ({ severity: 'error', own: 'error', messages, ownMessages: messages });
@@ -506,6 +539,41 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 			[PLAIN_ID]: own(MESSAGE),
 			[RESOURCE_ID]: own(MESSAGE),
 		}, 'AT_END');
+	});
+
+	test('GENERATE TOP / FIX (ticket 22): an error in a generate input\'s block mapping is underlined and marks the input\'s node; the fix clears both', async () => {
+		const editor = await open('generate-top.yaml', GENERATE);
+		const doc = editor.document;
+		const handle = await graph(doc);
+		assert.deepStrictEqual(bloblangOf(doc.uri), []);
+		await replace(editor, 'root.b = 1', 'root.b = 1 +ERR@2:12');
+		// Mapping line 2, char 12 is the `+` (`root.b = 1 +`, under a 6-space indent).
+		const expected = [error(at(doc, '+ERR@2:12'))];
+		assert.ok(await waitFor(() => JSON.stringify(bloblangOf(doc.uri)) === JSON.stringify(expected), 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		await expectStatus(handle, { [GENERATE_ID]: own(MESSAGE) }, 'TOP');
+
+		await replace(editor, ' +ERR@2:12', '');
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 0, 5_000), 'the diagnostic clears once it parses');
+		await expectStatus(handle, {}, 'FIX');
+
+		// AT_END (ticket 20): an error past the mapping's last line marks the input too.
+		await replace(editor, 'root.b = 1', 'root.b = 1 ERR@3:1');
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 1, 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		await expectStatus(handle, { [GENERATE_ID]: own(MESSAGE) }, 'AT_END');
+	});
+
+	test('GENERATE BROKER / QUOTED (ticket 22): a broker child\'s single-quoted generate mapping is underlined at its column and marks that child', async () => {
+		const editor = await open('generate-broker.yaml', BROKER);
+		const doc = editor.document;
+		const handle = await graph(doc);
+		await replace(editor, `'root = "x"'`, `'root = "x" ERR@1:10'`);
+		// Decoded `root = "x" …`: char 10 is the closing `"`.
+		const expected = [error(at(doc, '" ERR@1:10'))];
+		assert.ok(await waitFor(() => JSON.stringify(bloblangOf(doc.uri)) === JSON.stringify(expected), 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		await expectStatus(handle, { [GENERATE_ID]: rolled(MESSAGE), [BROKER_CHILD_ID]: own(MESSAGE) }, 'BROKER');
+		await replace(editor, ' ERR@1:10', '');
+		await expectStatus(handle, {}, 'FIX');
+		assert.deepStrictEqual(bloblangOf(doc.uri), []);
 	});
 
 	test('GRAPH FROZEN (ticket 6): while the YAML does not parse no status is sent and the marker stays; once it parses the status is recomputed', async () => {

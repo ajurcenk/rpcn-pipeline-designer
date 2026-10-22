@@ -11,6 +11,9 @@
 //   3. removed panels (and those that found nothing above) take the unclaimed processor with their
 //      last label, else an unclaimed one of the same kind and Bloblang nearest their last path;
 //   4. otherwise: none (the panel is removed).
+// Every step keeps to the panel's side of the kinds (ticket 22): a `generate` input mapping and a
+// `mapping` / `mutation` processor never match each other, by range, label or path (`sameSide`);
+// a processor whose kind changed between `mapping` and `mutation` is still found by its label.
 
 import type { BloblangKind, BloblangProcessor } from './bloblangProcessors';
 import type { ParsedYaml } from './yamlPath';
@@ -91,7 +94,7 @@ export function matchProcessors(processors: readonly BloblangProcessor[], tracke
 	// 0. Reset to the samples link: by its label, else its path.
 	tracked.forEach((t, i) => {
 		if (t.range === undefined) {
-			claim(i, t.label !== undefined ? free((p) => p.label === t.label) : free((p) => p.path === t.path));
+			claim(i, t.label !== undefined ? free((p) => sameSide(p.kind, t.kind) && p.label === t.label) : free((p) => sameSide(p.kind, t.kind) && p.path === t.path));
 		}
 	});
 
@@ -119,7 +122,7 @@ export function matchProcessors(processors: readonly BloblangProcessor[], tracke
 	// 2. Label, for a live panel with no overlap.
 	tracked.forEach((t, i) => {
 		if (!t.removed && t.range !== undefined && t.label !== undefined && found[i] === undefined) {
-			claim(i, free((p) => p.label === t.label));
+			claim(i, free((p) => sameSide(p.kind, t.kind) && p.label === t.label));
 		}
 	});
 
@@ -129,7 +132,7 @@ export function matchProcessors(processors: readonly BloblangProcessor[], tracke
 			return;
 		}
 		if (t.label !== undefined) {
-			claim(i, free((p) => p.label === t.label));
+			claim(i, free((p) => sameSide(p.kind, t.kind) && p.label === t.label));
 		}
 		if (found[i] === undefined) {
 			const same = processors.filter((p) => !claimed.has(p) && p.kind === t.kind && p.source === t.source);
@@ -137,6 +140,11 @@ export function matchProcessors(processors: readonly BloblangProcessor[], tracke
 		}
 	});
 	return found;
+}
+
+/** Whether an entry of kind `a` may follow one of kind `b`: both `generate`, or neither. */
+function sameSide(a: BloblangKind, b: BloblangKind): boolean {
+	return (a === 'generate') === (b === 'generate');
 }
 
 /** The processor of `processors` whose path is nearest `path`: the same list first, then the closest index; else the longest common prefix. */

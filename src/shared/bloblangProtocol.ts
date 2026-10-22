@@ -10,8 +10,11 @@ import type { BinaryStatus } from './protocol';
 
 export type { BinaryStatus };
 
-/** The processor kinds the panel tests (AD-21). */
-export type BloblangProcessorKind = 'mapping' | 'mutation';
+/**
+ * The Bloblang kinds (AD-21): the `mapping` / `mutation` processors the panel tests, and (ticket 22)
+ * a `generate` input's `mapping`, which only the live parse and the graph marker cover so far.
+ */
+export type BloblangProcessorKind = 'mapping' | 'mutation' | 'generate';
 
 /** A JSON value: what a message's metadata values are after a run. */
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -140,7 +143,7 @@ type Obj = Record<string, unknown>;
 
 const isObject = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isString = (v: unknown): v is string => typeof v === 'string';
-const isKind = (v: unknown): v is BloblangProcessorKind => v === 'mapping' || v === 'mutation';
+const isKind = (v: unknown): v is BloblangProcessorKind => v === 'mapping' || v === 'mutation' || v === 'generate';
 const isBinaryStatus = (v: unknown): v is BinaryStatus => v === 'ok' || v === 'missing' || v === 'invalid' || v === 'unresolved';
 /** A 1-based line or char. */
 const isPosition = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
