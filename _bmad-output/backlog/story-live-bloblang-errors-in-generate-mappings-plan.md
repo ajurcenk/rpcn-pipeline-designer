@@ -3,7 +3,7 @@ title: 'Live Bloblang errors in generate mappings'
 type: 'feature'
 ticket: '22'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: 'd6811f6186b8a5db36a5da6dd51a576bb66f9d2e'
 route: 'full'
 route_source: 'auto'

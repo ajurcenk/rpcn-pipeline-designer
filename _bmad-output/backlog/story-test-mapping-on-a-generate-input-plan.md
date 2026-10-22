@@ -3,7 +3,7 @@ title: 'Test mapping on a generate input'
 type: 'feature'
 ticket: '16'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '23e8f65ea96ed157b541b1ceb39140067dbf9e11'
 route: 'full'
 route_source: 'auto'
