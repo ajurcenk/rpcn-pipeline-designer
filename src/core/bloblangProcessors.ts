@@ -5,13 +5,14 @@
 // and its decoded Bloblang (`Scalar.value`). Since ticket 4.3 each also carries its
 // Bloblang-to-document position map (src/core/bloblangPositions.ts) and, given the document's
 // PipelineModel, its graph node's AD-7 id (through `nodeAt`, never a copied rule).
-// Ticket 4.18: the previous steps of a processor in its own list (`previousSteps`).
+// Ticket 4.18: the previous steps of a processor in its own list (`previousSteps`); since ticket 23,
+// a document's `input.generate` before its `pipeline.processors[0]`.
 // Ticket 22: a third kind, `generate`: the `mapping` of a `generate` input at `input` or at a
 // broker's `inputs[i]` below it (`input.broker.inputs[i]`, nested brokers too), for the live parse
 // (4.5) and the graph marker (4.6). The processor-only features (the lens, the Test mapping
 // command, the panel and its samples) took `processorsOnly` of the list until ticket 16, which gives
 // generate mappings the lens, the command and an output-only panel; `processorsOnly` now serves the
-// samples-only features (4.18's previous steps, the corpus parity).
+// samples-only features (the corpus parity; since 23, not the previous steps).
 
 import { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { BloblangProcessorKind } from '../shared/bloblangProtocol';
@@ -59,6 +60,11 @@ export interface BloblangProcessor {
 	readonly id?: string;
 	/** From the binary's mapping-relative `line L char C` to UTF-16 document offsets (AD-21). */
 	readonly positions: BloblangPositions;
+	/**
+	 * `generate` at a document's `input` only (ticket 23): set when that input map has no `broker` key
+	 * and no non-empty `processors` (of any kind), so its output reaches `pipeline.processors[0]` unchanged.
+	 */
+	readonly feedsPipeline?: true;
 }
 
 /**
@@ -110,9 +116,13 @@ export function stepTitle(processor: Pick<BloblangProcessor, 'label' | 'path'>):
 
 /**
  * The steps before the processor at `path` in its own list (4.18), nearest first: for `<list>[n]`,
- * `<list>[n-1]`, `<list>[n-2]`, … while each is one of `processors` (a `mapping` or `mutation`);
- * the first item of another kind, or the start of the list, ends them. None for a `processor_resources`
- * item (resources are not a sequence of steps) or a path that names no list item.
+ * `<list>[n-1]`, `<list>[n-2]`, … while each is a `mapping` or `mutation` of `processors`; the first
+ * item of another kind, or the start of the list, ends them. None for a `processor_resources` item
+ * (resources are not a sequence of steps) or a path that names no list item.
+ * Ticket 23, the one exception to "never crosses a list boundary": when the walk reaches the start
+ * of a document's `pipeline.processors`, that document's top-level `input.generate` (in the
+ * unfiltered `processors`, with a mapping, the input not a broker) is the last step: it starts the
+ * chain and needs no sample.
  */
 export function previousSteps(processors: readonly BloblangProcessor[], path: string): BloblangProcessor[] {
 	const match = /^(.*)\[(\d+)\]$/.exec(path);
@@ -124,14 +134,31 @@ export function previousSteps(processors: readonly BloblangProcessor[], path: st
 		return [];
 	}
 	const out: BloblangProcessor[] = [];
-	for (let i = Number(index) - 1; i >= 0; i--) {
+	let i = Number(index) - 1;
+	for (; i >= 0; i--) {
 		const step = bloblangProcessorByPath(processors, `${list}[${i}]`);
-		if (!step) {
+		if (!step || step.kind === 'generate') {
 			break;
 		}
 		out.push(step);
 	}
-	return out;
+	const generate = i < 0 ? generateBefore(processors, list) : undefined;
+	return generate ? [...out, generate] : out;
+}
+
+/**
+ * The generate input feeding the document's `pipeline.processors` when `list` is that list (23):
+ * its `input.generate` entry with a non-empty mapping, when its input map has no `broker` key and
+ * no non-empty `processors` (`feedsPipeline`, from the parsed YAML).
+ */
+function generateBefore(processors: readonly BloblangProcessor[], list: string): BloblangProcessor | undefined {
+	const doc = /^(documents\[\d+\]\.)?pipeline\.processors$/.exec(list);
+	if (!doc) {
+		return undefined;
+	}
+	const prefix = doc[1] ?? '';
+	const generate = bloblangProcessorByPath(processors, `${prefix}input.generate`);
+	return generate?.kind === 'generate' && generate.feedsPipeline && generate.source.trim() !== '' ? generate : undefined;
 }
 
 /** `pipeline.processors[0]` from `['pipeline', 'processors', 0]` (a first `documents[i]` step is kept as is). */
@@ -199,7 +226,25 @@ function generateOf(input: YAMLMap, steps: readonly PathStep[], context: Context
 	if (!pair || !isScalar(key) || !key.range) {
 		return undefined;
 	}
-	return entryOf('generate', input, key.range, pair.value, generate.range, pathText([...steps, 'generate']), context);
+	const entry = entryOf('generate', input, key.range, pair.value, generate.range, pathText([...steps, 'generate']), context);
+	// Only a document's own `input` (not a broker child) feeds its pipeline.
+	return steps[steps.length - 1] === 'input' && feedsPipeline(input) ? { ...entry, feedsPipeline: true } : entry;
+}
+
+/**
+ * Whether an input map's generate output reaches `pipeline.processors` unchanged (23): no `broker`
+ * key beside it and no non-empty `processors` (of any kind).
+ */
+function feedsPipeline(input: YAMLMap): boolean {
+	const valueOf = (name: string) => input.items.find((p) => isScalar(p.key) && p.key.value === name);
+	if (valueOf('broker')) {
+		return false;
+	}
+	const processors = valueOf('processors')?.value;
+	const empty = processors === undefined || processors === null
+		|| (isSeq(processors) && processors.items.length === 0)
+		|| (isScalar(processors) && (processors.value === null || processors.value === ''));
+	return empty;
 }
 
 /** A processor item's `mapping` / `mutation`: the first such key of the map. */

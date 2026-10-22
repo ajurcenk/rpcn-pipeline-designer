@@ -75,6 +75,9 @@
 // document with unsaved changes (samples are linked to the saved file) or one edited during the runs
 // saves nothing and says so. One such request
 // per panel at a time (another one meanwhile is ignored); the panel's own runs are untouched.
+// Ticket 23: a document's top-level `input.generate` (not a broker) is the step before its
+// `pipeline.processors[0]` (`previousSteps` on the unfiltered list): it starts the chain with its own
+// run (16's empty message), and needs no sample; a processor's selected sample still starts it nearer.
 // Ticket 16: a `generate` input's mapping (kind `generate`) has a panel too, from the lens, the
 // command at the cursor and by path. It is output only: each `run` ignores the input it carries and
 // runs the mapping on one empty message (`testConfig`'s `generate` run). It has no
@@ -88,7 +91,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, processorsOnly, stepTitle, type BloblangProcessor,
+	bloblangProcessorAt, bloblangProcessorByPath, bloblangProcessors, previousSteps, stepTitle, type BloblangProcessor,
 } from '../../core/bloblangProcessors';
 import { documentLabels, labelError, labelInsertion, suggestLabel, type TextInsertion } from '../../core/labelEdit';
 import { mapRange, matchProcessors, parses, type OffsetRange, type TextChange, type TrackedProcessor } from '../../core/processorTracking';
@@ -566,7 +569,8 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	private async seed(): Promise<void> {
 		const current = this.current();
-		const steps = current.processor && !this.generate ? previousSteps(processorsOnly(current.processors), this.path) : [];
+		// The unfiltered list: a document's generate input can be the last step (23).
+		const steps = current.processor && !this.generate ? previousSteps(current.processors, this.path) : [];
 		if (steps.length === 0 || samplesUri(this.uri) === undefined) {
 			// Nothing to offer any more: the webview gets the panel's state.
 			await this.postSnapshot();
@@ -588,6 +592,12 @@ class BloblangPanel implements BloblangPanelHandle {
 		let input: TestInput | undefined;
 		let start = -1;
 		for (let i = 0; i < steps.length && !input; i++) {
+			if (steps[i].kind === 'generate') {
+				// A generate input starts the chain (23): its run ignores the input (one empty message).
+				input = { content: '', meta: {} };
+				start = i;
+				break;
+			}
 			const { samples, selected } = samplesFor(state.file, linkOfProcessor(steps[i]));
 			const sample = samples.find((s) => s.name === selected);
 			if (sample) {
@@ -1600,10 +1610,13 @@ export function positionIn(text: string, offset: number): FilePosition {
 	return { line, char: at - start + 1 };
 }
 
-/** The previous step's title (4.18): of the processor just before `current`'s in its own list; none: no such step. */
+/**
+ * The previous step's title (4.18): of the processor just before `current`'s in its own list, or
+ * (23) the document's generate input before its `pipeline.processors[0]`; none: no such step.
+ */
 function previousStepOf(current: Current): string | undefined {
 	const step = current.processor && current.processor.kind !== 'generate'
-		? previousSteps(processorsOnly(current.processors), current.processor.path)[0]
+		? previousSteps(current.processors, current.processor.path)[0]
 		: undefined;
 	return step ? stepTitle(step) : undefined;
 }

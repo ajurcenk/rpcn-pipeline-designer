@@ -501,3 +501,103 @@ suite('core/bloblangProcessors generate mappings (22)', () => {
 		assert.strictEqual(bloblangProcessorAt(found, TEXT.indexOf('root = this.'))?.kind, 'generate');
 	});
 });
+
+suite('core/bloblangProcessors previous steps from the generate input (23)', () => {
+	const steps = (text: string, path: string) => previousSteps(processorsOf(text), path).map((p) => [p.path, p.kind]);
+	const GENERATE = [
+		'input:',
+		'  generate:',
+		'    count: 1',
+		'    mapping: root.a = 1',
+		'pipeline:',
+		'  processors:',
+		'    - mapping: root = this',
+		'    - mutation: root.b = 2',
+		'    - log: {}',
+		'    - mapping: root = this',
+		'',
+	].join('\n');
+
+	test('FIRST / CHAIN: the generate input is the last step of pipeline.processors, from index 0 on', () => {
+		assert.deepStrictEqual(steps(GENERATE, 'pipeline.processors[0]'), [['input.generate', 'generate']]);
+		assert.deepStrictEqual(steps(GENERATE, 'pipeline.processors[1]'), [['pipeline.processors[0]', 'mapping'], ['input.generate', 'generate']]);
+		// A step of another kind ends the walk before index 0: no generate step.
+		assert.deepStrictEqual(steps(GENERATE, 'pipeline.processors[3]'), []);
+		// The generate panel itself has no previous step.
+		assert.deepStrictEqual(steps(GENERATE, 'input.generate'), []);
+	});
+
+	test('LABEL: the title is the input\'s label, else input.generate', () => {
+		const labelled = GENERATE.replace('input:\n', 'input:\n  label: gen\n');
+		assert.deepStrictEqual(previousSteps(processorsOf(labelled), 'pipeline.processors[0]').map(stepTitle), ['gen']);
+		assert.deepStrictEqual(previousSteps(processorsOf(GENERATE), 'pipeline.processors[0]').map(stepTitle), ['input.generate']);
+	});
+
+	test('BROKER / OTHER_INPUT / NO_MAPPING / INPUT_PROCESSORS: no generate step, exactly 4.18', () => {
+		const pipeline = 'pipeline:\n  processors:\n    - mapping: root = this\n    - mapping: root = 1\n';
+		const none = (input: string) => {
+			assert.deepStrictEqual(steps(input + pipeline, 'pipeline.processors[0]'), [], input);
+			assert.deepStrictEqual(steps(input + pipeline, 'pipeline.processors[1]'), [['pipeline.processors[0]', 'mapping']], input);
+		};
+		none('input:\n  broker:\n    inputs:\n      - generate:\n          mapping: root = 1\n');
+		none('input:\n  stdin: {}\n');
+		none('');
+		none('input:\n  generate:\n    count: 1\n');
+		none('input:\n  generate:\n    mapping: ""\n');
+		// A generate key beside a broker (with no generate child): not the only input.
+		none('input:\n  generate:\n    mapping: root = 1\n  broker:\n    inputs:\n      - stdin: {}\n');
+		// INPUT_PROCESSORS: the input's own processors (Bloblang or not) run before pipeline.processors[0].
+		none('input:\n  generate:\n    mapping: root = 1\n  processors:\n    - mapping: root = 2\n');
+		none('input:\n  generate:\n    mapping: root = 1\n  processors:\n    - log: {}\n');
+		// An empty input processors list changes nothing.
+		assert.deepStrictEqual(steps('input:\n  generate:\n    mapping: root = 1\n  processors: []\n' + pipeline, 'pipeline.processors[0]'), [['input.generate', 'generate']]);
+	});
+
+	test('LISTS: only pipeline.processors, never the input\'s own processors, a nested list or a resource', () => {
+		const text = [
+			'input:',
+			'  generate:',
+			'    mapping: root = 1',
+			'  processors:',
+			'    - mapping: root = 2',
+			'pipeline:',
+			'  processors:',
+			'    - try:',
+			'        - mapping: root = 3',
+			'processor_resources:',
+			'  - mapping: root = 4',
+			'output:',
+			'  processors:',
+			'    - mapping: root = 5',
+			'',
+		].join('\n');
+		assert.deepStrictEqual(steps(text, 'input.processors[0]'), []);
+		assert.deepStrictEqual(steps(text, 'pipeline.processors[0].try[0]'), []);
+		assert.deepStrictEqual(steps(text, 'processor_resources[0]'), []);
+		assert.deepStrictEqual(steps(text, 'output.processors[0]'), []);
+	});
+
+	test('DOCS: only the same document\'s input counts', () => {
+		const text = [
+			'input:',
+			'  generate:',
+			'    mapping: root = 1',
+			'---',
+			'pipeline:',
+			'  processors:',
+			'    - mapping: root = this',
+			'---',
+			'input:',
+			'  label: third',
+			'  generate:',
+			'    mapping: root = 3',
+			'pipeline:',
+			'  processors:',
+			'    - mapping: root = this',
+			'',
+		].join('\n');
+		assert.deepStrictEqual(steps(text, 'documents[1].pipeline.processors[0]'), []);
+		assert.deepStrictEqual(previousSteps(processorsOf(text), 'documents[2].pipeline.processors[0]').map(stepTitle), ['third']);
+		assert.deepStrictEqual(steps(text, 'documents[2].pipeline.processors[0]'), [['documents[2].input.generate', 'generate']]);
+	});
+});

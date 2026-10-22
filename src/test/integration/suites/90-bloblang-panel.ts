@@ -23,6 +23,7 @@
 // Ticket 4.11: Esc in the panel (`focusEditorRequested`) focuses the YAML editor with its cursor unchanged.
 // Ticket 4.18: From previous step (`sampleFromPreviousRequested`) on the fake `run`, and the
 // snapshot's `previousStep`; a run seam for non-string output metadata.
+// Ticket 23: From previous step from a generate input feeding `pipeline.processors[0]` (its run, chained).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -2697,6 +2698,154 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.strictEqual(kind, 'error');
 			assert.ok(message.startsWith('The samples file can\'t be read: '), message);
 			assert.strictEqual(samplesUnreadable('r'), 'The samples file can\'t be read: r');
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	// From previous step from the generate input (23).
+	/** A config whose only input is a `generate` (`label` when given) with `mapping`, before two processors. */
+	const fromGenerateConfig = (mapping: string, label?: string) => [
+		'input:',
+		...(label ? [`  label: ${label}`] : []),
+		'  generate:',
+		'    count: 5',
+		'    interval: 1s',
+		`    mapping: '${mapping}'`,
+		'pipeline:',
+		'  processors:',
+		'    - label: first',
+		'      mapping: root.c = 4',
+		'    - label: second',
+		'      mutation: root.d = 5',
+		'output:',
+		'  stdout: {}',
+		'',
+	].join('\n');
+	const GEN_MAPPING = 'root.id = 1\nmeta g = "v"';
+	/**
+	 * previousPanels, also recording each run's kind and source, and the test config the fake binary
+	 * captured for it (`configs`, by source: read as the run ends); `steps(own)` leaves out the panels' own runs.
+	 */
+	function generatePanels() {
+		const kinds: [string, string][] = [];
+		const configs = new Map<string, string>();
+		const run: MappingTestRunner = async (state, kind, source, ...rest) => {
+			kinds.push([kind, source]);
+			const outcome = await runMappingTest(state, kind, source, ...rest);
+			configs.set(source, fs.readFileSync(path.join(capture, 'config.yaml'), 'utf8'));
+			return outcome;
+		};
+		const steps = (...own: string[]) => kinds.filter(([, source]) => !own.includes(source));
+		return { ...previousPanels(run), kinds, steps, configs };
+	}
+
+	test('FIRST + LABEL + OWN_SAMPLE + CHAIN (23): the generate input is the step before pipeline.processors[0]; its output is saved', async () => {
+		const quoted = GEN_MAPPING.replace('\n', '\n\n      ');
+		const doc = (await open('from-generate.yaml', fromGenerateConfig(quoted, 'gen'))).document;
+		assert.ok(!fs.existsSync(samplesFile('from-generate.yaml')));
+		const { panels, shown, kinds, steps, configs } = generatePanels();
+		try {
+			// FIRST + LABEL: named after the input's label; the generate mapping runs once, as a generate run (16), its output saved.
+			const first = await readyPanel(panels, doc.uri, AT(0));
+			assert.strictEqual(lastSnapshot(first)?.previousStep, 'gen');
+			await first.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(steps('root.c = 4'), [['generate', GEN_MAPPING]], 'one run: the generate mapping');
+			const fromGen = sample('from gen', '{"b":2}', { g: 'v' });
+			assert.deepStrictEqual(entryOf('from-generate.yaml', 'first'), { label: 'first', selected: 'from gen', samples: [fromGen] });
+			assert.deepStrictEqual(samplesMessages(first).at(-1), { type: 'samples', samples: [fromGen], selected: 'from gen' });
+			// first's own runs (its webview runs the new sample) end before the next steps are counted.
+			first.panel.dispose();
+			await settle();
+
+			// OWN_SAMPLE: first has a selected sample now: the chain starts there, no generate run.
+			const second = await readyPanel(panels, doc.uri, AT(1));
+			assert.strictEqual(lastSnapshot(second)?.previousStep, 'first');
+			kinds.length = 0;
+			await second.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(steps('root.d = 5'), [['mapping', 'root.c = 4']]);
+			assert.deepStrictEqual(entryOf('from-generate.yaml', 'second')?.samples, [sample('from first', '{"a":1,"b":3,"c":4}', { g: 'v' })]);
+
+			// CHAIN: no sample before second: generate, then first on its output (with the generate's metadata).
+			fs.rmSync(samplesFile('from-generate.yaml'));
+			await settle();
+			kinds.length = 0;
+			await second.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(steps('root.d = 5'), [['generate', GEN_MAPPING], ['mapping', 'root.c = 4']]);
+			// first's run got the generate output: its content and metadata in the generate input of its test config.
+			const firstRun = parse(configs.get('root.c = 4')!) as { input: { generate: { mapping: string } } };
+			assert.strictEqual(firstRun.input.generate.mapping, `root = ${bloblangString('{"b":2}')}\nmeta "g" = "v"`);
+			assert.deepStrictEqual(entryOf('from-generate.yaml', 'second'), {
+				label: 'second', selected: 'from first', samples: [sample('from first', '{"a":1,"b":3,"c":4}', { g: 'v' })],
+			});
+			assert.strictEqual(entryOf('from-generate.yaml', 'first'), undefined, 'nothing saved for the steps between');
+			assert.deepStrictEqual(shown, []);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('FAILS + NO_LABEL (23): a failed, invalid-input or deleting generate mapping saves nothing and names the step; unlabelled: "from input.generate"', async () => {
+		const name = 'from-generate-errors.yaml';
+		const doc = (await open(name, fromGenerateConfig('root.id = 1'))).document;
+		const { panels, shown, kinds, steps } = generatePanels();
+		try {
+			const first = await readyPanel(panels, doc.uri, AT(0));
+			const second = await readyPanel(panels, doc.uri, AT(1));
+			assert.strictEqual(lastSnapshot(first)?.previousStep, GENERATE);
+			// Each failing mapping, on the first processor and through the chain from the second.
+			for (const [mapping, expected] of [
+				['root.id = "FAIL_ME"', (m: string) => m.startsWith(`"${GENERATE}" failed: `) && m.includes('fake failure')],
+				['root.id = this.NOT_STRUCTURED', (m: string) => m.startsWith(`"${GENERATE}" failed: `) && m.includes('structured')],
+				['root = deleted()', (m: string) => m === previousDeleted(GENERATE)],
+			] as const) {
+				await setText(doc, fromGenerateConfig(mapping));
+				assert.ok(await doc.save());
+				for (const handle of [first, second]) {
+					kinds.length = 0;
+					const told = shown.length;
+					await handle.receive({ type: 'sampleFromPreviousRequested' });
+					assert.strictEqual(shown.length, told + 1, `${mapping}: one message`);
+					const [message, kind] = shown.at(-1)!;
+					assert.strictEqual(kind, 'error');
+					assert.ok(expected(message), `${mapping}: ${message}`);
+					assert.deepStrictEqual(steps('root.c = 4', 'root.d = 5'), [['generate', mapping]], `${mapping}: only the generate step ran`);
+					assert.ok(!fs.existsSync(samplesFile(name)), `${mapping}: nothing saved`);
+				}
+			}
+			// NO_LABEL: the step's title is its path.
+			await setText(doc, fromGenerateConfig('root.id = 1'));
+			assert.ok(await doc.save());
+			await first.receive({ type: 'sampleFromPreviousRequested' });
+			assert.deepStrictEqual(entryOf(name, 'first')?.samples, [sample(`from ${GENERATE}`, '{"b":2}')]);
+		} finally {
+			panels.dispose();
+		}
+	});
+
+	test('BROKER + OTHER_INPUT (23): a broker\'s generate children or another input add no generate step (4.18)', async () => {
+		const own = "  generate:\n    count: 5\n    interval: 1s\n    mapping: 'root.id = 1'\n";
+		const broker = fromGenerateConfig('root.id = 1').replace(own, '  broker:\n    inputs:\n      - generate:\n          mapping: root.id = 1\n');
+		const stdin = fromGenerateConfig('root.id = 1').replace(own, '  stdin: {}\n');
+		assert.ok(broker.includes('broker:') && stdin.includes('stdin:'));
+		const { panels, shown, steps } = generatePanels();
+		try {
+			for (const [name, text] of [['from-generate-broker.yaml', broker], ['from-generate-stdin.yaml', stdin]]) {
+				const doc = (await open(name, text)).document;
+				const first = await readyPanel(panels, doc.uri, AT(0));
+				assert.ok(lastSnapshot(first) && !('previousStep' in lastSnapshot(first)!), `${name}: ${JSON.stringify(lastSnapshot(first))}`);
+				await first.receive({ type: 'sampleFromPreviousRequested' });
+				assert.strictEqual(first.posted.at(-1)?.type, 'snapshot', `${name}: the panel's state goes back`);
+				// second: 4.18's chain, which ends at first (no sample: nothing runs).
+				const second = await readyPanel(panels, doc.uri, AT(1));
+				assert.strictEqual(lastSnapshot(second)?.previousStep, 'first');
+				const told = shown.length;
+				await second.receive({ type: 'sampleFromPreviousRequested' });
+				assert.strictEqual(shown.length, told + 1, `${name}: one message`);
+				assert.deepStrictEqual(shown.at(-1), [previousHasNoSample('first'), 'info']);
+				assert.deepStrictEqual(steps('root.c = 4', 'root.d = 5'), [], `${name}: nothing runs`);
+				assert.ok(!fs.existsSync(samplesFile(name)));
+			}
 		} finally {
 			panels.dispose();
 		}
