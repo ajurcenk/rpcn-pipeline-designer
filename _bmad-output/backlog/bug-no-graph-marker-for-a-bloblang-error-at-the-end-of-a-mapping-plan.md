@@ -3,7 +3,7 @@ title: 'No graph marker for a Bloblang error at the end of a mapping'
 type: 'bugfix'
 ticket: '20'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: 'fa05366dd1fd89f65617a9eceb576a40b3dbf15c'
 route: 'oneshot'
 route_source: 'auto'
