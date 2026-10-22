@@ -8,6 +8,7 @@ import type { JsonObject } from '../../core/schema';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { SchemaSnapshot } from '../redpandaConnect/schema';
 import type { HostStatus } from '../../shared/protocol';
+import { BLOBLANG_SOURCE } from '../vscode/bloblangDiagnostics';
 import { LINT_SOURCE } from '../vscode/diagnostics';
 
 const SEVERITIES: Readonly<Record<vscode.DiagnosticSeverity, StatusSeverity>> = {
@@ -20,7 +21,11 @@ const SEVERITIES: Readonly<Record<vscode.DiagnosticSeverity, StatusSeverity>> = 
 /**
  * The offset each diagnostic maps at: a lint finding (a whole line from column 1) at the first
  * non-whitespace character of its start line, so that the line's indentation does not land in
- * the parent node; any other diagnostic at its range's start.
+ * the parent node; a Bloblang error whose start is at a line's end or on whitespace up to it
+ * (the binary reports past a mapping's last character) at the last non-whitespace character
+ * before it, inside the mapping's value and so its processor's node, which `nodeAt` would
+ * exclude at its end (ticket 20, status only: selection is unchanged); any other diagnostic at
+ * its range's start.
  */
 export function statusDiagnostics(doc: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): StatusDiagnostic[] {
 	return diagnostics.map((d) => {
@@ -30,9 +35,29 @@ export function statusDiagnostics(doc: vscode.TextDocument, diagnostics: readonl
 			if (!line.isEmptyOrWhitespace) {
 				offset = doc.offsetAt(new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex));
 			}
+		} else if (d.source === BLOBLANG_SOURCE) {
+			offset = beforeTrailingWhitespace(doc, offset);
 		}
 		return { offset, severity: SEVERITIES[d.severity] ?? 'hint', message: d.message };
 	});
+}
+
+/**
+ * `offset`, or, when only whitespace follows it up to its line's end, the offset of the last
+ * non-whitespace character before it (`offset` itself when there is none).
+ */
+function beforeTrailingWhitespace(doc: vscode.TextDocument, offset: number): number {
+	const text = doc.getText();
+	const lineEnd = doc.offsetAt(doc.lineAt(doc.positionAt(offset).line).range.end);
+	if (text.slice(offset, lineEnd).trim() !== '') {
+		return offset;
+	}
+	for (let i = offset - 1; i >= 0; i--) {
+		if (text[i].trim() !== '') {
+			return i;
+		}
+	}
+	return offset;
 }
 
 /** What the graph needs of the binary state (ticket 3.9). */

@@ -487,6 +487,27 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		}, 'NESTED');
 	});
 
+	test('GRAPH AT_END (ticket 20): an error past a mapping\'s last character marks its processor: last in its list, nested, last in the file, and on a blank line after a block', async () => {
+		const editor = await open('graph-at-end.yaml', LABELLED);
+		const doc = editor.document;
+		const handle = await graph(doc);
+		// Each `root.x = 1 ERR@1:20` is 19 characters: char 20 is just past the mapping's end.
+		await replace(editor, 'mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:20');
+		await replace(editor, 'mutation: root.c = 1', 'mutation: root.c = 1 ERR@1:20');
+		await replace(editor, 'mapping: root.e = 1', 'mapping: root.e = 1 ERR@1:20');
+		// The block mapping has two lines: line 3 is past its last.
+		await replace(editor, 'root.b = this.b', 'root.b = this.b ERR@3:1');
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 4, 5_000), JSON.stringify(bloblangOf(doc.uri)));
+		await expectStatus(handle, {
+			[BLOCK_ID]: own(MESSAGE),
+			[SWITCH_ID]: rolled(MESSAGE),
+			[CASE_ID]: rolled(MESSAGE),
+			[MUTATION_ID]: own(MESSAGE),
+			[PLAIN_ID]: own(MESSAGE),
+			[RESOURCE_ID]: own(MESSAGE),
+		}, 'AT_END');
+	});
+
 	test('GRAPH FROZEN (ticket 6): while the YAML does not parse no status is sent and the marker stays; once it parses the status is recomputed', async () => {
 		const editor = await open('graph-frozen.yaml', CONFIG.replace('mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:1'));
 		const doc = editor.document;

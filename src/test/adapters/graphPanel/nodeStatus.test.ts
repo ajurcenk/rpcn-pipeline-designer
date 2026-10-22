@@ -34,4 +34,34 @@ suite('adapters/graphPanel statusDiagnostics (3.8)', () => {
 			{ offset: text.indexOf('+'), severity: 'error', message: 'expected thing' },
 		]);
 	});
+
+	test('a Bloblang diagnostic at a line\'s end, in trailing whitespace or on a blank line (ticket 20) maps at the last non-whitespace character before it', async () => {
+		const text = 'pipeline:\n  processors:\n    - mapping: |\n        root.a = 1\n        root.b = this.b *   \n\n    - mapping: root.c = this.c *';
+		const doc = await vscode.workspace.openTextDocument({ language: 'yaml', content: text });
+		const bloblang = (line: number, char: number, message: string, source = BLOBLANG_SOURCE) => {
+			const d = new vscode.Diagnostic(new vscode.Range(line, char, line, char), message, vscode.DiagnosticSeverity.Error);
+			d.source = source;
+			return d;
+		};
+		const lastStar = text.lastIndexOf('*');
+		const blockStar = text.indexOf('*');
+		const diagnostics = [
+			bloblang(6, doc.lineAt(6).text.length, 'end of text'),
+			bloblang(4, doc.lineAt(4).text.length, 'line end after whitespace'),
+			bloblang(4, doc.lineAt(4).text.indexOf('*') + 2, 'inside trailing whitespace'),
+			bloblang(5, 0, 'blank line'),
+			// Not at the end: unchanged.
+			bloblang(3, 8, 'mid-line'),
+			// Other sources at a line's end: unchanged.
+			bloblang(6, doc.lineAt(6).text.length, 'red hat', 'YAML'),
+		];
+		assert.deepStrictEqual(statusDiagnostics(doc, diagnostics).map((d) => [d.offset, d.message]), [
+			[lastStar, 'end of text'],
+			[blockStar, 'line end after whitespace'],
+			[blockStar, 'inside trailing whitespace'],
+			[blockStar, 'blank line'],
+			[text.indexOf('root.a'), 'mid-line'],
+			[text.length, 'red hat'],
+		]);
+	});
 });
