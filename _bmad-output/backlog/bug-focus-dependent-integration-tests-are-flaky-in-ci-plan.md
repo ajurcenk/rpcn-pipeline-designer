@@ -156,6 +156,8 @@ Iteration 0 (quick, with the AI-4 test-determinism question). Verdicts: 0 high, 
 
 ## Verification
 
+**CI proof on ada9853 (run 39699546577, 8 attempts, every attempt counted):** attempts 1-5 and 7-8 had the stable step and the corpus harness green. Attempt 6 failed the stable step: 850 passing, 1 failing, `F6_DISPOSE` in suite 86 ("only the model posted before the close": the graph webview's `ready` / snapshot timing, not focus). So criterion 5 reads 7/8 on CI. No focus test (PLACE_*, LATE_*, the undo and close tests, CURSOR) failed in any of the 8 CI attempts or the 8 pinned runs. Decision (user, 2026-10-22): bug 19 is done on its focus scope; F6_DISPOSE and the unexplained one-offs (suite 81 DRIVING, the 4.10 undo pair in proof2) go to a new backlog bug.
+
 **Manual check (the user, dev host, 2026-10-21):** placement below the graph keeps focus in the YAML; a graph opened after a test panel goes above it with focus back in the YAML; quick user clicks after Test mapping are not overridden; no sluggishness. No issues. Orchestrator checks after the last patches: `npm run compile` OK, `npm run test:webview` 302, `npm run test:corpus` 156.
 
 **Commands:**
