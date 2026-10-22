@@ -74,3 +74,82 @@ export async function newGroupNextTo(column: vscode.ViewColumn, direction: 'belo
 		return undefined;
 	}
 }
+
+/** How long `returnFocusTo` waits for focus to be back in the editor, per try. */
+const FOCUS_WAIT_MS = 500;
+/**
+ * How long, once focus is back in the editor, `returnFocusTo` lets a late focus change arrive before
+ * it re-checks. Bug 19: a webview group focused before (by `newGroupNextTo`) took the active group
+ * back 50-75 ms after the return on 2 CPUs.
+ */
+const FOCUS_SETTLE_MS = 250;
+
+/**
+ * How `returnFocusTo` ended: `kept`, focus is in the editor; `declined`, focus was left where the
+ * user (or a group other than the caller's) moved it; `missed`, focus was taken back from the
+ * caller's groups and still did not stay.
+ */
+export type FocusReturn = 'kept' | 'declined' | 'missed';
+
+/** How many times `returnFocusTo` takes focus back from the caller's groups (a group's echo, and a second one). */
+const RETAKES = 2;
+
+/**
+ * Gives focus to `doc` in `column` and confirms it (4.13, bug 19; the bug-15 pattern): it waits up
+ * to `FOCUS_WAIT_MS` for `doc` to be the active editor in that column *and* that column's group to
+ * be the active group (VS Code reports the two separately), then `FOCUS_SETTLE_MS` more and checks
+ * again. `through`: the groups the caller itself just moved focus through (the graph's group, a
+ * test group focused to create a group next to it). A webview group focused that way echoes its
+ * focus late and takes the active group back. Only when one of those groups is the active one, and
+ * `mayRetake()`, is focus taken back (up to `RETAKES` times) and confirmed again.
+ *
+ * The user's moves are never overridden: when another editor becomes active during the window, it
+ * becomes the target instead (an echo after it gives focus back to that editor, not the YAML), and
+ * when another group is activated, nothing more is done. Throws what `showTextDocument` throws.
+ */
+export async function returnFocusTo(
+	doc: vscode.TextDocument, column: vscode.ViewColumn, through: readonly vscode.ViewColumn[], mayRetake: () => boolean = () => true,
+): Promise<FocusReturn> {
+	const groups = vscode.window.tabGroups;
+	/** The editor the user moved to during the window, if any. */
+	let user: { readonly doc: vscode.TextDocument; readonly column: vscode.ViewColumn } | undefined;
+	/** Another group was activated, not by this sequence. */
+	let foreign = false;
+	const target = () => user ?? { doc, column };
+	const focused = () => {
+		const { doc: d, column: c } = target();
+		const active = vscode.window.activeTextEditor;
+		return active?.document === d && active.viewColumn === c && groups.activeTabGroup.viewColumn === c;
+	};
+	const subscriptions = [
+		vscode.window.onDidChangeActiveTextEditor((editor) => {
+			if (editor?.viewColumn !== undefined && !(editor.document === doc && editor.viewColumn === column)) {
+				user = { doc: editor.document, column: editor.viewColumn };
+			}
+		}),
+		groups.onDidChangeTabGroups(() => {
+			const active = groups.activeTabGroup.viewColumn;
+			if (active !== column && active !== user?.column && !through.includes(active)) {
+				foreign = true;
+			}
+		}),
+	];
+	try {
+		for (let attempt = 0; attempt <= RETAKES; attempt++) {
+			if (attempt > 0 && (foreign || !through.includes(groups.activeTabGroup.viewColumn) || !mayRetake())) {
+				return user || foreign || attempt === 1 ? 'declined' : 'missed';
+			}
+			const { doc: d, column: c } = target();
+			await vscode.window.showTextDocument(d, { viewColumn: c, preserveFocus: false });
+			if (await until(focused, FOCUS_WAIT_MS)) {
+				await new Promise((r) => setTimeout(r, FOCUS_SETTLE_MS));
+				if (focused()) {
+					return user ? 'declined' : 'kept';
+				}
+			}
+		}
+		return user || foreign ? 'declined' : 'missed';
+	} finally {
+		subscriptions.forEach((d) => d.dispose());
+	}
+}

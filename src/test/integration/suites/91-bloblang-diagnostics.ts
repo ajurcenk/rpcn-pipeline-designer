@@ -15,7 +15,7 @@ import { BLOBLANG_SOURCE } from '../../../adapters/vscode/bloblangDiagnostics';
 import { type ExtensionApi } from '../../../extension';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { live, settle, showGraph } from '../graphHelpers';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
 
 const ENV_LINE = 'Bloblang parse: failed to replace env vars: required environment variables were not set: [UNSET]';
 
@@ -402,7 +402,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		await new Promise((r) => setTimeout(r, 600));
 		await quiet();
 		assert.deepStrictEqual(bloblangOf(doc.uri), []);
-		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor');
 	});
 
 	test('UNTITLED and non-detected files get none and never spawn', async () => {
@@ -417,8 +417,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		assert.deepStrictEqual(bloblangOf(untitled.uri), []);
 		assert.deepStrictEqual(bloblangOf(plain.document.uri), []);
 		assert.strictEqual(spawns(), before);
-		await vscode.window.showTextDocument(untitled);
-		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		await runOnEditor(untitled, 'workbench.action.revertAndCloseActiveEditor');
 	});
 
 	test('BOUNDARY 4.2: a test run works while a parse is in flight', async () => {

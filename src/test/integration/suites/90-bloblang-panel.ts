@@ -46,7 +46,7 @@ import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
-import { EXTENSION_ID, waitFor, waitForAsync } from '../helpers';
+import { EXTENSION_ID, focusedIn, runOnEditor, waitFor, waitForAsync } from '../helpers';
 
 const CONFIG = [
 	'input:',
@@ -147,6 +147,17 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.ok(await waitFor(() => api().detection.has(doc.uri), 5_000));
 		return editor;
 	}
+
+	/** The active editor and group, for a focus assertion's message (bug 19). */
+	const focusState = () => {
+		const active = vscode.window.activeTextEditor;
+		return `editor ${active ? `${path.basename(active.document.uri.fsPath)}@${active.viewColumn}` : 'none'}, group ${vscode.window.tabGroups.activeTabGroup.viewColumn}`;
+	};
+	/** The placement never logged a missed focus return since output line `from` (bug 19). */
+	const assertFocusKept = (from: number) => {
+		const missed = api().outputLines().slice(from).filter((l) => /^Test mapping: (focus did not stay in the YAML|could not return focus)/.test(l));
+		assert.deepStrictEqual(missed, [], 'the placement confirmed focus in the YAML');
+	};
 
 	async function show(uri: vscode.Uri, processorPath: string): Promise<BloblangPanelHandle> {
 		const handle = await vscode.commands.executeCommand<BloblangPanelHandle | undefined>(TEST_MAPPING_COMMAND, uri, processorPath);
@@ -789,7 +800,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(api().bloblangPanels.size, 0);
 		// 4.9: an untitled config has no samples file.
 		assert.strictEqual(samplesUri(doc.uri), undefined);
-		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor');
 	});
 
 	test('BOUNDARY 3.1 + 3.10: the graph still loads, and with a graph open the panel opens outside its locked group', async () => {
@@ -1357,7 +1368,12 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	async function samplesRead(file: string, mappings: unknown): Promise<void> {
 		let last: unknown;
 		assert.ok(await waitFor(() => {
-			last = fs.existsSync(file) ? readSamples(file).mappings : undefined;
+			try {
+				last = fs.existsSync(file) ? readSamples(file).mappings : undefined;
+			} catch (e) {
+				// A read in the middle of the host's write (truncated, then written): not there yet (bug 19).
+				last = String(e);
+			}
 			return JSON.stringify(last) === JSON.stringify(mappings);
 		}, 10_000), JSON.stringify(last));
 	}
@@ -1532,8 +1548,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				assert.ok(lastRun().config.includes('root.d = 3'), lastRun().config);
 
 				// UNDO
-				await vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false });
-				await vscode.commands.executeCommand('undo');
+				await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
 				assert.ok(await waitFor(() => !deleted.removed, 5_000), 'back');
 				assert.strictEqual(doc.getText(), FOLLOW_CONFIG);
 				assert.ok(await waitFor(() => lastSnapshot(deleted)?.removed === undefined, 5_000));
@@ -1681,8 +1696,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				assert.ok(await doc.save());
 				await samplesRead(file, [bEntry(P(1))]);
 
-				await vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false });
-				await vscode.commands.executeCommand('undo');
+				await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
 				assert.ok(await waitFor(() => !a.removed && a.path === P(1) && b.path === P(2), 5_000), `${a.removed} ${a.path} ${b.path}`);
 				await settle();
 				assert.deepStrictEqual([showing(a), showing(b)], [[], [sample('b', '{"b":1}')]], 'A does not show B\'s samples');
@@ -1734,8 +1748,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				await handle.receive({ type: 'ready' });
 				await insert(doc, lineOf(doc, '    - label: first'), '    - mapping: root.new = 0\n');
 				assert.ok(await waitFor(() => handle.path === P(2), 5_000), handle.path);
-				await showDiff();
-				await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+				await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor', showDiff);
 				assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 				doc = await opened();
 				assert.strictEqual(doc.getText(), FOLLOW_CONFIG);
@@ -1796,8 +1809,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.deepStrictEqual(shown, [[couldNotMoveSamples('taken', SAMPLES_USE_IT), 'error']], 'only for the panel with samples to move');
 			assert.deepStrictEqual(readSamples(file).mappings, [firstEntry, taken, used]);
 			// Closed (no unsaved changes) and reopened: still on its own processor, not the one now labelled `first`.
-			await showDiff();
-			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+			await runOnEditor(doc, 'workbench.action.closeActiveEditor', showDiff);
 			assert.ok(await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === uri.toString()), 20_000), 'the document closed');
 			doc = await opened();
 			await settle();
@@ -2029,7 +2041,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const graph = (await api().graphPanels.show(doc.uri))!;
 		await graph.lockSettled;
 		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000));
+		const lines = api().outputLines().length;
 		const first = await show(doc.uri, FIRST);
+		// The placement's claim when Test mapping resolves (bug 19): the YAML is the active editor and its group the active group.
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus is back in the YAML, in its group: ${focusState()}`);
 		assert.ok(await waitFor(() => first.panel.viewColumn !== undefined, 5_000));
 		const column = first.panel.viewColumn;
 		assert.ok(column !== graph.panel.viewColumn && column !== vscode.ViewColumn.One, `the test panel's group: ${column}`);
@@ -2038,17 +2053,21 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const groups = await layout();
 		assert.strictEqual(groups.length, 2, JSON.stringify(groups));
 		assert.strictEqual(groups[1].groups?.length, 2, `the test group is below the graph's: ${JSON.stringify(groups)}`);
-		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000), 'focus is back in the YAML');
-		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.One);
+		// Both signals, settled (bug 19): focus stays in the YAML, in its group.
+		await settle();
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}`);
 
 		// PLACE_SECOND: another processor of the file, and another file's.
 		const second = await show(doc.uri, NESTED);
 		const third = await show(other.uri, FIRST);
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}`);
 		assert.ok(await waitFor(() => second.panel.viewColumn !== undefined && third.panel.viewColumn !== undefined, 5_000));
 		assert.deepStrictEqual([second.panel.viewColumn, third.panel.viewColumn], [column, column], 'the same test group');
 		assert.strictEqual(vscode.window.tabGroups.all.length, 3);
 		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE));
-		assert.strictEqual(vscode.window.activeTextEditor?.document, doc, 'focus stays in the YAML');
+		await settle();
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}`);
+		assertFocusKept(lines);
 	});
 
 	test('PLACE_GRAPH_LEFT (4.17): A, the graph group, then B: the test group below the graph; focus back to B in its own group', async () => {
@@ -2061,15 +2080,21 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === b, 10_000));
 		assert.deepStrictEqual([graphA.panel.viewColumn, graphB.panel.viewColumn], [vscode.ViewColumn.Two, vscode.ViewColumn.Two], 'one graph group');
 		assert.deepStrictEqual(textTabs(b.uri).map((t) => t.group.viewColumn), [vscode.ViewColumn.Three]);
+		const lines = api().outputLines().length;
 		const handle = await show(b.uri, FIRST);
+		// The placement's claim when Test mapping resolves (bug 19): B active in its group, now column Four.
+		assert.ok(focusedIn(b, vscode.ViewColumn.Four), `focus is back in B, in its group: ${focusState()}`);
 		assert.ok(await waitFor(() => handle.panel.viewColumn !== undefined, 5_000));
 		assert.strictEqual(handle.panel.viewColumn, vscode.ViewColumn.Three, 'the new group, below the graph\'s');
 		assert.ok(holdsOnly(handle.panel.viewColumn, BLOBLANG_VIEW_TYPE), 'the test group holds only test panels');
 		assert.ok(holdsOnly(vscode.ViewColumn.Two, GRAPH_VIEW_TYPE), 'the graph group holds only graphs');
-		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === b, 10_000), 'focus is back in B');
+		// Both signals, settled (bug 19).
+		await settle();
 		assert.deepStrictEqual(textTabs(b.uri).map((t) => t.group.viewColumn), [vscode.ViewColumn.Four], 'B stays in its own group, alone');
 		assert.strictEqual(vscode.window.tabGroups.activeTabGroup.viewColumn, vscode.ViewColumn.Four);
 		assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.Four);
+		assert.strictEqual(vscode.window.activeTextEditor?.document, b);
+		assertFocusKept(lines);
 	});
 
 	test('PLACE_NO_GRAPH + GRAPH_AFTER (4.17): beside the YAML with no graph; a graph opened later goes into a new locked group above the test group', async () => {
@@ -2083,6 +2108,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const lines = api().outputLines().length;
 		const graph = (await api().graphPanels.show(doc.uri))!;
 		await graph.lockSettled;
+		// The lock sequence's claim when it settles (bug 19): focus is back in the YAML, in its group.
+		const logged = () => api().outputLines().slice(lines).join(' | ');
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus is back in the YAML, in its group: ${focusState()}; log: ${logged()}`);
 		assert.ok(await waitFor(() => graph.panel.viewColumn !== undefined && handle.panel.viewColumn !== undefined, 5_000));
 		assert.notStrictEqual(graph.panel.viewColumn, handle.panel.viewColumn, 'the graph is not in the test group');
 		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group holds only graphs');
@@ -2090,9 +2118,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.ok(graph.panel.viewColumn! < handle.panel.viewColumn!, 'the graph is above');
 		const groups = await layout();
 		assert.strictEqual(groups[1]?.groups?.length, 2, `the graph's group is above the test group: ${JSON.stringify(groups)}`);
-		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc, 10_000), 'focus is back in the YAML');
-		assert.ok(!api().outputLines().slice(lines).some((l) => /not locked|could not (lock|return focus)|could not open a group/.test(l)),
-			api().outputLines().slice(lines).join(' | '));
+		await settle();
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}; log: ${logged()}`);
+		assert.ok(!api().outputLines().slice(lines).some((l) => /not locked|could not (lock|return focus)|could not open a group|did not stay/.test(l)),
+			logged());
 		// Locked: with the graph active, a file opened with no column does not go into its group.
 		graph.panel.reveal(undefined, false);
 		assert.ok(await waitFor(() => graph.panel.active, 10_000), 'the graph is active');
@@ -2100,7 +2129,95 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		fs.writeFileSync(notes.fsPath, 'notes\n');
 		await vscode.commands.executeCommand('vscode.open', notes);
 		assert.ok(await waitFor(() => textTabs(notes).length > 0, 10_000));
-		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), 'the graph group is locked');
+		assert.ok(holdsOnly(graph.panel.viewColumn, GRAPH_VIEW_TYPE), `the graph group is locked: notes in ${textTabs(notes).map((t) => t.group.viewColumn)}`);
+	});
+
+	/**
+	 * Runs `act` once, the first time focus comes back to `doc` in `column` after another group was
+	 * active (bug 19): the moment a focus return lands, inside its confirmation window.
+	 */
+	const onReturn = (doc: vscode.TextDocument, column: vscode.ViewColumn, act: () => void) => {
+		let left = false;
+		let done = false;
+		const check = () => {
+			if (done) {
+				return;
+			}
+			if (vscode.window.tabGroups.activeTabGroup.viewColumn !== column) {
+				left = true;
+			} else if (left && vscode.window.activeTextEditor?.document === doc) {
+				done = true;
+				dispose();
+				act();
+			}
+		};
+		const listeners = [vscode.window.onDidChangeActiveTextEditor(check), vscode.window.tabGroups.onDidChangeTabGroups(check)];
+		const dispose = () => listeners.forEach((l) => l.dispose());
+		return { fired: () => done, dispose };
+	};
+	const missedFocus = (from: number) => api().outputLines().slice(from).filter((l) => /did not stay|could not return focus/.test(l));
+
+	test('RETAKE_STEAL (bug 19): a group the sequence focused takes focus back inside the window: focus returns to the YAML, nothing logged', async () => {
+		// The placement: the graph's group steals right after the return.
+		const doc = (await open('retake-steal.yaml', CONFIG)).document;
+		const graph = (await api().graphPanels.show(doc.uri))!;
+		await graph.lockSettled;
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), focusState());
+		let lines = api().outputLines().length;
+		let steal = onReturn(doc, vscode.ViewColumn.One, () => graph.panel.reveal(undefined, false));
+		try {
+			await show(doc.uri, FIRST);
+			assert.ok(steal.fired(), 'the steal happened');
+			assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus is back in the YAML, in its group: ${focusState()}; ${missedFocus(lines)}`);
+			await settle();
+			assert.ok(focusedIn(doc, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}`);
+			assert.deepStrictEqual(missedFocus(lines), []);
+		} finally {
+			steal.dispose();
+		}
+
+		// The graph's lock (GRAPH_AFTER): the test group it focused steals right after the return.
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		assert.ok(await waitFor(() => api().graphPanels.size === 0 && api().bloblangPanels.size === 0, 10_000));
+		const after = (await open('retake-steal-after.yaml', CONFIG)).document;
+		const handle = await show(after.uri, FIRST);
+		assert.ok(await waitFor(() => handle.panel.viewColumn === vscode.ViewColumn.Two, 5_000), `beside: ${handle.panel.viewColumn}`);
+		lines = api().outputLines().length;
+		steal = onReturn(after, vscode.ViewColumn.One, () => handle.panel.reveal(undefined, false));
+		try {
+			const graphAfter = (await api().graphPanels.show(after.uri))!;
+			await graphAfter.lockSettled;
+			assert.ok(steal.fired(), 'the steal happened');
+			assert.ok(focusedIn(after, vscode.ViewColumn.One), `focus is back in the YAML, in its group: ${focusState()}; ${missedFocus(lines)}`);
+			await settle();
+			assert.ok(focusedIn(after, vscode.ViewColumn.One), `focus stays in the YAML, in its group: ${focusState()}`);
+			assert.deepStrictEqual(missedFocus(lines), []);
+		} finally {
+			steal.dispose();
+		}
+	});
+
+	test('RETAKE_USER_MOVE (bug 19): another editor shown inside the window keeps focus; nothing is logged', async () => {
+		const doc = (await open('retake-user.yaml', CONFIG)).document;
+		const notesFile = path.join(dir, 'retake-user-notes.txt');
+		fs.writeFileSync(notesFile, 'notes\n');
+		const notes = await vscode.workspace.openTextDocument(notesFile);
+		const graph = (await api().graphPanels.show(doc.uri))!;
+		await graph.lockSettled;
+		const lines = api().outputLines().length;
+		const move = onReturn(doc, vscode.ViewColumn.One, () => {
+			void vscode.window.showTextDocument(notes, { viewColumn: vscode.ViewColumn.One, preserveFocus: false, preview: false });
+		});
+		try {
+			await show(doc.uri, FIRST);
+			assert.ok(move.fired(), 'the user moved');
+			assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === notes, 5_000), focusState());
+			await settle();
+			assert.ok(focusedIn(notes, vscode.ViewColumn.One), `focus stays in the other editor: ${focusState()}`);
+			assert.deepStrictEqual(missedFocus(lines), [], 'a declined retake logs nothing');
+		} finally {
+			move.dispose();
+		}
 	});
 
 	// From previous step (4.18).

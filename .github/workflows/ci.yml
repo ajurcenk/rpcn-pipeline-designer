@@ -30,8 +30,9 @@ jobs:
       # scope and must not hide the steps below)
       - run: npm run pretest
 
+      # bug 19: relaunched once only when VS Code froze at startup before any test ran (never on a test failure)
       - name: VS Code tests (stable)
-        run: xvfb-run -a npx vscode-test --label stable
+        run: scripts/vscode-test-ci.sh stable
 
       - name: VS Code tests (1.100.0 floor, non-blocking)
         if: ${{ !cancelled() }}

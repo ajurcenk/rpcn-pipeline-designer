@@ -87,9 +87,9 @@ import { freeSampleName, inputMetaOf, linkOf, samplesFor, type RelinkMove, type 
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
-import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo } from '../graphPanel/groups';
+import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo, returnFocusTo } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
-import { hasTextTab, isTextTabOf, PENDING_RENAME_MS, PendingRenames, renamedThrough, until } from '../graphPanel/tabs';
+import { hasTextTab, isTextTabOf, PENDING_RENAME_MS, PendingRenames, renamedThrough } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
@@ -100,10 +100,6 @@ import { SampleStore, samplesUri } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export { BLOBLANG_VIEW_TYPE };
-/** How long a new test panel's placement waits for focus to be back in the YAML, per try (4.13). */
-const FOCUS_WAIT_MS = 500;
-/** How long, once focus is back in the YAML, the placement lets a late focus change arrive before it re-checks (4.13). */
-const FOCUS_SETTLE_MS = 100;
 /** Shown when Test mapping finds no mapping or mutation processor at the cursor. */
 export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor.';
 /** Shown when the CodeLens's processor is not in the open, detected document any more. */
@@ -230,6 +226,11 @@ export interface BloblangPanelsOptions {
 	 * `undefined`: no graph is known.
 	 */
 	readonly graphColumn?: (config: vscode.Uri) => vscode.ViewColumn | undefined;
+	/**
+	 * Resolves when `config`'s graph lock sequence has ended (its `lockSettled`), at once with no
+	 * graph (bug 19): a placement waits for it, so that the two never move focus at the same time.
+	 */
+	readonly graphSettled?: (config: vscode.Uri) => Promise<void>;
 	/**
 	 * Test seam (4.13, RENAME_NEVER): how long an announced rename that is never reported stays
 	 * pending. `undefined`: `PENDING_RENAME_MS`.
@@ -1329,6 +1330,12 @@ export class BloblangPanels implements vscode.Disposable {
 			return undefined;
 		}
 		const title = bloblangTitle(processor);
+		// The graph's lock sequence first (bug 19): it and the placement both move focus.
+		try {
+			await this.options.graphSettled?.(uri);
+		} catch (e) {
+			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+		}
 		const yamlColumn = editorColumnOf(uri);
 		const placed = await this.placement(uri, yamlColumn);
 		const panel = vscode.window.createWebviewPanel(
@@ -1361,34 +1368,21 @@ export class BloblangPanels implements vscode.Disposable {
 		const returnTo = !placed.movedFocus || yamlColumn === undefined ? undefined
 			: placed.created !== undefined && yamlColumn >= placed.created ? (yamlColumn + 1) as vscode.ViewColumn : yamlColumn;
 		if (doc && returnTo !== undefined) {
-			await this.returnFocus(doc, returnTo);
+			await this.returnFocus(doc, returnTo, placed.through);
 		}
 		return entry;
 	}
 
 	/**
-	 * Gives focus back to `doc` in `column` (4.17) and confirms it (4.13, PLACE_FOCUS; the bug-15
-	 * pattern): it waits up to `FOCUS_WAIT_MS` for the YAML to be the active editor in that column,
-	 * then `FOCUS_SETTLE_MS` more and checks again, since the new group's late activation can take
-	 * focus after the return; if focus is not there, it is returned once more and confirmed again
-	 * (about 1 s in all). A miss after that is logged.
+	 * Gives focus back to `doc` in `column` (4.17) and confirms it (`returnFocusTo`: 4.13, bug 19),
+	 * taking it back only from the groups the placement moved focus through (`through`). A retake
+	 * that did not hold is logged; focus the user moved elsewhere is left there.
 	 */
-	private async returnFocus(doc: vscode.TextDocument, column: vscode.ViewColumn): Promise<void> {
-		const focused = () => {
-			const active = vscode.window.activeTextEditor;
-			return active?.document === doc && active.viewColumn === column;
-		};
+	private async returnFocus(doc: vscode.TextDocument, column: vscode.ViewColumn, through: readonly vscode.ViewColumn[]): Promise<void> {
 		try {
-			for (let attempt = 0; attempt < 2; attempt++) {
-				await vscode.window.showTextDocument(doc, { viewColumn: column, preserveFocus: false });
-				if (await until(focused, FOCUS_WAIT_MS)) {
-					await new Promise((r) => setTimeout(r, FOCUS_SETTLE_MS));
-					if (focused()) {
-						return;
-					}
-				}
+			if (await returnFocusTo(doc, column, through) === 'missed') {
+				this.log('Test mapping: focus did not stay in the YAML.');
 			}
-			this.log('Test mapping: focus did not stay in the YAML.');
 		} catch (e) {
 			this.log(`Test mapping: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
 		}
@@ -1402,11 +1396,13 @@ export class BloblangPanels implements vscode.Disposable {
 	 */
 	private async placement(
 		uri: vscode.Uri, yamlColumn: vscode.ViewColumn | undefined,
-	): Promise<{ readonly column: vscode.ViewColumn; readonly movedFocus: boolean; readonly created?: vscode.ViewColumn }> {
+	): Promise<{
+		readonly column: vscode.ViewColumn; readonly movedFocus: boolean; readonly created?: vscode.ViewColumn; readonly through: readonly vscode.ViewColumn[];
+	}> {
 		const groups = vscode.window.tabGroups;
 		const testGroup = groups.all.find(isTestGroup);
 		if (testGroup) {
-			return { column: testGroup.viewColumn, movedFocus: false };
+			return { column: testGroup.viewColumn, movedFocus: false, through: [] };
 		}
 		let graph: vscode.ViewColumn | undefined;
 		try {
@@ -1423,12 +1419,12 @@ export class BloblangPanels implements vscode.Disposable {
 			const below = await newGroupNextTo(graph, 'below');
 			if (below !== undefined) {
 				// The new group's column: the groups from it on (the YAML's, maybe) are one further now.
-				return { column: below, movedFocus: true, created: below };
+				return { column: below, movedFocus: true, created: below, through: [graph, below] };
 			}
 			this.log('Test mapping: could not open a group below the graph.');
-			return { column: vscode.ViewColumn.Beside, movedFocus: true };
+			return { column: vscode.ViewColumn.Beside, movedFocus: true, through: [graph] };
 		}
-		return { column: vscode.ViewColumn.Beside, movedFocus: false };
+		return { column: vscode.ViewColumn.Beside, movedFocus: false, through: [] };
 	}
 
 	/**

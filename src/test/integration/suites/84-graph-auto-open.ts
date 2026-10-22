@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GRAPH_OPEN_PATHS_KEY, GraphPanels, HIDDEN_GRAPHS_STATE } from '../../../adapters/graphPanel/panels';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
 import { graphDir, ids, live, VALID, settle, insert, open, showGraph, testPanels, withAutoOpen, fakeMemento, autoOpened, useGraphSuite } from '../graphHelpers';
 import { api } from '../schemaHarness';
 
@@ -51,6 +51,8 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 		await withAutoOpen(async () => {
 			const doc = await open('auto.yaml', VALID);
 			const handle = await autoOpened(doc);
+			// `autoOpened` waited for the lock sequence; again here, before the focus checks (bug 19).
+			await handle.lockSettled;
 			assert.strictEqual(api().graphPanels.size, 1);
 			assert.strictEqual(handle.panel.title, 'Graph: auto.yaml');
 			assert.ok(await waitFor(() => handle.panel.viewColumn === vscode.ViewColumn.Two, 10_000), `beside: ${handle.panel.viewColumn}`);
@@ -74,7 +76,7 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 			assert.ok(await waitFor(() => tabColumn(more) !== undefined, 10_000));
 			assert.notStrictEqual(tabColumn(more), handle.panel.viewColumn, 'not in the graph group');
 			assert.strictEqual(vscode.window.tabGroups.all.length, 2, 'no new group');
-			assert.ok(!api().outputLines().some((l) => /not locked|could not (lock|return focus)/.test(l)), 'the lock sequence logged no failure');
+			assert.ok(!api().outputLines().some((l) => /not locked|could not (lock|return focus)|did not stay/.test(l)), 'the lock sequence logged no failure');
 		});
 	});
 
@@ -84,7 +86,7 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 		const lines: string[] = [];
 		return { lines, panels: testPanels({ lockWaitMs: 0, log: (l) => lines.push(l) }) };
 	};
-	const lockFailure = /not locked|could not (lock|return focus)|did not become active/;
+	const lockFailure = /not locked|could not (lock|return focus)|did not become active|did not stay/;
 
 	test('LATE_ACTIVE: the panel active past the wait: its group is locked and focus returns to the YAML', async () => {
 		const { lines, panels } = latePanels();
@@ -102,6 +104,8 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 			// The delayed reveal made the graph active, and the late sequence gave focus back.
 			const back = () => wasActive && !handle.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === vscode.ViewColumn.One;
 			assert.ok(await waitFor(back, 10_000), `the graph became active, then focus came back: ${lines.join(' | ')}`);
+			// The late sequence's confirmation ends before the strict checks (bug 19).
+			await handle.lockSettled;
 			await settle();
 			assert.strictEqual(vscode.window.activeTextEditor?.document, doc, 'the YAML editor stays active');
 			assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.One);
@@ -259,7 +263,7 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 			await settle();
 			await api().graphPanels.idle();
 			assert.strictEqual(api().graphPanels.size, 0);
-			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor');
 		});
 	});
 

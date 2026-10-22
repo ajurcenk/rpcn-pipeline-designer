@@ -207,6 +207,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		detection,
 		// 4.17: a new test panel goes below the file's graph.
 		graphColumn: (uri) => graphPanels.panelFor(uri)?.panel.viewColumn,
+		// Bug 19: a placement waits for the file's graph lock sequence.
+		graphSettled: async (uri) => {
+			await graphPanels.panelFor(uri)?.lockSettled;
+		},
 	});
 	// The lens counts each processor's samples (4.16) through the panels' store; it disposes its watchers.
 	const bloblangLens = new BloblangLensProvider(detection, bloblangPanels.samples);

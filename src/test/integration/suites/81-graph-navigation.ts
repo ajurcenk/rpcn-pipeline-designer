@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import type { SnapshotMessage } from '../../../shared/protocol';
 import { REPO_ROOT } from '../../helpers/fakeBinary';
-import { waitFor } from '../helpers';
+import { focusedIn, runOnEditor, waitFor } from '../helpers';
 import { snapshots, live, VALID, settle, SWITCH, SWITCH_ID, MAPPING_ID, withGraph, replace, insert, open, showGraph, useGraphSuite } from '../graphHelpers';
 import { api } from '../schemaHarness';
 
@@ -75,9 +75,12 @@ suite('Pipeline graph: navigation (3.7, integration)', function () {
 
 	test('DRIVING / DRIVING_CLOSED: a click selects in the editor the cursor last moved in, else a visible one, else column One', async () => {
 		const { doc, editor: one, handle } = await withGraph('driving.yaml', SWITCH);
-		// One's cursor in the output, while One has focus.
+		// One's cursor in the output, while One has focus (the lock sequence's claim, bug 19).
+		const state = () => `active ${vscode.window.activeTextEditor?.viewColumn}, group ${vscode.window.tabGroups.activeTabGroup.viewColumn}, `
+			+ `visible ${vscode.window.visibleTextEditors.map((e) => e.viewColumn)}, selections ${JSON.stringify(selections(handle))}`;
+		assert.ok(focusedIn(doc, vscode.ViewColumn.One), state());
 		moveTo(one, SWITCH.indexOf('stdout'));
-		assert.ok(await waitFor(() => selections(handle).at(-1) === 'path:output', 10_000));
+		assert.ok(await waitFor(() => selections(handle).at(-1) === 'path:output', 10_000), state());
 		const three = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three, preserveFocus: false });
 		assert.strictEqual(three.viewColumn, vscode.ViewColumn.Three);
 		moveTo(three, SWITCH.indexOf('stdin'));
@@ -123,7 +126,7 @@ suite('Pipeline graph: navigation (3.7, integration)', function () {
 		assert.strictEqual(doc.getText(active.selection), 'output:\n  stdout: {}');
 
 		// DRIVING_CLOSED: Three's tab closed, a visible editor for the file is used (column One).
-		await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+		await runOnEditor(doc, 'workbench.action.closeActiveEditor', undefined, vscode.ViewColumn.Three);
 		assert.ok(await waitFor(() => editors() === 1, 10_000), 'Three closed');
 		await handle.receive({ type: 'nodeActivated', nodeId: 'path:output', via: 'click' });
 		active = vscode.window.activeTextEditor!;

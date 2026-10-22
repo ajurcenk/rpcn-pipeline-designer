@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
 
 suite('Lint on save (integration)', function () {
 	this.timeout(90_000);
@@ -186,9 +186,9 @@ suite('Lint on save (integration)', function () {
 		assert.ok(await vscode.workspace.applyEdit(list[index].edit!));
 		const fixed = `${text.replace('network: tpc', 'network: tcp').replace('adress:', 'address:').replace('topci:', 'topic:')}\n`;
 		assert.strictEqual(doc.getText(), fixed);
-		await vscode.commands.executeCommand('undo');
+		await runOnEditor(doc, 'undo');
 		assert.strictEqual(doc.getText(), saved, 'one undo step reverts all three');
-		await vscode.commands.executeCommand('redo');
+		await runOnEditor(doc, 'redo');
 		assert.strictEqual(doc.getText(), fixed);
 		const lints = () => readCounter(counter).filter((l) => l === 'lint').length;
 		const before = lints();

@@ -34,7 +34,7 @@ import type { BinaryActions } from '../redpandaConnect/notify';
 import type { DetectionRegistry } from '../vscode/detection';
 import type { LintDiagnostics } from '../vscode/diagnostics';
 import { GraphPanel, type GraphPanelHandle } from './graphPanel';
-import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels } from './groups';
+import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
 import { hasTextTab, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, until, within, type Rename } from './tabs';
@@ -541,10 +541,11 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		const yamlColumn = shownIn?.column ?? this.columnOf(key);
 		const title = graphTitle(target);
+		const placed = await this.graphColumn(yamlColumn);
 		const panel = vscode.window.createWebviewPanel(
 			GRAPH_VIEW_TYPE,
 			title,
-			{ viewColumn: await this.graphColumn(yamlColumn), preserveFocus: true },
+			{ viewColumn: placed.column, preserveFocus: true },
 			{
 				enableScripts: true,
 				retainContextWhenHidden: false,
@@ -577,7 +578,7 @@ export class GraphPanels implements vscode.Disposable {
 		panel.webview.html = graphHtml(panel.webview, this.options.extensionUri, title);
 		this.updateContext();
 		const doc = shownIn?.doc ?? openDocument(key);
-		await this.lock(graph, yamlColumn, doc);
+		await this.lock(graph, yamlColumn, doc, placed.through);
 		return graph;
 	}
 
@@ -598,36 +599,38 @@ export class GraphPanels implements vscode.Disposable {
 	 * Where a new panel goes (one graph group, SECOND): the column of an open graph panel, else the
 	 * empty group directly right of the YAML (the locked group a reload leaves), else beside the YAML.
 	 * Beside the YAML is never a group of test panels only (4.17, GRAPH_AFTER): the graph then goes
-	 * into a new group above it.
+	 * into a new group above it. `through`: the test group focused to create it (bug 19), now one
+	 * column further.
 	 */
-	private async graphColumn(yamlColumn: vscode.ViewColumn | undefined): Promise<vscode.ViewColumn> {
+	private async graphColumn(yamlColumn: vscode.ViewColumn | undefined): Promise<{ readonly column: vscode.ViewColumn; readonly through?: vscode.ViewColumn }> {
 		for (const graph of this.panels.values()) {
 			const column = graph.panel.viewColumn;
 			if (column !== undefined && column !== yamlColumn) {
-				return column;
+				return { column };
 			}
 		}
 		const groups = vscode.window.tabGroups;
 		if (yamlColumn === undefined) {
-			return await this.aboveTestPanels((groups.activeTabGroup.viewColumn + 1) as vscode.ViewColumn) ?? vscode.ViewColumn.Beside;
+			return await this.aboveTestPanels((groups.activeTabGroup.viewColumn + 1) as vscode.ViewColumn) ?? { column: vscode.ViewColumn.Beside };
 		}
 		const empty = groups.all.find((g) => g.tabs.length === 0 && g.viewColumn === yamlColumn + 1);
 		if (empty) {
-			return empty.viewColumn;
+			return { column: empty.viewColumn };
 		}
 		const beside = await this.aboveTestPanels((yamlColumn + 1) as vscode.ViewColumn);
 		if (beside !== undefined) {
 			return beside;
 		}
 		// `Beside` is beside the active group; an editor shown without focus may be in another one.
-		return groups.activeTabGroup.viewColumn === yamlColumn ? vscode.ViewColumn.Beside : (yamlColumn + 1) as vscode.ViewColumn;
+		return { column: groups.activeTabGroup.viewColumn === yamlColumn ? vscode.ViewColumn.Beside : (yamlColumn + 1) as vscode.ViewColumn };
 	}
 
 	/**
 	 * When the group in `column` holds test panels only (4.17), a new empty group above it, for the
-	 * graph; else (or when none could be created, logged) `undefined`.
+	 * graph, and the test group's column after it (`through`); else (or when none could be created,
+	 * logged) `undefined`.
 	 */
-	private async aboveTestPanels(column: vscode.ViewColumn): Promise<vscode.ViewColumn | undefined> {
+	private async aboveTestPanels(column: vscode.ViewColumn): Promise<{ readonly column: vscode.ViewColumn; readonly through: vscode.ViewColumn } | undefined> {
 		const group = vscode.window.tabGroups.all.find((g) => g.viewColumn === column);
 		if (!group || !onlyTestPanels(group)) {
 			return undefined;
@@ -635,8 +638,9 @@ export class GraphPanels implements vscode.Disposable {
 		const above = await newGroupNextTo(column, 'above');
 		if (above === undefined) {
 			this.options.log('Graph: could not open a group above the test panels.');
+			return undefined;
 		}
-		return above;
+		return { column: above, through: (above + 1) as vscode.ViewColumn };
 	}
 
 	/**
@@ -647,7 +651,9 @@ export class GraphPanels implements vscode.Disposable {
 	 * not active within the wait, the sequence resolves and finishes late (bug 15): the delayed
 	 * reveal of a slow machine would otherwise take focus with nothing giving it back.
 	 */
-	private async lock(graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined): Promise<void> {
+	private async lock(
+		graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined, through?: vscode.ViewColumn,
+	): Promise<void> {
 		const name = path.posix.basename(graph.uri.path);
 		try {
 			if (graph.isDisposed) {
@@ -661,7 +667,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			if (!active) {
 				// `lockSettled` resolves when the late path ends.
-				this.lockLate(graph, yamlColumn, doc, name);
+				this.lockLate(graph, yamlColumn, doc, name, through);
 				return;
 			}
 		} catch (e) {
@@ -670,7 +676,7 @@ export class GraphPanels implements vscode.Disposable {
 			return;
 		}
 		try {
-			await this.lockAndReturn(graph, yamlColumn, doc, name, () => false);
+			await this.lockAndReturn(graph, yamlColumn, doc, name, () => false, through);
 		} finally {
 			graph.settleLock();
 		}
@@ -682,7 +688,9 @@ export class GraphPanels implements vscode.Disposable {
 	 * unless another text editor became active since the wait ended (LATE_USER_EDITOR). A disposed
 	 * panel ends it silently (LATE_DISPOSED); its listeners are disposed on every path.
 	 */
-	private lockLate(graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined, name: string): void {
+	private lockLate(
+		graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined, name: string, through?: vscode.ViewColumn,
+	): void {
 		const atTimeout = vscode.window.activeTextEditor;
 		let userEditor = false;
 		/** Set once the sequence ends: it finished, or the panel (or the registry) was disposed. */
@@ -716,7 +724,7 @@ export class GraphPanels implements vscode.Disposable {
 				if (done || graph.isDisposed) {
 					return;
 				}
-				await this.lockAndReturn(graph, yamlColumn, doc, name, () => userEditor);
+				await this.lockAndReturn(graph, yamlColumn, doc, name, () => userEditor, through);
 			} catch (e) {
 				this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
 			} finally {
@@ -738,6 +746,7 @@ export class GraphPanels implements vscode.Disposable {
 		doc: vscode.TextDocument | undefined,
 		name: string,
 		userEditor: () => boolean,
+		through?: vscode.ViewColumn,
 	): Promise<void> {
 		try {
 			if (userEditor()) {
@@ -765,7 +774,14 @@ export class GraphPanels implements vscode.Disposable {
 			if (graph.isDisposed || !graph.panel.active || userEditor()) {
 				return;
 			}
-			await vscode.window.showTextDocument(doc, { viewColumn: yamlColumn, preserveFocus: false });
+			// Confirmed (bug 19): the graph's group, or a test group focused to create the graph's group
+			// above it (GRAPH_AFTER), echoes its focus late and takes the active group back; only those
+			// two are taken back from.
+			const own = graph.panel.viewColumn;
+			const from = [...(own !== undefined ? [own] : []), ...(through !== undefined ? [through] : [])];
+			if (await returnFocusTo(doc, yamlColumn, from, () => !graph.isDisposed && !userEditor()) === 'missed') {
+				this.options.log(`Graph ${name}: focus did not stay in the YAML.`);
+			}
 		} catch (e) {
 			this.options.log(`Graph ${name}: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
 		}

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { GraphPanelHandle, GraphPanels } from '../../../adapters/graphPanel/panels';
 import type { HostMessage, NodeStatusById } from '../../../shared/protocol';
-import { waitFor } from '../helpers';
+import { runOnEditor, waitFor } from '../helpers';
 import {
 	graphDir, ids, live, settle, SWITCH, MAPPING_ID, VALID, withGraph, insert, open, showGraph, testPanels, fakeMemento, loseBinary,
 	restoreBinary, useGraphSuite,
@@ -265,8 +265,9 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				uri,
 				handle,
 				async close() {
-					await show();
-					await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+					const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+					assert.ok(doc, 'the document is open');
+					await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor', show);
 					assert.ok(await waitFor(() => !isOpen(uri), 20_000), 'the document closed');
 				},
 			};

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
 
 suite('Run and Stop (integration)', function () {
 	this.timeout(90_000);
@@ -98,7 +98,7 @@ suite('Run and Stop (integration)', function () {
 		await vscode.commands.executeCommand('redpandaConnect.run');
 		await vscode.commands.executeCommand('redpandaConnect.runUntitled');
 		assert.strictEqual(api().run.phaseOf(doc.uri), undefined);
-		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		await runOnEditor(doc, 'workbench.action.revertAndCloseActiveEditor');
 		// Positive control: the same content saved to a file runs.
 		const saved = await open('was-untitled.yaml', 'input:\n  stdin: {}\n');
 		await vscode.commands.executeCommand('redpandaConnect.run');
