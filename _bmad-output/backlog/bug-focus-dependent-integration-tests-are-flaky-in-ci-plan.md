@@ -3,7 +3,7 @@ title: 'Focus-dependent integration tests are flaky in CI'
 type: 'bugfix'
 ticket: '19'
 created: '2026-10-21'
-status: 'built'
+status: done
 baseline_revision: '0f0419594e71942981116e676faef2b8f027f088'
 route: 'full'
 route_source: 'auto'
