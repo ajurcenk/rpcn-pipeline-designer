@@ -4,7 +4,7 @@ type: story
 title: "Test mapping on a generate input"
 parent: none
 covers: ["CAP-16"]
-after: ["4.8"]
+after: []
 assignee: ""
 refined: false
 hitl: false
@@ -16,7 +16,7 @@ estimate: ""
 
 ## Description
 
-The Bloblang test panel (epic 4, CAP-16) covers `mapping` and `mutation` processors only; the spec's Non-goals exclude every other Bloblang field. A `generate` input's `mapping` builds each message from nothing (`this` is empty), and developers write a lot of Bloblang there to produce test data. When this is done, a "▷ Test mapping" CodeLens also sits above `generate.mapping`, and its panel has no input pane: one run shows the message the mapping generates (content and metadata), or the binary's error, through the same AD-21 one-message `run` with the generate mapping as the input itself. The user asked for this while checking 4.2 in the dev host (2026-10-13).
+The Bloblang test panel (epic 4, CAP-16) covers `mapping` and `mutation` processors only; the spec's Non-goals exclude every other Bloblang field. A `generate` input's `mapping` builds each message from nothing (`this` is empty), and developers write a lot of Bloblang there to produce test data. When this is done, a "▷ Test mapping" CodeLens also sits above `generate.mapping`, and its panel has no input pane: one run shows the message the mapping generates (content and metadata), or the binary's error, through the same AD-21 one-message `run` with the generate mapping as the input itself. The user asked for this while checking 4.2 in the dev host (2026-10-13). It builds on the test panel's error states (epic 4, ticket 4.8, done); that dependency was recorded as `after: ["4.8"]`, which `tickets.py` cannot resolve from the backlog folder, so it is kept here as text (2026-10-22).
 
 ## Acceptance Criteria
 
