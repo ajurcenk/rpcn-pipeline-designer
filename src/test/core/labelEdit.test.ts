@@ -88,4 +88,11 @@ suite('core/labelEdit (4.16)', () => {
 
 		assert.strictEqual(labelInsertion(CONFIG, processor(CONFIG, 'pipeline.processors[0]'), 'x'), undefined);
 	});
+
+	test('GENERATE (ticket 16): a generate input\'s mapping, labelled or not, gets no insertion', () => {
+		const text = 'input:\n  generate:\n    mapping: root = 1\noutput:\n  stdout: {}\n';
+		const found = processor(text, 'input.generate');
+		assert.strictEqual(found.kind, 'generate');
+		assert.strictEqual(labelInsertion(text, found, 'gen'), undefined);
+	});
 });

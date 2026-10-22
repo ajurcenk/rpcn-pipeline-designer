@@ -489,7 +489,7 @@ suite('core/bloblangProcessors generate mappings (22)', () => {
 		none('input:\n  broker:\n    inputs:\n      generate:\n        mapping: root = 1\n');
 	});
 
-	test('NO_LENS: processorsOnly leaves generate out, and the cursor in it finds no processor', () => {
+	test('PROCESSORS_ONLY: processorsOnly leaves generate out, and the cursor in it finds no processor there (16: the whole list finds the generate entry)', () => {
 		const found = processorsOf(TEXT);
 		const processors = processorsOnly(found);
 		assert.ok(found.some((p) => p.kind === 'generate'));
@@ -497,5 +497,7 @@ suite('core/bloblangProcessors generate mappings (22)', () => {
 		assert.strictEqual(bloblangProcessorAt(processors, TEXT.indexOf('root = this.')), undefined);
 		assert.strictEqual(bloblangProcessorAt(processors, TEXT.indexOf('root = 1')), processors[0]);
 		assert.deepStrictEqual(previousSteps(processors, 'input.processors[0]'), []);
+		// Ticket 16: the Test mapping command looks in the whole list, so the cursor in a generate mapping finds it.
+		assert.strictEqual(bloblangProcessorAt(found, TEXT.indexOf('root = this.'))?.kind, 'generate');
 	});
 });

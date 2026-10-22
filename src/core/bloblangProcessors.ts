@@ -8,8 +8,10 @@
 // Ticket 4.18: the previous steps of a processor in its own list (`previousSteps`).
 // Ticket 22: a third kind, `generate`: the `mapping` of a `generate` input at `input` or at a
 // broker's `inputs[i]` below it (`input.broker.inputs[i]`, nested brokers too), for the live parse
-// (4.5) and the graph marker (4.6) only. The processor-only features (the lens, the Test mapping
-// command, the panel and its samples) take `processorsOnly` of the list.
+// (4.5) and the graph marker (4.6). The processor-only features (the lens, the Test mapping
+// command, the panel and its samples) took `processorsOnly` of the list until ticket 16, which gives
+// generate mappings the lens, the command and an output-only panel; `processorsOnly` now serves the
+// samples-only features (4.18's previous steps, the corpus parity).
 
 import { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { BloblangProcessorKind } from '../shared/bloblangProtocol';
@@ -80,7 +82,7 @@ export function bloblangProcessors(parsed: ParsedYaml | undefined, model?: Pipel
 /** A `mapping` / `mutation` processor: what the panel can test. */
 export type TestableProcessor = BloblangProcessor & { readonly kind: Exclude<BloblangKind, 'generate'> };
 
-/** The `mapping` / `mutation` processors of `found`: what the lens, the command and the panel use (ticket 22). */
+/** The `mapping` / `mutation` processors of `found`: what the samples-only features use (ticket 22; since 16, not the lens or the panel). */
 export function processorsOnly(found: readonly BloblangProcessor[]): TestableProcessor[] {
 	return found.filter((p): p is TestableProcessor => p.kind !== 'generate');
 }

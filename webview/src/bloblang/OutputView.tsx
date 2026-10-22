@@ -7,6 +7,9 @@
 // stays, dimmed, unmarked and labelled; a deleted message dims nothing.
 // Ticket 4.11: the cards are not live regions (the panel's one announcer says each result), and the
 // output content is focusable, so it can be read and scrolled by keyboard.
+// Ticket 16: a generate mapping's output (`marks` off, `changes` off) has no change marks and no
+// "Changed:" footer: there is no input to compare; its invalid-input card's hint (`generate`) says the
+// message is empty instead of pointing at an input.
 
 import type { ReactNode } from 'react';
 import type { BloblangResult } from '../../../src/shared/bloblangProtocol';
@@ -89,10 +92,11 @@ function ErrorCard({ title, subtitle, message, goTo, onGoToLine, hint }: CardPro
 }
 
 /** The card of a result that is not `ok` or `deleted`. */
-function ProblemCard({ result, fileName, onGoToLine }: {
+function ProblemCard({ result, fileName, onGoToLine, generate }: {
 	readonly result: Exclude<BloblangResult, { kind: 'ok' | 'deleted' }>;
 	readonly fileName: string;
 	readonly onGoToLine: (line: number) => void;
+	readonly generate: boolean;
 }) {
 	switch (result.kind) {
 		case 'parseError':
@@ -123,7 +127,9 @@ function ProblemCard({ result, fileName, onGoToLine }: {
 					title={INVALID_INPUT_TITLE}
 					message={result.message}
 					onGoToLine={onGoToLine}
-					hint={<>The mapping reads the message as JSON (<code>this</code>); check the input&apos;s Content.</>}
+					hint={generate
+						? <>A generate input&apos;s message is empty: the mapping can&apos;t read <code>this</code>. Build the message with <code>root = …</code> instead.</>
+						: <>The mapping reads the message as JSON (<code>this</code>); check the input&apos;s Content.</>}
 				/>
 			);
 		case 'error':
@@ -139,12 +145,16 @@ export interface OutputBodyProps {
 	/** The YAML file's name, for the cards' "<file> line F". */
 	readonly fileName: string;
 	readonly onGoToLine: (line: number) => void;
+	/** Whether an ok output marks its added and changed fields and keys (default on; off for a generate mapping, 16). */
+	readonly marks?: boolean;
+	/** A generate mapping's output (16): the invalid-input card's hint says the message is empty. */
+	readonly generate?: boolean;
 }
 
-export function OutputBody({ result, tab, lastOk, fileName, onGoToLine }: OutputBodyProps) {
+export function OutputBody({ result, tab, lastOk, fileName, onGoToLine, marks = true, generate = false }: OutputBodyProps) {
 	switch (result.kind) {
 		case 'ok':
-			return <OkOutput result={result} tab={tab} marks />;
+			return <OkOutput result={result} tab={tab} marks={marks} />;
 		case 'deleted':
 			return (
 				<div className="rpcn-bl-card rpcn-bl-card-info">
@@ -154,7 +164,7 @@ export function OutputBody({ result, tab, lastOk, fileName, onGoToLine }: Output
 		default:
 			return (
 				<>
-					<ProblemCard result={result} fileName={fileName} onGoToLine={onGoToLine} />
+					<ProblemCard result={result} fileName={fileName} onGoToLine={onGoToLine} generate={generate} />
 					{lastOk && (
 						<section className="rpcn-bl-stale" aria-label={LAST_OK_LABEL}>
 							<p className="rpcn-bl-stale-label">{LAST_OK_LABEL}</p>
@@ -166,9 +176,15 @@ export function OutputBody({ result, tab, lastOk, fileName, onGoToLine }: Output
 	}
 }
 
-/** The output footer of a result: "Changed:" and its tags (or "No changes") for `ok`, else the state's line. */
-export function ResultFooter({ result, dimmed }: { readonly result: BloblangResult; readonly dimmed: boolean }) {
+/**
+ * The output footer of a result: "Changed:" and its tags (or "No changes") for `ok`, else the state's
+ * line; with `changes` off (a generate mapping, 16), none for `ok`.
+ */
+export function ResultFooter({ result, dimmed, changes = true }: { readonly result: BloblangResult; readonly dimmed: boolean; readonly changes?: boolean }) {
 	if (result.kind === 'ok') {
+		if (!changes) {
+			return null;
+		}
 		const tags = changeTags(result.changes);
 		if (tags.length === 0) {
 			return <footer className="rpcn-bl-foot">{NO_CHANGES_TEXT}</footer>;

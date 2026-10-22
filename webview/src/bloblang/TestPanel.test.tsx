@@ -30,7 +30,7 @@ import {
 	SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
 import {
-	ADD_LABEL_LABEL, announcement, EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
+	ADD_LABEL_LABEL, announcement, announcementKey, EMPTY_TEXT, GENERATE_EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
 	panelName, RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel, TOOLBAR_LABEL,
 } from './TestPanel';
 
@@ -1395,5 +1395,162 @@ describe('Bloblang test panel: keyboard and screen reader (4.11)', () => {
 		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one', removed: true });
 		expect(document.activeElement).toBe(outside);
 		outside.remove();
+	});
+});
+
+describe('Bloblang test panel: generate mapping (16)', () => {
+	const GENERATE: BloblangHostMessage = {
+		type: 'snapshot', title: 'Bloblang: gen', kind: 'generate', source: 'root.id = uuid_v4()', binary: 'ok', samples: [], selected: null, fileName: 'gen.yaml',
+	};
+	const OK_GEN = {
+		kind: 'ok', content: '{"id":"x"}', meta: { k: 'v' },
+		changes: { fields: null, meta: { added: ['k'], changed: [], removed: [] } },
+	} as const;
+	const live = () => host.querySelector('.rpcn-bl-sr[aria-live="polite"]')?.textContent;
+
+	it('OPEN_RUN: output only; runs once on open, even with Run on change off; no input, samples, label note or Changed footer', async () => {
+		// A page that still names a samples file (an older host): the controls stay hidden for generate.
+		await render({ runOnChange: false }, 'gen.yaml', 'gen.samples.json');
+		await send({ ...GENERATE, samples: [{ name: 'sample 1', content: '{}', meta: {} }], selected: 'sample 1', unlabelledPath: 'input.generate', previousStep: 'x' });
+		expect(host.querySelector('.rpcn-bl-kind')?.textContent).toBe('generate');
+		expect(host.querySelector('h1')?.textContent).toBe('Bloblang: gen');
+		expect([...host.querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Output']);
+		expect(host.querySelector('.rpcn-bl-in')).toBeNull();
+		expect(host.querySelector('textarea')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-io-single')).not.toBeNull();
+		expect(host.querySelector('.rpcn-bl-samples')).toBeNull();
+		expect(host.textContent).not.toContain(FROM_PREVIOUS_LABEL);
+		expect(host.querySelector('.rpcn-bl-labelnote')).toBeNull();
+		expect(host.querySelector('.rpcn-bl-saved')).toBeNull();
+		expect(host.textContent).toContain(GENERATE_EMPTY_TEXT);
+		expect(runs()).toEqual([{ type: 'run', content: '', meta: {} }]);
+		expect(pill()).toBe(RUNNING_TEXT);
+		await send({ type: 'result', result: OK_GEN, durationMs: 12, binary: '4.112.0' });
+		expect(outputText()).toBe(JSON.stringify({ id: 'x' }, null, 2));
+		expect(markedText()).toEqual([]);
+		expect(footer()).toBeUndefined();
+		expect(tags()).toEqual([]);
+		expect(pill()).toBe('✓ Ran in 12 ms · 4.112.0');
+		expect(badge('out')).toBe('1');
+		expect(live()).toBe('Ran in 12 ms.');
+		await click(tab('out', 'meta'));
+		expect(host.querySelector('.rpcn-bl-out')?.textContent).toContain('k');
+		expect(host.querySelectorAll('.rpcn-bl-out .rpcn-bl-mark').length).toBe(0);
+		// No sample intent was posted.
+		expect(posted.filter((m) => m.type !== 'ready' && m.type !== 'run')).toEqual([]);
+	});
+
+	it('RERUN: Run is always enabled and posts an empty run; Run on change re-runs on a source change', async () => {
+		vi.useFakeTimers();
+		await render();
+		await send(GENERATE);
+		expect(runs().length).toBe(1);
+		await send({ type: 'result', result: OK_GEN, durationMs: 5, binary: null });
+		const run = host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!;
+		expect(run.disabled).toBe(false);
+		await click(run);
+		expect(runs()).toEqual([{ type: 'run', content: '', meta: {} }, { type: 'run', content: '', meta: {} }]);
+		await send({ type: 'result', result: OK_GEN, durationMs: 5, binary: null });
+		await send({ ...GENERATE, source: 'root.id = uuid_v4()\nroot.n = 1' });
+		expect(runs().length).toBe(2);
+		await wait();
+		expect(runs().length).toBe(3);
+		// With Run on change off, a source change runs nothing.
+		await click(host.querySelector('.rpcn-bl-auto'));
+		await send({ ...GENERATE, source: 'root = 2' });
+		await wait();
+		expect(runs().length).toBe(3);
+	});
+
+	it('FAILED / DELETED: the error states as for processors', async () => {
+		await render();
+		await send(GENERATE);
+		await send({ type: 'result', result: { kind: 'failed', message: 'failed assignment (line 1): nope', mappingLine: 1, fileLine: 4 }, durationMs: 3, binary: null });
+		expect(cardTitle()).toBe('Failed on mapping line 1');
+		await click(goTo());
+		expect(posted[posted.length - 1]).toEqual({ type: 'goToLine', line: 4 });
+		expect(live()).toBe('Failed on mapping line 1: failed assignment (line 1): nope');
+		await send({ type: 'result', result: { kind: 'deleted' }, durationMs: 3, binary: null });
+		expect(cardTitle()).toBe(DELETED_TITLE);
+		expect(footer()).toBe(DELETED_FOOTER);
+		const message = "failed assignment (line 1): unable to reference message as structured (with 'this'): message is empty";
+		await send({ type: 'result', result: { kind: 'invalidInput', message }, durationMs: 3, binary: null });
+		expect(cardTitle()).toBe(INVALID_INPUT_TITLE);
+		expect(cardMessage()).toBe(message);
+		expect(card()?.querySelector('.rpcn-bl-card-hint')?.textContent)
+			.toBe('A generate input\'s message is empty: the mapping can\'t read this. Build the message with root = … instead.');
+	});
+
+	/** Renders a generate panel as its page does (`data-kind`), with no Run on change unless asked. */
+	const renderGenerate = (state: Partial<ViewState> = {}) => act(async () => {
+		root.render(
+			<TestPanel
+				post={(m) => posted.push(m)} initialState={{ ...DEFAULT_VIEW_STATE, ...state }} saveState={(s) => saved.push(s)}
+				fileName="gen.yaml" kind="generate"
+			/>,
+		);
+	});
+	const tabStops = () => [...host.querySelectorAll<HTMLElement>('main [tabindex], main button, main input, main select, main textarea')]
+		.filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled)
+		.map((el) => el.getAttribute('aria-label') ?? (el.id || el.textContent || el.className));
+
+	it('FIRST_PAINT: with the page\'s data-kind, the panel is output only before the snapshot arrives', async () => {
+		await renderGenerate();
+		expect(host.querySelector('.rpcn-bl-in')).toBeNull();
+		expect(host.querySelector('textarea')).toBeNull();
+		expect(host.textContent).toContain(GENERATE_EMPTY_TEXT);
+		expect(host.textContent).not.toContain(EMPTY_TEXT);
+		expect(host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.disabled).toBe(false);
+		await send(GENERATE);
+		expect(host.querySelector('.rpcn-bl-in')).toBeNull();
+		expect(runs().length).toBe(1);
+	});
+
+	it('TAB_WALK and FOCUS: Run on change, Run, the output tab, the output; leaving the no-binary or removed state focuses Run', async () => {
+		await renderGenerate();
+		await send(GENERATE);
+		await send({ type: 'result', result: OK_GEN, durationMs: 12, binary: null });
+		expect(tabStops()).toEqual(['rpcn-bl-auto', 'Run', 'rpcn-bl-out-tab-content', 'Output content']);
+		const run = () => host.querySelector<HTMLButtonElement>('.rpcn-bl-run');
+		run()!.focus();
+		await send({ type: 'binary', status: 'missing' });
+		expect(document.activeElement).toBe(host.querySelector(`[role="region"][aria-label="${NO_BINARY_TITLE}"]`));
+		await send({ type: 'binary', status: 'ok' });
+		expect(document.activeElement).toBe(run());
+		await send({ ...GENERATE, removed: true });
+		const notice = host.querySelector(`[role="region"][aria-label="${REMOVED_TITLE}"]`);
+		expect(document.activeElement).toBe(notice);
+		expect(notice?.textContent).toBe(removedText('gen.yaml', true));
+		expect(removedText('gen.yaml', true)).toBe('This mapping was removed from gen.yaml. Undo the change to bring it back.');
+		await send(GENERATE);
+		expect(document.activeElement).toBe(run());
+	});
+
+	it('LIVE_NEW_MESSAGE: each new message is said, even in the same time; the same message again is not', async () => {
+		await renderGenerate();
+		await send(GENERATE);
+		const node = () => host.querySelector('.rpcn-bl-sr')?.firstElementChild;
+		await send({ type: 'result', result: OK_GEN, durationMs: 12, binary: null });
+		expect(live()).toBe('Ran in 12 ms.');
+		const first = node();
+		await send({ type: 'result', result: { ...OK_GEN, content: '{"id":"y"}' }, durationMs: 12, binary: null });
+		expect(live()).toBe('Ran in 12 ms.');
+		expect(node()).not.toBe(first);
+		const second = node();
+		await send({ type: 'result', result: { ...OK_GEN, content: '{"id":"y"}' }, durationMs: 30, binary: null });
+		expect(node()).toBe(second);
+		expect(live()).toBe('Ran in 12 ms.');
+		expect(announcementKey({ type: 'result', result: OK_GEN, durationMs: 1, binary: null }, false))
+			.not.toBe(announcementKey({ type: 'result', result: { ...OK_GEN, content: '{}' }, durationMs: 1, binary: null }, false));
+	});
+
+	it('PROCESSOR_UNCHANGED: a mapping snapshot keeps the Input column, an empty input runs nothing, and the announcer says the changes', async () => {
+		await render({ runOnChange: true });
+		await send(SNAPSHOT);
+		expect([...host.querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Input', 'Output']);
+		expect(host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.disabled).toBe(true);
+		expect(runs()).toEqual([]);
+		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null })).toMatch(/^Ran in 1 ms\. ./);
+		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null }, false)).toBe('Ran in 1 ms.');
 	});
 });

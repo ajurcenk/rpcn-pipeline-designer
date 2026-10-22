@@ -12,7 +12,8 @@ export type { BinaryStatus };
 
 /**
  * The Bloblang kinds (AD-21): the `mapping` / `mutation` processors the panel tests, and (ticket 22)
- * a `generate` input's `mapping`, which only the live parse and the graph marker cover so far.
+ * a `generate` input's `mapping` (the live parse and the graph marker; since ticket 16, an output-only
+ * test panel too).
  */
 export type BloblangProcessorKind = 'mapping' | 'mutation' | 'generate';
 

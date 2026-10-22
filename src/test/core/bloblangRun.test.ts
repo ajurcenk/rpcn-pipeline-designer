@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parse } from 'yaml';
-import { bloblangString, changesOf, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
+import { bloblangString, changesOf, GENERATE_RUN_INPUT, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
 import { REPO_ROOT } from '../helpers/fakeBinary';
 
 /** Route C's captures (spike 4.1, standalone 4.112.0). */
@@ -43,6 +43,21 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 			RESULT_MAPPING,
 			'root = if errored() { {"error": error()} } else { {"content": content().string(), "meta": @} }',
 		);
+	});
+
+	test('GENERATE (ticket 16): a generate mapping runs as a mapping processor on one empty message; content and meta are ignored; ${VAR} kept', () => {
+		const source = 'root.id = uuid_v4()\nmeta k = "${FOO}"';
+		const text = testConfig('generate', source, '{"ignored":true}', { ignored: 'yes' });
+		assert.strictEqual(GENERATE_RUN_INPUT, 'root = ""');
+		assert.deepStrictEqual(parse(text), {
+			http: { enabled: false },
+			logger: { level: 'warn' },
+			input: { generate: { count: 1, interval: '', mapping: 'root = ""' } },
+			pipeline: { processors: [{ mapping: source }, { mapping: RESULT_MAPPING }] },
+			output: { stdout: { codec: 'lines' } },
+		});
+		assert.ok(!text.includes('- generate:'), 'no generate processor');
+		assert.ok(text.includes('${FOO}'), 'the source keeps its ${VAR} for the binary');
 	});
 
 	test('CONTENT_ESCAPE: quotes, backslashes, newlines, controls and non-ASCII reach the mapping unchanged', () => {

@@ -1,0 +1,10 @@
+{
+  "type": "snapshot",
+  "title": "Bloblang: gen",
+  "kind": "generate",
+  "source": "root.id = uuid_v4()\nmeta source = \"gen\"",
+  "binary": "ok",
+  "samples": [],
+  "selected": null,
+  "fileName": "orders.yaml"
+}

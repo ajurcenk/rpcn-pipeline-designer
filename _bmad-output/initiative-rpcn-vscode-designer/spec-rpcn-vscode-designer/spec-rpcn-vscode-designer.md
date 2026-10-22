@@ -81,8 +81,8 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
   - **success:** The `mapping` / `mutation` field of every `mapping` and `mutation` processor, nested ones included, and the `mapping` of a `generate` input (`input.generate`, or a `broker`'s `inputs[i].generate`), is parsed by the developer's binary as the YAML changes; each parse error appears as an editor diagnostic at the matching YAML line and column with the binary's message; the diagnostic clears once the mapping parses; other Bloblang fields get none.
 
 - **CAP-16 — Bloblang test panel** *(second release)*
-  - **intent:** Developers run one `mapping` or `mutation` against a sample message beside the editor and see what it produces or why it fails.
-  - **success:** Opened from the processor (CodeLens, graph node), the panel shows the sample's input content and metadata, the output content and metadata with added or changed fields marked, and on failure the binary's parse error or mapping error with the mapping line translated to the file line and a Go to line action; a deleted message is reported as deleted, and with no binary the panel offers Install guide / Set path / Retry; output follows edits to the mapping or the input. States and layout per `../brief-rpcn-vscode-designer/bloblang-test-panel-prototype.html`.
+  - **intent:** Developers run one `mapping` or `mutation` against a sample message beside the editor and see what it produces or why it fails; and run a `generate` input's `mapping` to see the message it generates.
+  - **success:** Opened from the processor (CodeLens, graph node), the panel shows the sample's input content and metadata, the output content and metadata with added or changed fields marked, and on failure the binary's parse error or mapping error with the mapping line translated to the file line and a Go to line action; a deleted message is reported as deleted, and with no binary the panel offers Install guide / Set path / Retry; output follows edits to the mapping or the input. States and layout per `../brief-rpcn-vscode-designer/bloblang-test-panel-prototype.html`. A `generate` input's `mapping` (`input.generate`, or a `broker`'s `inputs[i].generate`; ticket 16) gets the same CodeLens and an output-only panel: no input pane and no samples; each run shows one generated message (content and metadata; `count` and `interval` are ignored, a re-run gives a fresh message) or the binary's error as for processors, and it re-runs when the mapping changes.
 
 - **CAP-17 — Saved sample inputs** *(second release)*
   - **intent:** A mapping's sample messages persist with the pipeline, so tests can be repeated and reviewed.
@@ -101,7 +101,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Minimum supported Redpanda Connect version is v4.100.0.
 - Bloblang checks and test runs execute only on the developer's binary; no bundled Bloblang engine (the docs playground's Wasm build is not used).
 - A test runs the mapping alone on the sample: the sample is the message as it reaches that processor; earlier processors are not applied.
-- CAP-15–17 cover `mapping` and `mutation` processors only; CAP-15 also covers `generate` inputs' `mapping` (ticket 22), which have no test lens or panel yet.
+- CAP-15–17 cover `mapping` and `mutation` processors only; CAP-15 and CAP-16 also cover `generate` inputs' `mapping` (tickets 22 and 16), which have no saved samples (CAP-17).
 - Delivered as a CI-built `.vsix` installed by hand; nothing is published to a registry in the POC.
 - Scope unit is single-file configs plus resource files.
 - POC stakes: sized for typical configs, SemVer 0.x.
@@ -116,7 +116,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Large configs (thousands of lines).
 - Lint while typing.
 - A Bloblang language server, and Bloblang diagnostics outside CAP-15 (completion and hover are in CAP-4).
-- Bloblang checks or tests for anything but `mapping` / `mutation` processors and (live syntax errors only) `generate` inputs' `mapping`: `check`, `request_map` / `result_map`, other `*_map` / `*_mapping` fields, `${! }` interpolations, `.blobl` files.
+- Bloblang checks or tests for anything but `mapping` / `mutation` processors and (live syntax errors and the output-only test panel) `generate` inputs' `mapping`: `check`, `request_map` / `result_map`, other `*_map` / `*_mapping` fields, `${! }` interpolations, `.blobl` files.
 - Capturing test messages from a run, or running a mapping after the pipeline's earlier processors.
 - A bundled Bloblang engine for use without a binary.
 - A default keybinding for Show / Hide graph.

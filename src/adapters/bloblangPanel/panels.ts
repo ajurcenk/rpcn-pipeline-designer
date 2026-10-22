@@ -75,6 +75,15 @@
 // document with unsaved changes (samples are linked to the saved file) or one edited during the runs
 // saves nothing and says so. One such request
 // per panel at a time (another one meanwhile is ignored); the panel's own runs are untouched.
+// Ticket 16: a `generate` input's mapping (kind `generate`) has a panel too, from the lens, the
+// command at the cursor and by path. It is output only: each `run` ignores the input it carries and
+// runs the mapping on one empty message (`testConfig`'s `generate` run). It has no
+// samples: it never reads, watches or writes the samples file, has no samples link (`ref`), its
+// snapshot carries no `samplesFile`, `unlabelledPath` or `previousStep` (and the page no
+// `data-samples`), a save moves nothing for it, and the sample intents (`sampleAdded`,
+// `sampleRenamed`, `sampleSwitched`, `sampleDeleted`, `inputEdited`, `sampleFromPreviousRequested`,
+// `addLabelRequested`) are refused (logged, nothing posted). Tracking keeps it on its side of the
+// kinds (ticket 22's `sameSide`), so its kind never changes.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -100,10 +109,10 @@ import { SampleStore, samplesUri } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export { BLOBLANG_VIEW_TYPE };
-/** Shown when Test mapping finds no mapping or mutation processor at the cursor. */
-export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor.';
-/** Shown when the CodeLens's processor is not in the open, detected document any more. */
-export const NO_LONGER_THERE = 'That mapping or mutation processor is no longer there.';
+/** Shown when Test mapping finds no mapping or mutation processor, or generate mapping (16), at the cursor. */
+export const NO_MAPPING_AT_CURSOR = 'Put the cursor in a mapping or mutation processor, or a generate input\'s mapping.';
+/** Shown when the CodeLens's processor or generate mapping is not in the open, detected document any more. */
+export const NO_LONGER_THERE = 'That mapping is no longer there.';
 /** The Delete modal's message and its button (4.9). */
 export const deleteSampleMessage = (name: string): string => `Delete sample "${name}"?`;
 export const DELETE_SAMPLE_BUTTON = 'Delete';
@@ -139,6 +148,12 @@ export const PREVIOUS_FILE_CHANGED = 'The file changed while the previous steps 
 export const samplesUnreadable = (reason: string): string => `The samples file can't be read: ${reason}`;
 /** Why From previous step's sample could not be added (4.18): its name was taken twice meanwhile. */
 export const PREVIOUS_NAME_TAKEN = 'another sample took its name.';
+/** The intents a generate mapping's panel refuses (16): its samples and Add label. */
+const SAMPLE_INTENTS: ReadonlySet<string> = new Set([
+	'sampleAdded', 'sampleRenamed', 'sampleSwitched', 'sampleDeleted', 'inputEdited', 'sampleFromPreviousRequested', 'addLabelRequested',
+]);
+/** A generate mapping's panel's samples watch (16): none. */
+const NO_WATCH: vscode.Disposable = { dispose: () => undefined };
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
 
@@ -180,7 +195,7 @@ interface Current {
 	readonly processor: BloblangProcessor | undefined;
 	/** The document's text when the processor was read: the base of its position map. */
 	readonly text: string;
-	/** Every `mapping` / `mutation` processor of that text (4.18: the previous steps are among them). */
+	/** Every Bloblang entry of that text, `generate` mappings included (16); 4.18's previous steps are among its processors. */
 	readonly processors: readonly BloblangProcessor[];
 }
 
@@ -315,9 +330,11 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.source = processor.source;
 		this.range = processor.range;
 		this.last = { processor, text, processors };
-		this.ref = label !== undefined ? { label, path } : { path };
-		this.saved = this.ref;
-		this.watch = owner.samples.watch(uri);
+		const link: SampleRef = label !== undefined ? { label, path } : { path };
+		// A generate mapping has no samples (16): no link and no watch; its kind never changes (sameSide).
+		this.ref = this.generate ? undefined : link;
+		this.saved = link;
+		this.watch = this.generate ? NO_WATCH : owner.samples.watch(uri);
 		this.hadTab = hasTextTab(uri.toString());
 		this.subscription = panel.webview.onDidReceiveMessage((m) => this.receive(m));
 	}
@@ -325,6 +342,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	async receive(message: unknown): Promise<void> {
 		try {
 			const msg = parseBloblangWebviewMessage(message);
+			if (msg && this.generate && SAMPLE_INTENTS.has(msg.type)) {
+				// A generate mapping has no samples and no Add label (16).
+				this.owner.log(`Test mapping: ${this.panel.title}: ${msg.type} ignored: a generate mapping has no samples.`);
+				return;
+			}
 			if (msg?.type === 'ready') {
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
@@ -375,7 +397,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	moveTo(uri: vscode.Uri): void {
 		this.uri = uri;
 		const watch = this.watch;
-		this.watch = this.owner.samples.watch(uri);
+		this.watch = this.generate ? NO_WATCH : this.owner.samples.watch(uri);
 		watch.dispose();
 		// Its title (`Bloblang: <label ?? path>`) names no file: it stays.
 		this.owner.hints.set(this.hintKey, uri, this.hintLine);
@@ -433,6 +455,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	/** Whether it waits to be matched by its samples link (its document closed, 4.10). */
 	get isReset(): boolean {
 		return this.range === undefined;
+	}
+
+	/** Whether it tests a `generate` input's mapping (16): output only, no samples. */
+	get generate(): boolean {
+		return this.kind === 'generate';
 	}
 
 	/** Its processor's link now (4.10): its label, else its path. */
@@ -494,7 +521,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * now) has no label and the config has a samples file (it is not untitled).
 	 */
 	private unlabelled(processor: BloblangProcessor | undefined): boolean {
-		return this.ref !== undefined && this.ref.label === undefined && processor !== undefined && processor.label === undefined && samplesUri(this.uri) !== undefined;
+		return !this.generate && this.ref !== undefined && this.ref.label === undefined && processor !== undefined && processor.label === undefined && samplesUri(this.uri) !== undefined;
 	}
 
 	private async postSnapshot(): Promise<void> {
@@ -506,7 +533,8 @@ class BloblangPanel implements BloblangPanelHandle {
 		const unlabelled = this.unlabelled(current.processor);
 		const previousStep = previousStepOf(current);
 		const samples = await this.samples();
-		const samplesFile = samplesUri(this.uri);
+		// A generate mapping has no samples file (16).
+		const samplesFile = this.generate ? undefined : samplesUri(this.uri);
 		await this.post({
 			type: 'snapshot', title: this.panel.title, kind, source, binary: this.owner.binaryStatus(), ...samples,
 			// The samples' link (4.10): until a save moves them, the path they are under.
@@ -538,7 +566,7 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	private async seed(): Promise<void> {
 		const current = this.current();
-		const steps = current.processor ? previousSteps(current.processors, this.path) : [];
+		const steps = current.processor && !this.generate ? previousSteps(processorsOnly(current.processors), this.path) : [];
 		if (steps.length === 0 || samplesUri(this.uri) === undefined) {
 			// Nothing to offer any more: the webview gets the panel's state.
 			await this.postSnapshot();
@@ -746,6 +774,10 @@ class BloblangPanel implements BloblangPanelHandle {
 		await this.labelling;
 		// The link as it is when the read is asked for: the read is queued in that order (4.16).
 		const ref = this.ref;
+		if (this.generate) {
+			// A generate mapping (16) reads no samples file.
+			return { samples: [], selected: null };
+		}
 		if (!ref) {
 			// No link (4.10): another live panel has it.
 			return { samples: [], selected: null };
@@ -758,6 +790,10 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	/** Posts `samples`: the file's state now (4.9). */
 	async postSamples(): Promise<void> {
+		if (this.generate) {
+			// No samples (16): a processor panel's samples file changing is nothing to it.
+			return;
+		}
 		try {
 			await this.post({ type: 'samples', ...await this.samples() });
 		} catch (e) {
@@ -773,6 +809,10 @@ class BloblangPanel implements BloblangPanelHandle {
 	 * config's panels get the file's state, so they match the disk.
 	 */
 	private async change(change: SampleChange, echo = false): Promise<void> {
+		if (this.generate) {
+			// Refused in `receive` already (16): never a write for a generate mapping.
+			return;
+		}
 		// A change during Add label's relink, or a save's (4.10), goes to the link that results (4.16).
 		await this.labelling;
 		await this.relinking;
@@ -848,7 +888,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (!parses(parsed)) {
 			return this.last ?? { processor: undefined, text: '', processors: [] };
 		}
-		const processors = processorsOnly(bloblangProcessors(parsed));
+		const processors = bloblangProcessors(parsed);
 		return { processor: bloblangProcessorByPath(processors, this.path), text: doc.getText(), processors };
 	}
 
@@ -1141,7 +1181,8 @@ export class BloblangPanels implements vscode.Disposable {
 		if (parses(parsed)) {
 			try {
 				const wasLive = new Set(entries.filter((entry) => !entry.removed && !entry.isReset));
-				const processors = processorsOnly(bloblangProcessors(parsed));
+				// Generate mappings too (16): `matchProcessors` keeps each panel on its side of the kinds.
+				const processors = bloblangProcessors(parsed);
 				const found = matchProcessors(processors, entries.map((entry) => entry.tracked()));
 				const text = doc.getText();
 				entries.forEach((entry, i) => entry.follow(found[i], text, processors));
@@ -1189,7 +1230,8 @@ export class BloblangPanels implements vscode.Disposable {
 		const releases = await Promise.all(entries.map((entry) => entry.hold()));
 		const moved = new Set<BloblangPanel>();
 		try {
-			const live = entries.filter((entry) => !entry.removed && !entry.isReset && this.panels.has(entry));
+			// A generate mapping's panel has no samples to move (16).
+			const live = entries.filter((entry) => !entry.removed && !entry.isReset && !entry.generate && this.panels.has(entry));
 			const movers: BloblangPanel[] = [];
 			const moves: RelinkMove[] = [];
 			const held: SampleRef[] = [];
@@ -1261,7 +1303,7 @@ export class BloblangPanels implements vscode.Disposable {
 				return undefined;
 			}
 			const processor = editor && doc && this.options.detection.isDetected(doc.uri)
-				? bloblangProcessorAt(processorsOnly(bloblangProcessors(parsedDocument(doc).parsed)), doc.offsetAt(editor.selection.active))
+				? bloblangProcessorAt(bloblangProcessors(parsedDocument(doc).parsed), doc.offsetAt(editor.selection.active))
 				: undefined;
 			if (!doc || !processor) {
 				this.tell(NO_MAPPING_AT_CURSOR);
@@ -1323,7 +1365,7 @@ export class BloblangPanels implements vscode.Disposable {
 			return open;
 		}
 		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-		const processors = doc && this.options.detection.isDetected(uri) ? processorsOnly(bloblangProcessors(parsedDocument(doc).parsed)) : [];
+		const processors = doc && this.options.detection.isDetected(uri) ? bloblangProcessors(parsedDocument(doc).parsed) : [];
 		const processor = bloblangProcessorByPath(processors, processorPath);
 		if (!processor) {
 			this.tell(NO_LONGER_THERE);
@@ -1358,9 +1400,11 @@ export class BloblangPanels implements vscode.Disposable {
 			this.panels.delete(entry);
 		});
 		// The file's name, for the error cards' "<file> line F" (4.8), and its samples file's (4.9).
-		const samplesFile = samplesUri(uri);
+		const samplesFile = processor.kind === 'generate' ? undefined : samplesUri(uri);
 		panel.webview.html = webviewHtml(panel.webview, this.options.extensionUri, 'bloblang', title, {
 			file: path.posix.basename(uri.path),
+			// The kind (16), so a generate panel's first paint is already output only.
+			kind: processor.kind,
 			...(samplesFile ? { samples: path.posix.basename(samplesFile.path) } : {}),
 		});
 		// A new group took focus: it goes back to the YAML editor, in its column now (a group created
@@ -1436,14 +1480,16 @@ export class BloblangPanels implements vscode.Disposable {
 		const { processor, text } = current;
 		if (!processor) {
 			return {
-				result: { kind: 'error', message: `There is no mapping or mutation processor at ${processorPath} in ${path.posix.basename(uri.path)} any more.` },
+				result: { kind: 'error', message: `There is no mapping at ${processorPath} in ${path.posix.basename(uri.path)} any more.` },
 				durationMs: 0,
 				binary: null,
 			};
 		}
 		const cwd = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
 		const locate = (line: number, char: number): FilePosition => positionIn(text, processor.positions.offsetAt(line, char));
-		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, input.content, input.meta, this.options.storageDir, { cwd, locate });
+		// A generate mapping runs on no input of the panel's (16): `testConfig` gives it an empty message.
+		const { content, meta } = processor.kind === 'generate' ? { content: '', meta: {} } : input;
+		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, content, meta, this.options.storageDir, { cwd, locate });
 	}
 
 	/**
@@ -1556,7 +1602,9 @@ export function positionIn(text: string, offset: number): FilePosition {
 
 /** The previous step's title (4.18): of the processor just before `current`'s in its own list; none: no such step. */
 function previousStepOf(current: Current): string | undefined {
-	const step = current.processor ? previousSteps(current.processors, current.processor.path)[0] : undefined;
+	const step = current.processor && current.processor.kind !== 'generate'
+		? previousSteps(processorsOnly(current.processors), current.processor.path)[0]
+		: undefined;
 	return step ? stepTitle(step) : undefined;
 }
 

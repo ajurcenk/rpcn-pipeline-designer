@@ -67,8 +67,10 @@ export interface RunnerParseDependencies {
 }
 
 /**
- * Runs `source` as a `kind` processor once on `content` with metadata `meta`. The temporary config
- * lives in `storageDir` (created when missing) and is removed after the child exits.
+ * Runs `source` as a `kind` processor once on `content` with metadata `meta`; a `generate` kind
+ * (ticket 16) runs it as a `mapping` processor on one empty message, `content` and `meta` unused
+ * (`testConfig`). The temporary config lives in `storageDir` (created when missing) and is removed
+ * after the child exits.
  */
 export async function runMappingTest(
 	command: BloblangCommand,

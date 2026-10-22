@@ -10,6 +10,10 @@
 // string literals (Go's `strconv.Unquote` reads JSON escapes) and have their `$` escaped in the YAML, so that the binary's
 // `${VAR}` substitution, which runs on the raw config text, never touches it; the code under test
 // keeps its `${VAR}`s, which are substituted as in Run.
+// Ticket 16: a `generate` input's mapping is not run as the input it is (a failing generate input
+// retries forever on the binary): its `generate` input emits one message whose content is
+// empty (`root = ""`, as a real generate input's message starts) with no metadata, and the mapping runs as a `mapping`
+// processor on it, so its errors come back as a processor's.
 
 import type {
 	BloblangChanges, BloblangProcessorKind, BloblangResult, InputMeta, JsonValue, KeyChanges, ResultMeta,
@@ -21,16 +25,33 @@ export const RESULT_MAPPING = 'root = if errored() { {"error": error()} } else {
 /** How many stderr lines an `error` result keeps. */
 export const MAX_ERROR_LINES = 20;
 
+/** The input mapping of a `generate` kind's run (ticket 16): one empty message, as a real generate input's mapping sees it. */
+export const GENERATE_RUN_INPUT = 'root = ""';
+
 /**
  * The text of the YAML config that runs `source` (as a `kind` processor) once on `content`, with
  * `meta` set on the message: one `meta "<key>" = "<value>"` line per entry after `root = …` in the
- * `generate` mapping (ticket 4.7), key and value as Bloblang string literals.
+ * `generate` mapping (ticket 4.7), key and value as Bloblang string literals. A `generate` kind
+ * (ticket 16) ignores `content` and `meta`: `source` runs as a `mapping` processor on one message
+ * whose content is empty (GENERATE_RUN_INPUT).
  */
 export function testConfig(kind: BloblangProcessorKind, source: string, content: string, meta: InputMeta): string {
-	const generate = [
-		`root = ${bloblangString(content)}`,
-		...Object.keys(meta).map((key) => `meta ${bloblangString(key)} = ${bloblangString(meta[key] ?? '')}`),
-	].join('\n');
+	let processor: 'mapping' | 'mutation';
+	let generate: string;
+	switch (kind) {
+		case 'mapping':
+		case 'mutation':
+			processor = kind;
+			generate = [
+				`root = ${bloblangString(content)}`,
+				...Object.keys(meta).map((key) => `meta ${bloblangString(key)} = ${bloblangString(meta[key] ?? '')}`),
+			].join('\n');
+			break;
+		case 'generate':
+			processor = 'mapping';
+			generate = GENERATE_RUN_INPUT;
+			break;
+	}
 	return [
 		'http:',
 		'  enabled: false',
@@ -43,7 +64,7 @@ export function testConfig(kind: BloblangProcessorKind, source: string, content:
 		`    mapping: ${yamlQuoted(generate, true)}`,
 		'pipeline:',
 		'  processors:',
-		`    - ${kind}: ${yamlQuoted(source, false)}`,
+		`    - ${processor}: ${yamlQuoted(source, false)}`,
 		`    - mapping: ${yamlQuoted(RESULT_MAPPING, false)}`,
 		'output:',
 		'  stdout:',

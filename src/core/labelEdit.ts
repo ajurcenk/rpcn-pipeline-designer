@@ -76,11 +76,12 @@ export interface TextInsertion {
  * The insertion that writes `label: <name>` as `processor`'s first key in `text` (the text it was
  * read from), quoted with `yamlString` when needed. A block map gets the key at its first key's
  * column and a line break after it; a flow map (`{mapping: …}`) gets `label: <name>, ` after its
- * `{`. `undefined` when the processor already has a label, or when the result would not read back
- * as the same processor with that label.
+ * `{`. `undefined` when the processor already has a label, when it is a `generate` input's mapping
+ * (ticket 16: its panel has no samples to link, so no Add label; its `range` is the `generate` map,
+ * not the input's), or when the result would not read back as the same processor with that label.
  */
 export function labelInsertion(text: string, processor: BloblangProcessor, name: string): TextInsertion | undefined {
-	if (processor.label !== undefined) {
+	if (processor.kind === 'generate' || processor.label !== undefined) {
 		return undefined;
 	}
 	const start = processor.range[0];

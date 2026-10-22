@@ -1,7 +1,8 @@
 // "▷ Test mapping" CodeLens (ticket 4.2): one lens on the key line of every `mapping` / `mutation`
 // processor of a detected config (AD-18), from the shared parse (`parseCache`). It runs Test mapping
 // on that processor; untitled files get none (they never run). Lenses refresh when detection changes.
-// A `generate` input's mapping gets none (ticket 22: `processorsOnly`).
+// Ticket 16: a `generate` input's mapping gets one too, on its `mapping:` key line, always plain
+// `▷ Test mapping` (its panel has no samples, so no count, and no samples file is read for it).
 // Ticket 4.16 (AD-22): each lens shows its processor's sample count, `▷ Test mapping · N samples`
 // (`· 1 sample`; none, or a samples file that is missing or can't be read: no count), read through
 // the panels' `SampleStore` with the panel's linking rule (the label, else the unlabelled path
@@ -11,7 +12,7 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { bloblangProcessors, processorsOnly } from '../../core/bloblangProcessors';
+import { bloblangProcessors } from '../../core/bloblangProcessors';
 import { sampleCount, type SamplesFile } from '../../core/samples';
 import { TEST_MAPPING_COMMAND } from '../bloblangPanel/panels';
 import type { SampleStore } from '../bloblangPanel/sampleStore';
@@ -67,11 +68,12 @@ export class BloblangLensProvider implements vscode.CodeLensProvider, vscode.Dis
 		if (doc.uri.scheme === 'untitled' || !this.detection.isDetected(doc.uri)) {
 			return [];
 		}
-		const processors = processorsOnly(bloblangProcessors(parsedDocument(doc).parsed));
-		const file = processors.length > 0 ? await this.samplesOf(doc.uri) : undefined;
+		const processors = bloblangProcessors(parsedDocument(doc).parsed);
+		const file = processors.some((p) => p.kind !== 'generate') ? await this.samplesOf(doc.uri) : undefined;
 		return processors.map((p) => {
 			const start = doc.positionAt(p.keyRange[0]);
-			const count = sampleCount(file, p.label !== undefined ? { label: p.label, path: p.path } : { path: p.path });
+			// A generate mapping has no samples (ticket 16): no count.
+			const count = p.kind === 'generate' ? 0 : sampleCount(file, p.label !== undefined ? { label: p.label, path: p.path } : { path: p.path });
 			return new vscode.CodeLens(new vscode.Range(start, start), {
 				title: testMappingLensTitle(count),
 				command: TEST_MAPPING_COMMAND,

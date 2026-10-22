@@ -303,13 +303,43 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(api().outputLines()[api().outputLines().length - 1], `Test mapping: ${NO_MAPPING_AT_CURSOR}`);
 	});
 
-	test('NO_LENS (ticket 22): a generate input\'s mapping gets no lens, and Test mapping at its cursor says there is nothing to test', async () => {
+	/** A config whose `input` is a `generate` labelled `gen` (count and interval set), with `mapping` as its block mapping (16). */
+	const generateConfig = (mapping: readonly string[]) => [
+		'input:',
+		'  label: gen',
+		'  generate:',
+		'    count: 5',
+		'    interval: 1s',
+		'    mapping: |',
+		...mapping.map((l) => `      ${l}`),
+		'pipeline:',
+		'  processors:',
+		'    - mapping: root = this',
+		'output:',
+		'  stdout: {}',
+		'',
+	].join('\n');
+	const GENERATE = 'input.generate';
+
+	/** Opens `name` with `generateConfig(mapping)` and its generate panel; resolves once the panel's own run on open posted its result (16). */
+	async function openGenerate(name: string, mapping: readonly string[]): Promise<{ doc: vscode.TextDocument; handle: BloblangPanelHandle }> {
+		const doc = (await open(name, generateConfig(mapping))).document;
+		const handle = await show(doc.uri, GENERATE);
+		assert.ok(await waitFor(() => results(handle).length >= 1, 20_000), 'the generate panel did not run on open');
+		return { doc, handle };
+	}
+
+	test('LENS (16): a generate input\'s mapping gets a plain lens on its key line (also in a broker), and Test mapping at its cursor opens its panel', async () => {
 		const text = [
 			'input:',
-			'  label: gen',
-			'  generate:',
-			'    count: 1',
-			'    mapping: root = {"a": 1}',
+			'  broker:',
+			'    inputs:',
+			'      - generate:',
+			'          mapping: root = {"a": 1}',
+			'      - label: second',
+			'        generate:',
+			'          count: 3',
+			'          mapping: root = 2',
 			'pipeline:',
 			'  processors:',
 			'    - mapping: root = this',
@@ -317,20 +347,105 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			'  stdout: {}',
 			'',
 		].join('\n');
+		// A samples entry at a generate path is no sample of it: no count.
+		fs.writeFileSync(path.join(dir, 'generate.samples.json'), JSON.stringify({ version: 1, mappings: [
+			{ path: 'input.broker.inputs[0].generate', selected: null, samples: [{ name: 'x', content: '', meta: {} }] },
+		] }));
 		const editor = await open('generate.yaml', text);
 		const doc = editor.document;
 		const lenses = (await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', doc.uri))
 			.filter((l) => l.command?.command === TEST_MAPPING_COMMAND);
-		assert.deepStrictEqual(lenses.map((l) => [l.range.start.line, l.command?.arguments?.[1]]), [[7, 'pipeline.processors[0]']]);
+		assert.deepStrictEqual(lenses.map((l) => [l.range.start.line, l.command?.title, l.command?.arguments?.[1]]), [
+			[4, TEST_MAPPING_LENS_TITLE, 'input.broker.inputs[0].generate'],
+			[8, TEST_MAPPING_LENS_TITLE, 'input.broker.inputs[1].generate'],
+			[11, TEST_MAPPING_LENS_TITLE, 'pipeline.processors[0]'],
+		]);
 		const at = doc.positionAt(text.indexOf('{"a"'));
 		editor.selection = new vscode.Selection(at, at);
 		// The command reads the active editor's cursor: it must be this one, in the generate mapping.
 		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc
 			&& vscode.window.activeTextEditor.selection.active.isEqual(at), 10_000), 'the YAML editor is active, its cursor in the generate mapping');
 		const handle = await vscode.commands.executeCommand<BloblangPanelHandle | undefined>(TEST_MAPPING_COMMAND);
-		assert.strictEqual(handle, undefined);
-		assert.strictEqual(api().bloblangPanels.size, 0);
-		assert.strictEqual(api().outputLines()[api().outputLines().length - 1], `Test mapping: ${NO_MAPPING_AT_CURSOR}`);
+		assert.ok(handle);
+		assert.strictEqual(handle.path, 'input.broker.inputs[0].generate');
+		assert.strictEqual(handle.panel.title, 'Bloblang: input.broker.inputs[0].generate');
+		const second = await show(doc.uri, 'input.broker.inputs[1].generate');
+		assert.strictEqual(second.panel.title, 'Bloblang: second');
+		assert.strictEqual(api().bloblangPanels.size, 2);
+	});
+
+	test('OPEN_RUN / META / NO_SAMPLES (16): one run on open; the empty-message run config; content and metadata; no samples file, sample intents refused', async () => {
+		const { doc, handle } = await openGenerate('gen-open.yaml', ['root.id = uuid_v4()', 'meta k = "v"']);
+		const samplesFile = samplesUri(doc.uri)!.fsPath;
+		assert.strictEqual(handle.panel.title, 'Bloblang: gen');
+		assert.deepStrictEqual(handle.posted.find((m) => m.type === 'snapshot'), {
+			type: 'snapshot', title: 'Bloblang: gen', kind: 'generate', source: 'root.id = uuid_v4()\nmeta k = "v"\n', binary: 'ok', samples: [], selected: null,
+			fileName: 'gen-open.yaml',
+		});
+		const opened = results(handle)[0];
+		assert.deepStrictEqual(opened.result, {
+			kind: 'ok', content: '{"b":2}', meta: { k: 'v' },
+			changes: { fields: null, meta: { added: ['k'], changed: [], removed: [] } },
+		});
+		// The run: one empty message from a generate input (count 1, whatever the config says), the mapping as a `mapping` processor.
+		const ran = parse(lastRun().config) as { input: { generate: Record<string, unknown> }; pipeline: { processors: Record<string, string>[] } };
+		assert.deepStrictEqual(ran.input.generate, { count: 1, interval: '', mapping: 'root = ""' });
+		assert.deepStrictEqual(ran.pipeline.processors[0], { mapping: 'root.id = uuid_v4()\nmeta k = "v"\n' });
+		assert.ok(!lastRun().config.includes('- generate:'));
+		// A run the webview sends with an input still runs on no input.
+		const again = await run(handle, '{"ignored":true}', { ignored: 'x' });
+		assert.strictEqual(again.result.kind, 'ok');
+		assert.ok(!lastRun().config.includes('ignored'), 'the input is not in the run');
+
+		// The sample intents are refused: nothing is written, nothing posted back.
+		const before = handle.posted.length;
+		for (const message of [
+			{ type: 'sampleAdded', name: 'sample 1' }, { type: 'inputEdited', content: '{}', meta: {} }, { type: 'sampleRenamed', from: 'a', to: 'b' },
+			{ type: 'sampleSwitched', name: 'a' }, { type: 'sampleDeleted', name: 'a' }, { type: 'addLabelRequested' }, { type: 'sampleFromPreviousRequested' },
+		]) {
+			await handle.receive(message);
+		}
+		assert.strictEqual(handle.posted.length, before, 'nothing posted for the refused intents');
+		assert.ok(!fs.existsSync(samplesFile), 'no samples file written');
+		// A save moves nothing for it.
+		await doc.save();
+		await settle();
+		assert.ok(!fs.existsSync(samplesFile), 'no samples file written on save');
+		assert.ok(api().outputLines().some((l) => l.includes('sampleAdded ignored: a generate mapping has no samples')));
+	});
+
+	test('RERUN (16): Run on change re-runs the generate mapping when it changes; the panel follows a label change', async () => {
+		const { doc, handle } = await openGenerate('gen-rerun.yaml', ['root.id = uuid_v4()']);
+		const first = results(handle).length;
+		await setText(doc, generateConfig(['root.id = uuid_v4()', 'root.n = 1']));
+		assert.ok(await waitFor(() => results(handle).length > first, 20_000), 'no re-run after the mapping changed');
+		assert.ok(await waitFor(() => (parse(lastRun().config) as { pipeline: { processors: Record<string, string>[] } })
+			.pipeline.processors[0].mapping === 'root.id = uuid_v4()\nroot.n = 1\n', 5_000), 'the re-run used the new mapping');
+		// The panel follows its generate entry (4.10's rules, its own side of the kinds).
+		await setText(doc, generateConfig(['root.id = uuid_v4()', 'root.n = 1']).replace('label: gen', 'label: gen2'));
+		assert.ok(await waitFor(() => handle.panel.title === 'Bloblang: gen2', 5_000), handle.panel.title);
+		assert.strictEqual(handle.path, GENERATE);
+		assert.strictEqual(handle.removed, false);
+	});
+
+	test('FAILED / PARSE / DELETED (16): the binary\'s errors as for processors, with Go to line to the YAML line', async () => {
+		const failed = await openGenerate('gen-failed.yaml', ['root.id = 1', 'root.n = this.nope + 1 # FAIL_ON_2']);
+		assert.deepStrictEqual(results(failed.handle)[0].result, {
+			kind: 'failed', message: 'failed assignment (line 2): expected number value, got null from field `this.nope`', mappingLine: 2, fileLine: 8,
+		});
+		assert.strictEqual(failed.doc.lineAt(7).text.trim(), 'root.n = this.nope + 1 # FAIL_ON_2');
+		await failed.handle.receive({ type: 'goToLine', line: 8 });
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === failed.doc
+			&& vscode.window.activeTextEditor.selection.active.isEqual(new vscode.Position(7, 0)), 5_000), 'Go to line put the cursor at line 8');
+		assert.deepStrictEqual(api().bloblangPanels.hintRanges(failed.doc.uri).map((r) => r.start.line), [7]);
+
+		const parseError = await openGenerate('gen-parse.yaml', ['root.id = 1', 'root.c = = 3 # ERR@2:10']);
+		const result = results(parseError.handle)[0].result;
+		assert.strictEqual(result.kind, 'parseError');
+		assert.deepStrictEqual(result.kind === 'parseError' && [result.mappingLine, result.mappingChar, result.fileLine, result.fileChar], [2, 10, 8, 16]);
+
+		const deleted = await openGenerate('gen-deleted.yaml', ['root = deleted()']);
+		assert.deepStrictEqual(results(deleted.handle)[0].result, { kind: 'deleted' });
 	});
 
 	test('RUN_OK / CONTENT_ESCAPE: the mapping\'s output for a mapping and a mutation; the input reaches the config unchanged; the temp file is removed', async () => {
@@ -533,12 +648,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 
 		// Go to line: the YAML editor takes focus with the cursor at the line's start; a line past the end clamps.
 		await handle.receive({ type: 'goToLine', line: 10 });
-		assert.strictEqual(vscode.window.activeTextEditor?.document, doc);
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc
+			&& vscode.window.activeTextEditor.selection.active.isEqual(new vscode.Position(9, 0)), 5_000), 'Go to line put the cursor at line 10');
 		assert.strictEqual(vscode.window.activeTextEditor?.viewColumn, vscode.ViewColumn.One);
-		assert.deepStrictEqual([vscode.window.activeTextEditor?.selection.active.line, vscode.window.activeTextEditor?.selection.active.character], [9, 0]);
 		assert.notStrictEqual(handle.panel.viewColumn, vscode.ViewColumn.One, 'the panel stays in its own group');
 		await handle.receive({ type: 'goToLine', line: 999 });
-		assert.deepStrictEqual([vscode.window.activeTextEditor?.selection.active.line, vscode.window.activeTextEditor?.selection.active.character], [doc.lineCount - 1, 0]);
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document === doc
+			&& vscode.window.activeTextEditor.selection.active.isEqual(new vscode.Position(doc.lineCount - 1, 0)), 5_000), 'a line past the end clamps');
 
 		// The failing line leaves the processor: the hint clears.
 		const at = doc.getText().indexOf(`\n        ${failing}`);

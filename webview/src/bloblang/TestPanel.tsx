@@ -49,6 +49,15 @@
 // rename instead). One polite atomic region announces every result and state (`announcement`); a
 // result the same as the last one but for its run time is not said again (`announcementKey`). The removed notice takes focus on entry as the
 // no-binary state does.
+// Ticket 16: a `generate` input's mapping (the snapshot's kind `generate`) is output only: there is
+// no Input column, no sample controls, no From previous step and no "no label" note (its samples are
+// ignored), and the output has no change marks and no "Changed:" footer (there is no input to
+// compare). With no content to type, Run is always enabled and each run posts `run` with an empty
+// input (the host runs the mapping on an empty message); on open the panel runs once, whatever Run
+// on change says, and Run on change re-runs it on a source change. The announcer's ok text has no
+// changes part, and a new message is said even when its run time is the same (`announcementKey`).
+// The page's `data-kind` makes the first paint, before the snapshot, output only already. The
+// removed notice says "This mapping was removed …".
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
@@ -70,6 +79,8 @@ export const RUN_LABEL = 'Run';
 export const RUN_ON_CHANGE_LABEL = 'Run on change';
 export const RUNNING_TEXT = 'Running…';
 export const EMPTY_TEXT = 'Type the message content to run the mapping on it.';
+/** The output's text before the first result of a generate mapping (16). */
+export const GENERATE_EMPTY_TEXT = 'Run the mapping to generate a message.';
 /** The no-binary state's title (its region's name) and text (prototype, 4.15). */
 export const NO_BINARY_TITLE = 'No Redpanda Connect binary';
 export const NO_BINARY_TEXT = 'The test panel runs mappings with your own binary, so results match the version you deploy.';
@@ -92,7 +103,8 @@ export const ADD_LABEL_LABEL = 'Add label';
 
 /** The removed processor's notice (4.10): its region's name and its text. */
 export const REMOVED_TITLE = 'Processor removed';
-export const removedText = (file: string): string => `This processor was removed from ${file}. Undo the change to bring it back.`;
+export const removedText = (file: string, generate = false): string =>
+	`This ${generate ? 'mapping' : 'processor'} was removed from ${file}. Undo the change to bring it back.`;
 
 /** The panel's accessible name (4.11). */
 export const panelName = (title: string): string => `Bloblang test panel: ${title}`;
@@ -122,6 +134,8 @@ export interface TestPanelProps {
 	readonly fileName?: string;
 	/** The samples file's name (`data-samples`, 4.9); none: no sample controls. The snapshot's `samplesFile` wins (4.17). */
 	readonly samplesFile?: string;
+	/** The kind (`data-kind`, 16), until the snapshot's: a generate panel's first paint is output only. */
+	readonly kind?: string;
 }
 
 type Tone = 'ok' | 'err' | 'warn' | 'running';
@@ -145,12 +159,15 @@ export function statusOf(result: Result): { text: string; tone: Tone } {
 	}
 }
 
-/** What the announcer says for a result (4.11). */
-export function announcement(result: Result): string {
+/**
+ * What the announcer says for a result (4.11); with `changes` off (a generate mapping, 16), an ok
+ * result's text has no changes part.
+ */
+export function announcement(result: Result, changes = true): string {
 	const r = result.result;
 	switch (r.kind) {
 		case 'ok':
-			return `Ran in ${Math.round(result.durationMs)} ms. ${changeWords(r.changes)}`;
+			return changes ? `Ran in ${Math.round(result.durationMs)} ms. ${changeWords(r.changes)}` : `Ran in ${Math.round(result.durationMs)} ms.`;
 		case 'deleted':
 			return DELETED_TITLE;
 		case 'parseError':
@@ -168,8 +185,13 @@ export function announcement(result: Result): string {
  * What makes two announcements the same (4.11): an `ok` result's changes, not its run time, so a
  * rerun with the same outcome is not said again; any other text as it is.
  */
-export function announcementKey(result: Result): string {
-	return result.result.kind === 'ok' ? `ok: ${changeWords(result.result.changes)}` : announcement(result);
+export function announcementKey(result: Result, changes = true): string {
+	const r = result.result;
+	if (r.kind !== 'ok') {
+		return announcement(result, changes);
+	}
+	// A generate mapping (16): each new message is said; the same message again is not.
+	return changes ? `ok: ${changeWords(r.changes)}` : `ok: ${JSON.stringify([r.content, r.meta])}`;
 }
 
 /** The view the panel shows: the columns, the no-binary state, or the removed notice. */
@@ -260,7 +282,7 @@ function NoBinaryView({ post }: { readonly post: (message: BloblangWebviewMessag
 	);
 }
 
-export function TestPanel({ post, initialState, saveState, fileName: pageFile, samplesFile: pageSamples }: TestPanelProps) {
+export function TestPanel({ post, initialState, saveState, fileName: pageFile, samplesFile: pageSamples, kind: pageKind }: TestPanelProps) {
 	const nextId = useRef(0);
 	const withId = (row: MetaRow): EditableRow => ({ id: nextId.current++, key: row.key, value: row.value });
 	const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -288,11 +310,13 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	const binaryNow = useRef<BinaryStatus | null>(null);
 	/** Whether the last snapshot said the processor was removed (4.10), for timers and host messages. */
 	const removedNow = useRef(false);
+	/** Whether the last snapshot is a generate mapping's (16): output only, for timers and host messages. */
+	const generateNow = useRef(pageKind === 'generate');
 	const main = useRef<HTMLElement>(null);
 	/** Where focus goes once the state has rendered (4.15, 4.11): the region, the input, or nowhere. */
 	const moveFocus = useRef<'region' | 'input' | undefined>(undefined);
 	/** The announcer's last text and its key (4.11): a new text with the same key is not said. */
-	const spoken = useRef({ key: '', text: '' });
+	const spoken = useRef({ key: '', text: '', n: 0 });
 	/** The view as last decided by a host message (4.11), for `viewChanged`. */
 	const viewNow = useRef<View>('normal');
 	/** The mapping's samples, the selected one and the unreadable file's reason, as last known (4.9). */
@@ -304,7 +328,9 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	// The snapshot's names win over the page's (4.17: a rename changes them after the first paint).
 	const fileName = snapshot?.fileName ?? pageFile;
 	const samplesFile = snapshot?.samplesFile ?? pageSamples;
-	const hasSamples = samplesFile !== undefined;
+	/** A generate mapping's panel (16): output only. */
+	const generate = (snapshot?.kind ?? pageKind) === 'generate';
+	const hasSamples = samplesFile !== undefined && !generate;
 
 	/** Sets the samples state and its mirror. */
 	const putSamples = useCallback((next: { list: readonly BloblangSample[]; selected: string | null; error?: string }) => {
@@ -358,7 +384,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	 * sample, or the same one with another input and no edit pending: `switched` or `edited`.
 	 */
 	const takeSamples = useCallback((message: { samples: readonly BloblangSample[]; selected: string | null; samplesError?: string }): 'switched' | 'edited' | undefined => {
-		if (!hasSamples) {
+		if (!hasSamples || generateNow.current) {
 			return undefined;
 		}
 		const before = samplesNow.current.selected;
@@ -391,23 +417,24 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 		timer.current = undefined;
 	};
 
-	/** Runs the latest input now (an empty content runs nothing). */
+	/** Runs the latest input now (an empty content runs nothing, but for a generate mapping: 16). */
 	const runNow = useCallback(() => {
 		clearTimeout(timer.current);
 		timer.current = undefined;
 		const { content: text, rows: current } = latest.current;
-		if (text === '' || noBinaryIn(binaryNow.current) || removedNow.current) {
+		if ((text === '' && !generateNow.current) || noBinaryIn(binaryNow.current) || removedNow.current) {
 			return;
 		}
 		setRunning(true);
-		post({ type: 'run', content: text, meta: inputMeta(current) });
+		// A generate mapping has no input (16): the host runs it on an empty message.
+		post(generateNow.current ? { type: 'run', content: '', meta: {} } : { type: 'run', content: text, meta: inputMeta(current) });
 	}, [post]);
 
-	/** With Run on change on and a content, runs the latest input after the pause. */
+	/** With Run on change on and a content (or a generate mapping, 16), runs the latest input after the pause. */
 	const schedule = useCallback((text: string, on: boolean) => {
 		clearTimeout(timer.current);
 		timer.current = undefined;
-		if (on && text !== '' && !noBinaryIn(binaryNow.current) && !removedNow.current) {
+		if (on && (text !== '' || generateNow.current) && !noBinaryIn(binaryNow.current) && !removedNow.current) {
 			timer.current = setTimeout(runNow, RUN_DEBOUNCE_MS);
 		}
 	}, [runNow]);
@@ -449,6 +476,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 			const message = parseBloblangHostMessage(event.data);
 			if (message?.type === 'snapshot') {
 				setSnapshot(message);
+				generateNow.current = message.kind === 'generate';
 				// The removed state (4.10): entering it cancels the pending run; leaving it runs once (Run on change).
 				const wasRemoved = removedNow.current;
 				removedNow.current = message.removed === true;
@@ -472,7 +500,8 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 					// A recreated panel runs its restored input once (with Run on change on), so the output is
 					// back too; with no binary it does not (the recovery run brings it back).
 					restoredRun.current = true;
-					if (latest.current.runOnChange || recovered) {
+					// A generate mapping (16) runs once on open, whatever Run on change says.
+					if (latest.current.runOnChange || recovered || generateNow.current) {
 						runNow();
 					}
 				} else if (removedNow.current) {
@@ -501,7 +530,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 			} else if (message?.type === 'result' && (noBinaryIn(binaryNow.current) || removedNow.current)) {
 				// A result arriving with no binary, or while removed (4.10), is dropped.
 				setRunning(false);
-			} else if (message?.type === 'result' && latest.current.content !== '') {
+			} else if (message?.type === 'result' && (latest.current.content !== '' || generateNow.current)) {
 				// A result arriving after the content was cleared is dropped: the empty state stays.
 				setResult(message);
 				setRunning(false);
@@ -642,10 +671,10 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	}, [noBinary, removed]);
 
 	// The one announcer's text (4.11): the removed and no-binary states, else the last result.
-	const said = removed ? removedText(fileName ?? DEFAULT_FILE_NAME) : noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : result ? announcement(result) : '';
-	const saidKey = !removed && !noBinary && result ? announcementKey(result) : said;
+	const said = removed ? removedText(fileName ?? DEFAULT_FILE_NAME, generate) : noBinary ? `${NO_BINARY_TITLE}. ${NO_BINARY_TEXT}` : result ? announcement(result, !generate) : '';
+	const saidKey = !removed && !noBinary && result ? announcementKey(result, !generate) : said;
 	if (saidKey !== spoken.current.key) {
-		spoken.current = { key: saidKey, text: said };
+		spoken.current = { key: saidKey, text: said, n: spoken.current.n + 1 };
 	}
 
 	return (
@@ -658,11 +687,14 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 				{status && !noBinary && !removed && <span className={`rpcn-bl-pill rpcn-bl-pill-${status.tone}`}>{status.text}</span>}
 			</header>
 			{/* The one polite live region (4.15, 4.11): always mounted; an unchanged text changes nothing in it, so it is not said again. */}
-			<div className="rpcn-bl-sr" role="status" aria-live="polite" aria-atomic="true">{spoken.current.text}</div>
+			<div className="rpcn-bl-sr" role="status" aria-live="polite" aria-atomic="true">
+				{/* A new key remounts the text, so a new announcement with the same words (a generate mapping's new message in the same time, 16) is said again. */}
+				<span key={spoken.current.n}>{spoken.current.text}</span>
+			</div>
 			{removed
 				? (
 					<section className="rpcn-bl-removed" role="region" aria-label={REMOVED_TITLE} tabIndex={0}>
-						<p className="rpcn-bl-removed-text">{removedText(fileName ?? DEFAULT_FILE_NAME)}</p>
+						<p className="rpcn-bl-removed-text">{removedText(fileName ?? DEFAULT_FILE_NAME, generate)}</p>
 					</section>
 				)
 				: noBinary
@@ -682,7 +714,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 								<input type="checkbox" className="rpcn-bl-auto" checked={runOnChange} onChange={(e) => toggleChanged(e.target.checked)} />
 								{RUN_ON_CHANGE_LABEL}
 							</label>
-							<button type="button" className="rpcn-bl-run" disabled={content === ''} onClick={runNow}>{RUN_LABEL}</button>
+							<button type="button" className="rpcn-bl-run" disabled={content === '' && !generate} onClick={runNow}>{RUN_LABEL}</button>
 							{hasSamples && samples.error !== undefined && (
 								<p className="rpcn-bl-samples-error" role="alert">{SAMPLES_ERROR_PREFIX}{samples.error}</p>
 							)}
@@ -700,40 +732,42 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 								</button>
 							</div>
 						)}
-						<div className="rpcn-bl-io">
-							<section className="rpcn-bl-col rpcn-bl-in" aria-label={INPUT_LABEL}>
-								<ColumnHead id="rpcn-bl-in" label={INPUT_LABEL} selected={inputTab} count={String(metaRowCount(rows))} onSelect={setInputTab} />
-								<div className="rpcn-bl-colbody" role="tabpanel" id="rpcn-bl-in-panel" aria-labelledby={`rpcn-bl-in-tab-${inputTab}`}>
-									{inputTab === 'content'
-										? (
-											<textarea
-												id="rpcn-bl-input"
-												className="rpcn-bl-input"
-												aria-label="Input content"
-												spellCheck={false}
-												rows={12}
-												value={content}
-												placeholder='{"a": 1}'
-												onChange={(event) => contentChanged(event.target.value)}
-											/>
-										)
-										: (
-											<InputMetadata
-												rows={rows}
-												onChange={(i, row) => rowsChanged(rows.map((r, j) => (j === i ? { ...r, ...row } : r)))}
-												onAdd={() => {
-													const row = withId({ key: '', value: '' });
-													setFocusRow(row.id);
-													rowsChanged([...rows, row]);
-												}}
-												onRemove={(i) => rowsChanged(rows.filter((_, j) => j !== i))}
-												focusId={focusRow}
-												onFocused={() => setFocusRow(undefined)}
-											/>
-										)}
-								</div>
-								<footer className="rpcn-bl-foot">{lineCount(content)}</footer>
-							</section>
+						<div className={generate ? 'rpcn-bl-io rpcn-bl-io-single' : 'rpcn-bl-io'}>
+							{!generate && (
+								<section className="rpcn-bl-col rpcn-bl-in" aria-label={INPUT_LABEL}>
+									<ColumnHead id="rpcn-bl-in" label={INPUT_LABEL} selected={inputTab} count={String(metaRowCount(rows))} onSelect={setInputTab} />
+									<div className="rpcn-bl-colbody" role="tabpanel" id="rpcn-bl-in-panel" aria-labelledby={`rpcn-bl-in-tab-${inputTab}`}>
+										{inputTab === 'content'
+											? (
+												<textarea
+													id="rpcn-bl-input"
+													className="rpcn-bl-input"
+													aria-label="Input content"
+													spellCheck={false}
+													rows={12}
+													value={content}
+													placeholder='{"a": 1}'
+													onChange={(event) => contentChanged(event.target.value)}
+												/>
+											)
+											: (
+												<InputMetadata
+													rows={rows}
+													onChange={(i, row) => rowsChanged(rows.map((r, j) => (j === i ? { ...r, ...row } : r)))}
+													onAdd={() => {
+														const row = withId({ key: '', value: '' });
+														setFocusRow(row.id);
+														rowsChanged([...rows, row]);
+													}}
+													onRemove={(i) => rowsChanged(rows.filter((_, j) => j !== i))}
+													focusId={focusRow}
+													onFocused={() => setFocusRow(undefined)}
+												/>
+											)}
+									</div>
+									<footer className="rpcn-bl-foot">{lineCount(content)}</footer>
+								</section>
+							)}
 							<section className="rpcn-bl-col rpcn-bl-out" aria-label={OUTPUT_LABEL}>
 								<ColumnHead
 									id="rpcn-bl-out" label={OUTPUT_LABEL} selected={outputTab}
@@ -744,12 +778,12 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 										? (
 											<OutputBody
 												result={result.result} tab={outputTab} lastOk={lastOk}
-												fileName={fileName ?? DEFAULT_FILE_NAME} onGoToLine={goToLine}
+												fileName={fileName ?? DEFAULT_FILE_NAME} onGoToLine={goToLine} marks={!generate} generate={generate}
 											/>
 										)
-										: <p className="rpcn-bl-note rpcn-bl-pad">{EMPTY_TEXT}</p>}
+										: <p className="rpcn-bl-note rpcn-bl-pad">{generate ? GENERATE_EMPTY_TEXT : EMPTY_TEXT}</p>}
 								</div>
-								{result && <ResultFooter result={result.result} dimmed={dimmed} />}
+								{result && <ResultFooter result={result.result} dimmed={dimmed} changes={!generate} />}
 							</section>
 						</div>
 					</>
