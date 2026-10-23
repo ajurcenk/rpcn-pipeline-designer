@@ -59,6 +59,33 @@ suite('core/bloblang (2.19, 4.112.0 docs)', () => {
 		assert.strictEqual(ctx('output:\n  file:\n    path: /tmp/${! no§ }.txt\n')?.kind, 'function', 'interpolation');
 	});
 
+	test('ticket 8: on the left of `=` no method or function is offered; the right-hand side is unchanged', () => {
+		const items = (marked: string) => bloblangItems(CATALOG, ctx(marked)!).length;
+		const target = ctx(block('root.user.§ = this.name'))!;
+		assert.deepStrictEqual([target.kind, target.target, target.receiver], ['method', true, { base: 'root', path: ['user'] }]);
+		assert.strictEqual(items(block('root.user.§ = this.name')), 0, 'AC 1');
+		assert.strictEqual(items(block('root.user.na§me = this.name')), 0, 'inside the word');
+		assert.ok(items(block('root.x = this.name.§')) > 0, 'AC 2: the right-hand side');
+		assert.strictEqual(items(block('let v§ =')), 0, 'AC 3: let');
+		assert.strictEqual(items(block('meta foo§ = "x"')), 0, 'AC 3: meta');
+		assert.strictEqual(items(block('root.§ = 1')), 0);
+		assert.strictEqual(items(block('root.a.§.b.c = 1')), 0, 'a segment the rest of the path follows');
+		assert.strictEqual(items(block('let § = 1')), 0, 'let, before the name');
+		assert.strictEqual(items(block('meta § = "x"')), 0, 'meta, before the key');
+		assert.strictEqual(items(block('user.na§ = 1')), 0, 'a bare path');
+		assert.strictEqual(items("pipeline:\n  processors:\n    - mapping: 'root.a.§ = 1'\n"), 0, 'a single-quoted value');
+		assert.strictEqual(items(`pipeline:\n  processors:\n    - mapping: |\n        root = this\n        root.a.§ = 1\n`), 0, 'a later line');
+		// Not a target: a comparison, a match arm, a bare expression, an `=` on another line.
+		assert.ok(items(block('this.a.§ == 1')) > 0, '==');
+		assert.ok(items(block('this.a.§ => 1')) > 0, '=>');
+		for (const op of ['!=', '<=', '>=']) {
+			assert.ok(items(block(`this.a.§ ${op} 1`)) > 0, op);
+		}
+		assert.ok(items(block('this.name.§')) > 0, 'a bare expression');
+		assert.ok(items(`pipeline:\n  processors:\n    - mapping: |\n        this.a.§\n        root.b = 1\n`) > 0, 'the `=` is on the next line');
+		assert.ok(items(block('root = this.a.§ = 1')) > 0, 'after the `=`');
+	});
+
 	test('nothing in strings, comments, metadata keys, variables, or outside Bloblang', () => {
 		assert.strictEqual(ctx(block('root = "str§"')), undefined);
 		assert.strictEqual(ctx(block('# comm§')), undefined);

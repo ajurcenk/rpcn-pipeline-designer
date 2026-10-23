@@ -96,6 +96,8 @@ export type BloblangContext = {
 	readonly regionStart?: number;
 	/** After a dot on a literal (`"test".`): its type, to narrow the methods (2.21). */
 	readonly literal?: LiteralType;
+	/** On the left of `=` (`root.user.§ = …`, `let v§ =`): a path being assigned, no method or function fits (ticket 8). */
+	readonly target?: true;
 };
 
 export interface Region {
@@ -243,23 +245,40 @@ export function bloblangContext(parsed: ParsedYaml | undefined, text: string, of
 		if (/\d\.$/.test(before)) {
 			return undefined; // a decimal point
 		}
+		const target = isAssignmentTarget(code, text, region, offset) ? { target: true as const } : {};
 		if (!before.endsWith('.')) {
-			return { kind: 'function', prefix, start: offset - prefix.length, regionStart: region.start };
+			return { kind: 'function', prefix, start: offset - prefix.length, regionStart: region.start, ...target };
 		}
 		const chain = /(?:^|[^\w.$@])(this|root)((?:\.[A-Za-z_]\w*)*)\.$/.exec(before);
 		const receiver = chain ? { base: chain[1] as 'this' | 'root', path: chain[2].split('.').filter(Boolean) } : undefined;
 		const raw = sourceUpTo(text, region, offset);
 		const literal = receiver ? undefined : literalBeforeDot(raw.slice(0, raw.length - prefix.length), scanned.code.slice(0, scanned.code.length - prefix.length));
 		return { kind: 'method', prefix, start: offset - prefix.length, regionStart: region.start,
-			...(receiver ? { receiver } : {}), ...(literal ? { literal } : {}) };
+			...(receiver ? { receiver } : {}), ...(literal ? { literal } : {}), ...target };
 	} catch {
 		return undefined;
 	}
 }
 
+/**
+ * Whether the cursor is on the left of an assignment (ticket 8): `line` (the cursor's line in the
+ * region, up to the cursor, blanked) is only a target (`root…`, `this…`, a bare path, `let x`,
+ * `meta x`, also before the name), and the line goes on after the word under the cursor (and the
+ * rest of its path) with `=`, not `==` or `=>`.
+ * Bloblang statements start a line, so the line start is the statement's.
+ */
+function isAssignmentTarget(line: string, text: string, region: Region, offset: number): boolean {
+	if (!/^\s*(?:(?:let|meta)\s+(?:[A-Za-z_]\w*)?|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.?)$/.test(line)) {
+		return false;
+	}
+	const lineEnd = text.indexOf('\n', offset);
+	const rest = text.slice(offset, Math.min(lineEnd < 0 ? text.length : lineEnd, region.end));
+	return /^\w*(?:\.[A-Za-z_]\w*)*\s*=(?![=>])/.test(rest); // the rest of the path may follow (`root.a.§.b =`)
+}
+
 /** The entries to offer for `context`, deprecated ones last. */
 export function bloblangItems(catalog: BloblangCatalog, context: BloblangContext): BloblangEntry[] {
-	if (context.kind === 'variable' || context.kind === 'metadata') {
+	if (context.kind === 'variable' || context.kind === 'metadata' || context.target) {
 		return [];
 	}
 	const list = context.kind === 'method' ? catalog.methods : catalog.functions;

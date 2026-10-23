@@ -77,6 +77,12 @@ suite('core/bloblangNames (2.20)', () => {
 		assert.deepStrictEqual(fieldSuggestions(names, []).map((s) => s.name), ['a']);
 	});
 
+	test('ticket 8: on the left of `=` the fields already written under the path are still offered', () => {
+		const marked = 'pipeline:\n  processors:\n    - mapping: |\n        root.user.name = this.name\n        root.user.§ = this.age\n';
+		assert.ok(at(marked).context.target);
+		assert.deepStrictEqual(fields(marked, ['user']), ['name']);
+	});
+
 	test('interpolations are read too', () => {
 		const marked = 'pipeline:\n  processors:\n    - log:\n        message: "${! this.order.id }"\n    - mapping: |\n        root = this.order.§\n';
 		assert.deepStrictEqual(fields(marked, ['order']), ['id']);
