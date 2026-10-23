@@ -56,6 +56,7 @@ suite('Lint on save (integration)', function () {
 			`for n in $('${grep}' -n 'topci:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field topci not recognised" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'network: tpc' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) value tpc is not a valid option for this field" >&2; found=1; done`,
 			`for n in $('${grep}' -n 'adress:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field adress not recognised" >&2; found=1; done`,
+			`for n in $('${grep}' -n 'request_mapp:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field request_mapp not recognised" >&2; found=1; done`,
 			'exit $found',
 		].join('\n');
 		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter }));
@@ -151,6 +152,23 @@ suite('Lint on save (integration)', function () {
 		assert.strictEqual(ours[0]?.title, 'Change to `topic`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('topci:', 'topic:')}\n`);
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+	});
+
+	test('QUICK_FIX in a name-keyed map (ticket 7): request_mapp in a workflow branch offers "Change to `request_map`", preferred; applying changes only the key', async () => {
+		const text = 'input:\n  stdin: {}\npipeline:\n  processors:\n    - workflow:\n        branches:\n          enrich:\n            request_mapp: root = this  # keep\noutput:\n  drop: {}\n';
+		const doc = await openSaved('fix-branch.yaml', text);
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000));
+		await editAndSave(doc); // appends '\n'
+		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
+		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
+		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const ours = list.filter((a) => a.title.startsWith('Change to'));
+		assert.strictEqual(ours[0]?.title, 'Change to `request_map`', JSON.stringify(list.map((a) => a.title)));
+		assert.ok(ours[0].isPreferred, 'a clear winner is preferred');
+		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
+		assert.strictEqual(doc.getText(), `${text.replace('request_mapp:', 'request_map:')}\n`);
 		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
 	});
 

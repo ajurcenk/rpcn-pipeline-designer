@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import { JsonObject, transformSchema } from '../../core/schema';
-import { candidateFields, fieldsAt, validFieldsAt } from '../../core/schemaFields';
+import { candidateFields, fieldsAt, nodesAt, optionsAt, validFieldsAt } from '../../core/schemaFields';
 import { closestNames, editDistance, hasClearWinner, maxDistance, rankNames } from '../../core/suggest';
 import { findKeyOnLine, parseYaml } from '../../core/yamlPath';
 import { SCHEMA_FIXTURES } from '../helpers/fakeBinary';
@@ -158,11 +158,24 @@ suite('core/schemaFields (4.112.0 schema, transformed)', () => {
 		assert.ok(validFieldsAt(SCHEMA, ['cache_resources', 0])!.includes('memory'));
 	});
 
-	test('UNKNOWN_PATH: unknown keys, property-less objects and name-keyed maps give undefined', () => {
+	test('UNKNOWN_PATH: unknown keys and property-less objects give undefined', () => {
 		assert.strictEqual(validFieldsAt(SCHEMA, ['input', 'not_a_component']), undefined);
 		assert.strictEqual(validFieldsAt(SCHEMA, ['input', 'meta']), undefined);
 		assert.strictEqual(validFieldsAt(SCHEMA, ['nope', 'deeper']), undefined);
-		assert.strictEqual(validFieldsAt(SCHEMA, ['pipeline', 'processors', 0, 'workflow', 'branches', 'a']), undefined, 'known limit');
+	});
+
+	test('ticket 7: a name-keyed map is stepped through to its value schema for the Quick Fixes, not for gap completion', () => {
+		const branch = ['pipeline', 'processors', 0, 'workflow', 'branches', 'a'];
+		assert.deepStrictEqual(validFieldsAt(SCHEMA, branch), ['processors', 'request_map', 'result_map'], 'was the known limit (2.5 A4)');
+		assert.deepStrictEqual(validFieldsAt(SCHEMA, [...branch, 'processors', 0])?.includes('mapping'), true, 'and deeper');
+		assert.strictEqual(validFieldsAt(SCHEMA, branch.slice(0, -1)), undefined, 'the map itself names nothing: its keys are free');
+		assert.strictEqual(fieldsAt(SCHEMA, branch), undefined, 'gap completion keeps the old walk');
+		assert.deepStrictEqual(nodesAt(SCHEMA, branch), [], 'so do fieldInfo and requiredFieldsAt');
+		const compress = [...branch, 'processors', 0, 'compress'];
+		assert.deepStrictEqual(optionsAt(SCHEMA, compress, 'algorithm'), optionsAt(SCHEMA, ['pipeline', 'processors', 0, 'compress'], 'algorithm'), 'option values too (2.14)');
+		assert.ok(optionsAt(SCHEMA, compress, 'algorithm').length > 0);
+		const additional = { properties: { lanes: { additionalProperties: { properties: { speed: {}, width: {} } } } } };
+		assert.deepStrictEqual(validFieldsAt(additional, ['lanes', 'any']), ['speed', 'width'], 'an additionalProperties map');
 	});
 
 	test('a $ref cycle is bounded', () => {
@@ -175,6 +188,12 @@ suite('core quick-fix suggestions end to end (matrix)', () => {
 	test('COMPONENT_FIELD: mappin under generate → mapping; nope → none', () => {
 		assert.strictEqual(suggest('input:\n  generate:\n    mappin: x\n', 3, 'mappin')?.[0], 'mapping');
 		assert.deepStrictEqual(suggest('input:\n  generate:\n    mapping: x\n    nope: 1\n', 4, 'nope'), []);
+	});
+
+	test('ticket 7: request_mapp in a named workflow branch → request_map; the branch name gets none', () => {
+		const text = 'pipeline:\n  processors:\n    - workflow:\n        branches:\n          a:\n            request_mapp: root = this\n';
+		assert.strictEqual(suggest(text, 6, 'request_mapp')?.[0], 'request_map');
+		assert.strictEqual(suggest(text, 5, 'a'), undefined, 'AC 2: a map key');
 	});
 
 	test('COMPONENT_LEVEL: mappng as a processor item → mapping first', () => {

@@ -3,9 +3,9 @@
 // that path. Each step expands `$ref` (`#/definitions/<name>`), every `allOf` member and every
 // `anyOf` branch, then takes `properties[<key>]` (or `items` for a sequence index). At a
 // component mapping the names are the component names (keys of `anyOf` branches) plus the
-// shared fields (`label`, `processors`, …); inside a component they are its fields. Name-keyed
-// maps (`patternProperties`, e.g. `workflow.branches.<name>`) are not stepped through: no fix
-// there (known limit, user 2026-10-07).
+// shared fields (`label`, `processors`, …); inside a component they are its fields. The Quick
+// Fixes also step through name-keyed maps (`workflow.branches.<name>`) to their value schema
+// (ticket 7); gap completion does not, so it never overlaps Red Hat's completion there.
 
 import { isJsonObject, JsonObject, REQUIRED_KEY } from './schema';
 import type { PathStep } from './yamlPath';
@@ -26,13 +26,36 @@ interface Expanded {
 	readonly branch: boolean;
 }
 
-/** The names valid at `path`; `undefined` when the schema cannot say. */
-export function fieldsAt(schema: JsonObject, path: readonly PathStep[]): FieldsAt | undefined {
+/**
+ * The schema `step` leads to from `node`: `items` for an index, else `properties[step]`; with
+ * `throughMaps`, a name that is not a property goes into a name-keyed map's value schema
+ * (`patternProperties['.']`, else an `additionalProperties` schema, as the transform's `map`).
+ */
+function stepInto(node: JsonObject, step: PathStep, throughMaps: boolean): JsonObject | undefined {
+	if (typeof step === 'number') {
+		return isJsonObject(node.items) ? node.items : undefined;
+	}
+	const property = isJsonObject(node.properties) ? node.properties[step] : undefined;
+	if (isJsonObject(property) || !throughMaps) {
+		return isJsonObject(property) ? property : undefined;
+	}
+	const pattern = node.patternProperties;
+	if (isJsonObject(pattern) && isJsonObject(pattern['.'])) {
+		return pattern['.'];
+	}
+	return isJsonObject(node.additionalProperties) ? node.additionalProperties : undefined;
+}
+
+/**
+ * The names valid at `path`; `undefined` when the schema cannot say. `throughMaps` (the Quick
+ * Fixes, ticket 7) steps through name-keyed maps.
+ */
+export function fieldsAt(schema: JsonObject, path: readonly PathStep[], throughMaps = false): FieldsAt | undefined {
 	let nodes: JsonObject[] = [schema];
 	for (const step of path) {
 		nodes = nodes.flatMap((n) => expand(schema, n, false, 0)).flatMap(({ node }) => {
-			const next = typeof step === 'number' ? node.items : isJsonObject(node.properties) ? node.properties[step] : undefined;
-			return isJsonObject(next) ? [next] : [];
+			const next = stepInto(node, step, throughMaps);
+			return next ? [next] : [];
 		});
 		if (nodes.length === 0) {
 			return undefined;
@@ -55,7 +78,7 @@ export function fieldsAt(schema: JsonObject, path: readonly PathStep[]): FieldsA
 
 /** The sorted names valid at `path`; `undefined` when the schema cannot say. */
 export function validFieldsAt(schema: JsonObject, path: readonly PathStep[]): string[] | undefined {
-	const fields = fieldsAt(schema, path);
+	const fields = fieldsAt(schema, path, true);
 	return fields ? [...fields.all] : undefined;
 }
 
@@ -64,7 +87,7 @@ export function validFieldsAt(schema: JsonObject, path: readonly PathStep[]): st
  * component, only the shared fields are offered: a second component would still be invalid.
  */
 export function candidateFields(schema: JsonObject, path: readonly PathStep[], siblings: readonly string[]): string[] | undefined {
-	const fields = fieldsAt(schema, path);
+	const fields = fieldsAt(schema, path, true);
 	if (!fields) {
 		return undefined;
 	}
@@ -80,8 +103,8 @@ export function optionsAt(schema: JsonObject, path: readonly PathStep[], key: st
 	let nodes: JsonObject[] = [schema];
 	for (const step of [...path, key]) {
 		nodes = nodes.flatMap((n) => expand(schema, n, false, 0)).flatMap(({ node }) => {
-			const next = typeof step === 'number' ? node.items : isJsonObject(node.properties) ? node.properties[step] : undefined;
-			return isJsonObject(next) ? [next] : [];
+			const next = stepInto(node, step, true);
+			return next ? [next] : [];
 		});
 		if (nodes.length === 0) {
 			return [];
@@ -105,8 +128,8 @@ export function nodesAt(schema: JsonObject, path: readonly PathStep[]): JsonObje
 	let nodes: JsonObject[] = [schema];
 	for (const step of path) {
 		nodes = nodes.flatMap((n) => expand(schema, n, false, 0)).flatMap(({ node }) => {
-			const next = typeof step === 'number' ? node.items : isJsonObject(node.properties) ? node.properties[step] : undefined;
-			return isJsonObject(next) ? [next] : [];
+			const next = stepInto(node, step, false);
+			return next ? [next] : [];
 		});
 		if (nodes.length === 0) {
 			return [];
