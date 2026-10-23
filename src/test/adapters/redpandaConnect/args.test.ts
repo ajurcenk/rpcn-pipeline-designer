@@ -189,6 +189,15 @@ suite('adapters/redpandaConnect args', () => {
 		});
 	});
 
+	test('story 2: ~user in resourceFiles and envFile; with no such user, a relative path as before', () => {
+		const homeOf = (user: string) => (user === 'alice' ? '/home/alice' : undefined);
+		const result = ok(buildLintCommand(standalone, { targets: [A] },
+			environment({ homeOf, resourceFilesSetting: ['~alice/r.yaml', '~draft.yaml'], envFileSetting: '~alice/.env' })));
+		assert.deepStrictEqual(result.args, ['lint', '--deprecated', '--skip-env-var-check',
+			'--resources', path.normalize('/home/alice/r.yaml'), '--resources', path.join(WS, '~draft.yaml'),
+			'--env-file', path.join('/home/alice', '.env'), A]);
+	});
+
 	test('relative target paths are reported, not passed', () => {
 		assert.deepStrictEqual(buildLintCommand(standalone, { targets: ['a.yaml'] }, environment()),
 			{ kind: 'relativePath', role: 'target', path: 'a.yaml' });

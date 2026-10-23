@@ -85,11 +85,11 @@ The graph works from the keyboard. Tab enters it at the first node (the input), 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `redpandaConnect.binaryPath` | `""` | Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory, a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`. |
+| `redpandaConnect.binaryPath` | `""` | Fallback path to the `redpanda-connect` or `rpk` binary. `PATH` is tried first (`rpk connect`, then `redpanda-connect`); this setting is used only when neither is usable. `~` expands to the home directory (on Linux and macOS, `~user` to that user's), a relative path resolves against the first workspace folder, and a bare name is looked up on `PATH`. |
 | `redpandaConnect.autoOpenGraph` | `true` | Open the graph beside a detected config the first time an editor shows it in a session (not for a file you hid with **Hide graph**). |
 | `redpandaConnect.filePatterns` | `[]` | Globs always treated as Redpanda Connect configs, matched relative to the file's workspace folder or against its absolute path: `*.rpcn.yaml` matches only at a folder root, `**/*.rpcn.yaml` anywhere. |
-| `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (`--resources`), each entry may be a glob. `~` expands to the home directory; a relative path resolves against the first workspace folder. |
-| `redpandaConnect.envFile` | `""` | Environment file passed to lint and run (`--env-file`). `~` expands to the home directory; a relative path resolves against the first workspace folder. |
+| `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (`--resources`), each entry may be a glob. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the first workspace folder. |
+| `redpandaConnect.envFile` | `""` | Environment file passed to lint and run (`--env-file`). `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the first workspace folder. |
 
 ## Development
 

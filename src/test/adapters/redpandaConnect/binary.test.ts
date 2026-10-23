@@ -162,6 +162,23 @@ suite('adapters/redpandaConnect resolveBinaryState', () => {
 		assert.deepStrictEqual(state, { kind: 'ok', path: bin, version: '4.112.0', invocation: [bin] });
 	});
 
+	test('story 2: ~user resolves to that user\'s home; with no such user the value is a relative path, as before', async () => {
+		const alice = path.join(root, 'alice');
+		fs.mkdirSync(path.join(alice, 'bin'), { recursive: true });
+		const bin = writeFakeBinary(path.join(alice, 'bin'), 'rc', versionScript('4.112.0'));
+		const homeOf = (user: string) => (user === 'alice' ? alice : undefined);
+		const found = await resolveBinaryState({ ...env, binaryPathSetting: '~alice/bin/rc', homeOf });
+		assert.deepStrictEqual(found.state, { kind: 'ok', path: bin, version: '4.112.0', invocation: [bin] });
+		// No user `ghost`: `~ghost/bin/rc` is relative to the workspace folder (a shell keeps an unmatched `~word`).
+		assert.deepStrictEqual((await resolveBinaryState({ ...env, binaryPathSetting: '~ghost/bin/rc', homeOf })).state,
+			{ kind: 'invalid', path: '~ghost/bin/rc', reason: 'relativePathWithoutWorkspace' });
+		const ws = path.join(root, 'ws');
+		fs.mkdirSync(path.join(ws, '~ghost', 'bin'), { recursive: true });
+		const relative = writeFakeBinary(path.join(ws, '~ghost', 'bin'), 'rc', versionScript('4.112.0'));
+		assert.deepStrictEqual((await resolveBinaryState({ ...env, binaryPathSetting: '~ghost/bin/rc', homeOf, workspaceFolder: ws })).state,
+			{ kind: 'ok', path: relative, version: '4.112.0', invocation: [relative] });
+	});
+
 	test('SETTING_RELATIVE_NO_WS: invalid relativePathWithoutWorkspace', async () => {
 		const { state, message } = await resolveBinaryState({ ...env, binaryPathSetting: 'bin/rc' });
 		assert.deepStrictEqual(state, { kind: 'invalid', path: 'bin/rc', reason: 'relativePathWithoutWorkspace' });
@@ -287,6 +304,23 @@ suite('adapters/redpandaConnect resolveSettingPath', () => {
 		assert.deepStrictEqual(resolveSettingPath('./bin/rc', home, ws), { kind: 'path', path: path.join(ws, 'bin', 'rc') });
 		assert.deepStrictEqual(resolveSettingPath('bin\\rc', home, undefined), { kind: 'relativeWithoutWorkspace' });
 		assert.deepStrictEqual(resolveSettingPath('~user/rc', home, undefined), { kind: 'relativeWithoutWorkspace' });
+	});
+
+	test('story 2: ~user with a lookup; the other forms unchanged with it', () => {
+		const homeOf = (user: string) => (user === 'alice' ? path.resolve('/home/alice') : undefined);
+		assert.deepStrictEqual(resolveSettingPath('~alice/bin/rc', home, ws, homeOf), { kind: 'path', path: path.resolve('/home/alice/bin/rc') });
+		assert.deepStrictEqual(resolveSettingPath('~alice', home, ws, homeOf), { kind: 'path', path: path.resolve('/home/alice') });
+		// No such user: as before, a relative path (a file whose name starts with `~` keeps working).
+		assert.deepStrictEqual(resolveSettingPath('~ghost/rc', home, ws, homeOf), { kind: 'path', path: path.join(ws, '~ghost', 'rc') });
+		assert.deepStrictEqual(resolveSettingPath('~draft.yaml', home, ws, homeOf), { kind: 'path', path: path.join(ws, '~draft.yaml') });
+		assert.deepStrictEqual(resolveSettingPath('~ghost/rc', home, undefined, homeOf), { kind: 'relativeWithoutWorkspace' });
+		assert.deepStrictEqual(resolveSettingPath('~', home, ws, homeOf), { kind: 'path', path: home });
+		assert.deepStrictEqual(resolveSettingPath('~/bin/rc', home, ws, homeOf), { kind: 'path', path: path.join(home, 'bin', 'rc') });
+		assert.deepStrictEqual(resolveSettingPath('/opt/rc', home, ws, homeOf), { kind: 'path', path: '/opt/rc' });
+		assert.deepStrictEqual(resolveSettingPath('./bin/rc', home, ws, homeOf), { kind: 'path', path: path.join(ws, 'bin', 'rc') });
+		assert.deepStrictEqual(resolveSettingPath('rpk', home, ws, homeOf), { kind: 'command', name: 'rpk' });
+		// Not a user name: as before, a relative path.
+		assert.deepStrictEqual(resolveSettingPath('~a b/rc', home, ws, homeOf), { kind: 'path', path: path.join(ws, '~a b', 'rc') });
 	});
 
 	test('bare names are commands, whatever the workspace', () => {

@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { buildLintArgs, buildRunArgs } from '../../core/args';
 import { BinaryState, firstWorkspaceFolderPath, resolveSettingPath } from './binary';
+import { HomeOf, userHomeLookup } from './userHome';
 import {
 	type ArgsFailure, type ArgsFiles, type ArgsResult, buildCommandLine, type CommandLine, type CommandSettings,
 	describeArgsFailure, ENV_FILE_SETTING, type EnvFileResult, RESOURCE_FILES_SETTING,
@@ -28,6 +29,8 @@ export interface ArgsEnvironment {
 	/** Raw `redpandaConnect.envFile` value (may be malformed user input). */
 	readonly envFileSetting: unknown;
 	readonly homeDir: string;
+	/** Other users' homes, for `~user` (story 2); `undefined` (Windows): `~` only. */
+	readonly homeOf?: HomeOf;
 	/** File-system path of the first workspace folder, if any. */
 	readonly workspaceFolder: string | undefined;
 	/** The environment children inherit; `NO_COLOR=1` is added on top. */
@@ -68,6 +71,7 @@ export function defaultArgsEnvironment(): ArgsEnvironment {
 		resourceFilesSetting: config.get<unknown>('resourceFiles', []),
 		envFileSetting: config.get<unknown>('envFile', ''),
 		homeDir: os.homedir(),
+		homeOf: userHomeLookup(),
 		workspaceFolder: firstWorkspaceFolderPath(),
 		processEnv: process.env,
 	};
@@ -79,8 +83,9 @@ type FileSetting = { readonly kind: 'path'; readonly path: string } | { readonly
  * The `binaryPath` path rules for a file setting: `~` expands, a relative path (including a bare
  * name such as `.env`, which for files is never a PATH lookup) resolves against the workspace folder.
  */
-function resolveFileSettingPath(setting: string, homeDir: string, workspaceFolder: string | undefined): FileSetting {
-	const resolved = resolveSettingPath(setting, homeDir, workspaceFolder);
+function resolveFileSettingPath(setting: string, env: ArgsEnvironment): FileSetting {
+	const { homeDir, workspaceFolder } = env;
+	const resolved = resolveSettingPath(setting, homeDir, workspaceFolder, env.homeOf);
 	if (resolved.kind !== 'command') {
 		return resolved;
 	}
@@ -96,7 +101,7 @@ function resolveFileSettingPath(setting: string, homeDir: string, workspaceFolde
 function resolveArgsFiles(env: ArgsEnvironment): ArgsFiles | ArgsFailure {
 	const resourceFiles: string[] = [];
 	for (const raw of stringList(env.resourceFilesSetting)) {
-		const resolved = resolveFileSettingPath(raw, env.homeDir, env.workspaceFolder);
+		const resolved = resolveFileSettingPath(raw, env);
 		if (resolved.kind === 'relativeWithoutWorkspace') {
 			return { kind: 'unusableSetting', setting: RESOURCE_FILES_SETTING, value: raw, reason: 'relativePathWithoutWorkspace' };
 		}
@@ -112,7 +117,7 @@ function resolveEnvFile(env: ArgsEnvironment): EnvFileResult {
 	if (!envSetting) {
 		return { kind: 'ok', path: undefined };
 	}
-	const resolved = resolveFileSettingPath(envSetting, env.homeDir, env.workspaceFolder);
+	const resolved = resolveFileSettingPath(envSetting, env);
 	if (resolved.kind === 'relativeWithoutWorkspace') {
 		return { kind: 'unusableSetting', setting: ENV_FILE_SETTING, value: envSetting, reason: 'relativePathWithoutWorkspace' };
 	}

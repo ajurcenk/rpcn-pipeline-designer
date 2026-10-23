@@ -12,6 +12,7 @@ import {
 import { attachBinaryNotifications, BinaryActions, BinaryNotifications, BinaryNotifier } from './notify';
 import { DEFAULT_VERSION_TIMEOUT_MS, findOnPath, ProcessOutcome, readVersion } from './process';
 import { errorText, firstNonEmptyLine } from './text';
+import { HomeOf, userHomeLookup } from './userHome';
 
 const RPK_BINARY = 'rpk';
 const STANDALONE_BINARY = 'redpanda-connect';
@@ -54,6 +55,8 @@ export interface ResolveEnvironment {
 	readonly binaryPathSetting: string;
 	readonly envPath: string | undefined;
 	readonly homeDir: string;
+	/** Other users' homes, for `~user` (story 2); `undefined` (Windows): `~` only. */
+	readonly homeOf?: HomeOf;
 	/** File-system path of the first workspace folder, if any. */
 	readonly workspaceFolder: string | undefined;
 }
@@ -70,14 +73,24 @@ export type SettingPath =
 	| { readonly kind: 'command'; readonly name: string }
 	| { readonly kind: 'relativeWithoutWorkspace' };
 
+/** A leading `~<user>`, a POSIX user name followed by `/` or the end (story 2). */
+const TILDE_USER = /^~([A-Za-z_][\w.-]*\$?)(?=\/|$)/;
+
 /**
  * A value without `/` or `\\` and without a leading `~` is a command name (looked up on PATH).
- * Otherwise: expands a leading `~` to `homeDir`, resolves a relative path against
- * `workspaceFolder`, and keeps an absolute path as written.
+ * Otherwise: expands a leading `~` to `homeDir` and, with `homeOf`, a leading `~<user>` of an
+ * existing user to that user's home (story 2; with no such user the value stays as written, as a
+ * shell keeps an unmatched `~word`, so `~draft.yaml` is a relative file name), resolves a relative
+ * path against `workspaceFolder`, and keeps an absolute path as written.
  */
-export function resolveSettingPath(setting: string, homeDir: string, workspaceFolder: string | undefined): SettingPath {
+export function resolveSettingPath(setting: string, homeDir: string, workspaceFolder: string | undefined, homeOf?: HomeOf): SettingPath {
 	if (setting === '~' || setting.startsWith('~/') || setting.startsWith('~\\')) {
 		return { kind: 'path', path: path.join(homeDir, setting.slice(1)) };
+	}
+	const tilde = homeOf ? TILDE_USER.exec(setting) : null;
+	const home = tilde ? homeOf!(tilde[1]) : undefined;
+	if (tilde && home) {
+		return { kind: 'path', path: path.join(home, setting.slice(tilde[0].length)) };
 	}
 	if (!setting.startsWith('~') && !setting.includes('/') && !setting.includes('\\')) {
 		return { kind: 'command', name: setting };
@@ -191,7 +204,7 @@ export async function resolveBinaryState(
 	let settingNote = 'redpandaConnect.binaryPath is not set';
 	let settingRpkWithoutPlugin = false;
 	if (setting) {
-		const target = resolveSettingPath(setting, env.homeDir, env.workspaceFolder);
+		const target = resolveSettingPath(setting, env.homeDir, env.workspaceFolder, env.homeOf);
 		if (target.kind === 'relativeWithoutWorkspace') {
 			fallback ??= { kind: 'invalid', path: setting, reason: 'relativePathWithoutWorkspace' };
 		} else {
@@ -298,6 +311,7 @@ function defaultEnvironment(): ResolveEnvironment {
 		binaryPathSetting: vscode.workspace.getConfiguration('redpandaConnect').get<string>('binaryPath', '') ?? '',
 		envPath: process.env.PATH,
 		homeDir: os.homedir(),
+		homeOf: userHomeLookup(),
 		workspaceFolder: firstWorkspaceFolderPath(),
 	};
 }
