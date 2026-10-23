@@ -1,5 +1,7 @@
 import * as assert from 'assert';
-import { PENDING_RENAME_MS, PendingRenames, renamedKey, renamedThrough, type Rename } from '../../../adapters/graphPanel/tabs';
+import {
+	overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedKey, renamedThrough, renameFate, renameWinners, type Rename,
+} from '../../../adapters/graphPanel/tabs';
 
 const k = (p: string) => `file:///d/${p}`;
 
@@ -40,6 +42,54 @@ suite('adapters/graphPanel tabs: renames (3.10, F7)', () => {
 	test('renamedThrough: a rename back to the original name is a rename to the same key', () => {
 		const back = [{ from: k('a.yaml'), to: k('t.yaml') }, { from: k('t.yaml'), to: k('a.yaml') }];
 		assert.strictEqual(renamedThrough(k('a.yaml'), back), k('a.yaml'));
+	});
+});
+
+suite('adapters/graphPanel tabs: rename collisions (ticket 17)', () => {
+	const r = (from: string, to: string): Rename => ({ from: k(from), to: k(to) });
+
+	test('two movers onto one name (a→x, c→x): c wins, whatever the order of the keys', () => {
+		const batch = [r('a.yaml', 'x.yaml'), r('c.yaml', 'x.yaml')];
+		const expected = new Map([[k('x.yaml'), k('c.yaml')]]);
+		assert.deepStrictEqual(renameWinners([k('a.yaml'), k('c.yaml')], batch), expected);
+		assert.deepStrictEqual(renameWinners([k('c.yaml'), k('a.yaml')], batch), expected);
+		assert.deepStrictEqual(renameFate(k('a.yaml'), batch), { to: k('x.yaml'), destroyed: true });
+		assert.deepStrictEqual(renameFate(k('c.yaml'), batch), { to: k('x.yaml'), destroyed: false });
+	});
+
+	test('a later rename of a key not passed lands on the name (a→x, c→x, only a): a wins nowhere', () => {
+		assert.deepStrictEqual(renameWinners([k('a.yaml')], [r('a.yaml', 'x.yaml'), r('c.yaml', 'x.yaml')]), new Map());
+	});
+
+	test('a→b, b→c: a overwrote b, then moved on to c: a wins at c, b is destroyed', () => {
+		const batch = [r('a.yaml', 'b.yaml'), r('b.yaml', 'c.yaml')];
+		assert.deepStrictEqual(renameWinners([k('b.yaml'), k('a.yaml')], batch), new Map([[k('c.yaml'), k('a.yaml')]]));
+		assert.deepStrictEqual(renameFate(k('b.yaml'), batch), { to: k('c.yaml'), destroyed: true });
+		assert.ok(!overwrittenBy(k('b.yaml'), batch), 'b is moved (destroyed, not overwritten in place)');
+	});
+
+	test('a chain and a swap destroy nothing', () => {
+		const chain = [r('b.yaml', 'c.yaml'), r('a.yaml', 'b.yaml')];
+		assert.deepStrictEqual(renameWinners([k('a.yaml'), k('b.yaml')], chain), new Map([[k('b.yaml'), k('a.yaml')], [k('c.yaml'), k('b.yaml')]]));
+		const swap = [r('a.yaml', 't.yaml'), r('b.yaml', 'a.yaml'), r('t.yaml', 'b.yaml')];
+		assert.deepStrictEqual(renameWinners([k('a.yaml'), k('b.yaml')], swap), new Map([[k('a.yaml'), k('b.yaml')], [k('b.yaml'), k('a.yaml')]]));
+		assert.ok(!overwrittenBy(k('a.yaml'), swap) && !overwrittenBy(k('b.yaml'), swap));
+	});
+
+	test('a folder overwrite (f→g): g\'s files are overwritten, f\'s win at their new names', () => {
+		const batch = [r('f', 'g')];
+		assert.ok(overwrittenBy(k('g/b.yaml'), batch));
+		assert.ok(overwrittenBy(k('g/other.yaml'), batch), 'the whole folder is replaced');
+		assert.ok(!overwrittenBy(k('gh/b.yaml'), batch), 'a near name is no prefix');
+		assert.deepStrictEqual(renameWinners([k('f/b.yaml'), k('g/b.yaml')], batch), new Map([[k('g/b.yaml'), k('f/b.yaml')]]));
+	});
+
+	test('overwrittenBy: a file a rename lands on, a file moved away, a file left alone', () => {
+		const batch = [r('a.yaml', 'b.yaml')];
+		assert.ok(overwrittenBy(k('b.yaml'), batch));
+		assert.ok(!overwrittenBy(k('a.yaml'), batch), 'moved away');
+		assert.ok(!overwrittenBy(k('c.yaml'), batch));
+		assert.ok(!overwrittenBy(k('b.yaml'), [r('b.yaml', 'c.yaml'), r('a.yaml', 'b.yaml')]), 'moved away before the other lands');
 	});
 });
 

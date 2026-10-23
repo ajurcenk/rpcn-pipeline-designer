@@ -101,7 +101,7 @@ import {
 } from '../../shared/bloblangProtocol';
 import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo, returnFocusTo } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
-import { hasTextTab, isTextTabOf, PENDING_RENAME_MS, PendingRenames, renamedThrough } from '../graphPanel/tabs';
+import { hasTextTab, isTextTabOf, overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameWinners } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
@@ -1078,8 +1078,8 @@ export class BloblangPanels implements vscode.Disposable {
 
 	/**
 	 * A panel whose file had a text tab and has none left closes (4.17, TAB_CLOSE); a renaming file is
-	 * skipped, and so is a file a pending rename overwrites (its tab comes back with the rename, and
-	 * its panel stays: COLLISION closes the incoming one).
+	 * skipped, and so is a file a pending rename overwrites (its tab comes back with the rename; its
+	 * panels are closed by the rename, COLLISION, as they describe content that is gone).
 	 */
 	private tabsChanged(): void {
 		for (const entry of [...this.panels]) {
@@ -1094,8 +1094,10 @@ export class BloblangPanels implements vscode.Disposable {
 
 	/**
 	 * RENAME (4.17): each panel of a renamed config (the file itself, or a folder holding it) moves to
-	 * the new URI, as the graph's do (the batch is applied as a whole, `renamedThrough`); a panel
-	 * landing on the key of a panel not moved closes (COLLISION). The dirty set follows, a single
+	 * the new URI, as the graph's do (the batch is applied as a whole, `renamedThrough`). The moved
+	 * panels win a collision (COLLISION, ticket 17): every panel of an overwritten config (a rename
+	 * lands on it and it is not moved) closes, and so does every panel of a moved config a later
+	 * rename of the batch overwrote (`renameWinners`). The dirty set follows the winner, a single
 	 * file's samples file is renamed, and the moved panels get a snapshot with the new names.
 	 */
 	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
@@ -1103,20 +1105,24 @@ export class BloblangPanels implements vscode.Disposable {
 		this.pendingRenames.report(renames);
 		const moved = (key: string) => renamedThrough(key, renames);
 		const entries = [...this.panels];
-		const staying = new Set(entries.filter((entry) => moved(entry.uri.toString()) === undefined).map((entry) => entry.key));
+		// Per new name, the moved config whose content survives there.
+		const winners = renameWinners([...entries.map((entry) => entry.uri.toString()), ...this.dirty], renames);
 		const movers: { readonly entry: BloblangPanel; readonly uri: vscode.Uri }[] = [];
 		const configs = new Map<string, string>();
 		for (const entry of entries) {
 			const from = entry.uri.toString();
 			const to = moved(from);
 			if (to === undefined) {
+				if (overwrittenBy(from, renames)) {
+					entry.panel.dispose();
+				}
 				continue;
 			}
-			const uri = vscode.Uri.parse(to);
-			if (staying.has(keyOf(uri, entry.path))) {
+			if (winners.get(to) !== from) {
 				entry.panel.dispose();
 				continue;
 			}
+			const uri = vscode.Uri.parse(to);
 			configs.set(from, to);
 			movers.push({ entry, uri });
 		}
@@ -1128,7 +1134,12 @@ export class BloblangPanels implements vscode.Disposable {
 		movers.forEach(({ entry, uri }) => entry.moveTo(uri));
 		const dirty = [...this.dirty];
 		this.dirty.clear();
-		dirty.forEach((key) => this.dirty.add(moved(key) ?? key));
+		for (const key of dirty) {
+			const to = moved(key);
+			if (to === undefined ? !overwrittenBy(key, renames) : winners.get(to) === key) {
+				this.dirty.add(to ?? key);
+			}
+		}
 		for (const f of files) {
 			void this.moveSamples(f.oldUri, f.newUri);
 		}
@@ -1541,6 +1552,11 @@ export class BloblangPanels implements vscode.Disposable {
 	panelFor(uri: vscode.Uri, processorPath: string): BloblangPanelHandle | undefined {
 		const key = keyOf(uri, processorPath);
 		return this.live(uri, processorPath) ?? [...this.panels].find((entry) => entry.key === key);
+	}
+
+	/** Whether `uri`'s document counts as having unsaved changes (the dirty set, 4.10) (test seam). */
+	hasUnsavedChanges(uri: vscode.Uri): boolean {
+		return this.dirty.has(uri.toString());
 	}
 
 	/** How many Bloblang panels are open. */

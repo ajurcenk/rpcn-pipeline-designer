@@ -37,7 +37,7 @@ import { GraphPanel, type GraphPanelHandle } from './graphPanel';
 import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
-import { hasTextTab, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, until, within, type Rename } from './tabs';
+import { hasTextTab, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameFate, renameWinners, until, within, type Rename } from './tabs';
 
 export { MAX_POSTED, type GraphPanelHandle } from './graphPanel';
 export { hostStatusOf, statusDiagnostics, type GraphBinary, type GraphSchema } from './status';
@@ -223,9 +223,10 @@ export class GraphPanels implements vscode.Disposable {
 					if (!visible.includes(editor)) {
 						this.driving.delete(key);
 						// VS Code closes a renaming file's editors before it reports the rename: its column
-						// is kept for the new URI's editor (F7_RENAME).
-						const to = renamedThrough(key, this.pendingRenames.all);
-						if (to !== undefined && editor.viewColumn !== undefined) {
+						// is kept for the new URI's editor (F7_RENAME). A file a later rename of the batch
+						// overwrites keeps none: its column is not the one at the new name (ticket 17).
+						const { to, destroyed } = renameFate(key, this.pendingRenames.all);
+						if (to !== undefined && !destroyed && editor.viewColumn !== undefined) {
 							this.renamedDriving.set(to, { column: editor.viewColumn, reported: false });
 						}
 					}
@@ -321,13 +322,16 @@ export class GraphPanels implements vscode.Disposable {
 		}
 	}
 
-	/** A panel whose file had a text tab and has none left closes (TAB_CLOSE); a renaming file is skipped. */
+	/**
+	 * A panel whose file had a text tab and has none left closes (TAB_CLOSE); a renaming file is
+	 * skipped, and so is a file a pending rename overwrites (the rename decides its graph, ticket 17).
+	 */
 	private tabsChanged(): void {
 		for (const graph of [...this.panels.values()]) {
 			const key = graph.uri.toString();
 			if (hasTextTab(key)) {
 				graph.hadTab = true;
-			} else if (graph.hadTab && !this.pendingRenames.renaming(key)) {
+			} else if (graph.hadTab && !this.pendingRenames.renaming(key) && !this.pendingRenames.creating(key)) {
 				graph.panel.dispose();
 			}
 		}
@@ -337,7 +341,11 @@ export class GraphPanels implements vscode.Disposable {
 	 * RENAME: every map holding a renamed URI re-keys together; panels get their new title. The
 	 * batch is applied as a whole (F7_RENAME): each key goes through the renames in their order,
 	 * and each map is rebuilt from the old keys at once, so a chain (`b→c, a→b`) or a swap
-	 * (`a→t, b→a, t→b`) moves every entry to its own file instead of onto another's.
+	 * (`a→t, b→a, t→b`) moves every entry to its own file instead of onto another's. A moved graph
+	 * landing on an open one wins (ticket 17): the moved file's content is what is there now, so the
+	 * overwritten file's graph closes; a moved graph whose file a later rename of the batch overwrote
+	 * closes too (`renameWinners`).
+	 * The driving editor, `hidden` and `seen` of that name follow the winner.
 	 */
 	private renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
 		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
@@ -345,22 +353,25 @@ export class GraphPanels implements vscode.Disposable {
 		const moved = (key: string) => renamedThrough(key, renames);
 		const panels = [...this.panels];
 		this.panels.clear();
-		// The files not renamed keep their panels; a renamed one landing on an open graph of its new
-		// name closes (one panel per file).
+		// Per new name, the moved graph that ends up there.
+		const winners = renameWinners(panels.map(([key]) => key), renames);
+		// The overwritten files' graphs close, then the losing moved ones.
 		for (const [key, graph] of panels) {
 			if (moved(key) === undefined) {
-				this.panels.set(key, graph);
+				if (winners.has(key)) {
+					this.disposeKeepingColumn(graph);
+				} else {
+					this.panels.set(key, graph);
+				}
 			}
 		}
-		const collided: string[] = [];
 		for (const [key, graph] of panels) {
 			const to = moved(key);
 			if (to === undefined) {
 				continue;
 			}
-			if (this.panels.has(to)) {
-				graph.panel.dispose();
-				collided.push(to);
+			if (winners.get(to) !== key) {
+				this.disposeKeepingColumn(graph);
 				continue;
 			}
 			graph.uri = vscode.Uri.parse(to);
@@ -369,15 +380,22 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		// The driving editor of a renamed file is the visible editor of its new URI in the old one's
 		// column (the old editor object is closed with the old name); until VS Code shows it, the
-		// column is remembered.
+		// column is remembered. At a name a moved graph took, the overwritten file's editor goes and
+		// only the winner's column is kept.
 		const driving = [...this.driving];
 		this.driving.clear();
+		// An entry adopted for this batch is under its new key already: it is not moved again. It is
+		// the editor in the kept column; another editor there is the file's own (an overwritten one's).
+		const adoptedEntry = (key: string, editor: vscode.TextEditor) => editor.viewColumn !== undefined && editor.viewColumn === this.renamedDriving.get(key)?.column;
+		const drivingWinners = renameWinners(driving.filter(([key, editor]) => !adoptedEntry(key, editor)).map(([key]) => key), renames);
 		for (const [key, editor] of driving) {
-			// An entry adopted for this batch is under its new key already: it is not moved again.
-			const to = this.renamedDriving.has(key) ? undefined : moved(key);
+			const adopted = adoptedEntry(key, editor);
+			const to = adopted ? undefined : moved(key);
 			if (to === undefined) {
-				this.driving.set(key, editor);
-			} else if (editor.viewColumn !== undefined) {
+				if (adopted || !winners.has(key)) {
+					this.driving.set(key, editor);
+				}
+			} else if (editor.viewColumn !== undefined && (winners.get(to) ?? drivingWinners.get(to)) === key) {
 				this.renamedDriving.set(to, { column: editor.viewColumn, reported: true });
 			}
 		}
@@ -386,20 +404,48 @@ export class GraphPanels implements vscode.Disposable {
 				entry.reported = true;
 			}
 		}
-		collided.forEach((key) => this.renamedDriving.delete(key));
 		this.adoptRenamedDriving(vscode.window.visibleTextEditors);
-		const seen = [...this.seen];
-		this.seen.clear();
-		seen.forEach((key) => this.seen.add(moved(key) ?? key));
-		const hidden = [...this.hidden];
-		const hiddenChanged = hidden.some((key) => moved(key) !== undefined);
-		if (hiddenChanged) {
-			this.hidden.clear();
-			hidden.forEach((key) => this.hidden.add(moved(key) ?? key));
+		this.follows(this.seen, moved, winners);
+		if (this.follows(this.hidden, moved, winners)) {
 			void this.storeHidden();
 		}
 		this.updateContext();
 		this.tabsChanged();
+	}
+
+	/**
+	 * Disposes `graph` in a rename (ticket 17), keeping the column kept for its current name: its
+	 * disposal drops it, but that name is another file's new one now (the winner's).
+	 */
+	private disposeKeepingColumn(graph: GraphPanel): void {
+		const key = graph.uri.toString();
+		const column = this.renamedDriving.get(key);
+		graph.panel.dispose();
+		if (column) {
+			this.renamedDriving.set(key, column);
+		}
+	}
+
+	/**
+	 * Re-keys `set` after a rename batch: each key moves to its new name, and at a name a moved graph
+	 * took (`winners`) only the winner's membership counts (ticket 17). Whether `set` changed.
+	 */
+	private follows(set: Set<string>, moved: (key: string) => string | undefined, winners: ReadonlyMap<string, string>): boolean {
+		const before = [...set];
+		const after = new Set<string>();
+		for (const key of before) {
+			const at = moved(key) ?? key;
+			const winner = winners.get(at);
+			if (winner === undefined || winner === key) {
+				after.add(at);
+			}
+		}
+		const changed = after.size !== before.length || before.some((key) => !after.has(key));
+		if (changed) {
+			set.clear();
+			after.forEach((key) => set.add(key));
+		}
+		return changed;
 	}
 
 	/**

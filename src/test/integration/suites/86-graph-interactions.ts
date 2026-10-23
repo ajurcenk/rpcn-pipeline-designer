@@ -328,19 +328,24 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				workspace.onWillRenameFiles = original.will;
 				workspace.onDidRenameFiles = original.did;
 			}
+			/** Renames `pairs` in one WorkspaceEdit, announced and reported as one batch, in order. */
+			async function rename(overwrite: (i: number) => boolean, pairs: [vscode.Uri, vscode.Uri][]): Promise<void> {
+				const files: Files = pairs.map(([oldUri, newUri]) => ({ oldUri, newUri }));
+				will.fire({ files, waitUntil: () => undefined, token: new vscode.CancellationTokenSource().token } as vscode.FileWillRenameEvent);
+				const edit = new vscode.WorkspaceEdit();
+				pairs.forEach(([from, to], i) => edit.renameFile(from, to, { overwrite: overwrite(i) }));
+				assert.ok(await vscode.workspace.applyEdit(edit), 'the rename applied');
+				did.fire({ files });
+			}
 			return {
 				panels,
-				/** Renames `pairs` in one WorkspaceEdit, announced and reported as one batch, in order. */
-				async rename(...pairs: [vscode.Uri, vscode.Uri][]): Promise<void> {
-					const files: Files = pairs.map(([oldUri, newUri]) => ({ oldUri, newUri }));
-					will.fire({ files, waitUntil: () => undefined, token: new vscode.CancellationTokenSource().token } as vscode.FileWillRenameEvent);
-					const edit = new vscode.WorkspaceEdit();
-					// VS Code checks every target before it moves anything, so a later rename onto a name an
-					// earlier one frees needs `overwrite` (nothing is there by then).
-					pairs.forEach(([from, to], i) => edit.renameFile(from, to, { overwrite: i > 0 }));
-					assert.ok(await vscode.workspace.applyEdit(edit), 'the rename applied');
-					did.fire({ files });
-				},
+				/**
+				 * Renames `pairs` as one batch. VS Code checks every target before it moves anything, so a
+				 * later rename onto a name an earlier one frees needs `overwrite` (nothing is there by then).
+				 */
+				rename: (...pairs: [vscode.Uri, vscode.Uri][]) => rename((i) => i > 0, pairs),
+				/** Renames `pairs` as one batch, each one with `overwrite` ("Replace" in the Explorer). */
+				renameOver: (...pairs: [vscode.Uri, vscode.Uri][]) => rename(() => true, pairs),
 				dispose() {
 					panels.dispose();
 					will.dispose();
@@ -366,9 +371,14 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 		}
 		/** A click on the input of `handle`'s graph selects it in an editor: its file and column. */
 		async function clickSelects(handle: GraphPanelHandle): Promise<[string, vscode.ViewColumn | undefined]> {
+			const target = handle.uri.toString();
 			await handle.receive({ type: 'nodeActivated', nodeId: 'path:input', via: 'click' });
+			const selected = () => {
+				const active = vscode.window.activeTextEditor;
+				return active?.document.uri.toString() === target && active.document.getText(active.selection) === 'input:\n  stdin: {}';
+			};
+			assert.ok(await waitFor(selected, 5_000), `the click selected the input in ${target}`);
 			const active = vscode.window.activeTextEditor!;
-			assert.strictEqual(active.document.getText(active.selection), 'input:\n  stdin: {}');
 			return [path.basename(active.document.uri.path), active.viewColumn];
 		}
 		const visibleIn = (target: vscode.Uri, column: vscode.ViewColumn) =>
@@ -477,6 +487,134 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 					assert.strictEqual(active.document.uri.toString(), renamed.toString());
 					assert.strictEqual(active.viewColumn, column, 'the click selects in the driving editor\'s column');
 					assert.strictEqual(active.document.getText(active.selection), 'input:\n  stdin: {}');
+				} finally {
+					registry.dispose();
+				}
+			});
+		}
+
+		/** Whether `handle`'s panel was disposed, from now on. */
+		const disposal = (handle: GraphPanelHandle) => {
+			let gone = false;
+			handle.panel.onDidDispose(() => (gone = true));
+			return () => gone;
+		};
+
+		test('GRAPH_OVERWRITE (ticket 17): a renamed onto b with overwrite, graphs on both: a\'s graph takes b\'s key and title, b\'s closes, the driving editor is a\'s column', async () => {
+			const registry = batchedRegistry();
+			try {
+				const { panels } = registry;
+				const a = await openIn('over-a.yaml', VALID, vscode.ViewColumn.One);
+				const b = await openIn('over-b.yaml', 'input:\n  stdin: {}\n', vscode.ViewColumn.Three);
+				const handleA = (await panels.show(a.uri))!;
+				const handleB = (await panels.show(b.uri))!;
+				const aGone = disposal(handleA);
+				const bGone = disposal(handleB);
+				await drive(a, vscode.ViewColumn.One);
+				await drive(b, vscode.ViewColumn.Three);
+				await registry.renameOver([a.uri, b.uri]);
+				assert.ok(bGone(), 'the overwritten file\'s graph closed');
+				assert.strictEqual(panels.panelFor(b.uri), handleA, 'a\'s graph is keyed by b');
+				assert.strictEqual(panels.panelFor(a.uri), undefined);
+				assert.strictEqual(handleA.panel.title, 'Graph: over-b.yaml');
+				await settle();
+				assert.ok(!aGone(), 'the moved graph stays');
+				assert.strictEqual(panels.size, 1);
+				// The driving editor is b's new editor in a's column (One), not the overwritten file's (Three).
+				assert.ok(await waitFor(() => visibleIn(b.uri, vscode.ViewColumn.One), 10_000), 'the editor reopened');
+				assert.deepStrictEqual(await clickSelects(handleA), ['over-b.yaml', vscode.ViewColumn.One]);
+				// The graph shows the moved file's content.
+				const doc = await vscode.workspace.openTextDocument(b.uri);
+				assert.strictEqual(doc.getText(), VALID);
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		test('GRAPH_OVERWRITE (ticket 17), b\'s graph with no text tab (no TAB_CLOSE first): a\'s graph takes b\'s key, b\'s closes, a\'s driving column is kept', async () => {
+			const registry = batchedRegistry();
+			try {
+				const { panels } = registry;
+				const a = await openIn('over-notab-a.yaml', VALID, vscode.ViewColumn.One);
+				const b = uri('over-notab-b.yaml');
+				fs.writeFileSync(b.fsPath, 'input:\n  stdin: {}\n');
+				const handleA = (await panels.show(a.uri))!;
+				const handleB = (await panels.show(b))!;
+				assert.ok(!vscode.window.tabGroups.all.some((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === b.toString())), 'b has no text tab');
+				const aGone = disposal(handleA);
+				const bGone = disposal(handleB);
+				await drive(a, vscode.ViewColumn.One);
+				await registry.renameOver([a.uri, b]);
+				assert.ok(bGone(), 'the overwritten file\'s graph closed');
+				assert.strictEqual(panels.panelFor(b), handleA, 'a\'s graph is keyed by b');
+				assert.strictEqual(handleA.panel.title, 'Graph: over-notab-b.yaml');
+				await settle();
+				assert.ok(!aGone(), 'the moved graph stays');
+				assert.strictEqual(panels.size, 1);
+				assert.ok(await waitFor(() => visibleIn(b, vscode.ViewColumn.One), 10_000), 'the editor reopened');
+				assert.deepStrictEqual(await clickSelects(handleA), ['over-notab-b.yaml', vscode.ViewColumn.One]);
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		test('GRAPH_OVERWRITE_HIDDEN (ticket 17): b hidden, a shown, a renamed onto b with overwrite: a\'s graph is at b and b is no longer hidden', async () => {
+			const memento = fakeMemento();
+			const registry = batchedRegistry({ memento });
+			try {
+				const { panels } = registry;
+				const a = await openIn('over-hidden-a.yaml', VALID, vscode.ViewColumn.One);
+				const b = uri('over-hidden-b.yaml');
+				fs.writeFileSync(b.fsPath, 'input:\n  stdin: {}\n');
+				await panels.hide(b);
+				assert.ok(panels.isHidden(b));
+				const handleA = (await panels.show(a.uri))!;
+				await registry.renameOver([a.uri, b]);
+				assert.strictEqual(panels.panelFor(b), handleA, 'a\'s graph is keyed by b');
+				assert.ok(!panels.isHidden(b), 'the name takes the moved file\'s state: not hidden');
+				assert.ok(!panels.isHidden(a.uri));
+				assert.deepStrictEqual(memento.get('redpandaConnect.hiddenGraphs'), []);
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		for (const order of ['a first', 'c first'] as const) {
+			test(`TWO_MOVERS (ticket 17, ${order}): a→x, c→x in one batch, graphs on a and c: c's graph is keyed x, a's closes, the driving editor is c's column`, async () => {
+				const registry = batchedRegistry();
+				try {
+					const { panels } = registry;
+					const tag = order === 'a first' ? 'af' : 'cf';
+					// A second tab in each group keeps it when its renamed editor closes, so the columns stay.
+					await openIn(`movers-${tag}-keep1.yaml`, VALID, vscode.ViewColumn.One);
+					await openIn(`movers-${tag}-keep3.yaml`, VALID, vscode.ViewColumn.Three);
+					const a = await openIn(`movers-${tag}-a.yaml`, VALID, vscode.ViewColumn.One);
+					const c = await openIn(`movers-${tag}-c.yaml`, 'input:\n  stdin: {}\n', vscode.ViewColumn.Three);
+					const x = uri(`movers-${tag}-x.yaml`);
+					// The registry's insertion order is the opening order: the result does not depend on it.
+					const opened = new Map<vscode.TextDocument, GraphPanelHandle>();
+					for (const doc of order === 'a first' ? [a, c] : [c, a]) {
+						opened.set(doc, (await panels.show(doc.uri))!);
+					}
+					const handleA = opened.get(a)!;
+					const handleC = opened.get(c)!;
+					const aGone = disposal(handleA);
+					const cGone = disposal(handleC);
+					// The driving editors in the same order: the kept column is the winner's either way.
+					for (const [doc, column] of order === 'a first' ? [[a, vscode.ViewColumn.One], [c, vscode.ViewColumn.Three]] as const : [[c, vscode.ViewColumn.Three], [a, vscode.ViewColumn.One]] as const) {
+						await drive(doc, column);
+					}
+					await registry.rename([a.uri, x], [c.uri, x]);
+					assert.ok(aGone(), 'the graph of the file renamed first closed');
+					assert.strictEqual(panels.panelFor(x), handleC, 'the graph of the file renamed last is keyed by x');
+					assert.strictEqual(handleC.panel.title, `Graph: movers-${tag}-x.yaml`);
+					assert.strictEqual(panels.panelFor(a.uri), undefined);
+					assert.strictEqual(panels.panelFor(c.uri), undefined);
+					await settle();
+					assert.ok(!cGone(), 'the winner stays');
+					assert.strictEqual(panels.size, 1);
+					assert.ok(await waitFor(() => visibleIn(x, vscode.ViewColumn.Three), 10_000), 'the editor reopened');
+					assert.deepStrictEqual(await clickSelects(handleC), [`movers-${tag}-x.yaml`, vscode.ViewColumn.Three]);
 				} finally {
 					registry.dispose();
 				}

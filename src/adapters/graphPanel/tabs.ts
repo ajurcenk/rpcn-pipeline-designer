@@ -47,6 +47,60 @@ export function renamedThrough(key: string, renames: readonly Rename[]): string 
 	return moved ? current : undefined;
 }
 
+/** What the batch `renames` does to a key: where it ends (`undefined`: never moved), and whether its content survives. */
+export interface RenameFate {
+	readonly to: string | undefined;
+	readonly destroyed: boolean;
+}
+
+/**
+ * `key` through the batch `renames`, applied in order (ticket 17): a rename that moves the key's
+ * current place moves it (as `renamedThrough`); one that lands on its current place (the file
+ * itself, or a folder holding it) without moving it destroys its content, which later renames
+ * still carry along.
+ */
+export function renameFate(key: string, renames: readonly Rename[]): RenameFate {
+	let current = key;
+	let moved = false;
+	let destroyed = false;
+	for (const rename of renames) {
+		const to = renamedKey(current, [rename]);
+		if (to !== undefined) {
+			current = to;
+			moved = true;
+		} else if (current === rename.to || within(current, rename.to)) {
+			destroyed = true;
+		}
+	}
+	return { to: moved ? current : undefined, destroyed };
+}
+
+/**
+ * Per new name, the one of `keys` the batch `renames` moves there and whose content survives
+ * (at most one: each later arrival destroys the one there). A moved key that was destroyed wins
+ * nowhere; keys the batch leaves alone are not in it. The result does not depend on the order of
+ * `keys`, nor on which other keys are passed.
+ */
+export function renameWinners(keys: Iterable<string>, renames: readonly Rename[]): Map<string, string> {
+	const winners = new Map<string, string>();
+	for (const key of keys) {
+		const { to, destroyed } = renameFate(key, renames);
+		if (to !== undefined && !destroyed) {
+			winners.set(to, key);
+		}
+	}
+	return winners;
+}
+
+/**
+ * Whether the batch `renames` overwrites `key` (ticket 17): a rename lands on it (the file itself, or
+ * a folder holding it) and it is not moved, so its content is gone.
+ */
+export function overwrittenBy(key: string, renames: readonly Rename[]): boolean {
+	const { to, destroyed } = renameFate(key, renames);
+	return to === undefined && destroyed;
+}
+
 /** Polls `predicate` until it holds or `timeoutMs` passes; whether it held. */
 export async function until(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;

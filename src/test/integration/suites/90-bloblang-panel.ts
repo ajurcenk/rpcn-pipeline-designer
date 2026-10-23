@@ -2166,7 +2166,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		}
 	});
 
-	test('COLLISION (4.17): renamed onto a file whose same processor has a panel: the incoming panel closes', async () => {
+	test('COLLISION (4.17, ticket 17): renamed onto a file whose same processor has a panel: the moved panel takes the key, the one there closes', async () => {
 		const one = (await open('collide-1.yaml', CONFIG)).document;
 		const two = (await open('collide-2.yaml', CONFIG)).document;
 		const incoming = await show(one.uri, FIRST);
@@ -2175,12 +2175,94 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.notStrictEqual(incoming, there);
 		const thereGone = disposal(there);
 		await renameFile(one.uri, two.uri, { overwrite: true });
-		assert.ok(await waitFor(() => gone(), 10_000), 'the incoming panel closed');
+		assert.ok(await waitFor(() => thereGone(), 10_000), 'the panel already there closed');
+		assert.ok(await waitFor(() => api().bloblangPanels.panelFor(two.uri, FIRST) === incoming, 10_000), 'the moved panel is keyed by the name');
 		await settle();
-		assert.ok(!thereGone(), 'the panel already there stays');
-		assert.strictEqual(api().bloblangPanels.panelFor(two.uri, FIRST), there);
+		assert.ok(!gone(), 'the moved panel stays');
+		assert.strictEqual(incoming.uri.toString(), two.uri.toString());
+		assert.strictEqual(api().bloblangPanels.panelFor(two.uri, FIRST), incoming);
 		assert.strictEqual(api().bloblangPanels.panelFor(one.uri, FIRST), undefined);
 	});
+
+	test('OVERWRITTEN_OTHERS (ticket 17): every panel of the overwritten config closes, not only the colliding one', async () => {
+		const one = (await open('overwrite-1.yaml', CONFIG)).document;
+		const two = (await open('overwrite-2.yaml', CONFIG)).document;
+		const incoming = await show(one.uri, FIRST);
+		const gone = disposal(incoming);
+		const thereFirst = await show(two.uri, FIRST);
+		const thereOther = await show(two.uri, 'pipeline.processors[2]');
+		const firstGone = disposal(thereFirst);
+		const otherGone = disposal(thereOther);
+		await renameFile(one.uri, two.uri, { overwrite: true });
+		assert.ok(await waitFor(() => firstGone() && otherGone(), 10_000), 'both panels of the overwritten config closed');
+		assert.ok(await waitFor(() => api().bloblangPanels.panelFor(two.uri, FIRST) === incoming, 10_000), 'the moved panel is keyed by the name');
+		await settle();
+		assert.ok(!gone(), 'the moved panel stays');
+		assert.strictEqual(api().bloblangPanels.panelFor(two.uri, 'pipeline.processors[2]'), undefined);
+	});
+
+	test('OVERWRITTEN_DIRTY (ticket 17): the overwritten config had unsaved changes, the moved one none: the name has none after', async () => {
+		const a = (await open('overwrite-dirty-a.yaml', CONFIG)).document;
+		const b = (await open('overwrite-dirty-b.yaml', CONFIG)).document;
+		// A registry of the test's own hears the test's report of the rename (a→b with overwrite), so
+		// the dirty state it had for b is still there when the rename is reported.
+		const did = new vscode.EventEmitter<vscode.FileRenameEvent>();
+		const workspace = vscode.workspace as { onDidRenameFiles: unknown };
+		const original = workspace.onDidRenameFiles;
+		workspace.onDidRenameFiles = did.event;
+		let registry: ReturnType<typeof testBloblangPanels>;
+		try {
+			registry = testBloblangPanels(undefined);
+		} finally {
+			workspace.onDidRenameFiles = original;
+		}
+		const { panels } = registry;
+		try {
+			// Dirty before its panel opens: the panel's opening records it (an edit's own event comes
+			// before VS Code marks the document dirty).
+			await insert(b, 0, '# unsaved\n');
+			assert.ok(await waitFor(() => b.isDirty, 5_000));
+			const moved = (await panels.show(a.uri, FIRST))!;
+			const there = (await panels.show(b.uri, FIRST))!;
+			const thereGone = disposal(there);
+			assert.ok(panels.hasUnsavedChanges(b.uri), 'b counts as dirty');
+			assert.ok(!panels.hasUnsavedChanges(a.uri));
+			did.fire({ files: [{ oldUri: a.uri, newUri: b.uri }] });
+			assert.ok(thereGone(), 'the overwritten config\'s panel closed');
+			assert.strictEqual(panels.panelFor(b.uri, FIRST), moved);
+			assert.ok(!panels.hasUnsavedChanges(b.uri), 'the name takes the moved config\'s state: no unsaved changes');
+		} finally {
+			panels.dispose();
+			did.dispose();
+			assert.ok(await b.save());
+		}
+	});
+
+	for (const order of ['a first', 'c first'] as const) {
+		test(`TWO_MOVERS (ticket 17, ${order}): two configs renamed onto one name in a batch: the one renamed last keeps its panel`, async () => {
+			const tag = order === 'a first' ? 'af' : 'cf';
+			const a = (await open(`movers-${tag}-a.yaml`, CONFIG)).document;
+			const c = (await open(`movers-${tag}-c.yaml`, CONFIG)).document;
+			const x = vscode.Uri.file(path.join(dir, `movers-${tag}-x.yaml`));
+			const [first, second] = order === 'a first' ? [a, c] : [c, a];
+			const shownFirst = await show(first.uri, FIRST);
+			const shownSecond = await show(second.uri, FIRST);
+			const [fromA, fromC] = order === 'a first' ? [shownFirst, shownSecond] : [shownSecond, shownFirst];
+			const aGone = disposal(fromA);
+			const cGone = disposal(fromC);
+			const edit = new vscode.WorkspaceEdit();
+			edit.renameFile(a.uri, x);
+			edit.renameFile(c.uri, x, { overwrite: true });
+			assert.ok(await vscode.workspace.applyEdit(edit), 'the renames applied');
+			assert.ok(await waitFor(() => aGone(), 10_000), 'the panel of the config renamed first closed');
+			assert.ok(await waitFor(() => api().bloblangPanels.panelFor(x, FIRST) === fromC, 10_000), 'the panel of the config renamed last is keyed by the name');
+			await settle();
+			assert.ok(!cGone(), 'the winner stays');
+			assert.strictEqual(fromC.uri.toString(), x.toString());
+			assert.strictEqual(api().bloblangPanels.panelFor(a.uri, FIRST), undefined);
+			assert.strictEqual(api().bloblangPanels.panelFor(c.uri, FIRST), undefined);
+		});
+	}
 
 	test('PLACE_WITH_GRAPH + PLACE_SECOND (4.17): a new group below the graph\'s, holding only test panels; every test panel goes there; focus stays in the YAML', async () => {
 		const other = (await open('place-other.yaml', CONFIG)).document;

@@ -42,3 +42,15 @@
   summary: The graph panel reopens its document with `openTextDocument` on every webview `ready` (it sends `ready` again on each reload, since `retainContextWhenHidden` is false), which keeps a closed document open for minutes. This made suite 90's CLOSE_UNSAVED + WITH_GRAPH flaky in CI.
   evidence: Found after the 4.12 commit (CI 2a73cfa failed it on both labels; run 38851777631 on the 4.11 plan commit failed it on the floor before 4.12). Reproduced locally by sending one extra `ready` 50 ms after the close. 4.12 fixed only the test (wait for the graph's `ready` to settle). A product fix, not reopening a closed document on `ready`, changes graph behaviour; candidate for the refactor sweep (4.13).
   resolution: fixed by 4.13 (2026-10-17): on `ready` the graph uses its document only when it is already open, else its last model and status; suite 90's settle workaround is removed.
+
+- source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
+  summary: After an overwrite rename, the moved test panels read the overwritten config's samples file, and the moved config's own samples file is left under its old name.
+  evidence: `moveSamples` returns `exists` when the target's samples file is there, so both are left and the user is told; before ticket 17 the moved panel closed, which hid this. Changing how samples files move was out of the ticket's scope.
+
+- source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
+  summary: The test registry's dirty tracking misses an edit's dirty state; only a panel opened on an already dirty document records it.
+  evidence: Found while writing OVERWRITTEN_DIRTY (ticket 17 review): VS Code sets `isDirty` only after the content-change event, and the handler ignores the later change event that has no content changes.
+
+- source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
+  summary: A hidden file renamed (with overwrite) onto a file whose graph is open marks the new name hidden while that graph stays open, showing the moved content.
+  evidence: Ticket 17 resumed review R4. `GraphPanels.renamed` picks winners among open graphs only, so `follows(this.hidden, …)` moves the hidden flag with no winner check; the same before ticket 17.
