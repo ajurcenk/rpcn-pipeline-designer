@@ -3,7 +3,7 @@ title: 'Node markers wait for Red Hat to republish after an edit'
 type: 'bugfix'
 ticket: '13'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: '82b16477d830db5c13b4ea384bba3cd26c56e14d'
 route: 'oneshot'
 route_source: 'auto'
