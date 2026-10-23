@@ -26,16 +26,17 @@ class FakeSource implements DiagnosticsSource {
 		this.collection = vscode.languages.createDiagnosticCollection(`rpcn-test-${Math.random()}`);
 		return this.collection;
 	}
-	setRedHat(uri: vscode.Uri, lines: number[]): void {
+	setRedHat(uri: vscode.Uri, lines: number[], source = 'YAML'): void {
 		this.redHat.set(uri.toString(), lines.map((l) => {
 			const d = new vscode.Diagnostic(new vscode.Range(l - 1, 0, l - 1, 1), 'red hat', vscode.DiagnosticSeverity.Error);
-			d.source = 'YAML';
+			d.source = source;
 			return d;
 		}));
 		this.diagnostics.fire({ uris: [uri] });
 	}
-	edit(doc: vscode.TextDocument): void {
-		this.change.fire({ document: doc, contentChanges: [{} as vscode.TextDocumentContentChangeEvent], reason: undefined });
+	/** An edit event; by default a no-op change (empty text at offset 0), as a real one carries offsets. */
+	edit(doc: vscode.TextDocument, change: Partial<vscode.TextDocumentContentChangeEvent> = { rangeOffset: 0, rangeLength: 0, text: '' }): void {
+		this.change.fire({ document: doc, contentChanges: [change as vscode.TextDocumentContentChangeEvent], reason: undefined });
 	}
 	dispose(): void {
 		this.save.dispose();
@@ -78,6 +79,8 @@ const findings = (fsPath: string, ...lines: [number, string][]): LintResult => (
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 10));
+/** A Red Hat schema diagnostic's source (held through edits, story 13; a syntax error is not). */
+const SCHEMA = 'yaml-schema: test';
 
 suite('adapters/vscode LintDiagnostics', () => {
 	let dir: string;
@@ -180,13 +183,71 @@ suite('adapters/vscode LintDiagnostics', () => {
 	});
 
 	test('FIRST_EDIT: the first edit clears lint diagnostics; Red Hat untouched', async () => {
-		source.setRedHat(doc.uri, [1]);
+		source.setRedHat(doc.uri, [1], SCHEMA); // a schema diagnostic: a syntax one is not held through an edit (story 13)
 		source.save.fire(doc);
 		lint.release(findings(doc.uri.fsPath, [3, 'x']));
 		await tick();
 		source.edit(doc);
 		assert.deepStrictEqual(published(), []);
 		assert.deepStrictEqual(controller.diagnosticsFor(doc.uri).map((d) => d.message), ['red hat']);
+	});
+
+	test('story 13: Red Hat\'s diagnostics are held, shifted by the edits, until Red Hat republishes', async () => {
+		const editor = await vscode.window.showTextDocument(doc);
+		source.setRedHat(doc.uri, [3], SCHEMA); // `    nope: 1`
+		const at = () => controller.diagnosticsFor(doc.uri).filter((d) => d.source === SCHEMA).map((d) => [d.range.start.line + 1, d.range.start.character]);
+		assert.deepStrictEqual(at(), [[3, 0]]);
+		// A line inserted above: Red Hat still says line 3 (not republished); the view says line 4.
+		const inserted = 'x: 1\n';
+		assert.ok(await editor.edit((b) => b.insert(new vscode.Position(0, 0), inserted)));
+		source.edit(doc, { rangeOffset: 0, rangeLength: 0, text: inserted });
+		assert.deepStrictEqual(source.redHat.get(doc.uri.toString())!.map((d) => d.range.start.line + 1), [3], 'Red Hat has not republished');
+		assert.deepStrictEqual(at(), [[4, 0]], 'held on its line');
+		// Another collection's change does not take Red Hat's stale ranges again.
+		source.diagnostics.fire({ uris: [doc.uri] });
+		assert.deepStrictEqual(at(), [[4, 0]]);
+		// Red Hat republishes: its own ranges again.
+		source.setRedHat(doc.uri, [4], SCHEMA);
+		assert.deepStrictEqual(at(), [[4, 0]]);
+		// Its line's start replaced: it goes until Red Hat republishes.
+		const start = doc.offsetAt(new vscode.Position(3, 0));
+		assert.ok(await editor.edit((b) => b.replace(new vscode.Range(3, 0, 3, 4), '')));
+		source.edit(doc, { rangeOffset: start, rangeLength: 4, text: '' });
+		assert.deepStrictEqual(at(), [], 'its start was deleted');
+		source.setRedHat(doc.uri, [4], SCHEMA);
+		assert.deepStrictEqual(at(), [[4, 0]]);
+		// A change that can't be mapped, or a version the shifts did not reach: none until Red Hat republishes.
+		source.edit(doc, {});
+		assert.deepStrictEqual(at(), [], 'unmappable change');
+		source.setRedHat(doc.uri, [2], SCHEMA);
+		assert.ok(await editor.edit((b) => b.insert(new vscode.Position(0, 0), '#\n')));
+		assert.deepStrictEqual(at(), [], 'a version no shift reached');
+		await vscode.commands.executeCommand('workbench.action.files.revert');
+	});
+
+	test('story 13: text inserted exactly at a held start goes before it; the shift alone fires no event; undetected files hold nothing', async () => {
+		const editor = await vscode.window.showTextDocument(doc);
+		source.setRedHat(doc.uri, [3], SCHEMA); // column 0 of `    nope: 1`
+		const at = () => controller.diagnosticsFor(doc.uri).filter((d) => d.source === SCHEMA).map((d) => [d.range.start.line + 1, d.range.start.character]);
+		const start = doc.offsetAt(new vscode.Position(2, 0));
+		const fired = changes.length;
+		const typed = '    x: 1\n';
+		assert.ok(await editor.edit((b) => b.insert(new vscode.Position(2, 0), typed)));
+		source.edit(doc, { rangeOffset: start, rangeLength: 0, text: typed });
+		assert.deepStrictEqual(at(), [[4, 0]], 'not onto the typed line');
+		assert.strictEqual(changes.length, fired, 'no event for the shift');
+		// A syntax error (source YAML) is not held through an edit: the edit may have fixed it.
+		const schema = source.redHat.get(doc.uri.toString())![0];
+		const syntax = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), 'syntax', vscode.DiagnosticSeverity.Error);
+		syntax.source = 'YAML';
+		source.redHat.set(doc.uri.toString(), [schema, syntax]);
+		source.diagnostics.fire({ uris: [doc.uri] });
+		source.edit(doc);
+		assert.deepStrictEqual(controller.diagnosticsFor(doc.uri).filter((d) => d.source === 'YAML' || d.source === SCHEMA).map((d) => d.message), ['red hat'], 'the schema one stays');
+		detection.undetect(doc.uri);
+		source.setRedHat(doc.uri, [3], SCHEMA);
+		assert.deepStrictEqual(at(), [[3, 0]], 'an undetected file: Red Hat\'s own ranges');
+		await vscode.commands.executeCommand('workbench.action.files.revert');
 	});
 
 	test('a change event without content changes (dirty flag) does not clear', async () => {

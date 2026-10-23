@@ -1,9 +1,10 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
+import { LintDiagnostics } from '../../../adapters/vscode/diagnostics';
 import type { NodeStatusById } from '../../../shared/protocol';
 import { waitFor } from '../helpers';
-import { live, settle, SWITCH_ID, withGraph, replace, insert, open, fakeDiagnostics, useGraphSuite } from '../graphHelpers';
+import { live, settle, SWITCH_ID, withGraph, replace, insert, open, fakeDiagnostics, testPanels, useGraphSuite } from '../graphHelpers';
 import { api } from '../schemaHarness';
 
 suite('Pipeline graph: markers (3.8, integration)', function () {
@@ -117,6 +118,67 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 			assert.ok(after.indexOf('model') >= 0 && after.indexOf('model') < after.indexOf('nodeStatus'), `${after}`);
 		} finally {
 			fake.dispose();
+		}
+	});
+
+	test('HELD (story 13): a Red Hat marker stays on its node when a node is inserted above it before Red Hat republishes; the republish sends nothing new', async () => {
+		const doc = await open('status-redhat.yaml', STATUS);
+		// The real view (LintDiagnostics) over a Red Hat that republishes only when the test says.
+		const redHat = new Map<string, vscode.Diagnostic[]>();
+		const published = new vscode.EventEmitter<vscode.DiagnosticChangeEvent>();
+		const view = new LintDiagnostics({
+			detection: api().detection, log: () => undefined, lint: async () => ({ kind: 'findings', findings: [], logLines: [] }),
+			source: {
+				get textDocuments() { return vscode.workspace.textDocuments; },
+				onDidSaveTextDocument: vscode.workspace.onDidSaveTextDocument,
+				onDidChangeTextDocument: vscode.workspace.onDidChangeTextDocument,
+				onDidCloseTextDocument: vscode.workspace.onDidCloseTextDocument,
+				onDidChangeDiagnostics: published.event,
+				getDiagnostics: (uri) => redHat.get(uri.toString()) ?? [],
+				createDiagnosticCollection: (name) => vscode.languages.createDiagnosticCollection(`${name}-held`),
+			},
+		});
+		// Created after the view, as at activation: the view hears each edit first.
+		const panels = testPanels({ diagnostics: view });
+		const MESSAGE = 'Property message is odd';
+		const republish = () => {
+			const at = doc.positionAt(doc.getText().indexOf('message: hi'));
+			const d = new vscode.Diagnostic(new vscode.Range(at, at.translate(0, 1)), MESSAGE, vscode.DiagnosticSeverity.Warning);
+			d.source = 'yaml-schema: test';
+			redHat.set(doc.uri.toString(), [d]);
+			published.fire({ uris: [doc.uri] });
+		};
+		try {
+			const handle = (await panels.show(doc.uri))!;
+			await handle.receive({ type: 'ready' });
+			republish();
+			assert.ok(await waitFor(() => statuses(handle).at(-1)?.[LOG_ID]?.own === 'warning', 10_000), 'marked');
+			const before = statuses(handle).length;
+			const postedBefore = handle.posted.length;
+			// Two lines above the switch: Red Hat's stale range now lies on the case's `processors:` line.
+			await insert(doc, doc.getText().indexOf('    - switch:'), '    - log:\n        message: top\n');
+			assert.ok(await waitFor(() => live(handle).at(-1)?.type === 'model' && statuses(handle).length > before, 10_000), 'the edit\'s model and status');
+			// The status follows the model it describes, never before it (the old model would show it).
+			const posts = handle.posted.slice(postedBefore).map((m) => m.type);
+			assert.ok(posts.indexOf('model') >= 0 && posts.indexOf('model') < posts.indexOf('nodeStatus'), `${posts}`);
+			await settle();
+			const movedSwitch = 'path:pipeline.processors[1]';
+			const movedLog = `${movedSwitch}.switch[0].processors[0]`;
+			for (const status of statuses(handle).slice(before)) {
+				// Its own marker only on the log (messages roll up to the groups above, own ones do not).
+				const own = Object.entries(status).filter(([, s]) => s.ownMessages?.includes(MESSAGE)).map(([id]) => id);
+				assert.deepStrictEqual(own, [movedLog], `AC 1, never on another node: ${JSON.stringify(status)}`);
+				assert.strictEqual(status[movedLog]?.own, 'warning', `held on the log: ${JSON.stringify(status)}`);
+			}
+			// AC 2: Red Hat republishes at the shifted position: the mapped status is the same, nothing is sent.
+			const count = statuses(handle).length;
+			republish();
+			await settle();
+			assert.strictEqual(statuses(handle).length, count, 'no new nodeStatus');
+		} finally {
+			panels.dispose();
+			view.dispose();
+			published.dispose();
 		}
 	});
 

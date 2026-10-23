@@ -12,11 +12,16 @@
 // 4.5) is hidden: a finding on a line of that processor (its key line through the line after its
 // value) whose message starts with the live error's. The live error wins over lint's duplicate,
 // whose position is unreliable. The Bloblang collection is its own, so the first edit after a
-// save leaves it alone.
+// save leaves it alone. In that view Red Hat's diagnostics are held, shifted by the edits, until
+// Red Hat republishes (story 13): their offsets are taken when Red Hat publishes and moved
+// through each content change, so a marker never lands on another node meanwhile; one whose start
+// was replaced or deleted, and every syntax error, is left out, and a change that can't be mapped
+// leaves them all out until Red Hat republishes. Lint's suppression on Red Hat's lines reads Red Hat's own ranges.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { documentLine, LintFinding, suppressFlaggedLines } from '../../core/lint';
+import { mapRange, TextChange } from '../../core/processorTracking';
 import type { LintResult } from '../redpandaConnect/lint';
 import type { LiveBloblangError } from './bloblangDiagnostics';
 
@@ -72,6 +77,18 @@ interface UriState {
 	signature: string;
 }
 
+/** Red Hat's diagnostics of a URI as taken when its set changed, shifted by the edits since (story 13). */
+interface HeldRedHat {
+	/**
+	 * Red Hat's set they were taken from. Compared by identity: each republish creates new objects,
+	 * even with the same content, while another collection's change leaves them as they are.
+	 */
+	readonly published: readonly vscode.Diagnostic[];
+	/** The document version the offsets are for; another version gets none until Red Hat republishes. */
+	version: number;
+	held: readonly { readonly diagnostic: vscode.Diagnostic; readonly range: readonly [number, number] }[];
+}
+
 export function defaultDiagnosticsSource(): DiagnosticsSource {
 	return {
 		get textDocuments() { return vscode.workspace.textDocuments; },
@@ -86,6 +103,7 @@ export function defaultDiagnosticsSource(): DiagnosticsSource {
 
 export class LintDiagnostics implements vscode.Disposable {
 	private readonly states = new Map<string, UriState>();
+	private readonly redHatHeld = new Map<string, HeldRedHat>();
 	private readonly collection: vscode.DiagnosticCollection;
 	private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
 	private readonly subscriptions: vscode.Disposable[] = [];
@@ -104,6 +122,7 @@ export class LintDiagnostics implements vscode.Disposable {
 			this.source.onDidSaveTextDocument((doc) => this.onSave(doc)),
 			this.source.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length > 0) {
+					this.shiftRedHat(e);
 					this.invalidate(e.document.uri);
 				}
 			}),
@@ -114,17 +133,93 @@ export class LintDiagnostics implements vscode.Disposable {
 				}
 			}),
 			// A session-marked file stays detected after close; its findings still go.
-			this.source.onDidCloseTextDocument((doc) => this.invalidate(doc.uri)),
-			this.source.onDidChangeDiagnostics((e) => e.uris.forEach((uri) => this.refresh(uri))),
+			this.source.onDidCloseTextDocument((doc) => {
+				this.redHatHeld.delete(doc.uri.toString());
+				this.invalidate(doc.uri);
+			}),
+			this.source.onDidChangeDiagnostics((e) => e.uris.forEach((uri) => {
+				this.takeRedHat(uri);
+				this.refresh(uri);
+			})),
 		);
 		if (options.bloblangErrors) {
 			this.subscriptions.push(options.bloblangErrors.onDidChangeDiagnostics((uri) => this.refresh(uri)));
 		}
 	}
 
-	/** Red Hat's diagnostics for the URI, the published (deduped) lint ones and the published Bloblang ones. */
+	/** Red Hat's diagnostics for the URI (held, story 13), the published (deduped) lint ones and the published Bloblang ones. */
 	diagnosticsFor(uri: vscode.Uri): vscode.Diagnostic[] {
-		return [...this.redHat(uri), ...(this.collection.get(uri) ?? []), ...this.bloblang(uri)];
+		return [...this.heldRedHat(uri), ...(this.collection.get(uri) ?? []), ...this.bloblang(uri)];
+	}
+
+	/** Red Hat's set changed (or any collection did): a new set is taken with its offsets now. */
+	private takeRedHat(uri: vscode.Uri): void {
+		const key = uri.toString();
+		if (!this.options.detection.isDetected(uri)) {
+			this.redHatHeld.delete(key); // only the files the graph reads
+			return;
+		}
+		const redHat = this.redHat(uri);
+		const previous = this.redHatHeld.get(key)?.published;
+		if (previous && previous.length === redHat.length && previous.every((d, i) => d === redHat[i])) {
+			return; // another collection changed, not Red Hat's: the held offsets stay as shifted
+		}
+		const doc = this.document(uri);
+		if (!doc) {
+			this.redHatHeld.delete(key);
+			return;
+		}
+		this.redHatHeld.set(key, { published: redHat, version: doc.version, held: redHat.map((diagnostic) =>
+			({ diagnostic, range: [doc.offsetAt(diagnostic.range.start), doc.offsetAt(diagnostic.range.end)] as const })) });
+	}
+
+	/** An edit: the held offsets move through its changes; one whose start was replaced goes. */
+	private shiftRedHat(e: vscode.TextDocumentChangeEvent): void {
+		const held = this.redHatHeld.get(e.document.uri.toString());
+		if (!held) {
+			return;
+		}
+		const changes: TextChange[] = e.contentChanges.map((c) => ({ offset: c.rangeOffset, length: c.rangeLength, text: c.text }));
+		if (changes.some((c) => typeof c.offset !== 'number' || typeof c.length !== 'number' || typeof c.text !== 'string')) {
+			held.held = []; // can't be mapped: none until Red Hat republishes
+		} else {
+			// A syntax error (source `YAML`) describes the text's structure, which the edit may have fixed:
+			// it goes until Red Hat republishes. Schema diagnostics are held.
+			held.held = held.held
+				.filter(({ diagnostic }) => diagnostic.source !== 'YAML')
+				.filter(({ range: [start] }) => !changes.some((c) => c.length > 0 && c.offset <= start && start < c.offset + c.length))
+				.map((h) => {
+					// Text inserted exactly at its start (a node typed at the cursor) goes before it, not into it.
+					const [start, end] = mapRange(h.range, changes);
+					const before = changes.filter((c) => c.length === 0 && c.offset === h.range[0]).reduce((n, c) => n + c.text.length, 0);
+					return { diagnostic: h.diagnostic, range: [start + before, Math.max(start + before, end + (h.range[0] === h.range[1] ? before : 0))] as const };
+				});
+		}
+		held.version = e.document.version;
+		// The shift alone fires nothing: the graph rebuilds on this edit with the shifted ranges, and an
+		// event now would send the new model's status before the model (the view's listener runs first).
+		const state = this.states.get(e.document.uri.toString());
+		if (state) {
+			state.signature = signatureOf([...this.heldRedHat(e.document.uri), ...(this.collection.get(e.document.uri) ?? []), ...this.bloblang(e.document.uri)]);
+		}
+	}
+
+	/** Red Hat's diagnostics at their held ranges for the current text; Red Hat's own when none are held. */
+	private heldRedHat(uri: vscode.Uri): vscode.Diagnostic[] {
+		const held = this.redHatHeld.get(uri.toString());
+		if (!held) {
+			return this.redHat(uri);
+		}
+		const doc = this.document(uri);
+		if (!doc || doc.version !== held.version) {
+			return [];
+		}
+		return held.held.map(({ diagnostic, range: [start, end] }) => {
+			const moved = new vscode.Diagnostic(new vscode.Range(doc.positionAt(start), doc.positionAt(end)), diagnostic.message, diagnostic.severity);
+			moved.source = diagnostic.source;
+			moved.code = diagnostic.code;
+			return moved;
+		});
 	}
 
 	dispose(): void {
@@ -133,6 +228,7 @@ export class LintDiagnostics implements vscode.Disposable {
 			d.dispose();
 		}
 		this.states.clear();
+		this.redHatHeld.clear();
 	}
 
 	private state(uri: vscode.Uri): UriState {
@@ -232,7 +328,7 @@ export class LintDiagnostics implements vscode.Disposable {
 				this.collection.delete(uri);
 			}
 		}
-		const signature = signatureOf([...redHat, ...published, ...this.bloblang(uri)]);
+		const signature = signatureOf([...this.heldRedHat(uri), ...published, ...this.bloblang(uri)]);
 		if (signature !== state.signature) {
 			state.signature = signature;
 			this.emitter.fire(uri);

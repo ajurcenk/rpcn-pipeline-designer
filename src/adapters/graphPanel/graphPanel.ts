@@ -376,9 +376,7 @@ export class GraphPanel implements GraphPanelHandle {
 		this.modelCatalogue = this.built?.catalogue;
 		await this.post({ type: 'model', model });
 		await this.sendSelection(model);
-		// Known, transient (backlog story 13): Red Hat's published ranges are not shifted by an edit,
-		// so until Red Hat republishes (debounced, well under a second) one of its markers can sit one
-		// node off.
+		// Red Hat's diagnostics in the view are held at their shifted ranges until it republishes (story 13).
 		await this.sendStatus(doc, model);
 	}
 
