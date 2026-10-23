@@ -3,7 +3,7 @@ title: 'Graph marker does not blink after the YAML is fixed'
 type: 'bugfix'
 ticket: '18'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'f57dd3f9a6cc429c0868787bb9d47f9f70cfa0f5'
 route: 'oneshot'
 route_source: 'auto'
