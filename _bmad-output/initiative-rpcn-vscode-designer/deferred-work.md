@@ -54,3 +54,7 @@
 - source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
   summary: A hidden file renamed (with overwrite) onto a file whose graph is open marks the new name hidden while that graph stays open, showing the moved content.
   evidence: Ticket 17 resumed review R4. `GraphPanels.renamed` picks winners among open graphs only, so `follows(this.hidden, …)` moves the hidden flag with no winner check; the same before ticket 17.
+
+- source_plan: `_bmad-output/backlog/bug-typing-rpcn-in-a-blank-file-offers-no-starter-snippet-plan.md`
+  summary: In a detected config (also a blank one matched by `redpandaConnect.filePatterns`), accepting a section snippet after typing `rpcn-…` leaves `rpcn-` in front, since VS Code's YAML word stops at `-`; the README tells users to type `rpcn-` for the sections.
+  evidence: Ticket 11 review finding 1. `SnippetCompletionProvider` sets `item.range` only for undetected blank files; the YAML language configuration has no `wordPattern`. Ticket 11's boundary kept detected files unchanged.
