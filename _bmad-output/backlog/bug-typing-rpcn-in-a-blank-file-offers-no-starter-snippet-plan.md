@@ -3,7 +3,7 @@ title: 'Typing rpcn- in a blank file offers no starter snippet'
 type: 'bugfix'
 ticket: '11'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: '20c83d90fa504ee976fd753b268ed7837287ffff'
 route: 'oneshot'
 route_source: 'auto'
