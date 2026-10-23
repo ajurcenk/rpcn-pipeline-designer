@@ -360,7 +360,8 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		await replace(editor, 'stdout: {}', 'stdout: { codec: [lines }');
 		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 0, 5_000), 'cleared while the YAML does not parse');
 		await replace(editor, 'stdout: { codec: [lines }', 'stdout: {}');
-		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 1, 5_000), 'back once it parses');
+		// Story 18: the edit that fixes the YAML republishes at once, not after the 300 ms debounce.
+		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 1, 150), 'back once it parses, without the debounce');
 		await quiet();
 		assert.strictEqual(spawns(), spawned, 'unchanged mappings are not parsed again');
 	});
@@ -576,7 +577,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		assert.deepStrictEqual(bloblangOf(doc.uri), []);
 	});
 
-	test('GRAPH FROZEN (ticket 6): while the YAML does not parse no status is sent and the marker stays; once it parses the status is recomputed', async () => {
+	test('GRAPH FROZEN (ticket 6, story 18): while the YAML does not parse no status is sent and the marker stays; once it parses the status is recomputed and the marker does not blink', async () => {
 		const editor = await open('graph-frozen.yaml', CONFIG.replace('mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:1'));
 		const doc = editor.document;
 		const handle = await graph(doc);
@@ -601,14 +602,17 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		const beforeFix = statuses(handle).length;
 		await fixYaml();
 		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 1, 5_000), 'back once it parses');
-		// The model is mapped against the diagnostics of that moment, before 4.5 republishes its
-		// cached error (after its debounce), so a `{}` may be posted first; the last post is the marker.
-		assert.ok(await waitFor(() => statuses(handle).length > beforeFix
-			&& JSON.stringify(statuses(handle).at(-1)) === JSON.stringify(marked), 10_000),
-			`recomputed with the republished error: ${JSON.stringify(statuses(handle).slice(beforeFix))}`);
+		assert.ok(await waitFor(() => live(handle).at(-1)?.type === 'model', 10_000), 'the model is sent again');
 		await quiet();
 		await settle();
-		assert.deepStrictEqual(statuses(handle).at(-1), marked);
+		// Story 18: the model is mapped against the error 4.5 republished in the same change event,
+		// so the marker never goes: no other status is posted (the unchanged one is not sent again).
+		assert.deepStrictEqual(statuses(handle).slice(beforeFix).filter((s) => JSON.stringify(s) !== JSON.stringify(marked)), [],
+			`no blink: ${JSON.stringify(statuses(handle).slice(beforeFix))}`);
+		await handle.receive({ type: 'ready' });
+		const current = handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+		assert.ok(current?.type === 'snapshot' && !current.parseError);
+		assert.deepStrictEqual(current.nodeStatus, marked, 'the current status is the marker');
 
 		// Fixed while the YAML is broken: once it parses, the recomputed status is empty.
 		await brokenYaml();

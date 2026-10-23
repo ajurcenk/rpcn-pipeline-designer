@@ -9,8 +9,9 @@
 // runs one parse at a time with the latest text pending. The collection is always rebuilt from the
 // document's current processors and the cache, so a result for text that is no longer there is
 // never shown. A file whose YAML does not parse, that closes or stops being detected, or any file
-// while there is no usable binary, has none. A processor whose new text is still being parsed
-// keeps its last diagnostic until the result. Only deterministic outcomes are cached (a parse, a
+// while there is no usable binary, has none; the edit that makes its YAML parse again updates at
+// once, without the debounce, so the cached errors come back before the graph rebuilds (story
+// 18). A processor whose new text is still being parsed keeps its last diagnostic until the result. Only deterministic outcomes are cached (a parse, a
 // parse error, an unset env var); a timeout or spawn failure is parsed again on the next trigger.
 // Lint (AD-12) reads `liveErrorsFor` to hide its duplicate of a live error, and adds `diagnostics`
 // to the view the graph's node status reads (AD-17, ticket 6).
@@ -74,10 +75,12 @@ interface Shown {
 
 interface DocState {
 	timer: NodeJS.Timeout | undefined;
-	/** Processors by path, from the last debounced update; empty while the YAML does not parse. */
+	/** Processors by path, from the last update (debounced, or at once on the edit that fixes the YAML); empty while the YAML does not parse. */
 	current: Map<string, Current>;
 	/** The published diagnostic per processor path. */
 	shown: Map<string, Shown>;
+	/** The last update found the YAML not parsing. */
+	broken: boolean;
 }
 
 interface Flight {
@@ -134,7 +137,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 			this.parsedEmitter,
 			this.source.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length > 0) {
-					this.schedule(e.document);
+					this.changed(e.document);
 				}
 			}),
 			this.source.onDidCloseTextDocument((doc) => this.forget(doc.uri)),
@@ -195,6 +198,24 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		return doc.uri.scheme === 'file' && this.options.detection.isDetected(doc.uri);
 	}
 
+	/**
+	 * An edit: debounced, except the one that makes the YAML parse again, which updates at once so
+	 * the cached errors are republished in this change event. This listener is registered before the
+	 * graph's (the service is created first), so the graph's rebuild sees them and a marker does not
+	 * blink (story 18).
+	 */
+	private changed(doc: vscode.TextDocument): void {
+		const key = doc.uri.toString();
+		const state = this.docs.get(key);
+		if (!this.disposed && state?.broken && this.eligible(doc) && parses(doc)) {
+			clearTimeout(state.timer);
+			state.timer = undefined;
+			this.update(key);
+			return;
+		}
+		this.schedule(doc);
+	}
+
 	private schedule(doc: vscode.TextDocument): void {
 		if (this.disposed || !this.eligible(doc)) {
 			return;
@@ -202,7 +223,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		const key = doc.uri.toString();
 		let state = this.docs.get(key);
 		if (!state) {
-			state = { timer: undefined, current: new Map(), shown: new Map() };
+			state = { timer: undefined, current: new Map(), shown: new Map(), broken: false };
 			this.docs.set(key, state);
 		}
 		clearTimeout(state.timer);
@@ -225,7 +246,8 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		}
 		const { parsed } = parsedDocument(doc);
 		state.current = new Map();
-		if (parsed && parsed.docs.every((d) => d.errors.length === 0)) {
+		state.broken = !parses(doc);
+		if (parsed && !state.broken) {
 			for (const p of bloblangProcessors(parsed)) {
 				state.current.set(p.path, { source: p.source, keyStart: p.keyRange[0], offsetAt: p.positions.offsetAt });
 			}
@@ -425,6 +447,12 @@ export class BloblangDiagnostics implements vscode.Disposable {
 	private document(key: string): vscode.TextDocument | undefined {
 		return this.source.textDocuments.find((d) => d.uri.toString() === key);
 	}
+}
+
+/** Whether the document's YAML parses (every YAML document without errors). */
+function parses(doc: vscode.TextDocument): boolean {
+	const { parsed } = parsedDocument(doc);
+	return !!parsed && parsed.docs.every((d) => d.errors.length === 0);
 }
 
 /** A parse, a parse error and an unset env var depend only on the text (and the env file); a timeout or spawn failure does not. */
