@@ -3,7 +3,7 @@ title: '~user paths in path settings resolve to that user''s home'
 type: 'feature'
 ticket: '2'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'e60c84f2bec9441b5c0a75139424c9c4b331d49e'
 route: 'oneshot'
 route_source: 'auto'
