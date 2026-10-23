@@ -3,7 +3,7 @@ title: 'Bloblang completion on the left of an assignment'
 type: 'feature'
 ticket: '8'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'c90cfd614d51a712b960d17306f8b2cd50e8c90f'
 route: 'oneshot'
 route_source: 'auto'
