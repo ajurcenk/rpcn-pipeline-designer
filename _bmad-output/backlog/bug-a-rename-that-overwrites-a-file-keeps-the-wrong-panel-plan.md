@@ -3,7 +3,7 @@ title: 'A rename that overwrites a file keeps the wrong panel'
 type: 'bugfix'
 ticket: '17'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '1d4d26978e24dd7680229d33216987741f858be9'
 route: 'full'
 route_source: 'auto'
