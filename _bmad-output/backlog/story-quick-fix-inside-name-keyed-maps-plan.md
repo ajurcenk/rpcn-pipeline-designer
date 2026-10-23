@@ -3,7 +3,7 @@ title: 'Unknown-field Quick Fix inside name-keyed maps'
 type: 'feature'
 ticket: '7'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'c063d6cfee3ecb5ac08f013630f3cf6195dfaa08'
 route: 'oneshot'
 route_source: 'auto'
