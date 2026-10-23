@@ -3,7 +3,7 @@ title: "First processor's sample from the generate input"
 type: 'feature'
 ticket: '23'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '3a3a4cec9cae179f044d8684a344939349d18711'
 route: 'full'
 route_source: 'auto'
