@@ -3,7 +3,7 @@ title: 'Multi-root workspaces use a defined folder for relative path settings'
 type: 'feature'
 ticket: '4'
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'a9724766a5d55efdcb0d5f705406399c98c9d6c2'
 route: 'oneshot'
 route_source: 'auto'
