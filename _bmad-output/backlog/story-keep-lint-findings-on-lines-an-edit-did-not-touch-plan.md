@@ -3,7 +3,7 @@ title: 'Keep lint findings on lines an edit did not touch'
 type: 'feature'
 ticket: '10'
 created: '2026-10-24'
-status: 'built'
+status: done
 baseline_revision: '5d6bd6ce2e9125b5383b1b1781d542e37a213927'
 route: 'full'
 route_source: 'auto'
