@@ -73,7 +73,7 @@ suite('Lint on save (integration)', function () {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
-	test('UNKNOWN_FIELD / DEPRECATED / FIRST_EDIT: save shows Error and Warning on their lines; the first edit clears them', async () => {
+	test('UNKNOWN_FIELD / DEPRECATED / INSERT_ABOVE: save shows Error and Warning on their lines; a line inserted above moves them', async () => {
 		const doc = await openSaved('lint.yaml', 'input:\n  generate:\n    mapping: root = {}\n    nope: 1\noutput:\n  file:\n    path: x\n    codec: lines\n');
 		assert.ok(api().detection.isDetected(doc.uri));
 		await editAndSave(doc);
@@ -86,7 +86,10 @@ suite('Lint on save (integration)', function () {
 		const edit = new vscode.WorkspaceEdit();
 		edit.insert(doc.uri, new vscode.Position(0, 0), '# x\n');
 		assert.ok(await vscode.workspace.applyEdit(edit));
-		assert.deepStrictEqual(lintOf(doc), []);
+		assert.deepStrictEqual(lintOf(doc), [
+			[5, vscode.DiagnosticSeverity.Error, 'field nope not recognised'],
+			[9, vscode.DiagnosticSeverity.Warning, 'field codec is deprecated'],
+		]);
 	});
 
 	test('NOT_DETECTED: saving a non-Redpanda-Connect YAML runs no lint', async () => {
@@ -152,7 +155,7 @@ suite('Lint on save (integration)', function () {
 		assert.strictEqual(ours[0]?.title, 'Change to `topic`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('topci:', 'topic:')}\n`);
-		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix edits the finding\'s line, so its finding goes');
 	});
 
 	test('QUICK_FIX in a name-keyed map (ticket 7): request_mapp in a workflow branch offers "Change to `request_map`", preferred; applying changes only the key', async () => {
@@ -169,7 +172,7 @@ suite('Lint on save (integration)', function () {
 		assert.ok(ours[0].isPreferred, 'a clear winner is preferred');
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('request_mapp:', 'request_map:')}\n`);
-		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix edits the finding\'s line, so its finding goes');
 	});
 
 	test('OPTION_FIX (2.14): an invalid option offers "Change to `tcp`"; applying changes only the value', async () => {
@@ -185,7 +188,38 @@ suite('Lint on save (integration)', function () {
 		assert.strictEqual(ours[0]?.title, 'Change to `tcp`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
 		assert.strictEqual(doc.getText(), `${text.replace('network: tpc', 'network: tcp')}\n`);
-		assert.deepStrictEqual(lintOf(doc), [], 'the fix is an edit, so lint findings clear');
+		assert.deepStrictEqual(lintOf(doc), [], 'the fix edits the finding\'s line, so its finding goes');
+	});
+
+	test('QUICK_FIX keeps the others (ticket 10): after the fix on one finding, the next keeps its fix; the save replaces them all', async () => {
+		const text = 'input:\n  socket_server:\n    network: tpc  # keep\n    address: 0.0.0.0:6000\noutput:\n  kafka_franz:\n    seed_brokers: [x]\n    topci: t\n';
+		const doc = await openSaved('fixone.yaml', text);
+		assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000));
+		await editAndSave(doc); // appends '\n'
+		assert.ok(await waitFor(() => lintOf(doc).length === 2, 15_000), JSON.stringify(lintOf(doc)));
+		const fix = async (message: string, title: string) => {
+			const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect' && d.message.startsWith(message))!;
+			assert.ok(diagnostic, `${message}: ${JSON.stringify(lintOf(doc))}`);
+			const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+				'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+			const action = list.find((a) => a.title === title);
+			assert.ok(action, JSON.stringify(list.map((a) => a.title)));
+			assert.ok(await vscode.workspace.applyEdit(action.edit!));
+		};
+		await fix('value tpc', 'Change to `tcp`');
+		assert.deepStrictEqual(lintOf(doc), [[8, vscode.DiagnosticSeverity.Error, 'field topci not recognised']], 'only the fixed line\'s finding goes');
+		// A comment line above: the finding moves, and its Quick Fix still applies on its new line.
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(doc.uri, new vscode.Position(0, 0), '# nope: 1\n');
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.deepStrictEqual(lintOf(doc), [[9, vscode.DiagnosticSeverity.Error, 'field topci not recognised']]);
+		await fix('field topci', 'Change to `topic`');
+		assert.strictEqual(doc.getText(), `# nope: 1\n${text.replace('network: tpc', 'network: tcp').replace('topci:', 'topic:')}\n`);
+		assert.deepStrictEqual(lintOf(doc), []);
+		// SAVE: lint's fresh findings replace the held ones (the comment's `nope:` is new to them).
+		assert.ok(await doc.save());
+		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
+		assert.deepStrictEqual(lintOf(doc), [[1, vscode.DiagnosticSeverity.Error, 'field nope not recognised']]);
 	});
 
 	test('FIX_ALL (2.22): one light bulb fixes all three findings in one undo step; the next save reports none', async () => {

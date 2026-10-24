@@ -39,7 +39,7 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 	const NOPE = 'field nope not recognised';
 	const CODEC = 'field codec is deprecated';
 
-	test('SEND / CLEAR: a save whose lint reports an error and a deprecation marks those nodes and their groups; the first edit clears them', async () => {
+	test('SEND / GRAPH / CLEAR: a save whose lint reports an error and a deprecation marks those nodes and their groups; an insert above moves the markers with their nodes; an edit on a finding\'s line clears it', async () => {
 		const { doc, handle } = await withGraph('status.yaml', STATUS);
 		const edit = new vscode.WorkspaceEdit();
 		edit.insert(doc.uri, doc.positionAt(doc.getText().length), '\n');
@@ -59,11 +59,35 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 		assert.ok(snapshot?.type === 'snapshot');
 		assert.deepStrictEqual(snapshot.nodeStatus, statuses(handle).at(-1));
 
-		// CLEAR: the first edit after the save clears lint's findings, and so their markers.
+		// GRAPH (ticket 10): two lines (a node) inserted above the switch: lint's findings move with their
+		// lines, so the log keeps its marker under its new id; the status follows its model.
 		const count = statuses(handle).length;
-		await insert(doc, 0, '# x\n');
-		assert.ok(await waitFor(() => statuses(handle).length > count, 10_000), 'a new status');
-		assert.deepStrictEqual(statuses(handle).at(-1), {});
+		const postedBefore = handle.posted.length;
+		await insert(doc, doc.getText().indexOf('    - switch:'), '    - log:\n        message: top\n');
+		const movedSwitch = 'path:pipeline.processors[1]';
+		const movedCase = `${movedSwitch}.switch[0]`;
+		const movedLog = `${movedCase}.processors[0]`;
+		assert.ok(await waitFor(() => statuses(handle).at(-1)?.[movedLog] !== undefined, 10_000), JSON.stringify(statuses(handle).slice(count)));
+		assert.deepStrictEqual(statuses(handle).at(-1), {
+			[movedSwitch]: { severity: 'error', messages: [NOPE] },
+			[movedCase]: { severity: 'error', messages: [NOPE] },
+			[movedLog]: { severity: 'error', own: 'error', messages: [NOPE], ownMessages: [NOPE] },
+			'path:output': { severity: 'warning', own: 'warning', messages: [CODEC], ownMessages: [CODEC] },
+		});
+		const posts = handle.posted.slice(postedBefore).map((m) => m.type);
+		assert.ok(posts.indexOf('model') >= 0 && posts.indexOf('model') < posts.indexOf('nodeStatus'), `${posts}`);
+		for (const status of statuses(handle).slice(count)) {
+			const own = Object.entries(status).filter(([, st]) => st.ownMessages?.includes(NOPE)).map(([id]) => id);
+			assert.deepStrictEqual(own, [movedLog], `never on another node: ${JSON.stringify(status)}`);
+		}
+
+		// CLEAR: an edit on the finding's line drops it, and so its marker; the output's stays.
+		const typed = doc.getText().indexOf('nope: 1');
+		await replace(doc, typed, typed + 'nope'.length, 'nopx');
+		assert.ok(await waitFor(() => statuses(handle).at(-1)?.[movedLog] === undefined, 10_000), JSON.stringify(statuses(handle).at(-1)));
+		assert.deepStrictEqual(statuses(handle).at(-1), {
+			'path:output': { severity: 'warning', own: 'warning', messages: [CODEC], ownMessages: [CODEC] },
+		});
 	});
 
 	test('SAME / FROZEN / SNAPSHOT: an unchanged status is not sent again; while broken nothing is sent and the snapshot keeps the last one', async () => {

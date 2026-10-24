@@ -34,7 +34,10 @@ class FakeSource implements DiagnosticsSource {
 		}));
 		this.diagnostics.fire({ uris: [uri] });
 	}
-	/** An edit event; by default a no-op change (empty text at offset 0), as a real one carries offsets. */
+	/**
+	 * An edit event; by default a no-op change (empty text at offset 0) with no range, as a real one
+	 * carries offsets (lint's findings then clear: their lines can't be told, ticket 10).
+	 */
 	edit(doc: vscode.TextDocument, change: Partial<vscode.TextDocumentContentChangeEvent> = { rangeOffset: 0, rangeLength: 0, text: '' }): void {
 		this.change.fire({ document: doc, contentChanges: [change as vscode.TextDocumentContentChangeEvent], reason: undefined });
 	}
@@ -182,14 +185,90 @@ suite('adapters/vscode LintDiagnostics', () => {
 		assert.strictEqual(changes.length, 2);
 	});
 
-	test('FIRST_EDIT: the first edit clears lint diagnostics; Red Hat untouched', async () => {
+	test('NO_RANGE: an edit whose change has no range clears lint diagnostics; Red Hat untouched; no event', async () => {
 		source.setRedHat(doc.uri, [1], SCHEMA); // a schema diagnostic: a syntax one is not held through an edit (story 13)
 		source.save.fire(doc);
 		lint.release(findings(doc.uri.fsPath, [3, 'x']));
 		await tick();
+		const fired = changes.length;
 		source.edit(doc);
 		assert.deepStrictEqual(published(), []);
 		assert.deepStrictEqual(controller.diagnosticsFor(doc.uri).map((d) => d.message), ['red hat']);
+		assert.strictEqual(changes.length, fired, 'the edit fires no event');
+	});
+
+	test('ticket 10 QUICK_FIX: an edit drops the findings on the lines it touched and moves the others; no event; the save replaces them', async () => {
+		const editor = await vscode.window.showTextDocument(doc);
+		/** Applies a real edit and fires its change event with the range, as VS Code reports it. */
+		const apply = async (range: vscode.Range, text: string) => {
+			const change = { range, rangeOffset: doc.offsetAt(range.start), rangeLength: doc.offsetAt(range.end) - doc.offsetAt(range.start), text };
+			assert.ok(await editor.edit((b) => b.replace(range, text)));
+			source.edit(doc, change);
+		};
+		try {
+			source.save.fire(doc);
+			lint.release(findings(doc.uri.fsPath, [3, 'nope'], [4, 'codec'], [5, 'long']));
+			await tick();
+			const fired = changes.length;
+			// The fix on line 3 replaces its key: 3 goes, 4 and 5 stay, on their whole lines.
+			await apply(new vscode.Range(2, 4, 2, 8), 'name');
+			assert.deepStrictEqual(published().map((p) => [p[0], p[1], p[2], p[5]]), [[4, 0, 16, 'codec'], [5, 0, 14, 'long']]);
+			// Two lines inserted above: they move.
+			await apply(new vscode.Range(0, 0, 0, 0), '# a\n# b\n');
+			assert.deepStrictEqual(published().map((p) => [p[0], p[5]]), [[6, 'codec'], [7, 'long']]);
+			assert.deepStrictEqual(controller.diagnosticsFor(doc.uri).map((d) => [d.range.start.line + 1, d.message]), [[6, 'codec'], [7, 'long']]);
+			assert.strictEqual(changes.length, fired, 'the edits fire no event');
+			// A result for text changed since its save is still dropped, and the earlier save's findings go with it.
+			source.save.fire(doc);
+			await apply(new vscode.Range(0, 0, 0, 0), '#');
+			lint.release(findings(doc.uri.fsPath, [1, 'stale']));
+			await tick();
+			assert.deepStrictEqual(published(), [], 'the stale result dropped, the held findings cleared');
+			// SAVE: lint's fresh findings replace them all.
+			source.save.fire(doc);
+			lint.release(findings(doc.uri.fsPath, [2, 'fresh']));
+			await tick();
+			assert.deepStrictEqual(published().map((p) => [p[0], p[5]]), [[2, 'fresh']]);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+		}
+	});
+
+	test('ticket 10: a ranged edit while a newer save\'s lint runs drops its result and clears the held findings, not shifts them', async () => {
+		const editor = await vscode.window.showTextDocument(doc);
+		try {
+			source.save.fire(doc);
+			lint.release(findings(doc.uri.fsPath, [3, 'a'], [5, 'b']));
+			await tick();
+			source.save.fire(doc); // its lint is running
+			const inserted = '# x\n';
+			assert.ok(await editor.edit((b) => b.insert(new vscode.Position(0, 0), inserted)));
+			source.edit(doc, { range: new vscode.Range(0, 0, 0, 0), rangeOffset: 0, rangeLength: 0, text: inserted });
+			assert.deepStrictEqual(published(), [], 'cleared, not shifted');
+			lint.release(findings(doc.uri.fsPath, [4, 'stale']));
+			await tick();
+			assert.deepStrictEqual(published(), [], 'the running result is dropped');
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+		}
+	});
+
+	test('ticket 10: a finding hidden by Red Hat\'s line stays hidden after an insert above, before Red Hat republishes', async () => {
+		const editor = await vscode.window.showTextDocument(doc);
+		try {
+			source.setRedHat(doc.uri, [3], SCHEMA);
+			source.save.fire(doc);
+			lint.release(findings(doc.uri.fsPath, [3, 'dup'], [5, 'b']));
+			await tick();
+			assert.deepStrictEqual(published().map((p) => p[0]), [5]);
+			const inserted = '# a\n# b\n';
+			assert.ok(await editor.edit((b) => b.insert(new vscode.Position(0, 0), inserted)));
+			source.edit(doc, { range: new vscode.Range(0, 0, 0, 0), rangeOffset: 0, rangeLength: 0, text: inserted });
+			assert.deepStrictEqual(published().map((p) => [p[0], p[5]]), [[7, 'b']], 'the duplicate does not show on line 5');
+			assert.deepStrictEqual(controller.diagnosticsFor(doc.uri).map((d) => [d.range.start.line + 1, d.message]), [[5, 'red hat'], [7, 'b']]);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+		}
 	});
 
 	test('story 13: Red Hat\'s diagnostics are held, shifted by the edits, until Red Hat republishes', async () => {

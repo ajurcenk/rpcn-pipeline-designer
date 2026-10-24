@@ -4,8 +4,9 @@
 // Each fix replaces only the key or value token (AD-19). The YAML lookup, schema walk, ranking and
 // quoting are pure (`src/core`); this module maps between documents and offsets.
 // "Fix all lint findings with a clear fix (N)" (2.22) applies, as one edit, the preferred fix of every
-// lint finding in the file that has one: the first edit after a save clears all findings (AD-17), so
-// without it each fix would need its own save.
+// lint finding in the file that has one, in one undo step. (Until ticket 10 the first edit after a save
+// cleared all findings, so each fix needed its own save; now an edit drops only the findings on the
+// lines it touched, AD-17.)
 
 import * as vscode from 'vscode';
 import type { JsonObject } from '../../core/schema';

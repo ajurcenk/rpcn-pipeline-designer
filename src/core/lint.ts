@@ -111,3 +111,71 @@ export function suppressFlaggedLines(
 ): LintFinding[] {
 	return findings.filter((f) => !flaggedLines.has(f.line) && !(f.syntax && redHatHasSyntaxError));
 }
+
+/** A finding held between saves, with its line's text length when lint's result was applied (ticket 10). */
+export interface HeldFinding {
+	readonly finding: LintFinding;
+	/** The length of its line's text (without the line break), to tell an insertion at the line's end. */
+	readonly length: number;
+}
+
+/** One change of an edit as 0-based line/character positions, in the coordinates of the text before the event. */
+export interface LineChange {
+	readonly start: { readonly line: number; readonly character: number };
+	readonly end: { readonly line: number; readonly character: number };
+	readonly text: string;
+}
+
+/**
+ * Holds a lint result against the text it was taken on: each finding's line is clamped to the
+ * document (where it is shown) and carries that line's text length.
+ */
+export function holdFindings(findings: readonly LintFinding[], lineCount: number, lineLength: (line0: number) => number): HeldFinding[] {
+	return findings.map((f) => {
+		const line0 = documentLine(f.line, lineCount);
+		return { finding: line0 + 1 === f.line ? f : { ...f, line: line0 + 1 }, length: lineLength(line0) };
+	});
+}
+
+const LEADING_BREAK = /^\r?\n/;
+
+/** Whether a change ending at column 0 of a line leaves that line's text whole (whole lines removed or inserted above it). */
+function leavesLineAfterEnd(c: LineChange): boolean {
+	return c.text.endsWith('\n') || (c.text === '' && c.start.character === 0);
+}
+
+/** Whether `c` changes the text of 0-based `line` (of `length` characters). */
+function touches(line: number, length: number, c: LineChange): boolean {
+	const empty = c.start.line === c.end.line && c.start.character === c.end.character;
+	if ((empty && c.text === '') || c.end.line < line || c.start.line > line) {
+		return false;
+	}
+	if (c.end.line === line && c.end.character === 0 && leavesLineAfterEnd(c)) {
+		return false; // whole lines inserted or removed above it
+	}
+	// New lines started at its end.
+	return !(c.start.line === line && c.start.character >= length && LEADING_BREAK.test(c.text));
+}
+
+/** Whether `c` lies above 0-based `line` (which it does not touch), so the line moves by its growth in lines. */
+function above(line: number, c: LineChange): boolean {
+	return c.end.line < line || (c.end.line === line && c.end.character === 0 && leavesLineAfterEnd(c));
+}
+
+const breaks = (text: string) => text.split('\n').length - 1;
+
+/**
+ * The held findings after an edit's `changes` (all in pre-change coordinates, so their order does
+ * not matter): a finding whose line a change touches is dropped, the others move by the lines the
+ * changes above them added or removed. Findings stay whole-line: they never move inside a line.
+ */
+export function shiftFindings(held: readonly HeldFinding[], changes: readonly LineChange[]): HeldFinding[] {
+	return held.flatMap((h) => {
+		const line = h.finding.line - 1;
+		if (changes.some((c) => touches(line, h.length, c))) {
+			return [];
+		}
+		const delta = changes.filter((c) => above(line, c)).reduce((n, c) => n + breaks(c.text) - (c.end.line - c.start.line), 0);
+		return [delta === 0 ? h : { finding: { ...h.finding, line: h.finding.line + delta }, length: h.length }];
+	});
+}

@@ -2,8 +2,10 @@
 // publishes its findings on whole lines in our own collection (source `Redpanda Connect`). A
 // lint finding on a line Red Hat YAML already flags is suppressed, and lint's YAML syntax
 // findings are suppressed while Red Hat reports any syntax error; both are re-checked whenever
-// Red Hat's diagnostics change. The first edit after a save clears the file's lint findings, as does the
-// file stopping being detected (which includes close). One lint per URI runs at a time: a save
+// Red Hat's diagnostics change. An edit drops the lint findings on the lines it touched and moves the
+// others by the lines it added or removed above them, until the next save replaces them all (ticket
+// 10); a change without a range clears them all, as does the file stopping being detected (which
+// includes close). One lint per URI runs at a time: a save
 // during a run queues one rerun, and a result is dropped if the file was edited, saved again,
 // closed or undetected since its save (a generation per URI). `diagnosticsFor` is epic 3's
 // deduped view, which the graph's node status reads (AD-17): Red Hat's diagnostics, the
@@ -11,8 +13,9 @@
 // event fires when any of the three change. Lint's duplicate of a live Bloblang error (ticket
 // 4.5) is hidden: a finding on a line of that processor (its key line through the line after its
 // value) whose message starts with the live error's. The live error wins over lint's duplicate,
-// whose position is unreliable. The Bloblang collection is its own, so the first edit after a
-// save leaves it alone. In that view Red Hat's diagnostics are held, shifted by the edits, until
+// whose position is unreliable. The Bloblang collection is its own, so an edit's shift of lint's
+// findings leaves it alone. An edit fires no event of its own: the graph rebuilds on the same edit and
+// reads the shifted findings and Red Hat's held ones. In that view Red Hat's diagnostics are held, shifted by the edits, until
 // Red Hat republishes (story 13): their offsets are taken when Red Hat publishes and moved
 // through each content change, so a marker never lands on another node meanwhile; one whose start
 // was replaced or deleted, and every syntax error, is left out, and a change that can't be mapped
@@ -20,7 +23,7 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { documentLine, LintFinding, suppressFlaggedLines } from '../../core/lint';
+import { documentLine, HeldFinding, holdFindings, LineChange, LintFinding, shiftFindings, suppressFlaggedLines } from '../../core/lint';
 import { mapRange, TextChange } from '../../core/processorTracking';
 import type { LintResult } from '../redpandaConnect/lint';
 import type { LiveBloblangError } from './bloblangDiagnostics';
@@ -72,7 +75,13 @@ interface UriState {
 	running: boolean;
 	/** The generation of a save made while a lint was running (one rerun). */
 	queued: number | undefined;
-	raw: readonly LintFinding[];
+	/** Lint's findings of the last applied result, shifted by the edits since (ticket 10). */
+	raw: readonly HeldFinding[];
+	/**
+	 * The document version `raw` is for: a refresh for a newer version (another listener of the same
+	 * edit, before `onEdit` shifted `raw`) publishes and fires nothing; the edit's own refresh follows.
+	 */
+	version: number | undefined;
 	/** Signature of what `diagnosticsFor` last returned, to fire only on change. */
 	signature: string;
 }
@@ -110,7 +119,10 @@ export class LintDiagnostics implements vscode.Disposable {
 	private readonly source: DiagnosticsSource;
 	private disposed = false;
 
-	/** Fires with a URI whenever `diagnosticsFor(uri)` changes. */
+	/**
+	 * Fires with a URI whenever `diagnosticsFor(uri)` changes, except on an edit: the edit's shift of
+	 * Red Hat's and lint's diagnostics fires nothing, since the graph rebuilds on the same edit and reads them.
+	 */
 	readonly onDidChangeDiagnostics: vscode.Event<vscode.Uri> = this.emitter.event;
 
 	constructor(private readonly options: LintDiagnosticsOptions) {
@@ -123,7 +135,7 @@ export class LintDiagnostics implements vscode.Disposable {
 			this.source.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length > 0) {
 					this.shiftRedHat(e);
-					this.invalidate(e.document.uri);
+					this.onEdit(e);
 				}
 			}),
 			// States are kept (not deleted) so a running lint stays the only one for its URI.
@@ -196,12 +208,31 @@ export class LintDiagnostics implements vscode.Disposable {
 				});
 		}
 		held.version = e.document.version;
-		// The shift alone fires nothing: the graph rebuilds on this edit with the shifted ranges, and an
-		// event now would send the new model's status before the model (the view's listener runs first).
-		const state = this.states.get(e.document.uri.toString());
+	}
+
+	/**
+	 * An edit: lint's findings move through its changes (none when a change has no range), running
+	 * and queued results are dropped, and the view is republished without an event: the graph rebuilds
+	 * on this edit with the shifted findings, and an event now would send the new model's status before
+	 * the model (the view's listener runs first). This covers Red Hat's shift too.
+	 */
+	private onEdit(e: vscode.TextDocumentChangeEvent): void {
+		const uri = e.document.uri;
+		const state = this.states.get(uri.toString());
 		if (state) {
-			state.signature = signatureOf([...this.heldRedHat(e.document.uri), ...(this.collection.get(e.document.uri) ?? []), ...this.bloblang(e.document.uri)]);
+			// A save's lint running or queued: its result is dropped, and the earlier save's findings go too,
+			// so they never outlive a newer save.
+			const pending = state.running || state.queued !== undefined;
+			state.generation++;
+			state.queued = undefined;
+			const changes = e.contentChanges.map(lineChange);
+			// Only the findings shown now move: Red Hat's own ranges and the live errors' spans are for the
+			// text before the edit, and a hidden finding would not show again before the next save.
+			state.raw = !pending && changes.every((c): c is LineChange => c !== undefined)
+				? shiftFindings(this.shown(uri, state.raw), changes) : [];
+			state.version = e.document.version;
 		}
+		this.refresh(uri, false);
 	}
 
 	/** Red Hat's diagnostics at their held ranges for the current text; Red Hat's own when none are held. */
@@ -235,7 +266,7 @@ export class LintDiagnostics implements vscode.Disposable {
 		const key = uri.toString();
 		let state = this.states.get(key);
 		if (!state) {
-			state = { generation: 0, running: false, queued: undefined, raw: [], signature: '' };
+			state = { generation: 0, running: false, queued: undefined, raw: [], version: undefined, signature: '' };
 			this.states.set(key, state);
 		}
 		return state;
@@ -278,8 +309,12 @@ export class LintDiagnostics implements vscode.Disposable {
 		} else if (result.kind === 'findings') {
 			result.logLines.forEach((l) => this.options.log(l));
 		}
-		if (state.generation === generation && this.options.detection.isDetected(uri)) {
-			state.raw = result.kind === 'findings' ? result.findings : [];
+		const current = this.document(uri);
+		if (state.generation === generation && this.options.detection.isDetected(uri) && current) {
+			// Unedited since its save: the line lengths are those lint saw.
+			state.raw = result.kind === 'findings'
+				? holdFindings(result.findings, current.lineCount, (line) => current.lineAt(line).text.length) : [];
+			state.version = current.version;
 			this.refresh(uri);
 		}
 		const queued = state.queued;
@@ -289,7 +324,7 @@ export class LintDiagnostics implements vscode.Disposable {
 		}
 	}
 
-	/** Edit, undetect or close: forget the findings and drop running and queued results. */
+	/** Undetect or close: forget the findings and drop running and queued results. */
 	private invalidate(uri: vscode.Uri): void {
 		const state = this.states.get(uri.toString());
 		if (!state) {
@@ -298,11 +333,12 @@ export class LintDiagnostics implements vscode.Disposable {
 		state.generation++;
 		state.queued = undefined;
 		state.raw = [];
+		state.version = this.document(uri)?.version;
 		this.refresh(uri);
 	}
 
-	/** Re-publishes the URI's lint diagnostics against Red Hat's current lines; fires on change. */
-	private refresh(uri: vscode.Uri): void {
+	/** Re-publishes the URI's lint diagnostics against Red Hat's current lines; fires on change unless `fire` is false. */
+	private refresh(uri: vscode.Uri, fire = true): void {
 		if (this.disposed) {
 			return;
 		}
@@ -314,13 +350,11 @@ export class LintDiagnostics implements vscode.Disposable {
 			return;
 		}
 		const doc = this.document(uri);
-		const redHat = this.redHat(uri);
-		const flagged = new Set(redHat.flatMap((d) => linesOf(d.range)));
-		const live = this.options.bloblangErrors?.liveErrorsFor(uri) ?? [];
-		const raw = live.length === 0 ? state.raw : state.raw.filter((f) => !live.some((e) =>
-			e.firstLine <= f.line && f.line <= e.lastLine && f.message.startsWith(e.message)));
-		const redHatSyntax = redHat.some((d) => d.source === 'YAML');
-		const published = doc ? suppressFlaggedLines(raw, flagged, redHatSyntax).map((f) => toDiagnostic(doc, f)) : [];
+		if (doc && state.version !== undefined && doc.version > state.version) {
+			return; // an edit `onEdit` has not reached yet: its refresh follows
+		}
+		state.version ??= doc?.version;
+		const published = doc ? this.shown(uri, state.raw).map((h) => toDiagnostic(doc, h.finding)) : [];
 		if (signatureOf(published) !== signatureOf(this.collection.get(uri) ?? [])) {
 			if (published.length > 0) {
 				this.collection.set(uri, published);
@@ -331,8 +365,24 @@ export class LintDiagnostics implements vscode.Disposable {
 		const signature = signatureOf([...this.heldRedHat(uri), ...published, ...this.bloblang(uri)]);
 		if (signature !== state.signature) {
 			state.signature = signature;
-			this.emitter.fire(uri);
+			if (fire) {
+				this.emitter.fire(uri);
+			}
 		}
+	}
+
+	/**
+	 * The held findings that show: not lint's duplicate of a live Bloblang error, nor on a line Red Hat
+	 * flags (its own ranges), nor a syntax finding while Red Hat reports a syntax error.
+	 */
+	private shown(uri: vscode.Uri, held: readonly HeldFinding[]): HeldFinding[] {
+		const redHat = this.redHat(uri);
+		const flagged = new Set(redHat.flatMap((d) => linesOf(d.range)));
+		const live = this.options.bloblangErrors?.liveErrorsFor(uri) ?? [];
+		const notLive = live.length === 0 ? held : held.filter(({ finding: f }) => !live.some((e) =>
+			e.firstLine <= f.line && f.line <= e.lastLine && f.message.startsWith(e.message)));
+		const kept = new Set(suppressFlaggedLines(notLive.map((h) => h.finding), flagged, redHat.some((d) => d.source === 'YAML')));
+		return notLive.filter((h) => kept.has(h.finding));
 	}
 
 	private redHat(uri: vscode.Uri): vscode.Diagnostic[] {
@@ -347,6 +397,15 @@ export class LintDiagnostics implements vscode.Disposable {
 		const key = uri.toString();
 		return this.source.textDocuments.find((d) => d.uri.toString() === key);
 	}
+}
+
+/** A content change as line positions; undefined when it has no range (it can't be told which lines it touched). */
+function lineChange(c: vscode.TextDocumentContentChangeEvent): LineChange | undefined {
+	const range = (c as { range?: vscode.Range }).range;
+	if (!range || typeof c.text !== 'string') {
+		return undefined;
+	}
+	return { start: { line: range.start.line, character: range.start.character }, end: { line: range.end.line, character: range.end.character }, text: c.text };
 }
 
 /** A finding as a whole-line diagnostic; a line past the end is clamped to the last line. */

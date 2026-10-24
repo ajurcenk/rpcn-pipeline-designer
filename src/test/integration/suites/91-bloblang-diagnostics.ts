@@ -376,7 +376,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		assert.strictEqual(api().outputLines().filter((l) => l === ENV_LINE).length, 1);
 	});
 
-	test('LINT_DEDUPE / LINT_KEPT: on save, lint\'s finding inside a mapping with a live error is hidden; the others stay; the first edit clears lint, not Bloblang', async () => {
+	test('LINT_DEDUPE / LINT_KEPT: on save, lint\'s finding inside a mapping with a live error is hidden; the others stay; an edit drops lint\'s finding on its line, not Bloblang', async () => {
 		const text = CONFIG
 			.replace('mapping: root.d = 1', 'mapping: root.d = 1 ERR@1:1 LINTME')
 			.replace('mapping: root.e = 1', 'mapping: root.e = 1 LINTME')
@@ -402,21 +402,28 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 
 		// LINT_KEPT: with the error fixed, lint's finding there shows as before.
 		await replace(editor, 'ERR@1:1 ', '');
-		await expectLint([], 'the first edit after a save clears lint');
+		// The edit drops the (hidden) duplicate on its line; the others stay (ticket 10).
+		await expectLint(byLine([nope(), other(), kept()]), 'an edit drops only the findings on its lines');
 		assert.ok(await waitFor(() => bloblangOf(doc.uri).length === 0, 5_000));
 		await quiet();
 		assert.ok(await doc.save());
 		await expectLint(byLine([nope(), duplicate(), other(), kept()]), 'LINT_KEPT');
 
 		// Saved before the parse answers: lint is re-filtered when the Bloblang diagnostic arrives.
+		// (The edit already drops the held duplicate on its line, ticket 10, so wait for the save's lint
+		// run and the live error before checking that the fresh duplicate is hidden.)
+		const lints = () => readCounter(counter).filter((l) => l === 'lint').length;
+		const linted = lints();
 		await replace(editor, 'root.d = 1 LINTME', 'root.d = 1 ERR@1:1 LINTME');
 		assert.ok(await doc.save());
+		assert.ok(await waitFor(() => lints() > linted && bloblangOf(doc.uri).length === 1, 15_000), 'linted, and the live error arrived');
+		await quiet();
 		await expectLint(byLine([nope(), other(), kept()]), 're-filtered');
 		assert.strictEqual(bloblangOf(doc.uri).length, 1);
 
-		// The first edit after a save clears lint but not Bloblang.
-		await replace(editor, 'stdin: { }', 'stdin: {}');
-		await expectLint([], 'cleared by the edit');
+		// An edit on a finding's line drops that finding, not Bloblang.
+		await replace(editor, 'nope: 1', 'nope: 2');
+		await expectLint(byLine([other(), kept()]), 'dropped by the edit');
 		await quiet();
 		assert.strictEqual(bloblangOf(doc.uri).length, 1);
 		assert.ok(await doc.save());

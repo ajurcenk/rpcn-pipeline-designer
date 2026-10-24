@@ -30,7 +30,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 
 - **CAP-3 — Lint diagnostics on save + Quick Fixes**
   - **intent:** Developers see `rpk connect lint` findings inline and can apply fixes for common errors without leaving the editor.
-  - **success:** On save, lint findings appear as diagnostics, a lint finding on the same line as a schema diagnostic is not shown twice, and lint diagnostics clear on the first edit after save (AD-12, AD-17); a misspelled field offers a Quick Fix to the nearest valid field ("Change to `topic`"), an invalid option value offers the nearest valid options ("Change to `tcp`"), and when two or more findings have a clear fix one action fixes them all as one edit; every fix touches only its token's range (AD-19).
+  - **success:** On save, lint findings appear as diagnostics, a lint finding on the same line as a schema diagnostic is not shown twice, and until the next save an edit clears the lint diagnostics on the lines it changes while the others move with their lines (AD-12, AD-17; amended 2026-10-24, ticket 10: before, they all cleared on the first edit after save); a misspelled field offers a Quick Fix to the nearest valid field ("Change to `topic`"), an invalid option value offers the nearest valid options ("Change to `tcp`"), and when two or more findings have a clear fix one action fixes them all as one edit; every fix touches only its token's range (AD-19).
 
 - **CAP-4 — Bloblang highlighting, completion and hover**
   - **intent:** Bloblang in mapping fields (`mapping`, `check`, `mutation`, the `*_mapping` / `*_map` fields, …) and `${! }` interpolations reads as Bloblang inside YAML, and its functions and methods are discoverable.
