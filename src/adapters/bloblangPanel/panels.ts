@@ -1510,7 +1510,7 @@ export class BloblangPanels implements vscode.Disposable {
 		const locate = (line: number, char: number): FilePosition => positionIn(text, processor.positions.offsetAt(line, char));
 		// A generate mapping runs on no input of the panel's (16): `testConfig` gives it an empty message.
 		const { content, meta } = processor.kind === 'generate' ? { content: '', meta: {} } : input;
-		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, content, meta, this.options.storageDir, { cwd, locate });
+		return (this.options.run ?? runMappingTest)(state, processor.kind, processor.source, content, meta, this.options.storageDir, { cwd, locate, resource: uri });
 	}
 
 	/**

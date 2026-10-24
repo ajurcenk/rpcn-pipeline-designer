@@ -59,12 +59,14 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Resource files passed to lint and run with `--resources` (each entry may be a glob pattern). `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
+          "scope": "resource",
+          "markdownDescription": "Resource files passed to lint and run with `--resources` (each entry may be a glob pattern). `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the workspace folder whose settings set it, else the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
         },
         "redpandaConnect.envFile": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Environment file passed to lint and run with `--env-file`. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
+          "scope": "resource",
+          "markdownDescription": "Environment file passed to lint, run and the Bloblang checks (live errors and the test panel) with `--env-file`. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the workspace folder whose settings set it, else the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
         }
       }
     },

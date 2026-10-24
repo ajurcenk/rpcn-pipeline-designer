@@ -44,10 +44,11 @@ class FakeBinary {
 
 /** A parse the test releases: `ERR` gives a parse error at line 1 char 1. */
 class ControlledParse {
-	readonly calls: { text: string; release: () => void }[] = [];
-	readonly parse = (text: string): Promise<BloblParseOutcome> => new Promise((resolve) => {
+	readonly calls: { text: string; uri: vscode.Uri; release: () => void }[] = [];
+	readonly parse = (text: string, uri: vscode.Uri): Promise<BloblParseOutcome> => new Promise((resolve) => {
 		this.calls.push({
 			text,
+			uri,
 			release: () => resolve(text.includes('ERR') ? { kind: 'parseError', message: 'bad', line: 1, char: 1, excerpt: '' } : { kind: 'ok' }),
 		});
 	});
@@ -96,6 +97,34 @@ suite('adapters/vscode BloblangDiagnostics (4.5)', () => {
 		service = new BloblangDiagnostics({ detection, binary, parse: parse.parse, log: (l) => logs.push(l), debounceMs: 10, source });
 		return service;
 	}
+
+	test('ticket 4: each parse gets its config; a result cached in one scope (workspace folder) is not used in another', async () => {
+		const MAPPING = 'pipeline:\n  processors:\n    - mapping: root = ERR\n';
+		const scopes = new Map<string, string>();
+		const a = await doc(MAPPING);
+		scopes.set(a.uri.toString(), 'A');
+		service = new BloblangDiagnostics({ detection, binary, parse: parse.parse, log: (l) => logs.push(l), debounceMs: 10, source,
+			cacheScope: (uri) => scopes.get(uri.toString()) ?? '?' });
+		const s = service;
+		await until(() => parse.calls.length === 1);
+		assert.strictEqual(parse.calls[0].uri.toString(), a.uri.toString(), 'the parse gets its config');
+		parse.calls[0].release();
+		await until(() => s.diagnostics(a.uri).length === 1);
+		// The same text, now cached for A, in a config of scope B: parsed again, for B.
+		const b = await doc(MAPPING);
+		scopes.set(b.uri.toString(), 'B');
+		source.edit(b);
+		await until(() => parse.calls.length === 2);
+		assert.strictEqual(parse.calls[1].uri.toString(), b.uri.toString());
+		parse.calls[1].release();
+		await until(() => s.diagnostics(b.uri).length === 1);
+		// A third config in A's scope: A's cached result, no parse.
+		const c = await doc(MAPPING);
+		scopes.set(c.uri.toString(), 'A');
+		source.edit(c);
+		await until(() => s.diagnostics(c.uri).length === 1);
+		assert.strictEqual(parse.calls.length, 2, 'c shares a\'s scope and its cached result');
+	});
 
 	test('ERROR_SHOWN at the mapped offset, source Bloblang, Error; CLOSE clears it', async () => {
 		const d = await doc('pipeline:\n  processors:\n    - mapping: root = ERR\n');

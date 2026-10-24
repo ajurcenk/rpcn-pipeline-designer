@@ -9,7 +9,8 @@
 import * as path from 'path';
 import type { BloblParseOutcome } from '../../core/bloblangParse';
 import type { BloblangProcessorKind, BloblangResult, InputMeta } from '../../shared/bloblangProtocol';
-import { ArgsEnvironment, commandSettings } from './args';
+import type * as vscode from 'vscode';
+import { ArgsEnvironment, commandSettings, defaultArgsEnvironment } from './args';
 import { BinaryState } from './binary';
 import {
 	type BloblangCommand, FilePosition, MAPPING_PARSE_TIMEOUT_MS, MAPPING_TEST_TIMEOUT_MS,
@@ -23,6 +24,8 @@ export const NO_BINARY_MESSAGE = 'No Redpanda Connect binary.';
 
 export interface MappingTestDependencies {
 	readonly argsEnvironment?: ArgsEnvironment;
+	/** The config the mapping is in: its folder's settings apply (ticket 4). */
+	readonly resource?: vscode.Uri;
 	/**
 	 * From the mapping's 1-based `line` and `char` to the document's (4.3's position map). Without
 	 * it, the mapping's own position (as if the mapping were the whole file).
@@ -69,7 +72,7 @@ export async function runMappingTest(
 	if (state.kind !== 'ok') {
 		return done({ kind: 'error', message: NO_BINARY_MESSAGE });
 	}
-	return done(await runWith(commandOf(state, deps.argsEnvironment), kind, source, content, meta, storageDir, {
+	return done(await runWith(commandOf(state, deps.argsEnvironment, deps.resource), kind, source, content, meta, storageDir, {
 		...(deps.locate ? { locate: deps.locate } : {}),
 		...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
 		...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
@@ -79,6 +82,8 @@ export async function runMappingTest(
 
 export interface MappingParseDependencies {
 	readonly argsEnvironment?: ArgsEnvironment;
+	/** The config the mapping is in: its folder's settings apply (ticket 4). */
+	readonly resource?: vscode.Uri;
 	readonly timeoutMs?: number;
 	readonly cwd?: string;
 	readonly run?: RunFunction;
@@ -98,7 +103,7 @@ export async function parseMapping(
 	if (state.kind !== 'ok') {
 		return { kind: 'other', message: NO_BINARY_MESSAGE };
 	}
-	return parseWith(commandOf(state, deps.argsEnvironment), source, storageDir, {
+	return parseWith(commandOf(state, deps.argsEnvironment, deps.resource), source, storageDir, {
 		...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
 		...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
 		...(deps.run ? { run: deps.run } : {}),
@@ -106,9 +111,9 @@ export async function parseMapping(
 }
 
 /**
- * The runner's command: `state` and the settings of `argsEnvironment`, else VS Code's, read only
- * when the runner builds its command line (so a failing read gets the runner's message).
+ * The runner's command: `state` and the settings of `argsEnvironment`, else VS Code's for
+ * `resource`, read only when the runner builds its command line (so a failing read gets the runner's message).
  */
-function commandOf(state: BinaryState, argsEnvironment: ArgsEnvironment | undefined): BloblangCommand {
-	return { state, settings: argsEnvironment ? commandSettings(() => argsEnvironment) : commandSettings() };
+function commandOf(state: BinaryState, argsEnvironment: ArgsEnvironment | undefined, resource: vscode.Uri | undefined): BloblangCommand {
+	return { state, settings: commandSettings(argsEnvironment ? () => argsEnvironment : () => defaultArgsEnvironment(resource)) };
 }

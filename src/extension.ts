@@ -167,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const bloblangDiagnostics = new BloblangDiagnostics({
 		detection,
 		binary: redpandaConnect,
-		parse: (source) => parseMapping(redpandaConnect.state, source, context.globalStorageUri.fsPath),
+		parse: (source, uri) => parseMapping(redpandaConnect.state, source, context.globalStorageUri.fsPath, { resource: uri }),
 		log,
 	});
 	const lintDiagnostics = new LintDiagnostics({

@@ -5,7 +5,8 @@
 // character the 4.3 position map gives for the binary's `line L char C`. Other failures (an unset
 // `${VAR}`, a timeout) give no diagnostic and one output-channel line per distinct message.
 //
-// Results are cached by text, so an unchanged processor never spawns again. Each processor path
+// Results are cached by text (per workspace folder, whose `envFile` may differ, ticket 4), so an
+// unchanged processor never spawns again. Each processor path
 // runs one parse at a time with the latest text pending. The collection is always rebuilt from the
 // document's current processors and the cache, so a result for text that is no longer there is
 // never shown. A file whose YAML does not parse, that closes or stops being detected, or any file
@@ -43,8 +44,13 @@ export interface BloblangDiagnosticsSource {
 export interface BloblangDiagnosticsOptions {
 	readonly detection: DetectionView;
 	readonly binary: { readonly state: BinaryState; readonly onDidChange: vscode.Event<BinaryState> };
-	/** Parses one mapping (`parseMapping` with the current binary state in production). */
-	readonly parse: (source: string) => Promise<BloblParseOutcome>;
+	/**
+	 * Parses one mapping of the config `uri` (`parseMapping` with the current binary state and that
+	 * config's settings in production, ticket 4).
+	 */
+	readonly parse: (source: string, uri: vscode.Uri) => Promise<BloblParseOutcome>;
+	/** What keeps cached results apart (ticket 4); default: the config's workspace folder. */
+	readonly cacheScope?: (uri: vscode.Uri) => string;
 	readonly log: (line: string) => void;
 	readonly debounceMs?: number;
 	readonly source?: BloblangDiagnosticsSource;
@@ -255,7 +261,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		if (this.options.binary.state.kind === 'ok') {
 			for (const [path, current] of state.current) {
 				const flight = this.flights.get(`${key}#${path}`);
-				if (this.cache.has(current.source)) {
+				if (this.cache.has(this.cacheKey(key, current.source))) {
 					// The current text is answered: an older text waiting behind a running parse is not needed.
 					if (flight) {
 						flight.pending = undefined;
@@ -290,27 +296,28 @@ export class BloblangDiagnostics implements vscode.Disposable {
 			flight.pending = undefined;
 			const epoch = this.epoch;
 			flight.runningEpoch = epoch;
-			const outcome = await this.limited(text);
+			const docKey = flightKey.slice(0, flightKey.lastIndexOf('#'));
+			const outcome = await this.limited(text, vscode.Uri.parse(docKey));
 			if (this.disposed) {
 				return;
 			}
 			if (epoch === this.epoch && outcome) {
 				if (isDeterministic(outcome)) {
-					this.remember(text, outcome);
+					this.remember(this.cacheKey(docKey, text), outcome);
 				}
 				if (outcome.kind === 'other') {
 					this.logOnce(outcome.message);
 				}
 			}
 			const pending: string | undefined = flight.pending;
-			text = pending !== undefined && !this.cache.has(pending) ? pending : undefined;
+			text = pending !== undefined && !this.cache.has(this.cacheKey(docKey, pending)) ? pending : undefined;
 			flight.running = text;
 			flight.pending = undefined;
 			if (text === undefined) {
 				this.flights.delete(flightKey);
 			}
 			// The document's text is read again: only a processor whose current text is the parsed one shows it.
-			this.publish(flightKey.slice(0, flightKey.lastIndexOf('#')));
+			this.publish(docKey);
 		}
 		if (this.flights.get(flightKey) === flight && flight.running === undefined) {
 			this.flights.delete(flightKey);
@@ -318,7 +325,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 	}
 
 	/** Runs one parse under the global concurrency limit; `undefined` when the binary went away. */
-	private async limited(text: string): Promise<BloblParseOutcome | undefined> {
+	private async limited(text: string, uri: vscode.Uri): Promise<BloblParseOutcome | undefined> {
 		this.flying++;
 		if (this.active >= MAX_CONCURRENT) {
 			await new Promise<void>((resolve) => this.queue.push(resolve));
@@ -329,7 +336,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 				return undefined;
 			}
 			this.parses++;
-			const outcome = await this.options.parse(text);
+			const outcome = await this.options.parse(text, uri);
 			this.parsedEmitter.fire(text);
 			return outcome;
 		} catch (err) {
@@ -341,9 +348,16 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		}
 	}
 
-	private remember(text: string, outcome: BloblParseOutcome): void {
-		this.cache.delete(text);
-		this.cache.set(text, outcome);
+	/** The cache key of `text` in the document `docKey`: its scope (workspace folder) and the text. */
+	private cacheKey(docKey: string, text: string): string {
+		const uri = vscode.Uri.parse(docKey);
+		const scope = this.options.cacheScope?.(uri) ?? vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() ?? '';
+		return `${scope}\n${text}`;
+	}
+
+	private remember(key: string, outcome: BloblParseOutcome): void {
+		this.cache.delete(key);
+		this.cache.set(key, outcome);
 		while (this.cache.size > CACHE_SIZE) {
 			this.cache.delete(this.cache.keys().next().value as string);
 		}
@@ -369,7 +383,7 @@ export class BloblangDiagnostics implements vscode.Disposable {
 		if (this.options.binary.state.kind === 'ok') {
 			const text = doc.getText();
 			for (const [path, current] of state.current) {
-				const outcome = this.cache.get(current.source);
+				const outcome = this.cache.get(this.cacheKey(key, current.source));
 				if (outcome === undefined) {
 					// Its new text is still being parsed: the last diagnostic stays until the result.
 					const previous = state.shown.get(path);

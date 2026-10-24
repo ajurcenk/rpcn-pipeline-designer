@@ -62,3 +62,7 @@
 - source_plan: `_bmad-output/backlog/story-quick-fix-inside-name-keyed-maps-plan.md`
   summary: Suite 50's Quick Fix tests (QUICK_FIX, OPTION_FIX, FIX_ALL, ticket 7's) sometimes get no action from the provider: `executeCodeActionProvider` lists only Copilot's "Fix" / "Explain".
   evidence: Seen on the baseline (c063d6c, 1 of 6 runs) and with ticket 7 (2 of 6, all Quick Fix tests of the run). Building a longer failure message (schema state, diagnostics) before the assertion made 8 of 8 runs pass, so it looks like the request racing the diagnostics reaching the provider's context. Related to bug 21 (CI timing flakes).
+
+- source_plan: `_bmad-output/backlog/story-multi-root-workspace-folder-choice-plan.md`
+  summary: No automated test covers a real multi-root workspace: per-folder `resourceFiles` / `envFile` (ticket 4) are tested through an injected folder and the pure `definingFolder`, not through `getConfiguration(…, resource)` and `inspect`.
+  evidence: Ticket 4 review finding 2. The test host opens no workspace folder (some suites rely on that); a multi-root case needs a separate `vscode-test` run with its own `.code-workspace` and folder settings.

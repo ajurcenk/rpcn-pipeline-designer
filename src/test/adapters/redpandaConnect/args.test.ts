@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import {
-	ArgsEnvironment, ArgsResult, buildLintCommand, buildRunCommand, commandSettings, describeArgsFailure,
+	ArgsEnvironment, ArgsResult, buildLintCommand, buildRunCommand, commandSettings, definingFolder, describeArgsFailure,
 } from '../../../adapters/redpandaConnect/args';
 import { buildBloblCommandLine } from '../../../adapters/redpandaConnect/commandLine';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
@@ -196,6 +196,23 @@ suite('adapters/redpandaConnect args', () => {
 		assert.deepStrictEqual(result.args, ['lint', '--deprecated', '--skip-env-var-check',
 			'--resources', path.normalize('/home/alice/r.yaml'), '--resources', path.join(WS, '~draft.yaml'),
 			'--env-file', path.join('/home/alice', '.env'), A]);
+	});
+
+	test('ticket 4: a folder-scoped value resolves against its folder; a workspace or user value against the first one', () => {
+		const folderB = path.resolve('/wsB');
+		const result = ok(buildLintCommand(standalone, { targets: [A] }, environment({
+			resourceFilesSetting: ['r.yaml'], envFileSetting: '.env', settingFolders: { envFile: folderB },
+		})));
+		assert.deepStrictEqual(result.args, ['lint', '--deprecated', '--skip-env-var-check',
+			'--resources', path.join(WS, 'r.yaml'), '--env-file', path.join(folderB, '.env'), A]);
+		// The folder's settings define it: that folder. A workspace or user value, or no folder: the first one (undefined).
+		const inspected = (values: Record<string, unknown>): { workspaceFolderValue?: unknown } => values;
+		assert.strictEqual(definingFolder(inspected({ workspaceFolderValue: '.env' }), folderB), folderB);
+		assert.strictEqual(definingFolder(inspected({ workspaceFolderValue: '.env', workspaceValue: 'x' }), folderB), folderB);
+		assert.strictEqual(definingFolder(inspected({ workspaceValue: '.env' }), folderB), undefined);
+		assert.strictEqual(definingFolder(inspected({ globalValue: '.env' }), folderB), undefined);
+		assert.strictEqual(definingFolder({ workspaceFolderValue: '.env' }, undefined), undefined);
+		assert.strictEqual(definingFolder(undefined, folderB), undefined);
 	});
 
 	test('relative target paths are reported, not passed', () => {
