@@ -3,7 +3,7 @@ title: 'Automated Run and Stop check with a real binary'
 type: 'chore'
 ticket: '9'
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: 'd89e711a28b19a64e0139408c07f919bde5007ee'
 route: 'oneshot'
 route_source: 'auto'
