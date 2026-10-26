@@ -9,6 +9,7 @@ import './suites/30-bloblang';
 import './suites/40-snippets';
 import './suites/50-lint';
 import './suites/60-run';
+import './suites/61-run-real';
 import './suites/70-feedback';
 import './suites/80-graph-panel';
 import './suites/81-graph-navigation';

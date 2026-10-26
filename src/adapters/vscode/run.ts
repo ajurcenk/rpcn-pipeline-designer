@@ -107,12 +107,23 @@ export interface RunOptions {
 	readonly graceMs?: number;
 }
 
+/** How much of a run's output `outputOf` keeps (ticket 9). */
+const TRANSCRIPT_LIMIT = 65_536;
+
 /** A Pseudoterminal that buffers writes until VS Code opens it and reports Ctrl+C and close. */
 class RunPty implements vscode.Pseudoterminal {
 	private readonly writer = new vscode.EventEmitter<string>();
 	private readonly pending: string[] = [];
 	private opened = false;
+	/** What was written, as given, in chunks (test seam, ticket 9: a terminal's content can't be read through the API). */
+	private readonly chunks: string[] = [];
+	private chunkLength = 0;
 	readonly onDidWrite = this.writer.event;
+
+	/** The last 64 KiB written; kept in chunks, trimmed only when over twice that, so a write stays cheap. */
+	get transcript(): string {
+		return this.chunks.join('').slice(-TRANSCRIPT_LIMIT);
+	}
 
 	constructor(private readonly onInterrupt: () => void, private readonly onClosed: () => void) {}
 
@@ -136,6 +147,13 @@ class RunPty implements vscode.Pseudoterminal {
 
 	/** Writes `text` with `\n` as `\r\n` (a terminal needs both). */
 	write(text: string): void {
+		this.chunks.push(text);
+		this.chunkLength += text.length;
+		if (this.chunkLength > 2 * TRANSCRIPT_LIMIT) {
+			const kept = this.chunks.join('').slice(-TRANSCRIPT_LIMIT);
+			this.chunks.splice(0, this.chunks.length, kept);
+			this.chunkLength = kept.length;
+		}
 		const converted = text.replace(/\r?\n/g, '\r\n');
 		if (this.opened) {
 			this.writer.fire(converted);
@@ -181,6 +199,8 @@ export class RunController implements vscode.Disposable {
 	private readonly status: vscode.StatusBarItem;
 	private readonly subscriptions: vscode.Disposable[] = [];
 	private readonly graceMs: number;
+	/** Whether the status bar item is shown (`statusBarText`). */
+	private statusShown = false;
 	private disposed = false;
 
 	constructor(private readonly options: RunOptions) {
@@ -203,6 +223,16 @@ export class RunController implements vscode.Disposable {
 			vscode.commands.registerCommand(RUN_UNTITLED_COMMAND, () => this.host.showInformationMessage(UNTITLED_MESSAGE)),
 			vscode.commands.registerCommand(REVEAL_RUN_COMMAND, (uri?: vscode.Uri) => this.reveal(uri)),
 		];
+	}
+
+	/** What `uri`'s run terminal was given to show, its last 64 KiB; `undefined` before its first run (test seam, ticket 9). */
+	outputOf(uri: vscode.Uri): string | undefined {
+		return this.sessions.get(uri.toString())?.pty?.transcript;
+	}
+
+	/** The status bar item's text while it is shown (the active file's run); `undefined` while hidden (test seam, ticket 9). */
+	get statusBarText(): string | undefined {
+		return this.statusShown ? this.status.text : undefined;
 	}
 
 	/** The phase of `uri`'s run, or `undefined` if it has not run this session (tests, epic 3). */
@@ -396,6 +426,7 @@ export class RunController implements vscode.Disposable {
 		this.host.setContext(DETECTED_PATHS_KEY, this.options.detection.detectedUris().map((u) => vscode.Uri.parse(u).fsPath));
 		if (!session?.phase) {
 			this.status.hide();
+			this.statusShown = false;
 			return;
 		}
 		this.status.text = statusText(session.phase, session.exit, session.stopRequested);
@@ -410,6 +441,7 @@ export class RunController implements vscode.Disposable {
 			this.status.command = { title: 'Show terminal', command: REVEAL_RUN_COMMAND, arguments: [uri] };
 		}
 		this.status.show();
+		this.statusShown = true;
 	}
 }
 

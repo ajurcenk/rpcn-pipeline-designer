@@ -25,6 +25,19 @@ jobs:
           path: .vscode-test/vscode-linux-x64-1.100.0
           key: vscode-1.100.0-${{ runner.os }}-${{ runner.arch }}
 
+      # Pinned standalone binaries, keyed on fetch-binaries.sh (which pins the versions): the corpus
+      # harness (ticket 1.7) and, since ticket 9, the real-binary Run and Stop suite need them, so they
+      # are fetched before the VS Code tests (GitHub sets CI=true: a missing binary fails both)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: .cache/redpanda-connect
+          key: redpanda-connect-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/spike/fetch-binaries.sh') }}
+
+      - name: Fetch Redpanda Connect 4.100.0 and 4.112.0
+        run: scripts/spike/fetch-binaries.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       # unit + integration tests (needs a display): the latest stable VS Code is required; the 1.100.0
       # floor reports but doesn't fail the build (user decision 2026-10-16: its timing flakes are out of
       # scope and must not hide the steps below)
@@ -38,19 +51,6 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: xvfb-run -a npx vscode-test --label floor
-
-      # Corpus harness (ticket 1.7): pinned standalone binaries, keyed on fetch-binaries.sh (which pins the versions)
-      - if: ${{ !cancelled() }}
-        uses: actions/cache@v6.1.0
-        with:
-          path: .cache/redpanda-connect
-          key: redpanda-connect-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/spike/fetch-binaries.sh') }}
-
-      - name: Fetch Redpanda Connect 4.100.0 and 4.112.0
-        if: ${{ !cancelled() }}
-        run: scripts/spike/fetch-binaries.sh
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       # lint every test/corpus/*.yaml with both binaries; CI=true turns a missing binary into a failure
       - name: Corpus harness
