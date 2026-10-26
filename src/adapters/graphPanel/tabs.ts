@@ -188,3 +188,59 @@ export class PendingRenames {
 		this.onExpired?.(expired.map((e) => e.rename));
 	}
 }
+
+/** How recently a file must have been created and saved for its new tab to be a Save As (ticket 12). */
+export const SAVE_AS_WINDOW_MS = 2_000;
+/** How soon after the new tab opened the source's tab must close for a Save As (ticket 12). */
+export const SAVE_AS_CLOSE_MS = 1_000;
+
+/** When a file was last created and last saved (`Date.now()`), by `uri.toString()`. */
+export interface CreatedAndSaved {
+	readonly created?: number;
+	readonly saved?: number;
+}
+
+/** A tab that opened and may be a Save As of its source (ticket 12), as `uri.toString()`s. */
+export interface SaveAsCandidate {
+	/** The new file, whose tab opened. */
+	readonly to: string;
+	/** The file of the next tab in its group when it opened. */
+	readonly from: string;
+	/** When the new tab opened (`Date.now()`). */
+	readonly openedAt: number;
+}
+
+/**
+ * Whether the text tab of `opened` that just opened (at `now`) is a candidate Save As of `next`, the
+ * tab just after it in its group (ticket 12): VS Code reports no Save As, but the new file is created
+ * and saved, then its tab opens at the old tab's place (so the old tab is the next one), which closes
+ * in a later event. A candidate when `opened` was created and saved within `SAVE_AS_WINDOW_MS` before
+ * `now`, and `next` is a text tab of another URI (`undefined`: no next tab, or not a text one).
+ */
+export function isSaveAsCandidate(
+	opened: string,
+	next: string | undefined,
+	recent: ReadonlyMap<string, CreatedAndSaved>,
+	now: number,
+): boolean {
+	if (next === undefined || next === opened) {
+		return false;
+	}
+	const at = recent.get(opened);
+	const fresh = (t: number | undefined) => t !== undefined && t <= now && now - t <= SAVE_AS_WINDOW_MS;
+	return at !== undefined && fresh(at.created) && fresh(at.saved);
+}
+
+/** Whether `candidate` can no longer be confirmed at `now`: its source's close came too late. */
+export function saveAsExpired(candidate: SaveAsCandidate, now: number): boolean {
+	return now - candidate.openedAt > SAVE_AS_CLOSE_MS;
+}
+
+/**
+ * Whether the close of a text tab of `closed` at `now` confirms `candidate` (ticket 12): it is the
+ * candidate's source, it closed within `SAVE_AS_CLOSE_MS` after the new tab opened, and the new tab
+ * is still open (`toOpen`). A file merely opened beside another leaves its neighbour open.
+ */
+export function confirmsSaveAs(candidate: SaveAsCandidate, closed: string, now: number, toOpen: boolean): boolean {
+	return closed === candidate.from && toOpen && now >= candidate.openedAt && !saveAsExpired(candidate, now);
+}

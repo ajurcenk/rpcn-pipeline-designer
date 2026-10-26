@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import {
-	overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedKey, renamedThrough, renameFate, renameWinners, type Rename,
+	confirmsSaveAs, isSaveAsCandidate, overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedKey, renamedThrough, renameFate, renameWinners,
+	SAVE_AS_CLOSE_MS, SAVE_AS_WINDOW_MS, saveAsExpired, type Rename,
 } from '../../../adapters/graphPanel/tabs';
 
 const k = (p: string) => `file:///d/${p}`;
@@ -162,5 +163,50 @@ suite('adapters/graphPanel tabs: pending renames (4.13)', () => {
 		assert.deepStrictEqual(renames.all, [ab]);
 		clock.now = 2_000;
 		assert.deepStrictEqual(renames.all, []);
+	});
+});
+
+suite('adapters/graphPanel tabs: Save As (ticket 12)', () => {
+	const now = 100_000;
+	const recent = (key: string, created: number | undefined, saved: number | undefined) => new Map([[key, { created, saved }]]);
+	const candidate = (from: string, to: string) => ({ from, to, openedAt: now });
+
+	test('SAVED: b created and saved just now, its next tab a.yaml; a\'s tab closes soon after, b still open', () => {
+		assert.ok(isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), now - 50, now - 20), now));
+		assert.ok(confirmsSaveAs(candidate(k('a.yaml'), k('b.yaml')), k('a.yaml'), now + 20, true));
+	});
+
+	test('UNTITLED: the next tab is untitled', () => {
+		const untitled = 'untitled:Untitled-1';
+		assert.ok(isSaveAsCandidate(k('c.yaml'), untitled, recent(k('c.yaml'), now - 10, now - 5), now));
+		assert.ok(confirmsSaveAs(candidate(untitled, k('c.yaml')), untitled, now + 8, true));
+	});
+
+	test('NOT_SAVE_AS: created but not saved, saved but not created, nothing recorded', () => {
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), now - 10, undefined), now));
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), undefined, now - 10), now));
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('a.yaml'), new Map(), now));
+	});
+
+	test('NOT_SAVE_AS: no next text tab, or the next tab is the same URI', () => {
+		const at = recent(k('b.yaml'), now - 10, now - 5);
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), undefined, at, now));
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('b.yaml'), at, now));
+	});
+
+	test('NOT_SAVE_AS: the source stays open, another tab closes, the new tab closed first', () => {
+		const c = candidate(k('a.yaml'), k('b.yaml'));
+		assert.ok(!confirmsSaveAs(c, k('x.yaml'), now + 10, true), 'another file\'s tab closed');
+		assert.ok(!confirmsSaveAs(c, k('a.yaml'), now + 10, false), 'the new tab is gone');
+		assert.ok(!confirmsSaveAs(c, k('a.yaml'), now + SAVE_AS_CLOSE_MS + 1, true), 'the source closed too late');
+		assert.ok(confirmsSaveAs(c, k('a.yaml'), now + SAVE_AS_CLOSE_MS, true), 'at the edge');
+		assert.ok(!saveAsExpired(c, now + SAVE_AS_CLOSE_MS));
+		assert.ok(saveAsExpired(c, now + SAVE_AS_CLOSE_MS + 1), 'a source that stays open settles the candidate as no Save As');
+	});
+
+	test('STALE: created or saved more than the window before the tab opened', () => {
+		assert.ok(isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), now - SAVE_AS_WINDOW_MS, now - SAVE_AS_WINDOW_MS), now), 'at the edge');
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), now - SAVE_AS_WINDOW_MS - 1, now - 5), now));
+		assert.ok(!isSaveAsCandidate(k('b.yaml'), k('a.yaml'), recent(k('b.yaml'), now - 5, now - SAVE_AS_WINDOW_MS - 1), now));
 	});
 });

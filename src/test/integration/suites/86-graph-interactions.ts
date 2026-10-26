@@ -7,7 +7,7 @@ import type { HostMessage, NodeStatusById } from '../../../shared/protocol';
 import { runOnEditor, waitFor } from '../helpers';
 import {
 	graphDir, ids, live, settle, SWITCH, MAPPING_ID, VALID, withGraph, insert, open, showGraph, testPanels, fakeMemento, loseBinary,
-	restoreBinary, useGraphSuite,
+	restoreBinary, useGraphSuite, autoOpened,
 } from '../graphHelpers';
 import { api } from '../schemaHarness';
 
@@ -620,6 +620,245 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				}
 			});
 		}
+
+		suite('SAVE_AS (ticket 12)', () => {
+			/** The text tab of `target`, if any. */
+			const tabOf = (target: vscode.Uri) => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+				.find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === target.toString());
+			const autoRegistry = (memento = fakeMemento()) => testPanels({ memento, autoOpen: () => true, detection: api().detection });
+			/**
+			 * A filler tab, then `name` with `text` after it in column One; the filler is active again, so
+			 * the next tab opened in the group lands between them (`workbench.editor.openPositioning`: right).
+			 */
+			async function besideFiller(name: string, text: string): Promise<{ filler: vscode.TextDocument; doc: vscode.TextDocument }> {
+				const filler = await openIn(`${name}.filler.txt`, 'filler\n', vscode.ViewColumn.One);
+				const doc = await openIn(name, text, vscode.ViewColumn.One);
+				return { filler, doc };
+			}
+			const activate = (doc: vscode.TextDocument) =>
+				vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
+			/**
+			 * A Save As of `from` to `name` the way VS Code reports it, with no dialog: the new file is
+			 * created and saved with `from`'s text, then shown (its tab opens before `from`'s, unless
+			 * `before: false`; `beforeShow` runs first), then `from`'s tab in column One closes at once
+			 * (`closeOld`). `save: false` creates it with its text and saves nothing.
+			 */
+			async function saveAs(
+				from: vscode.TextDocument, name: string,
+				{ save = true, closeOld = true, before = true, beforeShow }: { save?: boolean; closeOld?: boolean; before?: boolean; beforeShow?: (to: vscode.TextDocument) => Promise<void> } = {},
+			): Promise<vscode.TextDocument> {
+				const to = uri(name);
+				const text = from.getText();
+				const create = new vscode.WorkspaceEdit();
+				create.createFile(to, save ? {} : { contents: Buffer.from(text) });
+				assert.ok(await vscode.workspace.applyEdit(create), 'the file was created');
+				const doc = await vscode.workspace.openTextDocument(to);
+				if (save) {
+					const fill = new vscode.WorkspaceEdit();
+					fill.insert(to, new vscode.Position(0, 0), text);
+					assert.ok(await vscode.workspace.applyEdit(fill));
+					assert.ok(await doc.save(), 'the file was saved');
+				}
+				await beforeShow?.(doc);
+				await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
+				const tabs = vscode.window.tabGroups.all.find((g) => g.viewColumn === vscode.ViewColumn.One)!.tabs;
+				const at = tabs.findIndex((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === to.toString());
+				const next = tabs[at + 1]?.input;
+				const justBefore = next instanceof vscode.TabInputText && next.uri.toString() === from.uri.toString();
+				assert.strictEqual(justBefore, before, before ? 'the new tab opened just before the old one' : 'the new tab is not just before the old one');
+				if (closeOld) {
+					await vscode.window.tabGroups.close(tabs.find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === from.uri.toString())!);
+				}
+				await settle();
+				return doc;
+			}
+
+			test('DIRTY: a with unsaved edits, saved as b (VS Code reverts a before the tab swap): the same panel follows b', async () => {
+				const panels = autoRegistry();
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-dirty-a.yaml', VALID);
+					const handle = await autoOpened(a, panels);
+					await insert(a, 0, '# edited\n');
+					assert.ok(a.isDirty, 'a has unsaved edits');
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-dirty-b.yaml', {
+						beforeShow: async () => {
+							// The revert command acts on the active editor; the filler is active again after it.
+							await activate(a);
+							await vscode.commands.executeCommand('workbench.action.files.revert');
+							assert.ok(await waitFor(() => !a.isDirty, 5_000), 'a was reverted');
+							await activate(filler);
+						},
+					});
+					await panels.idle();
+					await settle();
+					assert.ok(b.getText().startsWith('# edited\n') && !a.getText().startsWith('# edited'), 'the texts differ');
+					assert.strictEqual(panels.panelFor(b.uri), handle, 'a\'s panel is keyed by b');
+					assert.strictEqual(handle.panel.title, 'Graph: saveas-dirty-b.yaml');
+					assert.strictEqual(panels.size, 1, 'no second graph');
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('SAVED: the same panel follows b, titled with its name; no second graph; a\'s tab close closes nothing; the driving editor is b\'s', async () => {
+				const panels = autoRegistry();
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-a.yaml', VALID);
+					const handle = await autoOpened(a, panels);
+					const gone = disposal(handle);
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-b.yaml');
+					await panels.idle();
+					await settle();
+					assert.strictEqual(panels.panelFor(b.uri), handle, 'a\'s panel is keyed by b');
+					assert.strictEqual(panels.panelFor(a.uri), undefined);
+					assert.strictEqual(handle.panel.title, 'Graph: saveas-b.yaml');
+					assert.ok(!gone(), 'a\'s tab close closed nothing');
+					assert.strictEqual(panels.size, 1, 'no second graph');
+					assert.deepStrictEqual(await clickSelects(handle), ['saveas-b.yaml', vscode.ViewColumn.One]);
+					// The graph keeps following b.
+					const count = live(handle).length;
+					await insert(b, b.getText().indexOf('output:'), 'pipeline:\n  processors:\n    - mapping: root = this\n');
+					assert.ok(await waitFor(() => live(handle).length > count, 10_000), 'the panel follows b');
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('HIDE: a hidden, saved as b: b is hidden and does not auto-open; a stays hidden', async () => {
+				const memento = fakeMemento();
+				const panels = autoRegistry(memento);
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-hide-a.yaml', VALID);
+					await autoOpened(a, panels);
+					await panels.hide(a.uri);
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-hide-b.yaml');
+					await panels.idle();
+					await settle();
+					assert.strictEqual(panels.size, 0, 'no graph auto-opened');
+					assert.ok(panels.isHidden(b.uri), 'b is hidden');
+					assert.ok(panels.isHidden(a.uri), 'a stays hidden');
+					assert.deepStrictEqual(memento.get('redpandaConnect.hiddenGraphs'), [a.uri.toString(), b.uri.toString()]);
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('SEEN: a shown, its graph closed by its ×, saved as b: b\'s graph does not auto-open', async () => {
+				const panels = autoRegistry();
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-seen-a.yaml', VALID);
+					const handle = await autoOpened(a, panels);
+					handle.panel.dispose();
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-seen-b.yaml');
+					await panels.idle();
+					await settle();
+					assert.strictEqual(panels.panelFor(b.uri), undefined, 'b\'s graph did not auto-open');
+					assert.ok(!panels.isHidden(b.uri) && !panels.isHidden(a.uri), 'no Hide');
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('EXTRA: b\'s graph opened before the Save As of hidden a is confirmed: it closes, b is hidden', async () => {
+				const panels = autoRegistry();
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-extra-a.yaml', VALID);
+					await autoOpened(a, panels);
+					await panels.hide(a.uri);
+					await activate(filler);
+					let shown: Promise<unknown> = Promise.resolve();
+					const b = await saveAs(a, 'saveas-extra-b.yaml', {
+						// b's graph is open before its tab, as when an auto-open's wait ran out.
+						beforeShow: async (to) => {
+							shown = panels.show(to.uri);
+							assert.ok(await waitFor(() => panels.panelFor(to.uri) !== undefined, 600), 'b\'s graph opened first');
+						},
+					});
+					await shown;
+					await panels.idle();
+					assert.ok(await waitFor(() => panels.size === 0, 5_000), 'b\'s extra graph closed');
+					assert.ok(panels.isHidden(b.uri), 'b is hidden');
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('OTHER_GROUP: a also open in another group keeps its graph; b gets no graph', async () => {
+				const panels = autoRegistry();
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-group-a.yaml', VALID);
+					const handle = await autoOpened(a, panels);
+					const gone = disposal(handle);
+					const graphColumn = handle.panel.viewColumn!;
+					await vscode.window.showTextDocument(a, { viewColumn: (graphColumn + 1) as vscode.ViewColumn, preview: false });
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-group-b.yaml');
+					await panels.idle();
+					await settle();
+					assert.strictEqual(panels.panelFor(a.uri), handle, 'a keeps its graph');
+					assert.strictEqual(handle.panel.title, 'Graph: saveas-group-a.yaml');
+					assert.ok(!gone());
+					assert.strictEqual(panels.panelFor(b.uri), undefined, 'b\'s graph did not auto-open');
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			test('STALE_HIDE: a Hide stored earlier for b goes when a\'s graph moves onto b', async () => {
+				const memento = fakeMemento();
+				await memento.update('redpandaConnect.hiddenGraphs', [uri('saveas-stalehide-b.yaml').toString()]);
+				const panels = autoRegistry(memento);
+				try {
+					const { filler, doc: a } = await besideFiller('saveas-stalehide-a.yaml', VALID);
+					const handle = await autoOpened(a, panels);
+					await activate(filler);
+					const b = await saveAs(a, 'saveas-stalehide-b.yaml');
+					await panels.idle();
+					await settle();
+					assert.strictEqual(panels.panelFor(b.uri), handle, 'a\'s panel is keyed by b');
+					assert.ok(!panels.isHidden(b.uri), 'b is no longer hidden');
+					assert.deepStrictEqual(memento.get('redpandaConnect.hiddenGraphs'), []);
+				} finally {
+					panels.dispose();
+				}
+			});
+
+			const cases = [
+				{ kind: 'created, not saved, a closed at once', tag: 'nosave', options: { save: false } },
+				{ kind: 'created and saved, a stays open', tag: 'open', options: { closeOld: false } },
+				{ kind: 'created and saved, not just before a, a closed at once', tag: 'after', options: { before: false } },
+			] as const;
+			for (const { kind, tag, options } of cases) {
+				test(`NOT_SAVE_AS (${kind}): a's graph is not moved and closes with a's tab`, async () => {
+					const panels = autoRegistry();
+					try {
+						const { filler, doc: a } = await besideFiller(`saveas-${tag}-a.yaml`, VALID);
+						const handle = await autoOpened(a, panels);
+						const gone = disposal(handle);
+						// `before: false`: a is active, so b opens after it.
+						await activate(tag === 'after' ? a : filler);
+						const b = await saveAs(a, `saveas-${tag}-b.yaml`, options);
+						await panels.idle();
+						assert.notStrictEqual(panels.panelFor(b.uri), handle, 'b did not take a\'s graph');
+						if (tag === 'open') {
+							// The source stays open past the window: a's later close is a close.
+							assert.strictEqual(panels.panelFor(a.uri), handle, 'a\'s graph stays a\'s');
+							assert.strictEqual(handle.panel.title, `Graph: saveas-${tag}-a.yaml`);
+							await new Promise((r) => setTimeout(r, 1_300));
+							await vscode.window.tabGroups.close(tabOf(a.uri)!);
+						}
+						assert.ok(await waitFor(gone, 10_000), 'a\'s graph closed with its tab');
+						assert.strictEqual(panels.panelFor(a.uri), undefined);
+					} finally {
+						panels.dispose();
+					}
+				});
+			}
+		});
 
 		test('VS Code\'s own rename events: the driving editor is a visible editor of the new URI; a click opens no editor', async () => {
 			const { doc, handle } = await withGraph('drive-real-old.yaml', SWITCH);

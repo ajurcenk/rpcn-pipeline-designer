@@ -37,7 +37,10 @@ import { GraphPanel, type GraphPanelHandle } from './graphPanel';
 import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
-import { hasTextTab, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameFate, renameWinners, until, within, type Rename } from './tabs';
+import {
+	confirmsSaveAs, hasTextTab, isSaveAsCandidate, isTextTabOf, openDocument, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameFate, renameWinners,
+	SAVE_AS_CLOSE_MS, SAVE_AS_WINDOW_MS, saveAsExpired, until, within, type CreatedAndSaved, type Rename, type SaveAsCandidate,
+} from './tabs';
 
 export { MAX_POSTED, type GraphPanelHandle } from './graphPanel';
 export { hostStatusOf, statusDiagnostics, type GraphBinary, type GraphSchema } from './status';
@@ -58,6 +61,11 @@ const LOCK_WAIT_MS = 1_000;
 const LATE_LOCK_WINDOW_MS = 5_000;
 /** How long the late sequence lets pending focus changes arrive before it re-checks and locks. */
 const LATE_SETTLE_MS = 100;
+/**
+ * How long a queued auto-open of a file just created and saved waits for its tab to open, which
+ * starts the Save As test (ticket 12): VS Code may report its editor before its tab.
+ */
+const SAVE_AS_TAB_WAIT_MS = 500;
 export { GRAPH_VIEW_TYPE };
 
 /** Whether `graph`'s panel is active and its group is the active one: the lock acts on the active group. */
@@ -139,6 +147,9 @@ export type GraphDetection = Pick<DetectionRegistry, 'isDetected' | 'markDetecte
  * stores a per-file Hide in the memento, which suppresses auto-open until Show graph clears it;
  * closing the panel by its own × is not a Hide. Closing the file's last text tab closes its
  * graph. A rename re-keys the panel, its title, the driving editor, the Hide and the session memory.
+ * A Save As (ticket 12: a tab of a file just created and saved opens just before another file's tab,
+ * which closes within `SAVE_AS_CLOSE_MS`) moves the panel, its title and the driving column to the
+ * new file, and copies the Hide and the session memory to it (the old file keeps them).
  */
 export class GraphPanels implements vscode.Disposable {
 	private readonly panels = new Map<string, GraphPanel>();
@@ -166,6 +177,15 @@ export class GraphPanels implements vscode.Disposable {
 	 * the file's editors.
 	 */
 	private readonly renamedDriving = new Map<string, { readonly column: vscode.ViewColumn; reported: boolean }>();
+	/**
+	 * Files created or saved in the last `SAVE_AS_WINDOW_MS`, by `uri.toString()` (ticket 12): a text
+	 * tab of one that opens may be a Save As. `checked`: a tab of it opened since and was tested.
+	 */
+	private readonly recentFiles = new Map<string, CreatedAndSaved & { checked?: boolean }>();
+	/** Save As candidates not settled yet, by the new file's `uri.toString()`, with the new tab's column. */
+	private readonly saveAsCandidates = new Map<string, SaveAsCandidate & { readonly column: vscode.ViewColumn }>();
+	/** Files that are the target of a settled Save As in this session (ticket 12): they never auto-open. */
+	private readonly saveAsTargets = new Set<string>();
 	/** Panel creations (and their lock sequences) run one at a time: the lock acts on the active group. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private disposed = false;
@@ -235,7 +255,15 @@ export class GraphPanels implements vscode.Disposable {
 			}),
 			// TAB_CLOSE: whatever the event calls it (a close, a preview tab replaced), a panel whose
 			// file had a text tab and has none left closes.
-			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
+			// A Save As (ticket 12) is tested on the opened tabs and applied on the source's close, before
+			// TAB_CLOSE, so that close closes nothing.
+			vscode.window.tabGroups.onDidChangeTabs((e) => {
+				this.saveAsOpened(e.opened);
+				this.saveAsClosed(e.closed);
+				this.tabsChanged();
+			}),
+			vscode.workspace.onDidCreateFiles((e) => e.files.forEach((uri) => this.recent(uri.toString(), 'created'))),
+			vscode.workspace.onDidSaveTextDocument((doc) => this.recent(doc.uri.toString(), 'saved')),
 			vscode.workspace.onWillRenameFiles((e) => {
 				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
 			}),
@@ -334,6 +362,136 @@ export class GraphPanels implements vscode.Disposable {
 			} else if (graph.hadTab && !this.pendingRenames.renaming(key) && !this.pendingRenames.creating(key)) {
 				graph.panel.dispose();
 			}
+		}
+	}
+
+	/** `key` was created or saved now (ticket 12); entries older than `SAVE_AS_WINDOW_MS` go. */
+	private recent(key: string, what: 'created' | 'saved'): void {
+		this.pruneSaveAs();
+		this.recentFiles.set(key, { ...this.recentFiles.get(key), [what]: Date.now() });
+	}
+
+	/** Drops the recent files past `SAVE_AS_WINDOW_MS`, and the candidates that can no longer be confirmed. */
+	private pruneSaveAs(): void {
+		const now = Date.now();
+		for (const [key, { created, saved }] of [...this.recentFiles]) {
+			if (Math.max(created ?? -Infinity, saved ?? -Infinity) < now - SAVE_AS_WINDOW_MS) {
+				this.recentFiles.delete(key);
+			}
+		}
+		for (const [key, candidate] of [...this.saveAsCandidates]) {
+			if (saveAsExpired(candidate, now) || !hasTextTab(key)) {
+				this.saveAsCandidates.delete(key);
+			}
+		}
+	}
+
+	/**
+	 * Whether `key` may still turn out to be a Save As target (ticket 12): it was created and saved
+	 * just now and no tab of it was tested yet, or its candidate is not settled.
+	 */
+	private saveAsPending(key: string): boolean {
+		this.pruneSaveAs();
+		const entry = this.recentFiles.get(key);
+		return (entry !== undefined && entry.created !== undefined && entry.saved !== undefined && !entry.checked) || this.saveAsCandidates.has(key);
+	}
+
+	/**
+	 * Ticket 12: each text tab that opened, of a file just created and saved, is tested against the
+	 * next tab in its group (`isSaveAsCandidate`); a candidate waits for that tab's close.
+	 */
+	private saveAsOpened(opened: readonly vscode.Tab[]): void {
+		if (this.recentFiles.size === 0) {
+			return;
+		}
+		this.pruneSaveAs();
+		const now = Date.now();
+		for (const tab of opened) {
+			if (!(tab.input instanceof vscode.TabInputText)) {
+				continue;
+			}
+			const key = tab.input.uri.toString();
+			const entry = this.recentFiles.get(key);
+			if (!entry) {
+				continue;
+			}
+			entry.checked = true;
+			const tabs = tab.group.tabs;
+			const index = tabs.indexOf(tab);
+			const nextInput = index >= 0 ? tabs[index + 1]?.input : undefined;
+			const next = nextInput instanceof vscode.TabInputText ? nextInput.uri.toString() : undefined;
+			if (next !== undefined && isSaveAsCandidate(key, next, this.recentFiles, now)) {
+				this.saveAsCandidates.set(key, { to: key, from: next, openedAt: now, column: tab.group.viewColumn });
+			}
+		}
+	}
+
+	/**
+	 * SAVED, UNTITLED, DIRTY (ticket 12): a closed text tab that is a candidate's source, closing
+	 * within `SAVE_AS_CLOSE_MS` with the new tab still open (`confirmsSaveAs`), confirms the Save As.
+	 */
+	private saveAsClosed(closed: readonly vscode.Tab[]): void {
+		if (this.saveAsCandidates.size === 0) {
+			return;
+		}
+		const now = Date.now();
+		for (const tab of closed) {
+			if (!(tab.input instanceof vscode.TabInputText)) {
+				continue;
+			}
+			const from = tab.input.uri.toString();
+			for (const [key, candidate] of [...this.saveAsCandidates]) {
+				if (confirmsSaveAs(candidate, from, now, hasTextTab(key))) {
+					this.saveAsCandidates.delete(key);
+					this.saveAsTargets.add(key);
+					this.applySaveAs(from, vscode.Uri.parse(key), candidate.column);
+				}
+			}
+		}
+		this.pruneSaveAs();
+	}
+
+	/**
+	 * Applies a Save As of `from` to `to` (ticket 12): a graph of the new file other than the moved
+	 * one closes (a Save As target keeps no auto-opened graph). The old file's panel moves to the new
+	 * file (key, title, driving column; the webview and its pan, zoom and collapsed groups stay) when
+	 * the old file has no text tab left (VS Code replaces the source in one group only), and the new
+	 * file's Hide then becomes the old one's. The session memory, and the Hide when no graph moved,
+	 * are copied (the old file keeps them).
+	 */
+	private applySaveAs(from: string, to: vscode.Uri, column: vscode.ViewColumn): void {
+		const key = to.toString();
+		this.options.log(`Graph: ${path.posix.basename(vscode.Uri.parse(from).path)} was saved as ${path.posix.basename(to.path)}.`);
+		const graph = hasTextTab(from) ? undefined : this.panels.get(from);
+		const other = this.panels.get(key);
+		if (other && other !== graph) {
+			other.panel.dispose();
+		}
+		if (graph) {
+			this.panels.delete(from);
+			graph.uri = to;
+			graph.panel.title = graphTitle(to);
+			graph.hadTab = true;
+			this.panels.set(key, graph);
+			// The driving editor is the new file's editor in the column of its tab.
+			this.renamedDriving.set(key, { column, reported: true });
+			this.adoptRenamedDriving(vscode.window.visibleTextEditors);
+			this.options.detection?.markDetected(to);
+			this.updateContext();
+			void graph.diagnosticsChanged();
+		}
+		if (this.seen.has(from)) {
+			this.seen.add(key);
+		}
+		// A moved graph takes the old file's Hide state over a stale one of the new path (as `renamed`).
+		const hide = this.hidden.has(from);
+		if (hide !== this.hidden.has(key) && (hide || graph)) {
+			if (hide) {
+				this.hidden.add(key);
+			} else {
+				this.hidden.delete(key);
+			}
+			void this.storeHidden();
 		}
 	}
 
@@ -573,6 +731,14 @@ export class GraphPanels implements vscode.Disposable {
 		auto: boolean,
 	): Promise<GraphPanelHandle | undefined> {
 		const key = target.toString();
+		// A file just created and saved may be a Save As target (ticket 12): no auto-open until that
+		// is settled, and none for a Save As target (the graph moved, or the old file had none).
+		if (auto && this.saveAsPending(key)) {
+			await until(() => this.disposed || !this.saveAsPending(key), SAVE_AS_TAB_WAIT_MS + SAVE_AS_CLOSE_MS);
+		}
+		if (auto && this.saveAsTargets.has(key)) {
+			return this.panels.get(key);
+		}
 		const open = this.panels.get(key);
 		if (open) {
 			if (!auto) {
@@ -861,6 +1027,9 @@ export class GraphPanels implements vscode.Disposable {
 		this.subscriptions.forEach((d) => d.dispose());
 		this.driving.clear();
 		this.renamedDriving.clear();
+		this.recentFiles.clear();
+		this.saveAsCandidates.clear();
+		this.saveAsTargets.clear();
 		for (const graph of [...this.panels.values()]) {
 			graph.panel.dispose();
 		}
