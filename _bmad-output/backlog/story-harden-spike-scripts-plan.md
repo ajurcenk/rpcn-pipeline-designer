@@ -3,7 +3,7 @@ title: 'Spike scripts handle unusual repo paths and re-check extracted binaries'
 type: 'chore'
 ticket: '6'
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: '45f85a6fb23a91151309a4359f0bc9180d444da3'
 route: 'oneshot'
 route_source: 'auto'
