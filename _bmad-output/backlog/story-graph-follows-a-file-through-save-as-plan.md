@@ -3,7 +3,7 @@ title: 'The graph follows a file through Save As'
 type: 'feature'
 ticket: '12'
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: '172c14f060c8d9c6b6f8baeba6c056896aa165ba'
 route: 'full'
 route_source: 'auto'
