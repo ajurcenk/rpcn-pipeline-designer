@@ -673,6 +673,30 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				return doc;
 			}
 
+			test('UNTITLED_NO_GRAPH: an untitled config with no graph, saved as d: d auto-opens its own graph (an untitled file\'s memory is not copied)', async () => {
+				const panels = autoRegistry();
+				try {
+					const filler = await openIn('saveas-untitled.filler.txt', 'filler\n', vscode.ViewColumn.One);
+					const untitled = await vscode.workspace.openTextDocument({ language: 'yaml', content: VALID });
+					await vscode.window.showTextDocument(untitled, { viewColumn: vscode.ViewColumn.One, preview: false });
+					await settle();
+					assert.strictEqual(panels.panelFor(untitled.uri), undefined, 'an untitled file never auto-opens');
+					await activate(filler);
+					const d = await saveAs(untitled, 'saveas-untitled-d.yaml', {
+						beforeShow: async () => {
+							// VS Code closes the untitled document before the tab swap; reverting it avoids the close prompt.
+							await activate(untitled);
+							await vscode.commands.executeCommand('workbench.action.files.revert');
+							await activate(filler);
+						},
+					});
+					assert.ok(await waitFor(() => panels.panelFor(d.uri) !== undefined, 10_000), 'd auto-opened its own graph');
+					assert.strictEqual(panels.size, 1);
+				} finally {
+					panels.dispose();
+				}
+			});
+
 			test('DIRTY: a with unsaved edits, saved as b (VS Code reverts a before the tab swap): the same panel follows b', async () => {
 				const panels = autoRegistry();
 				try {

@@ -25,7 +25,7 @@ context: []
 **Decisions (user, 2026-10-26):**
 - The old file keeps its Hide and session memory: they are copied to the new file, not moved (a saved old file still exists).
 - Only the graph follows; Bloblang test panels close with the old tab, as today.
-- Manual checks on VS Code 1.141.0 and 1.140.0 only.
+- ~~Manual checks on VS Code 1.141.0 and 1.140.0 only.~~ Superseded (user, 2026-10-26): manual checks on VS Code 1.143.1, the target version.
 - (After review, 2026-10-26.) No text check: VS Code reverts the old document after a Save As, so a source with unsaved edits would not match. The old tab closing right after the new one opens is the signal instead.
 
 ## Boundaries & Constraints
@@ -71,7 +71,7 @@ context: []
 - [x] Docs -- README, AD-1, CHANGELOG.
 
 **Acceptance Criteria:**
-- Given a detected file with its graph in VS Code 1.141.0 and 1.140.0, when the user runs File: Save As to a new path, then the same graph panel follows the new file, with its title updated, its pan, zoom and collapsed groups kept, and no second graph opens.
+- Given a detected file with its graph in VS Code 1.143.1, when the user runs File: Save As to a new path, then the same graph panel follows the new file, with its title updated, its pan, zoom and collapsed groups kept, and no second graph opens.
 - Given an untitled detected document with its graph, when it is saved for the first time, then the graph follows the saved file.
 - Given the change, when compile, the unit suites, suite 86 and the full stable suite run, then all pass.
 
@@ -92,6 +92,8 @@ Iteration 1:
 - Suite 86 `SAVE_AS (ticket 12)`: SAVED, HIDE, SEEN, and NOT_SAVE_AS for: created not saved (source closed at once), created and saved with the source left open past 1 s, created and saved not just before the source (source closed at once). DIRTY is not simulated (closing a dirty tab prompts); it holds because no text is compared.
 - Manual checks on 1.141.0 / 1.140.0 with a real File: Save As (SAVED, UNTITLED, HIDE, DIRTY) were not run by the implementing agent. The automated suite runs on the `stable` label (1.143.1 here).
 - Review fixes (iteration 1): `applySaveAs` closes any graph of the new file other than the moved one, whether or not the old file had a graph (an auto-open whose wait ran out keeps no graph of a Save As target); the panel moves only when the old file has no text tab left after the close (VS Code replaces the source in one group only), while the Hide / session-memory copy and the Save As target still apply; when a graph moves, the new path's Hide becomes the old file's (set or removed, stored when changed), as `renamed()` does; without a moved graph the copy rule holds. Suite 86 adds EXTRA (the new file's graph opened before the confirmation), OTHER_GROUP (the old file open in a second group keeps its graph) and STALE_HIDE (a stored Hide of the new path goes when a graph moves onto it).
+
+- Found in the manual check on 1.143.1 (2026-10-26): an untitled config with no graph (a new Ctrl+N file, which never auto-opens), saved as `d2.yml`, got no graph at all: its session memory was copied and the target blocked auto-open. Now an untitled file's session memory is not copied, and the new file is a Save As target (no auto-open, an extra graph closed) only when a graph moved or the old file's Hide or session memory was copied (`applySaveAs` returns it). Suite 86 UNTITLED_NO_GRAPH (fails without the fix). Full stable suite: 934 passing.
 
 ## Plan Change Log
 
@@ -128,4 +130,4 @@ Matrix audit (full stable suite 932 passing, then suite 86's Save As tests 10 pa
 - `xvfb-run -a npx vscode-test --label stable` (alone) -- expected: all pass.
 
 **Manual checks:**
-- Dev host on 1.141.0 and on 1.140.0 (downloaded with `@vscode/test-electron`): SAVED, UNTITLED and HIDE with real File: Save As.
+- Dev host on 1.143.1 (the target version, `.vscode-test/vscode-linux-x64-1.143.1`): SAVED, UNTITLED, DIRTY and HIDE with real File: Save As.

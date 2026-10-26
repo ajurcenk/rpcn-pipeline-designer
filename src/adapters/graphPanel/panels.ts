@@ -443,8 +443,9 @@ export class GraphPanels implements vscode.Disposable {
 			for (const [key, candidate] of [...this.saveAsCandidates]) {
 				if (confirmsSaveAs(candidate, from, now, hasTextTab(key))) {
 					this.saveAsCandidates.delete(key);
-					this.saveAsTargets.add(key);
-					this.applySaveAs(from, vscode.Uri.parse(key), candidate.column);
+					if (this.applySaveAs(from, vscode.Uri.parse(key), candidate.column)) {
+						this.saveAsTargets.add(key);
+					}
 				}
 			}
 		}
@@ -457,14 +458,19 @@ export class GraphPanels implements vscode.Disposable {
 	 * file (key, title, driving column; the webview and its pan, zoom and collapsed groups stay) when
 	 * the old file has no text tab left (VS Code replaces the source in one group only), and the new
 	 * file's Hide then becomes the old one's. The session memory, and the Hide when no graph moved,
-	 * are copied (the old file keeps them).
+	 * are copied (the old file keeps them). An untitled file's session memory is not: it never
+	 * auto-opens, so an untitled config saved without a graph gets its own, as before. Whether the
+	 * new file is a Save As target (no auto-open): a graph moved, or the old file's Hide or session
+	 * memory was copied.
 	 */
-	private applySaveAs(from: string, to: vscode.Uri, column: vscode.ViewColumn): void {
+	private applySaveAs(from: string, to: vscode.Uri, column: vscode.ViewColumn): boolean {
 		const key = to.toString();
 		this.options.log(`Graph: ${path.posix.basename(vscode.Uri.parse(from).path)} was saved as ${path.posix.basename(to.path)}.`);
 		const graph = hasTextTab(from) ? undefined : this.panels.get(from);
+		const remembered = !from.startsWith('untitled:') && this.seen.has(from);
+		const target = graph !== undefined || this.hidden.has(from) || remembered;
 		const other = this.panels.get(key);
-		if (other && other !== graph) {
+		if (target && other && other !== graph) {
 			other.panel.dispose();
 		}
 		if (graph) {
@@ -480,7 +486,7 @@ export class GraphPanels implements vscode.Disposable {
 			this.updateContext();
 			void graph.diagnosticsChanged();
 		}
-		if (this.seen.has(from)) {
+		if (remembered) {
 			this.seen.add(key);
 		}
 		// A moved graph takes the old file's Hide state over a stale one of the new path (as `renamed`).
@@ -493,6 +499,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			void this.storeHidden();
 		}
+		return target;
 	}
 
 	/**
