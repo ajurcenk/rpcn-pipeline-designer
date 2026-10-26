@@ -25,6 +25,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The repo path as an ERE matching it literally (any regex character, and the `#` delimiter, escaped).
+ROOT_RE="$(printf '%s' "$ROOT" | sed -e 's/[][\\.^$*+?(){}|#/]/\\&/g')"
 CACHE="$ROOT/.cache/redpanda-connect"
 FINDINGS="$ROOT/_bmad-output/initiative-rpcn-vscode-designer/epic-foundation/spike-1-1-findings"
 CAPS="$FINDINGS/captures"
@@ -57,7 +59,7 @@ normalize() { # <file> [sort]
   local f="$1" tmp
   tmp="$(mktemp)"
   sed -E \
-    -e "s#${ROOT}#<ROOT>#g" \
+    -e "s#${ROOT_RE}#<ROOT>#g" \
     -e 's/time="[^"]*"/time="<TS>"/g' \
     -e 's/expires_at="[^"]*"/expires_at="<REDACTED>"/g' \
     -e 's/license_org=("[^"]*"|[^ ]*)/license_org=<REDACTED>/g' \
