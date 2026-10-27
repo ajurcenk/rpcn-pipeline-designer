@@ -67,3 +67,7 @@
 - source_plan: `_bmad-output/backlog/story-multi-root-workspace-folder-choice-plan.md`
   summary: No automated test covers a real multi-root workspace: per-folder `resourceFiles` / `envFile` (ticket 4) are tested through an injected folder and the pure `definingFolder`, not through `getConfiguration(…, resource)` and `inspect`.
   evidence: Ticket 4 review finding 2. The test host opens no workspace folder (some suites rely on that); a multi-root case needs a separate `vscode-test` run with its own `.code-workspace` and folder settings.
+
+- source_plan: `_bmad-output/backlog/bug-graph-webview-ready-timing-flakes-in-ci-plan.md`
+  summary: CI flake in the graph keyboard suite (3.11): `ESC (ticket 11): focusEditorRequested focuses the driving editor with its cursor unchanged; with no editor nothing happens` failed with "focus stays where it was" in the stable run (933 passing, 1 failing); the same job's non-blocking 1.100.0 floor run failed `RETAKE_STEAL (bug 19)`.
+  evidence: CI run 40398418336 on d89e711 (story 6, which changed only scripts/spike/*.sh). The next two runs on the same CI setup passed (eb4ddbc, f994870). Same family as bugs 19 and 21: focus-dependent tests under xvfb on the 2-CPU runner; not reproduced locally.
