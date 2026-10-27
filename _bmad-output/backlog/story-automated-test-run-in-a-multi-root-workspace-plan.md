@@ -3,7 +3,7 @@ title: 'An automated test run checks per-folder settings in a real multi-root wo
 type: 'chore'
 ticket: '28'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '316adb19be7f5cd144ba5104383a888150b41613'
 route: 'full'
 route_source: 'auto'
