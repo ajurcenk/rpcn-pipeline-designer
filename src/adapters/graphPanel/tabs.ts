@@ -222,18 +222,19 @@ export function isSaveAsCandidate(
 	next: string | undefined,
 	recent: ReadonlyMap<string, CreatedAndSaved>,
 	now: number,
+	windowMs = SAVE_AS_WINDOW_MS,
 ): boolean {
 	if (next === undefined || next === opened) {
 		return false;
 	}
 	const at = recent.get(opened);
-	const fresh = (t: number | undefined) => t !== undefined && t <= now && now - t <= SAVE_AS_WINDOW_MS;
+	const fresh = (t: number | undefined) => t !== undefined && t <= now && now - t <= windowMs;
 	return at !== undefined && fresh(at.created) && fresh(at.saved);
 }
 
 /** Whether `candidate` can no longer be confirmed at `now`: its source's close came too late. */
-export function saveAsExpired(candidate: SaveAsCandidate, now: number): boolean {
-	return now - candidate.openedAt > SAVE_AS_CLOSE_MS;
+export function saveAsExpired(candidate: SaveAsCandidate, now: number, closeMs = SAVE_AS_CLOSE_MS): boolean {
+	return now - candidate.openedAt > closeMs;
 }
 
 /**
@@ -241,6 +242,6 @@ export function saveAsExpired(candidate: SaveAsCandidate, now: number): boolean 
  * candidate's source, it closed within `SAVE_AS_CLOSE_MS` after the new tab opened, and the new tab
  * is still open (`toOpen`). A file merely opened beside another leaves its neighbour open.
  */
-export function confirmsSaveAs(candidate: SaveAsCandidate, closed: string, now: number, toOpen: boolean): boolean {
-	return closed === candidate.from && toOpen && now >= candidate.openedAt && !saveAsExpired(candidate, now);
+export function confirmsSaveAs(candidate: SaveAsCandidate, closed: string, now: number, toOpen: boolean, closeMs = SAVE_AS_CLOSE_MS): boolean {
+	return closed === candidate.from && toOpen && now >= candidate.openedAt && !saveAsExpired(candidate, now, closeMs);
 }

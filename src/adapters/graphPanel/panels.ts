@@ -131,6 +131,14 @@ export interface GraphPanelsOptions {
 	 * pending. `undefined`: `PENDING_RENAME_MS`.
 	 */
 	readonly pendingRenameMs?: number;
+	/**
+	 * Test seam (bug 21): the Save As windows (ticket 12): how recently the new file must have been
+	 * created and saved when its tab opens, and how soon after that the old tab must close.
+	 * `undefined`: `SAVE_AS_WINDOW_MS`, `SAVE_AS_CLOSE_MS`. A simulated Save As in a test is slower
+	 * than VS Code's own (about 50 ms) on a busy machine.
+	 */
+	readonly saveAsWindowMs?: number;
+	readonly saveAsCloseMs?: number;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -170,6 +178,9 @@ export class GraphPanels implements vscode.Disposable {
 	 * One never reported expires (4.13), and its unreported `renamedDriving` entries go with it.
 	 */
 	private readonly pendingRenames: PendingRenames;
+	/** The Save As windows (ticket 12; options in tests, bug 21). */
+	private readonly saveAsWindowMs: number;
+	private readonly saveAsCloseMs: number;
 	/**
 	 * Renamed files whose driving editor was in a column, by new `uri.toString()`: the editor of the
 	 * new URI in that column becomes the driving one once it is visible (F7_RENAME), and again when
@@ -194,6 +205,8 @@ export class GraphPanels implements vscode.Disposable {
 	constructor(private readonly options: GraphPanelsOptions) {
 		const stored = options.memento?.get<unknown>(HIDDEN_GRAPHS_STATE);
 		this.hidden = new Set(Array.isArray(stored) ? stored.filter((k): k is string => typeof k === 'string') : []);
+		this.saveAsWindowMs = options.saveAsWindowMs ?? SAVE_AS_WINDOW_MS;
+		this.saveAsCloseMs = options.saveAsCloseMs ?? SAVE_AS_CLOSE_MS;
 		this.pendingRenames = new PendingRenames(options.pendingRenameMs ?? PENDING_RENAME_MS, Date.now, (expired) => this.renamesExpired(expired));
 		// One subscription per event for all panels: an event goes to the panel of its file, if one
 		// is open (OTHER_DOC, OTHER_FILE, CLOSED). Events with no content change (dirty state, save)
@@ -375,12 +388,12 @@ export class GraphPanels implements vscode.Disposable {
 	private pruneSaveAs(): void {
 		const now = Date.now();
 		for (const [key, { created, saved }] of [...this.recentFiles]) {
-			if (Math.max(created ?? -Infinity, saved ?? -Infinity) < now - SAVE_AS_WINDOW_MS) {
+			if (Math.max(created ?? -Infinity, saved ?? -Infinity) < now - this.saveAsWindowMs) {
 				this.recentFiles.delete(key);
 			}
 		}
 		for (const [key, candidate] of [...this.saveAsCandidates]) {
-			if (saveAsExpired(candidate, now) || !hasTextTab(key)) {
+			if (saveAsExpired(candidate, now, this.saveAsCloseMs) || !hasTextTab(key)) {
 				this.saveAsCandidates.delete(key);
 			}
 		}
@@ -420,7 +433,7 @@ export class GraphPanels implements vscode.Disposable {
 			const index = tabs.indexOf(tab);
 			const nextInput = index >= 0 ? tabs[index + 1]?.input : undefined;
 			const next = nextInput instanceof vscode.TabInputText ? nextInput.uri.toString() : undefined;
-			if (next !== undefined && isSaveAsCandidate(key, next, this.recentFiles, now)) {
+			if (next !== undefined && isSaveAsCandidate(key, next, this.recentFiles, now, this.saveAsWindowMs)) {
 				this.saveAsCandidates.set(key, { to: key, from: next, openedAt: now, column: tab.group.viewColumn });
 			}
 		}
@@ -441,7 +454,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			const from = tab.input.uri.toString();
 			for (const [key, candidate] of [...this.saveAsCandidates]) {
-				if (confirmsSaveAs(candidate, from, now, hasTextTab(key))) {
+				if (confirmsSaveAs(candidate, from, now, hasTextTab(key), this.saveAsCloseMs)) {
 					this.saveAsCandidates.delete(key);
 					if (this.applySaveAs(from, vscode.Uri.parse(key), candidate.column)) {
 						this.saveAsTargets.add(key);
@@ -741,7 +754,7 @@ export class GraphPanels implements vscode.Disposable {
 		// A file just created and saved may be a Save As target (ticket 12): no auto-open until that
 		// is settled, and none for a Save As target (the graph moved, or the old file had none).
 		if (auto && this.saveAsPending(key)) {
-			await until(() => this.disposed || !this.saveAsPending(key), SAVE_AS_TAB_WAIT_MS + SAVE_AS_CLOSE_MS);
+			await until(() => this.disposed || !this.saveAsPending(key), SAVE_AS_TAB_WAIT_MS + this.saveAsCloseMs);
 		}
 		if (auto && this.saveAsTargets.has(key)) {
 			return this.panels.get(key);

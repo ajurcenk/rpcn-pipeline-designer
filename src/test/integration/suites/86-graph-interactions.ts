@@ -638,7 +638,11 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 			/** The text tab of `target`, if any. */
 			const tabOf = (target: vscode.Uri) => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
 				.find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === target.toString());
-			const autoRegistry = (memento = fakeMemento()) => testPanels({ memento, autoOpen: () => true, detection: api().detection });
+			/** Wide Save As windows (bug 21): the simulated Save As is slower than VS Code's own on a busy machine. */
+			const SAVE_AS_CLOSE_TEST_MS = 3_000;
+			const autoRegistry = (memento = fakeMemento()) => testPanels({
+				memento, autoOpen: () => true, detection: api().detection, saveAsWindowMs: 10_000, saveAsCloseMs: SAVE_AS_CLOSE_TEST_MS,
+			});
 			/**
 			 * A filler tab, then `name` with `text` after it in column One; the filler is active again, so
 			 * the next tab opened in the group lands between them (`workbench.editor.openPositioning`: right).
@@ -885,7 +889,7 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 							// The source stays open past the window: a's later close is a close.
 							assert.strictEqual(panels.panelFor(a.uri), handle, 'a\'s graph stays a\'s');
 							assert.strictEqual(handle.panel.title, `Graph: saveas-${tag}-a.yaml`);
-							await new Promise((r) => setTimeout(r, 1_300));
+							await new Promise((r) => setTimeout(r, SAVE_AS_CLOSE_TEST_MS + 300));
 							await vscode.window.tabGroups.close(tabOf(a.uri)!);
 						}
 						assert.ok(await waitFor(gone, 10_000), 'a\'s graph closed with its tab');
