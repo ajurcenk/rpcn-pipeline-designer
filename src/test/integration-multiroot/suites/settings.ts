@@ -19,6 +19,8 @@ import { EXTENSION_ID, runOnEditor, waitFor } from '../../integration/helpers';
 type FolderName = 'a' | 'b';
 /** Per feature, the `--env-file` of each command it ran (`null`: none). */
 type EnvFiles = Record<'lint' | 'run' | 'parse' | 'panel', (string | null)[]>;
+/** Per feature, the argv of each command it ran. */
+type Argvs = Record<keyof EnvFiles, string[]>;
 
 const FIXTURE = path.join(REPO_ROOT, 'test', 'multiroot');
 const WORKSPACE_FILE = path.join(FIXTURE, 'multiroot.code-workspace');
@@ -45,6 +47,10 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		return fs.existsSync(at) ? fs.readFileSync(at, 'utf8').split('\n').filter(Boolean) : [];
 	};
 	const envFileOf = (argv: string) => /(?:^| )--env-file (\S+)/.exec(argv)?.[1] ?? null;
+	/** The last `--env-file` (ticket 29: `redpandaConnect.env`'s generated one). */
+	const lastEnvFileOf = (argv: string) => [...argv.matchAll(/(?:^| )--env-file (\S+)/g)].pop()?.[1] ?? null;
+	const setEnv = (target: vscode.ConfigurationTarget, value: Record<string, string> | undefined, name?: FolderName) => vscode.workspace
+		.getConfiguration('redpandaConnect', name ? folder(name).uri : undefined).update('env', value, target);
 
 	const setFolderEnvFile = (name: FolderName, value: string | undefined) => vscode.workspace
 		.getConfiguration('redpandaConnect', folder(name).uri).update('envFile', value, vscode.ConfigurationTarget.WorkspaceFolder);
@@ -80,6 +86,12 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 	 * `--env-file` each command got. The config on disk ends as it started.
 	 */
 	async function exercise(name: FolderName): Promise<EnvFiles> {
+		const got = await exerciseArgv(name);
+		return { lint: got.lint.map(envFileOf), run: got.run.map(envFileOf), parse: got.parse.map(envFileOf), panel: got.panel.map(envFileOf) };
+	}
+
+	/** As `exercise`, the whole argv of each command. */
+	async function exerciseArgv(name: FolderName): Promise<Argvs> {
 		const file = configOf(name);
 		const original = fs.readFileSync(file, 'utf8');
 		const doc = await vscode.workspace.openTextDocument(file);
@@ -130,7 +142,7 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		assert.ok(await waitFor(() => !doc.isDirty, 5_000), `${name}: the edit was not reverted`);
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		assert.strictEqual(fs.readFileSync(file, 'utf8'), original);
-		return { lint: lint.map(envFileOf), run: run.map(envFileOf), parse: parse.map(envFileOf), panel: panel.map(envFileOf) };
+		return { lint, run, parse, panel };
 	}
 
 	/** What `exercise` returns when every command got `envFile` (`null`: none). */
@@ -169,6 +181,8 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		await setFolderEnvFile('a', undefined);
 		await setFolderEnvFile('b', undefined);
 		await setWorkspaceEnvFile(undefined);
+		await setEnv(vscode.ConfigurationTarget.WorkspaceFolder, undefined, 'b');
+		await setEnv(vscode.ConfigurationTarget.Global, undefined);
 	});
 
 	suiteTeardown(async () => {
@@ -209,5 +223,35 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		assert.deepStrictEqual(inA, expected(inA, envOf('a')), 'the config in A');
 		const inB = await exercise('b');
 		assert.deepStrictEqual(inB, expected(inB, envOf('a')), 'the config in B');
+	});
+
+	test('ticket 29 MERGE: redpandaConnect.env merges the user and folder values by name, the folder\'s winning, for that folder\'s configs only', async () => {
+		await setEnv(vscode.ConfigurationTarget.Global, { A: 'user-a', B: 'user-b' });
+		await setEnv(vscode.ConfigurationTarget.WorkspaceFolder, { B: 'b-b', C: 'b-c' }, 'b');
+		// VS Code's `get` merges object values across levels.
+		assert.deepStrictEqual(vscode.workspace.getConfiguration('redpandaConnect', folder('b').uri).get('env'), { A: 'user-a', B: 'b-b', C: 'b-c' });
+		const contentsOf = (got: Argvs) => {
+			const all = [...got.lint, ...got.run, ...got.parse, ...got.panel];
+			assert.ok(got.lint.length > 0 && got.run.length > 0 && got.parse.length > 0 && got.panel.length > 0, JSON.stringify(got));
+			return [...new Set(all.map((argv) => {
+				const file = lastEnvFileOf(argv);
+				assert.ok(file, argv);
+				return fs.readFileSync(file, 'utf8');
+			}))];
+		};
+		assert.deepStrictEqual(contentsOf(await exerciseArgv('b')), ['A="user-a"\nB="b-b"\nC="b-c"\n'], 'the config in B');
+		assert.deepStrictEqual(contentsOf(await exerciseArgv('a')), ['A="user-a"\nB="user-b"\n'], 'the config in A');
+	});
+
+	test('ticket 29: with folder B\'s envFile, redpandaConnect.env\'s file comes after it in every command', async () => {
+		await setFolderEnvFile('b', '.env');
+		await setEnv(vscode.ConfigurationTarget.WorkspaceFolder, { C: 'b-c' }, 'b');
+		const got = await exerciseArgv('b');
+		for (const argv of [...got.lint, ...got.run, ...got.parse, ...got.panel]) {
+			const files = [...argv.matchAll(/(?:^| )--env-file (\S+)/g)].map((m) => m[1]);
+			assert.strictEqual(files.length, 2, argv);
+			assert.strictEqual(files[0], envOf('b'));
+			assert.strictEqual(fs.readFileSync(files[1], 'utf8'), 'C="b-c"\n');
+		}
 	});
 });

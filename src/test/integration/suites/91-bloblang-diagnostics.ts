@@ -223,6 +223,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		process.env.PATH = originalPath;
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -489,6 +490,51 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 			assert.ok(last.startsWith(`blobl --env-file ${envFile} --file `), last);
 		} finally {
 			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 29 EVERY_COMMAND / CHANGED / WRITE_FAILS: redpandaConnect.env reaches blobl as the last --env-file; editing it re-parses with a new file; an unwritable folder is logged, with no value', async () => {
+		const envFile = path.join(dir, 'parse-29.env');
+		fs.writeFileSync(envFile, 'FOO=bar\n');
+		await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+		await config().update('env', { FOO: 'baz' }, vscode.ConfigurationTarget.Global);
+		let folder: string | undefined;
+		try {
+			const editor = await open('env-setting.yaml', CONFIG);
+			await replace(editor, 'root.d = 1', 'root.d = 29');
+			await quiet();
+			const last = bloblArgv().pop()!;
+			const generated = new RegExp(`^blobl --env-file ${envFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} --env-file (\\S+) --file `).exec(last)?.[1];
+			assert.ok(generated, last);
+			assert.strictEqual(fs.readFileSync(generated, 'utf8'), 'FOO="baz"\n');
+
+			// CHANGED: with no edit, the setting's change alone parses again, with the new file.
+			const count = bloblArgv().length;
+			await config().update('env', { FOO: 'qux' }, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => bloblArgv().length > count, 10_000), 'no parse after the setting changed');
+			await quiet();
+			const again = /--env-file \S+ --env-file (\S+) --file /.exec(bloblArgv().pop()!)?.[1];
+			assert.ok(again && again !== generated, String(again));
+			assert.strictEqual(fs.readFileSync(again, 'utf8'), 'FOO="qux"\n');
+
+			// WRITE_FAILS: the folder is a file now; the re-parse the next value triggers cannot write it.
+			folder = path.dirname(again);
+			fs.rmSync(folder, { recursive: true, force: true });
+			fs.writeFileSync(folder, '');
+			const spawned = bloblArgv().length;
+			await config().update('env', { FOO: 'tok-29-secret-parse' }, vscode.ConfigurationTarget.Global);
+			const failure = () => api().outputLines().find((l) => l.startsWith('Bloblang parse:')
+				&& l.includes('redpandaConnect.env: the variables could not be written to '));
+			assert.ok(await waitFor(() => failure() !== undefined, 10_000), api().outputLines().slice(-5).join('\n'));
+			await quiet();
+			assert.strictEqual(bloblArgv().length, spawned, 'no blobl was started');
+			assert.ok(!api().outputLines().some((l) => l.includes('tok-29-secret')), 'no value is logged');
+		} finally {
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+			if (folder && fs.existsSync(folder) && fs.statSync(folder).isFile()) {
+				fs.rmSync(folder);
+			}
 		}
 	});
 

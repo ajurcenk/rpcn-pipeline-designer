@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
+import { EnvSettingFiles, envSettingContent, setActiveEnvSettingFiles } from './adapters/redpandaConnect/envSetting';
 import { SchemaStore } from './adapters/redpandaConnect/schema';
 import { registerSchemaContributor, SchemaContributor } from './adapters/redhatYaml/contributor';
 import { DetectionRegistry } from './adapters/vscode/detection';
@@ -138,6 +139,25 @@ function registerEditorProviders(schema: () => JsonObject | undefined, detection
 	];
 }
 
+/**
+ * Sets where the `redpandaConnect.env` env files go (ticket 29) and removes the ones no longer
+ * current: those of no value this window's settings hold (the window's and each folder's). Only
+ * here, since a command may still be starting on an older file.
+ */
+export function activateEnvSetting(storageDir: string, log: (line: string) => void): vscode.Disposable {
+	const files = EnvSettingFiles.in(storageDir, log);
+	setActiveEnvSettingFiles(files);
+	const scopes = [undefined, ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri)];
+	const current = scopes
+		.map((scope) => envSettingContent(vscode.workspace.getConfiguration('redpandaConnect', scope).get<unknown>('env', {})))
+		.filter((c): c is string => c !== undefined);
+	const failed = files.sweep(current);
+	if (failed.length > 0) {
+		log(`redpandaConnect.env: could not remove ${failed.length} old env file(s) in ${files.dir}.`);
+	}
+	return new vscode.Disposable(() => setActiveEnvSettingFiles(undefined));
+}
+
 export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	const channel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	context.subscriptions.push(channel);
@@ -147,6 +167,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		lines.push(line);
 		channel.appendLine(line);
 	};
+
+	// `redpandaConnect.env` (ticket 29): the commands write its env file under global storage.
+	context.subscriptions.push(activateEnvSetting(context.globalStorageUri.fsPath, log));
 
 	const redpandaConnect = new RedpandaConnect({ log, notifier: createVsCodeNotifier(log) });
 	context.subscriptions.push(redpandaConnect);

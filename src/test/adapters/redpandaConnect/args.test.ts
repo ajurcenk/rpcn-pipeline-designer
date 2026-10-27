@@ -1,10 +1,13 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
 	ArgsEnvironment, ArgsResult, buildLintCommand, buildRunCommand, commandSettings, definingFolder, describeArgsFailure,
 } from '../../../adapters/redpandaConnect/args';
 import { buildBloblCommandLine } from '../../../adapters/redpandaConnect/commandLine';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
+import { EnvSettingFiles } from '../../../adapters/redpandaConnect/envSetting';
 import { FORBIDDEN_ARGS } from '../../../core/args';
 
 // Rows of the plan's I/O & edge-case matrix. Pure: no binaries are spawned and no files need to exist.
@@ -273,5 +276,103 @@ suite('adapters/redpandaConnect args', () => {
 				assert.ok(![result.command, ...result.args].includes(forbidden), forbidden);
 			}
 		}
+	});
+});
+
+// Ticket 29: `redpandaConnect.env` as the last `--env-file`. These write real files in a temp folder.
+suite('adapters/redpandaConnect args: the env setting (ticket 29)', () => {
+	let storage: string;
+	setup(() => {
+		storage = fs.mkdtempSync(path.join(os.tmpdir(), 'rpcn-args-env-'));
+	});
+	teardown(() => {
+		fs.chmodSync(storage, 0o700);
+		fs.rmSync(storage, { recursive: true, force: true });
+	});
+	const mapping = path.join(WS, 'm.blobl');
+	/** Every command's argv for `env`. */
+	const all = (env: ArgsEnvironment) => ({
+		lint: ok(buildLintCommand(standalone, { targets: [A] }, env)).args,
+		run: ok(buildRunCommand(standalone, { targets: [A] }, env)).args,
+		blobl: ok(buildBloblCommand(standalone, mapping, env)).args,
+	});
+	const lastEnvFile = (args: readonly string[]) => args[args.lastIndexOf('--env-file') + 1];
+
+	test('EVERY_COMMAND: lint, run and blobl get the generated file as the last --env-file, after envFile\'s', () => {
+		const files = EnvSettingFiles.in(storage);
+		const env = environment({ envFileSetting: '.env', envSetting: { API_TOKEN: 't' }, envSettingFiles: files });
+		const got = all(env);
+		const generated = lastEnvFile(got.lint);
+		assert.strictEqual(path.dirname(generated), files.dir);
+		assert.strictEqual(fs.readFileSync(generated, 'utf8'), 'API_TOKEN="t"\n');
+		const flags = ['--env-file', path.join(WS, '.env'), '--env-file', generated];
+		assert.deepStrictEqual(got.lint, ['lint', '--deprecated', '--skip-env-var-check', ...flags, A]);
+		assert.deepStrictEqual(got.run, ['run', '--set', 'http.enabled=false', ...flags, A]);
+		assert.deepStrictEqual(got.blobl, ['blobl', ...flags, '--file', mapping]);
+		// Without envFile: the generated file alone; the process env is passed as before.
+		const alone = ok(buildRunCommand(standalone, { targets: [A] }, environment({ envSetting: { API_TOKEN: 't' }, envSettingFiles: files })));
+		assert.deepStrictEqual(alone.args, ['run', '--set', 'http.enabled=false', '--env-file', generated, A]);
+		assert.deepStrictEqual(alone.env, { PATH: '/usr/bin', FOO: 'bar', NO_COLOR: '1' });
+	});
+
+	test('EMPTY: unset, {} or only invalid entries: argv and env exactly as without the setting; no file', () => {
+		const files = EnvSettingFiles.in(storage, () => undefined);
+		const base = environment({ envFileSetting: '.env', resourceFilesSetting: ['r.yaml'] });
+		for (const envSetting of [undefined, {}, { '1X': 'v' }, 'A=1']) {
+			const env = { ...base, envSetting, envSettingFiles: files };
+			assert.deepStrictEqual(all(env), all(base), JSON.stringify(envSetting));
+			assert.deepStrictEqual(ok(buildRunCommand(standalone, { targets: [A] }, env)).env, ok(buildRunCommand(standalone, { targets: [A] }, base)).env);
+		}
+		assert.ok(!fs.existsSync(files.dir), 'nothing was written');
+	});
+
+	test('CHANGED: a new value gives a new file; the same value the same file', () => {
+		const files = EnvSettingFiles.in(storage);
+		const runWith = (envSetting: unknown) => lastEnvFile(ok(buildRunCommand(standalone, { targets: [A] }, environment({ envSetting, envSettingFiles: files }))).args);
+		const first = runWith({ A: '1' });
+		assert.strictEqual(runWith({ A: '1' }), first);
+		const second = runWith({ A: '2' });
+		assert.notStrictEqual(second, first);
+		assert.strictEqual(fs.readFileSync(second, 'utf8'), 'A="2"\n');
+		assert.ok(fs.existsSync(first), 'old files stay until activation');
+	});
+
+	test('INVALID: only the valid variables are written; one log line naming the others', () => {
+		const lines: string[] = [];
+		const files = EnvSettingFiles.in(storage, (l) => lines.push(l));
+		const env = environment({ envSetting: { '1X': 'v', OK: 5, GOOD: 'g' }, envSettingFiles: files });
+		const got = all(env);
+		assert.strictEqual(fs.readFileSync(lastEnvFile(got.run), 'utf8'), 'GOOD="g"\n');
+		assert.strictEqual(lines.length, 1, JSON.stringify(lines));
+		assert.match(lines[0], /"1X", "OK"/);
+	});
+
+	test('WRITE_FAILS: the command is not built; the failure names the setting and the reason, never a value', function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) {
+			this.skip();
+		}
+		fs.chmodSync(storage, 0o500);
+		const env = environment({ envSetting: { SECRET: 'hunter2' }, envSettingFiles: EnvSettingFiles.in(storage) });
+		for (const result of [
+			buildLintCommand(standalone, { targets: [A] }, env),
+			buildRunCommand(standalone, { targets: [A] }, env),
+			buildBloblCommand(standalone, mapping, env),
+		]) {
+			assert.strictEqual(result.kind, 'envSettingUnwritable', JSON.stringify(result));
+			const message = describeArgsFailure(result as Exclude<ArgsResult, { kind: 'ok' }>);
+			assert.match(message, /^redpandaConnect\.env: the variables could not be written to .*env-setting.*: .*(EACCES|permission)/i);
+			assert.ok(!message.includes('hunter2'), message);
+		}
+		// No storage folder at all (outside the extension): also a failure, not a silent drop.
+		const none = buildRunCommand(standalone, { targets: [A] }, environment({ envSetting: { SECRET: 'hunter2' } }));
+		assert.deepStrictEqual(none, { kind: 'envSettingUnwritable', path: undefined, reason: 'the extension has no storage folder.' });
+	});
+
+	test('a bad envFile is still the failure reported first, before the env setting is written', () => {
+		const files = EnvSettingFiles.in(storage);
+		const result = buildRunCommand(standalone, { targets: [A] },
+			environment({ envFileSetting: '.env', workspaceFolder: undefined, envSetting: { A: '1' }, envSettingFiles: files }));
+		assert.strictEqual(result.kind, 'unusableSetting');
+		assert.ok(!fs.existsSync(files.dir));
 	});
 });

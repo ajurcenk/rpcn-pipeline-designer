@@ -75,6 +75,75 @@ suite('Run and Stop (integration)', function () {
 		assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
 	});
 
+	test('ticket 29 EVERY_COMMAND / CHANGED / WRITE_FAILS: redpandaConnect.env reaches Run as the last --env-file; an edit makes a new file; an unwritable folder stops the run', async () => {
+		const envFile = path.join(dir, 'run.env');
+		fs.writeFileSync(envFile, 'API_TOKEN=from-file\n');
+		await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+		await config().update('env', { API_TOKEN: 'tok-29-secret-a' }, vscode.ConfigurationTarget.Global);
+		let folder: string | undefined;
+		try {
+			const doc = await open('env-setting.yaml', 'input:\n  generate:\n    mapping: root = "${API_TOKEN}"\noutput:\n  stdout: {}\n');
+			const runOnce = async (): Promise<string> => {
+				const before = eventLines().length;
+				await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+				assert.ok(await waitFor(() => eventLines().length > before, 15_000), 'the binary was not started');
+				const started = eventLines()[before];
+				await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
+				assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
+				return started;
+			};
+			const first = await runOnce();
+			const generated = /--env-file (\S+) --env-file (\S+) /.exec(first);
+			assert.ok(generated, first);
+			assert.strictEqual(generated[1], envFile, 'envFile\'s file first');
+			assert.ok(first.endsWith(`argv=run --set http.enabled=false --env-file ${envFile} --env-file ${generated[2]} ${doc.uri.fsPath}`), first);
+			assert.strictEqual(fs.readFileSync(generated[2], 'utf8'), 'API_TOKEN="tok-29-secret-a"\n');
+			folder = path.dirname(generated[2]);
+			assert.strictEqual(path.basename(folder), 'env-setting');
+
+			// CHANGED: the next run gets a new file with the new value, without a restart.
+			await config().update('env', { API_TOKEN: 'tok-29-secret-b' }, vscode.ConfigurationTarget.Global);
+			const second = await runOnce();
+			const next = /--env-file \S+ --env-file (\S+) /.exec(second)?.[1];
+			assert.ok(next && next !== generated[2], second);
+			assert.strictEqual(fs.readFileSync(next, 'utf8'), 'API_TOKEN="tok-29-secret-b"\n');
+
+			// WRITE_FAILS: the folder is a file now; a new value cannot be written, so Run does not start.
+			fs.rmSync(folder, { recursive: true, force: true });
+			fs.writeFileSync(folder, '');
+			await config().update('env', { API_TOKEN: 'tok-29-secret-c' }, vscode.ConfigurationTarget.Global);
+			const before = eventLines().length;
+			await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+			const line = () => api().outputLines().find((l) => l.startsWith('Run env-setting.yaml: redpandaConnect.env: the variables could not be written to '));
+			assert.ok(await waitFor(() => line() !== undefined, 5_000), api().outputLines().slice(-5).join('\n'));
+			await new Promise((r) => setTimeout(r, 300));
+			assert.strictEqual(eventLines().length, before, 'the binary was not started');
+			const leaked = api().outputLines().filter((l) => l.includes('tok-29-secret') || l.includes('from-file'));
+			assert.deepStrictEqual(leaked, [], 'no value is logged');
+		} finally {
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+			if (folder && fs.existsSync(folder) && fs.statSync(folder).isFile()) {
+				fs.rmSync(folder);
+			}
+		}
+	});
+
+	test('ticket 29 EMPTY: with redpandaConnect.env set to {} the argv is as without it', async () => {
+		await config().update('env', {}, vscode.ConfigurationTarget.Global);
+		try {
+			const doc = await open('env-empty.yaml', 'input:\n  generate:\n    mapping: root = "tick"\noutput:\n  stdout: {}\n');
+			const before = eventLines().length;
+			await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+			assert.ok(await waitFor(() => eventLines().length > before, 15_000));
+			assert.ok(eventLines()[before].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), eventLines()[before]);
+			await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
+			assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
+		} finally {
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
 	test('DIRTY: Run saves unsaved changes first', async () => {
 		const doc = await open('dirty.yaml', 'input:\n  generate:\n    mapping: root = "a"\noutput:\n  stdout: {}\n');
 		const edit = new vscode.WorkspaceEdit();

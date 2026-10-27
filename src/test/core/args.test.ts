@@ -1,12 +1,12 @@
 import * as assert from 'assert';
-import { buildLintArgs, buildRunArgs, escapeGlob, FORBIDDEN_ARGS } from '../../core/args';
+import { buildBloblArgs, buildLintArgs, buildRunArgs, escapeGlob, FORBIDDEN_ARGS } from '../../core/args';
 
 const BIN = '/opt/rc/redpanda-connect';
 
 suite('core/args', () => {
 	test('lint: invocation, subcommand, flags, resources, env file, targets', () => {
 		assert.deepStrictEqual(buildLintArgs({
-			invocation: [BIN], targets: ['/w/a.yaml', '/w/b.yaml'], resourceFiles: ['/w/r1.yaml'], envFile: '/w/.env',
+			invocation: [BIN], targets: ['/w/a.yaml', '/w/b.yaml'], resourceFiles: ['/w/r1.yaml'], envFiles: ['/w/.env'],
 		}), {
 			kind: 'ok',
 			argv: [BIN, 'lint', '--deprecated', '--skip-env-var-check', '--resources', '/w/r1.yaml',
@@ -16,12 +16,27 @@ suite('core/args', () => {
 
 	test('run: --set http.enabled=false before file flags and the single target', () => {
 		assert.deepStrictEqual(buildRunArgs({
-			invocation: ['/usr/bin/rpk', 'connect'], targets: ['/w/a.yaml'], resourceFiles: ['/w/r1.yaml'], envFile: '/w/.env',
+			invocation: ['/usr/bin/rpk', 'connect'], targets: ['/w/a.yaml'], resourceFiles: ['/w/r1.yaml'], envFiles: ['/w/.env'],
 		}), {
 			kind: 'ok',
 			argv: ['/usr/bin/rpk', 'connect', 'run', '--set', 'http.enabled=false', '--resources', '/w/r1.yaml',
 				'--env-file', '/w/.env', '/w/a.yaml'],
 		});
+	});
+
+	test('ticket 29 EVERY_COMMAND: several env files are passed in order, the generated one last; empty ones are skipped', () => {
+		const envFiles = ['/w/.env', '/s/env-setting/env-1.env'];
+		const flags = ['--env-file', '/w/.env', '--env-file', '/s/env-setting/env-1.env'];
+		assert.deepStrictEqual(buildLintArgs({ invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: ['/w/r.yaml'], envFiles }),
+			{ kind: 'ok', argv: [BIN, 'lint', '--deprecated', '--skip-env-var-check', '--resources', '/w/r.yaml', ...flags, '/w/a.yaml'] });
+		assert.deepStrictEqual(buildRunArgs({ invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: [], envFiles }),
+			{ kind: 'ok', argv: [BIN, 'run', '--set', 'http.enabled=false', ...flags, '/w/a.yaml'] });
+		assert.deepStrictEqual(buildBloblArgs({ invocation: [BIN], mappingFile: '/t/m.blobl', envFiles }),
+			{ kind: 'ok', argv: [BIN, 'blobl', ...flags, '--file', '/t/m.blobl'] });
+		assert.deepStrictEqual(buildBloblArgs({ invocation: [BIN], mappingFile: '/t/m.blobl', envFiles: [undefined, '/s/e.env'] }),
+			{ kind: 'ok', argv: [BIN, 'blobl', '--env-file', '/s/e.env', '--file', '/t/m.blobl'] });
+		assert.deepStrictEqual(buildBloblArgs({ invocation: [BIN], mappingFile: '/t/m.blobl', envFiles: [undefined, undefined] }),
+			{ kind: 'ok', argv: [BIN, 'blobl', '--file', '/t/m.blobl'] });
 	});
 
 	test('resource files are deduplicated, first occurrence wins', () => {
@@ -47,7 +62,7 @@ suite('core/args', () => {
 
 	test('no forbidden argument appears', () => {
 		for (const build of [buildLintArgs, buildRunArgs]) {
-			const result = build({ invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: ['/w/r.yaml'], envFile: '/w/.env' });
+			const result = build({ invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: ['/w/r.yaml'], envFiles: ['/w/.env'] });
 			assert.strictEqual(result.kind, 'ok');
 			if (result.kind === 'ok') {
 				for (const forbidden of FORBIDDEN_ARGS) {

@@ -47,6 +47,92 @@ suite('Run and Stop with a real binary (integration, ticket 9)', function () {
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 	});
 
+	// Ticket 29: what the pipeline sees with `redpandaConnect.env`, the env file and the process
+	// environment all naming WINS; `env()` and `${…}` read the same variables.
+	const ESCAPES = 'a b # c "q" back\\slash\nnew\rcr $X ${HOME} ünïcødé ✓';
+	const ENV_CONFIG = [
+		'input:',
+		'  generate:',
+		'    count: 1',
+		'    interval: ""',
+		'    mapping: |',
+		'      root.wins = env("WINS")',
+		'      root.interpolated = "${WINS}"',
+		'      root.file_only = env("FILE_ONLY")',
+		'      root.process_only = env("PROCESS_ONLY")',
+		'      root.escapes = env("ESCAPES")',
+		'      root.empty = env("EMPTY")',
+		'output:',
+		'  stdout: {}',
+		'logger:',
+		'  level: off',
+		'',
+	].join('\n');
+	for (const ver of VERSIONS) {
+		test(`ticket 29 WINS / ESCAPES / CHANGED with Redpanda Connect ${ver}: redpandaConnect.env beats the env file and the process env; values arrive exactly`, async function () {
+			const bin = binaryOf(ver);
+			if (!hasBinary(ver)) {
+				const message = `no cached executable Redpanda Connect ${ver} at ${bin}: run scripts/spike/fetch-binaries.sh`;
+				if (IN_CI) {
+					assert.fail(message);
+				}
+				console.warn(`skipped: ${message}`);
+				this.skip();
+			}
+			const dir = makeTempDir(`rpcn-run-env-${ver}-`);
+			const saved = { WINS: process.env.WINS, PROCESS_ONLY: process.env.PROCESS_ONLY };
+			try {
+				process.env.WINS = 'from-process';
+				process.env.PROCESS_ONLY = 'p';
+				await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
+				assert.ok(await waitFor(() => {
+					const state = api().redpandaConnect.state;
+					return state.kind === 'ok' && state.path === bin && state.version === ver;
+				}, 30_000), `the extension resolved ${bin}: ${JSON.stringify(api().redpandaConnect.state)}`);
+				const envFile = path.join(dir, 'user.env');
+				fs.writeFileSync(envFile, 'WINS=from-file\nFILE_ONLY=f\n');
+				await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+				await config().update('env', { WINS: 'from-setting', ESCAPES, EMPTY: '' }, vscode.ConfigurationTarget.Global);
+				const file = path.join(dir, 'env_values.yaml');
+				fs.writeFileSync(file, ENV_CONFIG);
+				const doc = await vscode.workspace.openTextDocument(file);
+				await vscode.window.showTextDocument(doc);
+				assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 5_000));
+				/** Runs the config (it ends after its one message) and returns the message. */
+				const runOnce = async (): Promise<Record<string, string | null>> => {
+					const runs = (api().run.outputOf(doc.uri) ?? '').split('"wins"').length;
+					await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+					assert.ok(await waitFor(() => (api().run.outputOf(doc.uri) ?? '').split('"wins"').length > runs
+						&& api().run.phaseOf(doc.uri) === 'exited', 30_000), `no message: ${JSON.stringify(api().run.outputOf(doc.uri))}`);
+					const messages = (api().run.outputOf(doc.uri) ?? '').match(/\{"[^\r\n]*\}/g) ?? [];
+					return JSON.parse(messages[messages.length - 1]) as Record<string, string | null>;
+				};
+				assert.deepStrictEqual(await runOnce(), {
+					wins: 'from-setting', interpolated: 'from-setting', file_only: 'f', process_only: 'p', escapes: ESCAPES, empty: '',
+				});
+				// CHANGED: an edit of the setting reaches the next run, no restart.
+				await config().update('env', { WINS: 'changed' }, vscode.ConfigurationTarget.Global);
+				const changed = await runOnce();
+				assert.strictEqual(changed.wins, 'changed');
+				assert.strictEqual(changed.escapes, null, 'a variable no longer set is not passed');
+			} finally {
+				for (const [name, value] of Object.entries(saved)) {
+					if (value === undefined) {
+						delete process.env[name];
+					} else {
+						process.env[name] = value;
+					}
+				}
+				await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+				await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+				await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+				vscode.window.terminals.filter((t) => t.name === 'Redpanda Connect: env_values.yaml').forEach((t) => t.dispose());
+				await waitFor(() => !vscode.window.terminals.some((t) => t.name === 'Redpanda Connect: env_values.yaml'), 10_000);
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
+
 	for (const ver of VERSIONS) {
 		test(`RUN / STOP / RERUN with Redpanda Connect ${ver}: output streams, Stop ends it with "Pipeline stopped", Run again reuses the terminal`, async function () {
 			const bin = binaryOf(ver);

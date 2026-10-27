@@ -21,8 +21,11 @@ export interface ArgvInput {
 	readonly targets: readonly string[];
 	/** Absolute resource file paths from the `redpandaConnect.resourceFiles` setting, in order; duplicates are removed here. */
 	readonly resourceFiles: readonly string[];
-	/** Absolute env file path, if any. */
-	readonly envFile?: string;
+	/**
+	 * Absolute env file paths, in order: `redpandaConnect.envFile`'s, then the one generated from
+	 * `redpandaConnect.env` (ticket 29). The binary lets the last one win. Empty entries are skipped.
+	 */
+	readonly envFiles?: readonly (string | undefined)[];
 	/** `process.platform`; on anything but `win32`, lint targets are glob-escaped. Default: POSIX. */
 	readonly platform?: string;
 }
@@ -65,12 +68,12 @@ export interface BloblArgvInput {
 	readonly invocation: readonly string[];
 	/** Absolute path of the file holding the mapping. */
 	readonly mappingFile: string;
-	/** Absolute env file path, if any. */
-	readonly envFile?: string;
+	/** Absolute env file paths, in order (see `ArgvInput.envFiles`). */
+	readonly envFiles?: readonly (string | undefined)[];
 }
 
 /**
- * `[...invocation, 'blobl', --env-file <path>?, --file <mappingFile>]`: the AD-21 live parse. With
+ * `[...invocation, 'blobl', (--env-file <path>)*, --file <mappingFile>]`: the AD-21 live parse. With
  * stdin closed (the spawn site's), `blobl` only parses (spike 4.1, B parse-only). `blobl` takes no
  * `--resources`.
  */
@@ -80,18 +83,23 @@ export function buildBloblArgs(input: BloblArgvInput): ArgvResult {
 	}
 	return {
 		kind: 'ok',
-		argv: [...input.invocation, 'blobl', ...fileFlags([], input.envFile), '--file', input.mappingFile],
+		argv: [...input.invocation, 'blobl', ...fileFlags([], input.envFiles), '--file', input.mappingFile],
 	};
 }
 
-/** `--resources <path>` per unique resource file (first occurrence wins), then `--env-file <path>`. */
-export function fileFlags(resourceFiles: readonly string[], envFile: string | undefined): string[] {
+/**
+ * `--resources <path>` per unique resource file (first occurrence wins), then `--env-file <path>`
+ * per env file, in order (the binary lets the last one win).
+ */
+export function fileFlags(resourceFiles: readonly string[], envFiles: readonly (string | undefined)[] = []): string[] {
 	const flags: string[] = [];
 	for (const resource of dedupe(resourceFiles)) {
 		flags.push('--resources', resource);
 	}
-	if (envFile) {
-		flags.push('--env-file', envFile);
+	for (const envFile of envFiles) {
+		if (envFile) {
+			flags.push('--env-file', envFile);
+		}
 	}
 	return flags;
 }
@@ -106,7 +114,7 @@ function build(subcommand: string, subcommandFlags: readonly string[], input: Ar
 			...input.invocation,
 			subcommand,
 			...subcommandFlags,
-			...fileFlags(input.resourceFiles, input.envFile),
+			...fileFlags(input.resourceFiles, input.envFiles),
 			...input.targets,
 		],
 	};

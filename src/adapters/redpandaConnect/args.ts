@@ -9,6 +9,8 @@
 // `runProcess([command], args, …, { env })`. The two settings are `resource`-scoped (ticket 4): each
 // is read for the config the command is for, and a relative value its own workspace folder's
 // settings define resolves against that folder; a workspace or user value against the first one.
+// `redpandaConnect.env` (ticket 29, also `resource`-scoped; VS Code merges its levels by key) becomes
+// an env file written by `envSetting.ts`, passed after `envFile`'s, so its variables win.
 
 import * as os from 'os';
 import * as path from 'path';
@@ -18,11 +20,12 @@ import { BinaryState, firstWorkspaceFolderPath, resolveSettingPath } from './bin
 import { HomeOf, userHomeLookup } from './userHome';
 import {
 	type ArgsFailure, type ArgsFiles, type ArgsResult, buildCommandLine, type CommandLine, type CommandSettings,
-	describeArgsFailure, ENV_FILE_SETTING, type EnvFileResult, RESOURCE_FILES_SETTING,
+	describeArgsFailure, ENV_FILE_SETTING, ENV_SETTING, type EnvFileResult, RESOURCE_FILES_SETTING,
 } from './commandLine';
+import { activeEnvSettingFiles, encodeEnvFile, type EnvSettingFiles, validateEnvSetting } from './envSetting';
 
 export type { ArgsFailure, ArgsFiles, ArgsResult, CommandLine, EnvFileResult };
-export { describeArgsFailure, ENV_FILE_SETTING, RESOURCE_FILES_SETTING };
+export { describeArgsFailure, ENV_FILE_SETTING, ENV_SETTING, RESOURCE_FILES_SETTING };
 
 /** Everything the builder reads from the outside world, as plain values. */
 export interface ArgsEnvironment {
@@ -39,6 +42,10 @@ export interface ArgsEnvironment {
 	readonly settingFolders?: { readonly resourceFiles?: string; readonly envFile?: string };
 	/** The environment children inherit; `NO_COLOR=1` is added on top. */
 	readonly processEnv: NodeJS.ProcessEnv;
+	/** Raw `redpandaConnect.env` value, merged across levels (ticket 29; may be malformed user input). */
+	readonly envSetting?: unknown;
+	/** Where its env file is written (`<globalStorage>/env-setting`); without it, a non-empty setting fails. */
+	readonly envSettingFiles?: EnvSettingFiles;
 }
 
 export interface ArgsRequest {
@@ -70,6 +77,7 @@ export function commandSettings(env: () => ArgsEnvironment = defaultArgsEnvironm
 	return {
 		files: () => resolveArgsFiles(env()),
 		envFile: () => resolveEnvFile(env()),
+		settingEnvFile: () => resolveSettingEnvFile(env()),
 		processEnv: () => env().processEnv,
 	};
 }
@@ -93,6 +101,8 @@ export function defaultArgsEnvironment(resource?: vscode.Uri): ArgsEnvironment {
 			envFile: definingFolder(config.inspect('envFile'), folderPath),
 		},
 		processEnv: process.env,
+		envSetting: config.get<unknown>('env', {}),
+		envSettingFiles: activeEnvSettingFiles(),
 	};
 }
 
@@ -150,6 +160,25 @@ function resolveEnvFile(env: ArgsEnvironment): EnvFileResult {
 		return { kind: 'unusableSetting', setting: ENV_FILE_SETTING, value: envSetting, reason: 'relativePathWithoutWorkspace' };
 	}
 	return { kind: 'ok', path: resolved.path };
+}
+
+/**
+ * The env file of `redpandaConnect.env` (ticket 29), written now: `undefined` when the setting holds
+ * no valid variable; a failure when it cannot be written (the command then does not run). Never throws.
+ */
+function resolveSettingEnvFile(env: ArgsEnvironment): EnvFileResult {
+	const files = env.envSettingFiles;
+	const { variables } = files ? files.variables(env.envSetting) : validateEnvSetting(env.envSetting);
+	if (variables.length === 0) {
+		return { kind: 'ok', path: undefined };
+	}
+	if (!files) {
+		return { kind: 'envSettingUnwritable', path: undefined, reason: 'the extension has no storage folder.' };
+	}
+	const written = files.write(encodeEnvFile(variables));
+	return written.kind === 'ok'
+		? { kind: 'ok', path: written.path }
+		: { kind: 'envSettingUnwritable', path: written.path, reason: written.reason };
 }
 
 /** The trimmed, non-empty strings of a `string[]` setting; anything else is ignored. */

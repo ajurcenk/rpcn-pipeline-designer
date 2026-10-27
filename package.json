@@ -67,6 +67,15 @@
           "default": "",
           "scope": "resource",
           "markdownDescription": "Environment file passed to lint, run and the Bloblang checks (live errors and the test panel) with `--env-file`. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the workspace folder whose settings set it, else the first workspace folder, and with no workspace folder open it is rejected and lint and run do not start."
+        },
+        "redpandaConnect.env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "scope": "resource",
+          "markdownDescription": "Environment variables for lint, run and the Bloblang checks (live errors and the test panel), as `\"NAME\": \"value\"` pairs that `${NAME}` in a config reads. They win over `#redpandaConnect.envFile#` and over the environment VS Code was started with. User, workspace and folder values merge by name, the most specific winning. A name must match `[A-Za-z_][A-Za-z0-9_]*` and a value be a string; others are left out (and logged). The values are passed in an owner-only file in the extension's storage, but they are plain text in `settings.json`: keep secrets in the env file."
         }
       }
     },

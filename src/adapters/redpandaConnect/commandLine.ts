@@ -11,6 +11,7 @@ import type { BinaryState } from './binary';
 
 export const RESOURCE_FILES_SETTING = 'redpandaConnect.resourceFiles';
 export const ENV_FILE_SETTING = 'redpandaConnect.envFile';
+export const ENV_SETTING = 'redpandaConnect.env';
 
 export type ArgsFailure =
 	/** `binaryState` is not `ok`. */
@@ -26,6 +27,11 @@ export type ArgsFailure =
 		readonly value: string;
 		readonly reason: 'relativePathWithoutWorkspace';
 	}
+	/**
+	 * The env file generated from `redpandaConnect.env` (ticket 29) could not be written; the command
+	 * does not run (the user's variables are never dropped silently). `reason` never holds a value.
+	 */
+	| { readonly kind: 'envSettingUnwritable'; readonly path: string | undefined; readonly reason: string }
 	/** A caller-supplied target path is not absolute (a programming error upstream). */
 	| { readonly kind: 'relativePath'; readonly role: 'target'; readonly path: string };
 
@@ -42,6 +48,10 @@ export function describeArgsFailure(failure: ArgsFailure): string {
 			return 'Internal error: the Redpanda Connect binary state has an empty invocation.';
 		case 'unusableSetting':
 			return `${failure.setting} "${failure.value}" is a relative path, but no workspace folder is open.`;
+		case 'envSettingUnwritable':
+			return failure.path === undefined
+				? `${ENV_SETTING}: the variables could not be written to an env file: ${failure.reason}`
+				: `${ENV_SETTING}: the variables could not be written to ${failure.path}: ${failure.reason}`;
 		case 'relativePath':
 			return `Internal error: target path "${failure.path}" is not absolute.`;
 	}
@@ -65,6 +75,11 @@ export interface CommandSettings {
 	readonly files: () => ArgsFiles | ArgsFailure;
 	/** The env file setting only (`blobl` takes no `--resources`). */
 	readonly envFile: () => EnvFileResult;
+	/**
+	 * The env file generated from `redpandaConnect.env` (ticket 29), written on the call; passed as the
+	 * last `--env-file`. Absent (the corpus harness) or `path: undefined` (the setting is empty): none.
+	 */
+	readonly settingEnvFile?: () => EnvFileResult;
 	/** The environment children inherit; `NO_COLOR=1` is added on top. */
 	readonly processEnv: () => NodeJS.ProcessEnv;
 }
@@ -98,15 +113,19 @@ export function buildCommandLine(
 	if (files.kind !== 'ok') {
 		return files;
 	}
+	const generated = settingEnvFile(settings);
+	if (generated.kind !== 'ok') {
+		return generated;
+	}
 	const result = buildArgv({
-		invocation: state.invocation, targets, resourceFiles: files.resourceFiles, envFile: files.envFile, platform: process.platform,
+		invocation: state.invocation, targets, resourceFiles: files.resourceFiles, envFiles: [files.envFile, generated.path], platform: process.platform,
 	});
 	return result.kind === 'ok' ? commandLine(result.argv, settings) : result;
 }
 
 /**
  * The `blobl --file <mappingFile>` command line of the live parse (AD-21, ticket 4.5), with the same
- * `--env-file` and `NO_COLOR` as lint and run.
+ * `--env-file`s (`envFile`'s, then `redpandaConnect.env`'s generated one) and `NO_COLOR` as lint and run.
  */
 export function buildBloblCommandLine(state: BinaryState, mappingFile: string, settings: CommandSettings): ArgsResult {
 	if (state.kind !== 'ok') {
@@ -120,8 +139,17 @@ export function buildBloblCommandLine(state: BinaryState, mappingFile: string, s
 	if (envFile.kind !== 'ok') {
 		return envFile;
 	}
-	const result = buildBloblArgs({ invocation: state.invocation, mappingFile, envFile: envFile.path });
+	const generated = settingEnvFile(settings);
+	if (generated.kind !== 'ok') {
+		return generated;
+	}
+	const result = buildBloblArgs({ invocation: state.invocation, mappingFile, envFiles: [envFile.path, generated.path] });
 	return result.kind === 'ok' ? commandLine(result.argv, settings) : result;
+}
+
+/** The generated env file of `redpandaConnect.env`, if the settings provide one. */
+function settingEnvFile(settings: CommandSettings): EnvFileResult {
+	return settings.settingEnvFile ? settings.settingEnvFile() : { kind: 'ok', path: undefined };
 }
 
 /** The failure for the first target that is not absolute, if any. */

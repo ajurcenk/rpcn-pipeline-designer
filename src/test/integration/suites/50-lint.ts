@@ -107,6 +107,7 @@ suite('Lint on save (integration)', function () {
 		process.env.PATH = originalPath;
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
+		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -176,6 +177,29 @@ suite('Lint on save (integration)', function () {
 			assert.deepStrictEqual(lintOf(doc), []);
 		} finally {
 			await config().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 29 INVALID: lint on save with bad redpandaConnect.env entries logs one line naming the keys, never a value; lint still runs', async () => {
+		await config().update('env', { '1X': 'tok-29-secret-bad', OK: 5, GOOD: 'tok-29-secret-good' }, vscode.ConfigurationTarget.Global);
+		try {
+			// No mapping in it, so only lint reads the setting.
+			const doc = await openSaved('env-invalid.yaml', 'input:\n  generate:\n    nope: 1\n');
+			const lints = () => readCounter(counter).filter((l) => l === 'lint').length;
+			const before = lints();
+			const isLine = (l: string) => l.startsWith('redpandaConnect.env: left out ');
+			await editAndSave(doc);
+			assert.ok(await waitFor(() => lints() > before, 15_000), 'lint did not run');
+			assert.ok(await waitFor(() => api().outputLines().some(isLine), 5_000), api().outputLines().slice(-5).join('\n'));
+			await editAndSave(doc);
+			assert.ok(await waitFor(() => lints() > before + 1, 15_000), 'lint did not run again');
+			const logged = api().outputLines().filter(isLine);
+			assert.strictEqual(logged.length, 1, JSON.stringify(logged));
+			assert.match(logged[0], /"1X", "OK"/);
+			assert.ok(!logged[0].includes('GOOD'), logged[0]);
+			assert.deepStrictEqual(api().outputLines().filter((l) => l.includes('tok-29-secret')), [], 'no value is logged');
+		} finally {
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
 

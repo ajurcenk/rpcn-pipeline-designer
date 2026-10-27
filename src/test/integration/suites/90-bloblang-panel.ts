@@ -225,6 +225,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		process.env.PATH = originalPath;
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -977,6 +978,44 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.ok(argv.includes(`--env-file ${envFile} `), argv);
 		} finally {
 			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 29 EVERY_COMMAND / WRITE_FAILS: redpandaConnect.env reaches the test run as the last --env-file, after envFile\'s; an unwritable folder is the run\'s error, with no value', async () => {
+		const envFile = path.join(dir, 'test-29.env');
+		fs.writeFileSync(envFile, 'FOO=bar\n');
+		await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+		await config().update('env', { FOO: 'baz' }, vscode.ConfigurationTarget.Global);
+		let folder: string | undefined;
+		try {
+			const doc = (await open('env-setting.yaml', CONFIG)).document;
+			const handle = await show(doc.uri, FIRST);
+			await run(handle, '{"a":1}');
+			const argv = lastRunArgv();
+			const generated = /^run --set http\.enabled=false --env-file (\S+) --env-file (\S+) \S+$/.exec(argv);
+			assert.ok(generated, argv);
+			assert.strictEqual(generated[1], envFile);
+			assert.strictEqual(fs.readFileSync(generated[2], 'utf8'), 'FOO="baz"\n');
+
+			// WRITE_FAILS: the folder is a file now; the next run is not started and shows why.
+			folder = path.dirname(generated[2]);
+			fs.rmSync(folder, { recursive: true, force: true });
+			fs.writeFileSync(folder, '');
+			await config().update('env', { FOO: 'tok-29-secret-panel' }, vscode.ConfigurationTarget.Global);
+			const runs = argvLines().length;
+			await run(handle, '{"a":1}');
+			const result = handle.posted.filter((m) => m.type === 'result').pop()?.result;
+			assert.ok(result?.kind === 'error', JSON.stringify(result));
+			assert.match(result.message, /^redpandaConnect\.env: the variables could not be written to /);
+			assert.ok(!result.message.includes('tok-29-secret'), result.message);
+			assert.strictEqual(argvLines().length, runs, 'no run was started');
+			assert.ok(!api().outputLines().some((l) => l.includes('tok-29-secret')), 'no value is logged');
+		} finally {
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+			if (folder && fs.existsSync(folder) && fs.statSync(folder).isFile()) {
+				fs.rmSync(folder);
+			}
 		}
 	});
 

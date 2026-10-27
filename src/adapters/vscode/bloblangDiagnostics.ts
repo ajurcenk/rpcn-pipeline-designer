@@ -157,7 +157,8 @@ export class BloblangDiagnostics implements vscode.Disposable {
 			}),
 			options.binary.onDidChange(() => this.reset()),
 			this.source.onDidChangeConfiguration((e) => {
-				if (e.affectsConfiguration('redpandaConnect.envFile')) {
+				// The env file and the `env` setting's variables (ticket 29) change what a parse sees.
+				if (e.affectsConfiguration('redpandaConnect.envFile') || e.affectsConfiguration('redpandaConnect.env')) {
 					this.reset();
 				}
 			}),
