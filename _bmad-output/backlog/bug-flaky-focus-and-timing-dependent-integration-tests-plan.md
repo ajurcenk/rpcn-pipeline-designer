@@ -3,7 +3,7 @@ title: 'Some integration tests fail now and then in CI and pass on rerun'
 type: 'bugfix'
 ticket: '27'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: 'fee97db9c21b6fa9293f9c7212f28049778b111f'
 route: 'oneshot'
 route_source: 'auto'
