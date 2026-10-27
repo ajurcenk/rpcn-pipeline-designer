@@ -11,6 +11,9 @@
 // a save's moves of all of a config's panels in one write.
 // Ticket 4.17: a config's rename re-keys the store's caches (`rekey`), and a single file's rename
 // renames its samples file to the new config's (`moveFile`), never over an existing one.
+// Bug 24: a rename that overwrote a config (`moveFile`'s `overwrite`) first moves that config's
+// samples file to the OS trash, and a config whose content a later rename of its batch overwrote has
+// its samples file moved to the trash (`discard`); a failed trash leaves the files and is logged.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -50,6 +53,12 @@ export type RelinkOutcome = 'written' | 'unchanged' | 'taken' | { readonly faile
 
 /** What a rename did to the samples file (4.17): moved it, found none to move (or a folder), or found the new one there already. */
 export type SamplesMove = 'moved' | 'none' | 'exists' | { readonly failed: string };
+
+/** What a batch's loser's samples file became (bug 24): trashed, none to trash, or not trashed (why). */
+export type SamplesDiscard = 'trashed' | 'none' | { readonly failed: string };
+
+/** Deletes a file (bug 24's seam): `vscode.workspace.fs.delete` in production. */
+export type DeleteFile = (uri: vscode.Uri, options: { readonly useTrash: boolean }) => Thenable<void>;
 
 /** The samples file of `config`; `undefined` for an untitled config. */
 export function samplesUri(config: vscode.Uri): vscode.Uri | undefined {
@@ -111,7 +120,11 @@ export class SampleStore implements vscode.Disposable {
 	private readonly watched = new Map<string, Watched>();
 	private readonly saves: vscode.Disposable;
 
-	constructor(private readonly log: (line: string) => void) {
+	constructor(
+		private readonly log: (line: string) => void,
+		/** Test seam (bug 24): deletes the samples files a rename moves to the trash; `undefined`: `vscode.workspace.fs.delete`. */
+		private readonly deleteFile: DeleteFile = (uri, options) => vscode.workspace.fs.delete(uri, options),
+	) {
 		// A save in VS Code (also seen by the watcher, but not always outside a workspace folder).
 		this.saves = vscode.workspace.onDidSaveTextDocument((doc) => {
 			for (const key of this.watched.keys()) {
@@ -225,18 +238,20 @@ export class SampleStore implements vscode.Disposable {
 	/**
 	 * A single file's rename (4.17): when `renamed` is a file, `config`'s samples file is renamed to
 	 * the new one's in its folder, only when the old one exists and the new one doesn't (no
-	 * overwrite): `'exists'` leaves both. A folder's rename (its files' samples moved with it) and a
-	 * missing samples file are `'none'`. Queued on the new samples file. Never throws: a failure is
-	 * logged and is `{failed}`.
+	 * overwrite): `'exists'` leaves both. With `overwrite` (bug 24: the rename overwrote the config
+	 * there), the new one is moved to the OS trash first; when that fails both are left (`'exists'`)
+	 * and the reason is logged. A folder's rename (its files' samples moved with it) and a missing
+	 * samples file are `'none'`. Queued on the new samples file. Never throws: a failure is logged and
+	 * is `{failed}`.
 	 */
-	moveFile(config: vscode.Uri, renamed: vscode.Uri): Promise<SamplesMove> {
+	moveFile(config: vscode.Uri, renamed: vscode.Uri, overwrite = false): Promise<SamplesMove> {
 		const from = samplesUri(config);
 		const to = samplesUri(renamed);
 		if (!from || !to || from.toString() === to.toString()) {
 			return Promise.resolve('none');
 		}
 		return this.queued(to, async (): Promise<SamplesMove> => {
-			const outcome = await this.moveSamplesFile(renamed, from, to);
+			const outcome = await this.moveSamplesFile(renamed, from, to, overwrite);
 			// A cache `rekey` copied to the new name holds the old file's text: it stays only when that
 			// file is now there (moved, or a folder's rename moved it), else the next read would see an
 			// outside edit.
@@ -247,7 +262,7 @@ export class SampleStore implements vscode.Disposable {
 		});
 	}
 
-	private async moveSamplesFile(renamed: vscode.Uri, from: vscode.Uri, to: vscode.Uri): Promise<SamplesMove | 'folder'> {
+	private async moveSamplesFile(renamed: vscode.Uri, from: vscode.Uri, to: vscode.Uri, overwrite: boolean): Promise<SamplesMove | 'folder'> {
 		try {
 			if (!(await exists(renamed, vscode.FileType.File))) {
 				return 'folder';
@@ -258,7 +273,16 @@ export class SampleStore implements vscode.Disposable {
 			const caseOnly = caseOnlyRename(from, to);
 			// The new one first: a samples file moved meanwhile (by another rename) is then no move, not `'exists'`.
 			if (!caseOnly && await exists(to)) {
-				return await exists(from) ? 'exists' : 'none';
+				if (!(await exists(from))) {
+					return 'none';
+				}
+				if (!overwrite || await this.trash(to) !== undefined) {
+					return 'exists';
+				}
+				// The trashed file's text is no cache of the new name's, unless `rekey` copied the old one's.
+				if (!this.rekeyed.has(to.toString())) {
+					this.seen.delete(to.toString());
+				}
 			}
 			if (!(await exists(from))) {
 				return 'none';
@@ -282,6 +306,41 @@ export class SampleStore implements vscode.Disposable {
 			const reason = e instanceof Error ? e.message : String(e);
 			this.log(`Samples: ${path.posix.basename(from.path)}: ${reason}`);
 			return { failed: reason };
+		}
+	}
+
+	/**
+	 * A config whose content a later rename of its batch overwrote (bug 24, the batch's loser): its
+	 * samples file belongs to nothing any more and is moved to the OS trash. `'none'`: there
+	 * is none. Queued on it. Never throws: a failed trash leaves it, is logged and is `{failed}`.
+	 */
+	discard(config: vscode.Uri): Promise<SamplesDiscard> {
+		const uri = samplesUri(config);
+		if (!uri) {
+			return Promise.resolve('none');
+		}
+		return this.queued(uri, async (): Promise<SamplesDiscard> => {
+			if (!(await exists(uri, vscode.FileType.File))) {
+				return 'none';
+			}
+			const failed = await this.trash(uri);
+			if (failed !== undefined) {
+				return { failed };
+			}
+			this.seen.delete(uri.toString());
+			return 'trashed';
+		});
+	}
+
+	/** Moves `uri` to the OS trash (bug 24), never deleting it for good; `undefined`, else why not (logged). */
+	private async trash(uri: vscode.Uri): Promise<string | undefined> {
+		try {
+			await this.deleteFile(uri, { useTrash: true });
+			return undefined;
+		} catch (e) {
+			const reason = e instanceof Error ? e.message : String(e);
+			this.log(`Samples: ${path.posix.basename(uri.path)}: not moved to the trash: ${reason}`);
+			return reason;
 		}
 	}
 

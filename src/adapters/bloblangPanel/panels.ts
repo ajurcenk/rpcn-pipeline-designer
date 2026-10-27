@@ -61,9 +61,13 @@
 // document the rename causes resets nothing); a panel landing on another panel's key closes; and the
 // snapshot carries the new `fileName` and `samplesFile`. A single file's rename also renames its
 // samples file (`SampleStore.moveFile`), unless the new one exists (both are left, and the user is
-// told). Placement: a new panel goes into the test group (a group holding a test panel and no text
-// editors or graph) when there is one; else, with the file's graph open, into a new group below the
-// graph's group; else beside the YAML (never into a graph's group). Focus stays in the YAML.
+// told). Bug 24: a rename onto a config that existed (checked when it is announced) overwrote it, so
+// that config's samples file goes to the OS trash and the moved one's takes its name; in a batch, a
+// moved config whose content a later rename overwrote (not the name's winner) has its samples file
+// moved to the trash. A failed trash leaves the files, and the user is told. Placement: a new panel
+// goes into the test group (a group holding a test panel and no text editors or graph) when there is
+// one; else, with the file's graph open, into a new group below the graph's group; else beside the
+// YAML (never into a graph's group). Focus stays in the YAML.
 // Ticket 4.11: `focusEditorRequested` (Esc in the panel, the graph's message) shows the YAML in its
 // editor group and focuses it, with its cursor and selection unchanged; with no editor of it, nothing.
 // Ticket 4.18 (AD-22): the snapshot names the previous step (`previousStep`: the `mapping` / `mutation`
@@ -101,14 +105,14 @@ import {
 } from '../../shared/bloblangProtocol';
 import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo, returnFocusTo } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
-import { hasTextTab, isTextTabOf, overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameWinners } from '../graphPanel/tabs';
+import { hasTextTab, isTextTabOf, overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameFate, renameWinners } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
 import type { DetectionRegistry } from '../vscode/detection';
 import { parsedDocument } from '../vscode/parseCache';
 import { BloblangHints } from './hint';
-import { SampleStore, samplesUri } from './sampleStore';
+import { SampleStore, samplesUri, type DeleteFile } from './sampleStore';
 
 export const TEST_MAPPING_COMMAND = 'redpandaConnect.testMapping';
 export { BLOBLANG_VIEW_TYPE };
@@ -159,6 +163,18 @@ const SAMPLE_INTENTS: ReadonlySet<string> = new Set([
 const NO_WATCH: vscode.Disposable = { dispose: () => undefined };
 /** How many of a panel's posted messages `posted` keeps (test seam). */
 export const MAX_BLOBLANG_POSTED = 50;
+
+/** A rename's key in `BloblangPanels.targets` (bug 24). */
+const targetKey = (from: vscode.Uri, to: vscode.Uri): string => `${from.toString()}\n${to.toString()}`;
+
+/** Whether `uri` is a file (bug 24); `false` when it is missing or can't be read. */
+async function isFile(uri: vscode.Uri): Promise<boolean> {
+	try {
+		return ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.File) !== 0;
+	} catch {
+		return false;
+	}
+}
 
 /** The tab title of a processor's panel. */
 export function bloblangTitle(processor: Pick<BloblangProcessor, 'label' | 'path'>): string {
@@ -254,6 +270,11 @@ export interface BloblangPanelsOptions {
 	 * pending. `undefined`: `PENDING_RENAME_MS`.
 	 */
 	readonly pendingRenameMs?: number;
+	/**
+	 * Test seam (bug 24, TRASH_FAILS): deletes the samples files a rename moves to the OS trash.
+	 * `undefined`: `vscode.workspace.fs.delete`.
+	 */
+	readonly deleteFile?: DeleteFile;
 }
 
 /** What Add label's input box shows and checks (4.16). */
@@ -991,6 +1012,12 @@ export class BloblangPanels implements vscode.Disposable {
 	 * close. One never reported expires (4.13).
 	 */
 	private readonly pendingRenames: PendingRenames;
+	/**
+	 * Per announced rename of a file (`from\nto`, bug 24): whether its new name held a file before the
+	 * batch ran, so whether it overwrote a config. A folder's rename has none; each goes when reported,
+	 * or when a pending rename would expire (4.13).
+	 */
+	private readonly targets = new Map<string, { readonly held: boolean }>();
 	/** Panel creations run one at a time (4.17): each one's placement sees the groups the last one left. */
 	private queue: Promise<unknown> = Promise.resolve();
 	private readonly subscriptions: vscode.Disposable[];
@@ -1000,7 +1027,7 @@ export class BloblangPanels implements vscode.Disposable {
 	readonly samples: SampleStore;
 
 	constructor(private readonly options: BloblangPanelsOptions) {
-		this.samples = new SampleStore((line) => this.log(line));
+		this.samples = new SampleStore((line) => this.log(line), options.deleteFile);
 		this.pendingRenames = new PendingRenames(options.pendingRenameMs ?? PENDING_RENAME_MS);
 		this.subscriptions = [
 			// An outside edit of a samples file (4.9): its config's panels get `samples`.
@@ -1076,9 +1103,30 @@ export class BloblangPanels implements vscode.Disposable {
 			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
 			vscode.workspace.onWillRenameFiles((e) => {
 				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
+				// Bug 24: the rename waits for the check of which new names hold a file.
+				e.waitUntil(this.checkTargets(e.files));
 			}),
 			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
+	}
+
+	/**
+	 * Records, for each renamed file of a batch about to run (bug 24), whether its new name holds a
+	 * file: only files' renames, and only their new names, are checked.
+	 */
+	private async checkTargets(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): Promise<void> {
+		await Promise.all(files.map(async (f) => {
+			if (await isFile(f.oldUri)) {
+				const key = targetKey(f.oldUri, f.newUri);
+				const target = { held: await isFile(f.newUri) };
+				this.targets.set(key, target);
+				setTimeout(() => {
+					if (this.targets.get(key) === target) {
+						this.targets.delete(key);
+					}
+				}, this.options.pendingRenameMs ?? PENDING_RENAME_MS);
+			}
+		}));
 	}
 
 	/** Whether a pending rename renames `key` (the file itself, or a folder holding it) (4.17). */
@@ -1151,7 +1199,7 @@ export class BloblangPanels implements vscode.Disposable {
 			}
 		}
 		for (const f of files) {
-			void this.moveSamples(f.oldUri, f.newUri);
+			void this.moveSamples(f.oldUri, f.newUri, renames);
 		}
 		for (const { entry } of movers) {
 			void entry.refresh();
@@ -1161,10 +1209,22 @@ export class BloblangPanels implements vscode.Disposable {
 
 	/**
 	 * A single file's rename moves its samples file to the new config's name (4.17); when that one
-	 * exists already, both are left and the user is told.
+	 * exists already, both are left and the user is told. Bug 24, by the batch `renames` (ticket 17's
+	 * rules, over every renamed file, not only those with panels): a moved config whose content a
+	 * later rename overwrote has its samples file moved to the trash; one onto a config that existed
+	 * (its new name held a file when announced) and overwrote it moves its samples file over that
+	 * config's, which goes to the trash. A rename that was not announced moves as 4.17.
 	 */
-	private async moveSamples(from: vscode.Uri, to: vscode.Uri): Promise<void> {
-		const outcome = await this.samples.moveFile(from, to);
+	private async moveSamples(from: vscode.Uri, to: vscode.Uri, renames: readonly { readonly from: string; readonly to: string }[]): Promise<void> {
+		const key = targetKey(from, to);
+		const held = this.targets.get(key)?.held;
+		this.targets.delete(key);
+		const fate = renameFate(from.toString(), renames);
+		if (held !== undefined && fate.to !== undefined && fate.destroyed) {
+			await this.samples.discard(from);
+			return;
+		}
+		const outcome = await this.samples.moveFile(from, to, held === true && overwrittenBy(to.toString(), renames));
 		if (outcome === 'exists') {
 			const target = samplesUri(to);
 			this.tell(samplesNotMoved(target ? path.posix.basename(target.path) : ''));

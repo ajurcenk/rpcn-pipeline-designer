@@ -36,7 +36,7 @@ import {
 	samplesNotMoved, samplesUnreadable, TEST_MAPPING_COMMAND,
 	type BloblangPanelHandle, type LabelRequest, type MappingTestRunner,
 } from '../../../adapters/bloblangPanel/panels';
-import { samplesUri } from '../../../adapters/bloblangPanel/sampleStore';
+import { samplesUri, type DeleteFile } from '../../../adapters/bloblangPanel/sampleStore';
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
 import { NO_BINARY_MESSAGE, runMappingTest } from '../../../adapters/redpandaConnect/bloblang';
 import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
@@ -2283,6 +2283,207 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.strictEqual(api().bloblangPanels.panelFor(c.uri, FIRST), undefined);
 		});
 	}
+
+	// Bug 24: a rename onto a config that existed moves the overwritten config's samples file to the
+	// trash and the moved one's takes its name; a batch's loser's samples file goes to the trash.
+	/**
+	 * A BloblangPanels of the test's own that hears only the test's renames, with `deleteFile` as its
+	 * delete (the trash, recorded in `deletes`) and its own messages and log. `rename` announces the
+	 * batch and waits for its listeners' `waitUntil` (as VS Code does), renames the files on disk in
+	 * order (overwriting), opens each new name in an editor (a panel closes with its file's last tab),
+	 * reports the batch and closes the old names' tabs, so the extension's own registry never sees it.
+	 */
+	function ownRenames(deleteFile?: DeleteFile) {
+		const will = new vscode.EventEmitter<vscode.FileWillRenameEvent>();
+		const did = new vscode.EventEmitter<vscode.FileRenameEvent>();
+		const workspace = vscode.workspace as { onWillRenameFiles: unknown; onDidRenameFiles: unknown };
+		const original = { will: workspace.onWillRenameFiles, did: workspace.onDidRenameFiles };
+		const shown: [string, string | undefined][] = [];
+		const log: string[] = [];
+		const deletes: [string, boolean][] = [];
+		workspace.onWillRenameFiles = will.event;
+		workspace.onDidRenameFiles = did.event;
+		let panels: BloblangPanels;
+		try {
+			panels = new BloblangPanels({
+				extensionUri: vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri,
+				log: (line) => log.push(line),
+				binary: api().redpandaConnect,
+				actions: undefined,
+				storageDir: path.join(dir, 'storage'),
+				detection: api().detection,
+				showMessage: (message, kind) => shown.push([message, kind]),
+				// The recorded delete removes the file for good: the test does not depend on the OS trash.
+				deleteFile: deleteFile ?? (async (uri, options) => {
+					deletes.push([path.basename(uri.fsPath), options.useTrash]);
+					await vscode.workspace.fs.delete(uri, { useTrash: false });
+				}),
+			});
+		} finally {
+			workspace.onWillRenameFiles = original.will;
+			workspace.onDidRenameFiles = original.did;
+		}
+		async function rename(...pairs: [vscode.Uri, vscode.Uri][]): Promise<void> {
+			const files = pairs.map(([oldUri, newUri]) => ({ oldUri, newUri }));
+			const waits: Thenable<unknown>[] = [];
+			will.fire({
+				files, waitUntil: (thenable: Thenable<unknown>) => waits.push(thenable), token: new vscode.CancellationTokenSource().token,
+			} as vscode.FileWillRenameEvent);
+			await Promise.all(waits);
+			for (const [from, to] of pairs) {
+				fs.renameSync(from.fsPath, to.fsPath);
+			}
+			for (const to of new Set(pairs.map(([, to]) => to.toString()))) {
+				await vscode.window.showTextDocument(vscode.Uri.parse(to), { viewColumn: vscode.ViewColumn.One, preview: false });
+			}
+			did.fire({ files });
+			for (const [from] of pairs) {
+				await vscode.window.tabGroups.close(textTabs(from));
+			}
+		}
+		return {
+			panels, shown, log, deletes, rename,
+			dispose() {
+				panels.dispose();
+				will.dispose();
+				did.dispose();
+			},
+		};
+	}
+
+	test('OVERWRITE (bug 24): renamed onto a config with its own samples: that file goes to the trash, the moved one takes its name and is shown', async () => {
+		const mine = { label: 'first', selected: 'mine', samples: [sample('mine', '{"m":1}')] };
+		const theirs = { label: 'first', selected: 'theirs', samples: [sample('theirs', '{"t":1}')] };
+		fs.writeFileSync(samplesFile('over-a.yaml'), JSON.stringify({ version: 1, mappings: [mine] }));
+		fs.writeFileSync(samplesFile('over-b.yaml'), JSON.stringify({ version: 1, mappings: [theirs] }));
+		fs.writeFileSync(path.join(dir, 'over-b.yaml'), CONFIG);
+		const doc = (await open('over-a.yaml', CONFIG)).document;
+		const registry = ownRenames();
+		try {
+			const handle = (await registry.panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			assert.deepStrictEqual(lastSnapshot(handle)?.samples, mine.samples);
+			const to = vscode.Uri.file(path.join(dir, 'over-b.yaml'));
+			await registry.rename([doc.uri, to]);
+			await samplesRead(samplesFile('over-b.yaml'), [mine]);
+			assert.ok(!fs.existsSync(samplesFile('over-a.yaml')), 'the moved samples file left its old name');
+			assert.deepStrictEqual(registry.deletes, [['over-b.samples.json', true]], 'the overwritten samples file went to the trash');
+			assert.strictEqual(registry.panels.panelFor(to, FIRST), handle);
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'over-b.yaml', 10_000), JSON.stringify(lastSnapshot(handle)));
+			assert.deepStrictEqual([lastSnapshot(handle)?.samplesFile, lastSnapshot(handle)?.samples, lastSnapshot(handle)?.selected],
+				['over-b.samples.json', mine.samples, 'mine']);
+			await settle();
+			assert.deepStrictEqual(registry.shown, [], 'no "weren\'t moved" message');
+		} finally {
+			registry.dispose();
+		}
+	});
+
+	test('OVERWRITE_NO_SAMPLES (bug 24): renamed onto a config with no samples file: the samples file moves, nothing is trashed', async () => {
+		const mine = { label: 'first', selected: null, samples: [sample('mine')] };
+		fs.writeFileSync(samplesFile('over-none-a.yaml'), JSON.stringify({ version: 1, mappings: [mine] }));
+		fs.writeFileSync(path.join(dir, 'over-none-b.yaml'), CONFIG);
+		const doc = (await open('over-none-a.yaml', CONFIG)).document;
+		const registry = ownRenames();
+		try {
+			const handle = (await registry.panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			const to = vscode.Uri.file(path.join(dir, 'over-none-b.yaml'));
+			await registry.rename([doc.uri, to]);
+			await samplesRead(samplesFile('over-none-b.yaml'), [mine]);
+			assert.ok(!fs.existsSync(samplesFile('over-none-a.yaml')));
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'over-none-b.yaml', 10_000));
+			assert.deepStrictEqual(lastSnapshot(handle)?.samples, mine.samples);
+			await settle();
+			assert.deepStrictEqual([registry.deletes, registry.shown], [[], []]);
+		} finally {
+			registry.dispose();
+		}
+	});
+
+	test('BATCH (bug 24): a→x then c→x in one batch: c\'s samples become x\'s, a\'s samples file goes to the trash', async () => {
+		const ofA = { label: 'first', selected: null, samples: [sample('from a')] };
+		const ofC = { label: 'first', selected: 'from c', samples: [sample('from c', '{"c":1}')] };
+		fs.writeFileSync(samplesFile('batch-a.yaml'), JSON.stringify({ version: 1, mappings: [ofA] }));
+		fs.writeFileSync(samplesFile('batch-c.yaml'), JSON.stringify({ version: 1, mappings: [ofC] }));
+		const a = (await open('batch-a.yaml', CONFIG)).document;
+		const c = (await open('batch-c.yaml', CONFIG)).document;
+		const registry = ownRenames();
+		try {
+			const fromA = (await registry.panels.show(a.uri, FIRST))!;
+			const fromC = (await registry.panels.show(c.uri, FIRST))!;
+			const aGone = disposal(fromA);
+			await fromC.receive({ type: 'ready' });
+			const x = vscode.Uri.file(path.join(dir, 'batch-x.yaml'));
+			await registry.rename([a.uri, x], [c.uri, x]);
+			await samplesRead(samplesFile('batch-x.yaml'), [ofC]);
+			assert.ok(await waitFor(() => !fs.existsSync(samplesFile('batch-a.yaml')), 10_000), 'a\'s samples file is gone');
+			assert.ok(!fs.existsSync(samplesFile('batch-c.yaml')));
+			assert.deepStrictEqual(registry.deletes, [['batch-a.samples.json', true]], 'the loser\'s samples file went to the trash');
+			assert.ok(aGone(), 'the loser\'s panel closed');
+			assert.strictEqual(registry.panels.panelFor(x, FIRST), fromC);
+			assert.ok(await waitFor(() => lastSnapshot(fromC)?.fileName === 'batch-x.yaml', 10_000));
+			assert.deepStrictEqual([lastSnapshot(fromC)?.samples, lastSnapshot(fromC)?.selected], [ofC.samples, 'from c']);
+			await settle();
+			assert.deepStrictEqual(registry.shown, []);
+		} finally {
+			registry.dispose();
+		}
+	});
+
+	test('BATCH_OVER (bug 24): a→x then c→x in one batch onto an existing x: x\'s and a\'s samples files go to the trash, c\'s become x\'s', async () => {
+		const ofA = { label: 'first', selected: null, samples: [sample('from a')] };
+		const ofC = { label: 'first', selected: 'from c', samples: [sample('from c', '{"c":1}')] };
+		const ofX = { label: 'first', selected: null, samples: [sample('from x')] };
+		fs.writeFileSync(samplesFile('batch-over-a.yaml'), JSON.stringify({ version: 1, mappings: [ofA] }));
+		fs.writeFileSync(samplesFile('batch-over-c.yaml'), JSON.stringify({ version: 1, mappings: [ofC] }));
+		fs.writeFileSync(samplesFile('batch-over-x.yaml'), JSON.stringify({ version: 1, mappings: [ofX] }));
+		const x = vscode.Uri.file(path.join(dir, 'batch-over-x.yaml'));
+		fs.writeFileSync(x.fsPath, CONFIG);
+		const a = (await open('batch-over-a.yaml', CONFIG)).document;
+		const c = (await open('batch-over-c.yaml', CONFIG)).document;
+		const registry = ownRenames();
+		try {
+			const fromC = (await registry.panels.show(c.uri, FIRST))!;
+			await fromC.receive({ type: 'ready' });
+			await registry.rename([a.uri, x], [c.uri, x]);
+			await samplesRead(samplesFile('batch-over-x.yaml'), [ofC]);
+			assert.ok(await waitFor(() => !fs.existsSync(samplesFile('batch-over-a.yaml')), 10_000), 'a\'s samples file is gone');
+			assert.ok(!fs.existsSync(samplesFile('batch-over-c.yaml')));
+			assert.deepStrictEqual([...registry.deletes].sort(), [['batch-over-a.samples.json', true], ['batch-over-x.samples.json', true]]);
+			assert.ok(await waitFor(() => lastSnapshot(fromC)?.fileName === 'batch-over-x.yaml', 10_000));
+			assert.deepStrictEqual([lastSnapshot(fromC)?.samples, lastSnapshot(fromC)?.selected], [ofC.samples, 'from c']);
+			await settle();
+			assert.deepStrictEqual(registry.shown, []);
+		} finally {
+			registry.dispose();
+		}
+	});
+
+	test('TRASH_FAILS (bug 24): as OVERWRITE, the trash fails: both files are left, the user is told, the reason is logged', async () => {
+		const mine = { label: 'first', selected: null, samples: [sample('mine')] };
+		const theirs = { label: 'first', selected: 'theirs', samples: [sample('theirs', '{"t":1}')] };
+		fs.writeFileSync(samplesFile('trash-fails-a.yaml'), JSON.stringify({ version: 1, mappings: [mine] }));
+		fs.writeFileSync(samplesFile('trash-fails-b.yaml'), JSON.stringify({ version: 1, mappings: [theirs] }));
+		fs.writeFileSync(path.join(dir, 'trash-fails-b.yaml'), CONFIG);
+		const doc = (await open('trash-fails-a.yaml', CONFIG)).document;
+		const registry = ownRenames(() => Promise.reject(new Error('no trash here')));
+		try {
+			const handle = (await registry.panels.show(doc.uri, FIRST))!;
+			await handle.receive({ type: 'ready' });
+			const to = vscode.Uri.file(path.join(dir, 'trash-fails-b.yaml'));
+			await registry.rename([doc.uri, to]);
+			assert.ok(await waitFor(() => registry.shown.length > 0, 10_000), 'the user is told');
+			assert.deepStrictEqual(registry.shown, [[samplesNotMoved('trash-fails-b.samples.json'), 'info']]);
+			assert.ok(registry.log.some((line) => line.includes('trash-fails-b.samples.json') && line.includes('no trash here')), registry.log.join('\n'));
+			assert.deepStrictEqual(readSamples(samplesFile('trash-fails-a.yaml')).mappings, [mine]);
+			assert.deepStrictEqual(readSamples(samplesFile('trash-fails-b.yaml')).mappings, [theirs]);
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'trash-fails-b.yaml', 10_000));
+			assert.deepStrictEqual(lastSnapshot(handle)?.samples, theirs.samples);
+		} finally {
+			registry.dispose();
+		}
+	});
 
 	test('PLACE_WITH_GRAPH + PLACE_SECOND (4.17): a new group below the graph\'s, holding only test panels; every test panel goes there; focus stays in the YAML', async () => {
 		const other = (await open('place-other.yaml', CONFIG)).document;

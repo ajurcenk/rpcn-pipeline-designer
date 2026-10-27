@@ -57,4 +57,4 @@ The samples file follows a rename only when the target name has none: when it ex
 
 ## Notes
 
-- Open question: what happens to the overwritten config's samples file — replaced by the moved config's (it belongs to destroyed content), or kept beside under another name, or kept and the user asked.
+- Decision: the overwritten config's samples file goes to the OS trash (recoverable), and the moved config's samples file takes its name (user, 2026-10-27).
