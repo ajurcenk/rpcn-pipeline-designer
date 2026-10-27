@@ -47,6 +47,11 @@ jobs:
       - name: VS Code tests (stable)
         run: scripts/vscode-test-ci.sh stable
 
+      # ticket 28: per-folder settings in a real two-folder workspace; blocks the build like stable
+      - name: VS Code tests (multi-root)
+        if: ${{ !cancelled() }}
+        run: scripts/vscode-test-ci.sh multiroot
+
       - name: VS Code tests (1.100.0 floor, non-blocking)
         if: ${{ !cancelled() }}
         continue-on-error: true

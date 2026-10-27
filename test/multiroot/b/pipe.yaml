@@ -1,0 +1,7 @@
+input:
+  stdin: {}
+pipeline:
+  processors:
+    - mapping: root.b = this.a + 1
+output:
+  stdout: {}

@@ -96,8 +96,9 @@ The graph works from the keyboard. Tab enters it at the first node (the input), 
 ```sh
 npm ci
 npm run compile          # type-check, lint, bundle to dist/
-npm test                 # unit + integration tests, twice: latest stable VS Code and VS Code 1.100.0 (the engines floor)
-npx vscode-test --label floor     # one of the two (stable | floor), after npm run pretest
+npm test                 # unit + integration tests, twice: latest stable VS Code and VS Code 1.100.0 (the engines floor),
+                         # then the multi-root suite (per-folder settings in test/multiroot's two-folder workspace)
+npx vscode-test --label floor     # one run (stable | floor | multiroot), after npm run pretest
 scripts/spike/fetch-binaries.sh   # pinned Redpanda Connect 4.100.0 and 4.112.0 into .cache/ (needs an authenticated gh)
 npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and compare with the recorded output;
                          # also checks the extension's diagnostics match every record (diagnostics parity) and
