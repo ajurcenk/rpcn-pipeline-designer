@@ -3,7 +3,7 @@ title: 'After an overwrite rename, the moved test panels read the overwritten co
 type: 'bugfix'
 ticket: '24'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '19cd9e34027b3d991791a879a53ad6b8ca3d0dc7'
 route: 'full'
 route_source: 'auto'
@@ -98,3 +98,4 @@ Quick review. Verdicts: 0 high, 1 medium, 4 low.
 
 **Manual checks:**
 - Dev host on 1.143.1: two configs with samples; move one onto the other with Replace; the moved panel shows its own samples, the old samples file is in the OS trash.
+  Done by the user (2026-10-27): no issues.

@@ -3,7 +3,7 @@ title: 'Test panels may not notice that their config has unsaved changes'
 type: 'bugfix'
 ticket: '25'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '688e5c65dd84457870b482f5e43924dfbfb7810c'
 route: 'oneshot'
 route_source: 'auto'
