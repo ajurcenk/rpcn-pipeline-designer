@@ -63,6 +63,7 @@ Today a config's `${VAR}` values come only from the `redpandaConnect.envFile` fi
 
 - Decision (user, 2026-10-27): the setting's value wins over the env file's and VS Code's environment for the same variable.
 - Decision (user, 2026-10-27): user, workspace and folder values merge by key, the most specific level winning per key.
-- Open question: Redpanda Connect's own precedence between `--env-file` and the process environment; if the file wins, AC2 needs the extension to keep the setting's keys from being overridden by the file. The builder checks it on both pinned binaries and records the rule in the README.
+- Probed (2026-10-27, 4.100.0 and 4.112.0, `run` and `blobl`): a variable in the `--env-file` file overrides the same variable in the process environment; `--env-file` can be given more than once, and for a key in several files the last file's value wins. So the setting's variables passed only in the process environment would lose to `envFile` (AC2); passed as a further env file after `envFile`, they win.
+- Open question: how the setting's variables reach the binary so that AC2 holds: a temporary env file passed last (it holds the values on disk while the command runs, so owner-only, in the extension's storage, deleted after, values written in dotenv syntax), or another way the builder finds. Settle it with the user at planning.
 - Assumption: values are plain strings, with no `${env:…}` or other expansion.
 - Assumption: the README says the setting is stored in plain text in `settings.json`, so secrets belong in the env file, which can stay out of version control.
