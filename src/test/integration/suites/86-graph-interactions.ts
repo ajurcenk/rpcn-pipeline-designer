@@ -592,6 +592,89 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 			}
 		});
 
+		test('HIDDEN_OVER_OPEN (bug 26): a hidden with its editor open, b shown, a renamed onto b with overwrite: b\'s graph stays open and b is not hidden', async () => {
+			const memento = fakeMemento();
+			const registry = batchedRegistry({ memento });
+			try {
+				const { panels } = registry;
+				const a = await openIn('hidden-over-a.yaml', 'input:\n  stdin: {}\n', vscode.ViewColumn.One);
+				await panels.hide(a.uri);
+				assert.ok(panels.isHidden(a.uri));
+				const b = await openIn('hidden-over-b.yaml', VALID, vscode.ViewColumn.One);
+				const handleB = (await panels.show(b.uri))!;
+				const bGone = disposal(handleB);
+				await registry.renameOver([a.uri, b.uri]);
+				await settle();
+				assert.ok(!bGone(), 'a\'s tab, now b\'s, keeps the open graph');
+				assert.strictEqual(panels.panelFor(b.uri), handleB);
+				assert.ok(!panels.isHidden(b.uri), 'the open graph wins: the name is not hidden');
+				assert.ok(!panels.isHidden(a.uri));
+				assert.deepStrictEqual(memento.get('redpandaConnect.hiddenGraphs'), []);
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		test('HIDDEN_NO_TAB (bug 26): a hidden with no editor, b shown, a renamed onto b with overwrite: b\'s graph closes with its tab and b is hidden', async () => {
+			const memento = fakeMemento();
+			const registry = batchedRegistry({ memento });
+			try {
+				const { panels } = registry;
+				const a = uri('hidden-notab-a.yaml');
+				fs.writeFileSync(a.fsPath, 'input:\n  stdin: {}\n');
+				await panels.hide(a);
+				const b = await openIn('hidden-notab-b.yaml', VALID, vscode.ViewColumn.One);
+				const handleB = (await panels.show(b.uri))!;
+				const bGone = disposal(handleB);
+				await registry.renameOver([a, b.uri]);
+				assert.ok(await waitFor(() => bGone(), 10_000), 'b\'s tab closed, and its graph with it');
+				assert.ok(panels.isHidden(b.uri), 'with no graph left, the name takes a\'s Hide');
+				assert.deepStrictEqual(memento.get('redpandaConnect.hiddenGraphs'), [b.uri.toString()]);
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		test('HIDDEN_FOLDER (bug 26): a folder holding a hidden file with its editor open, renamed onto a folder whose same-named file\'s graph is open: that graph stays and the name is not hidden', async () => {
+			const registry = batchedRegistry();
+			try {
+				const { panels } = registry;
+				fs.mkdirSync(path.join(dir, 'hidden-folder-from'), { recursive: true });
+				fs.mkdirSync(path.join(dir, 'hidden-folder-to'), { recursive: true });
+				const a = (await openIn('hidden-folder-from/pipe.yaml', 'input:\n  stdin: {}\n', vscode.ViewColumn.One)).uri;
+				await panels.hide(a);
+				const b = (await openIn('hidden-folder-to/pipe.yaml', VALID, vscode.ViewColumn.One)).uri;
+				const handleB = (await panels.show(b))!;
+				const bGone = disposal(handleB);
+				await registry.renameOver([uri('hidden-folder-from'), uri('hidden-folder-to')]);
+				await settle();
+				assert.ok(!bGone(), 'a\'s tab, now b\'s, keeps the open graph');
+				assert.strictEqual(panels.panelFor(b), handleB);
+				assert.ok(!panels.isHidden(b), 'the open graph wins: the name is not hidden');
+			} finally {
+				registry.dispose();
+			}
+		});
+
+		test('HIDDEN_CHAIN (bug 26): a hidden with its editor open, b shown, b→t then a→b in one batch: b\'s graph moves to t and the name b takes a\'s Hide', async () => {
+			const registry = batchedRegistry();
+			try {
+				const { panels } = registry;
+				const a = (await openIn('hidden-chain-a.yaml', 'input:\n  stdin: {}\n', vscode.ViewColumn.One)).uri;
+				await panels.hide(a);
+				const b = await openIn('hidden-chain-b.yaml', VALID, vscode.ViewColumn.One);
+				const handleB = (await panels.show(b.uri))!;
+				const t = uri('hidden-chain-t.yaml');
+				await registry.rename([b.uri, t], [a, b.uri]);
+				assert.strictEqual(panels.panelFor(t), handleB, 'b\'s graph is keyed by t');
+				assert.strictEqual(panels.panelFor(b.uri), undefined);
+				assert.ok(panels.isHidden(b.uri), 'no graph stays at b: the moved Hide lands');
+				assert.ok(!panels.isHidden(t));
+			} finally {
+				registry.dispose();
+			}
+		});
+
 		for (const order of ['a first', 'c first'] as const) {
 			test(`TWO_MOVERS (ticket 17, ${order}): a→x, c→x in one batch, graphs on a and c: c's graph is keyed x, a's closes, the driving editor is c's column`, async () => {
 				const registry = batchedRegistry();

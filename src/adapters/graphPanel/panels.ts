@@ -178,6 +178,12 @@ export class GraphPanels implements vscode.Disposable {
 	 * One never reported expires (4.13), and its unreported `renamedDriving` entries go with it.
 	 */
 	private readonly pendingRenames: PendingRenames;
+	/**
+	 * Files that had a text tab when their rename (theirs or their folder's) was announced (bug 26): the
+	 * tab moves with the file, so a graph open at its new name keeps a tab and stays. Each goes when its
+	 * rename is reported or expires, and a new announcement of the same rename sets it again.
+	 */
+	private readonly tabbedRenames = new Set<string>();
 	/** The Save As windows (ticket 12; options in tests, bug 21). */
 	private readonly saveAsWindowMs: number;
 	private readonly saveAsCloseMs: number;
@@ -279,6 +285,14 @@ export class GraphPanels implements vscode.Disposable {
 			vscode.workspace.onDidSaveTextDocument((doc) => this.recent(doc.uri.toString(), 'saved')),
 			vscode.workspace.onWillRenameFiles((e) => {
 				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
+				const froms = e.files.map((f) => f.oldUri.toString());
+				const renamed = (key: string) => froms.some((from) => key === from || within(key, from));
+				[...this.tabbedRenames].filter(renamed).forEach((key) => this.tabbedRenames.delete(key));
+				for (const tab of vscode.window.tabGroups.all.flatMap((g) => g.tabs)) {
+					if (tab.input instanceof vscode.TabInputText && renamed(tab.input.uri.toString())) {
+						this.tabbedRenames.add(tab.input.uri.toString());
+					}
+				}
 			}),
 			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
@@ -584,7 +598,11 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		this.adoptRenamedDriving(vscode.window.visibleTextEditors);
 		this.follows(this.seen, moved, winners);
-		if (this.follows(this.hidden, moved, winners)) {
+		// At a name whose own graph stays open (the moved file's tab keeps it), a moved file's Hide does
+		// not land: the open graph wins (bug 26). With no tab moving there, the graph closes with its tab.
+		const tabbed = new Set([...this.tabbedRenames].filter((key) => renames.some((r) => key === r.from || within(key, r.from))));
+		tabbed.forEach((key) => this.tabbedRenames.delete(key));
+		if (this.follows(this.hidden, moved, winners, (key, at) => tabbed.has(key) && this.panels.has(at))) {
 			void this.storeHidden();
 		}
 		this.updateContext();
@@ -606,15 +624,17 @@ export class GraphPanels implements vscode.Disposable {
 
 	/**
 	 * Re-keys `set` after a rename batch: each key moves to its new name, and at a name a moved graph
-	 * took (`winners`) only the winner's membership counts (ticket 17). Whether `set` changed.
+	 * took (`winners`) only the winner's membership counts (ticket 17); with `stays`, a moved key's
+	 * membership does not land at a name where a graph that did not move stays open (bug 26). Whether
+	 * `set` changed.
 	 */
-	private follows(set: Set<string>, moved: (key: string) => string | undefined, winners: ReadonlyMap<string, string>): boolean {
+	private follows(set: Set<string>, moved: (key: string) => string | undefined, winners: ReadonlyMap<string, string>, stays?: (key: string, at: string) => boolean): boolean {
 		const before = [...set];
 		const after = new Set<string>();
 		for (const key of before) {
 			const at = moved(key) ?? key;
 			const winner = winners.get(at);
-			if (winner === undefined || winner === key) {
+			if (winner === undefined ? at === key || !stays?.(key, at) : winner === key) {
 				after.add(at);
 			}
 		}
@@ -631,6 +651,11 @@ export class GraphPanels implements vscode.Disposable {
 	 * reported either, go; a later file of that name is no renamed file.
 	 */
 	private renamesExpired(expired: readonly Rename[]): void {
+		for (const key of [...this.tabbedRenames]) {
+			if (expired.some((r) => key === r.from || within(key, r.from))) {
+				this.tabbedRenames.delete(key);
+			}
+		}
 		for (const [key, entry] of [...this.renamedDriving]) {
 			if (!entry.reported && expired.some((r) => key === r.to || within(key, r.to))) {
 				this.renamedDriving.delete(key);
