@@ -26,6 +26,8 @@ context: []
 
 **Decision (user, 2026-10-27, after the first loops):** FIX_ALL's undo (and redo) is retried when it did not change the text (up to three tries, the focus state printed on each retry): in 32 runs on two CPUs VS Code ignored the undo 3 times, while the Quick Fix requests never failed.
 
+**Decision (user, 2026-10-27, at the push):** CI runs 2 times on the pushed commit, not 5.
+
 </frozen-after-approval>
 
 ## Implementation Notes
@@ -56,3 +58,5 @@ Quick review. Verdicts: 0 high, 1 medium, 3 low (2 rejected), 1 false.
 - After the push: the CI workflow, 5 runs on one commit -- expected: all pass, or each failure recorded with its focus report and a follow-up.
 
 Local results (2026-10-27): suite 50 10/10 on two CPUs; full stable suite 946 passing; after the review patches, suites 50, 85 and 90 107 passing. CI 5 runs: after the push.
+
+CI on c69102b (run 40558514970), 2 attempts (Decision): both succeeded. Stable 946 passing both times, no `[ticket 27]` retry printed; multi-root 3 passing both times. The 1.100.0 floor (non-blocking): attempt 1 failed `RETAKE_STEAL (bug 19)` with "focus stays in the YAML, in its group: editor none, group 2 (tab Graph: retake-steal.yaml [webview]), visible [retake-steal.yaml@1]" (the graph's webview group took focus back after the return, on 1.100.0); attempt 2 946 passing. Follow-up: deferred-work entry.

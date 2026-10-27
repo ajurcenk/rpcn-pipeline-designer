@@ -77,3 +77,7 @@
   summary: CI flake in the graph keyboard suite (3.11): `ESC (ticket 11): focusEditorRequested focuses the driving editor with its cursor unchanged; with no editor nothing happens` failed with "focus stays where it was" in the stable run (933 passing, 1 failing); the same job's non-blocking 1.100.0 floor run failed `RETAKE_STEAL (bug 19)`.
   evidence: CI run 40398418336 on d89e711 (story 6, which changed only scripts/spike/*.sh). The next two runs on the same CI setup passed (eb4ddbc, f994870). Same family as bugs 19 and 21: focus-dependent tests under xvfb on the 2-CPU runner; not reproduced locally.
   resolution: ticketed as backlog 27 (2026-10-27): `_bmad-output/backlog/bug-flaky-focus-and-timing-dependent-integration-tests.md`.
+
+- source_plan: `_bmad-output/backlog/bug-flaky-focus-and-timing-dependent-integration-tests-plan.md`
+  summary: On the 1.100.0 floor, RETAKE_STEAL sometimes ends with the graph's webview group focused after the focus return to the YAML.
+  evidence: CI run 40558514970 attempt 1 (floor, non-blocking): "focus stays in the YAML, in its group: editor none, group 2 (tab Graph: retake-steal.yaml [webview]), visible [retake-steal.yaml@1]"; attempt 2 and the stable runs passed. Only seen on 1.100.0.
