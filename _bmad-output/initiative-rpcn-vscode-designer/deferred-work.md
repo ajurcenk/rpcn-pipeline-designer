@@ -46,14 +46,17 @@
 - source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
   summary: After an overwrite rename, the moved test panels read the overwritten config's samples file, and the moved config's own samples file is left under its old name.
   evidence: `moveSamples` returns `exists` when the target's samples file is there, so both are left and the user is told; before ticket 17 the moved panel closed, which hid this. Changing how samples files move was out of the ticket's scope.
+  resolution: ticketed as backlog 24 (2026-10-27): `_bmad-output/backlog/bug-moved-test-panels-read-the-overwritten-configs-samples.md`.
 
 - source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
   summary: The test registry's dirty tracking misses an edit's dirty state; only a panel opened on an already dirty document records it.
   evidence: Found while writing OVERWRITTEN_DIRTY (ticket 17 review): VS Code sets `isDirty` only after the content-change event, and the handler ignores the later change event that has no content changes.
+  resolution: ticketed as backlog 25 (2026-10-27): `_bmad-output/backlog/bug-test-panels-miss-unsaved-changes-made-after-the-panel-opened.md`.
 
 - source_plan: `_bmad-output/backlog/bug-a-rename-that-overwrites-a-file-keeps-the-wrong-panel-plan.md`
   summary: A hidden file renamed (with overwrite) onto a file whose graph is open marks the new name hidden while that graph stays open, showing the moved content.
   evidence: Ticket 17 resumed review R4. `GraphPanels.renamed` picks winners among open graphs only, so `follows(this.hidden, …)` moves the hidden flag with no winner check; the same before ticket 17.
+  resolution: ticketed as backlog 26 (2026-10-27): `_bmad-output/backlog/bug-a-hidden-file-renamed-over-an-open-graph-marks-the-name-hidden.md`.
 
 - source_plan: `_bmad-output/backlog/bug-typing-rpcn-in-a-blank-file-offers-no-starter-snippet-plan.md`
   summary: In a detected config (also a blank one matched by `redpandaConnect.filePatterns`), accepting a section snippet after typing `rpcn-…` leaves `rpcn-` in front, since VS Code's YAML word stops at `-`; the README tells users to type `rpcn-` for the sections.
@@ -63,11 +66,14 @@
 - source_plan: `_bmad-output/backlog/story-quick-fix-inside-name-keyed-maps-plan.md`
   summary: Suite 50's Quick Fix tests (QUICK_FIX, OPTION_FIX, FIX_ALL, ticket 7's) sometimes get no action from the provider: `executeCodeActionProvider` lists only Copilot's "Fix" / "Explain".
   evidence: Seen on the baseline (c063d6c, 1 of 6 runs) and with ticket 7 (2 of 6, all Quick Fix tests of the run). Building a longer failure message (schema state, diagnostics) before the assertion made 8 of 8 runs pass, so it looks like the request racing the diagnostics reaching the provider's context. Related to bug 21 (CI timing flakes).
+  resolution: ticketed as backlog 27 (2026-10-27): `_bmad-output/backlog/bug-flaky-focus-and-timing-dependent-integration-tests.md`.
 
 - source_plan: `_bmad-output/backlog/story-multi-root-workspace-folder-choice-plan.md`
   summary: No automated test covers a real multi-root workspace: per-folder `resourceFiles` / `envFile` (ticket 4) are tested through an injected folder and the pure `definingFolder`, not through `getConfiguration(…, resource)` and `inspect`.
   evidence: Ticket 4 review finding 2. The test host opens no workspace folder (some suites rely on that); a multi-root case needs a separate `vscode-test` run with its own `.code-workspace` and folder settings.
+  resolution: ticketed as backlog 28 (2026-10-27): `_bmad-output/backlog/story-automated-test-run-in-a-multi-root-workspace.md`.
 
 - source_plan: `_bmad-output/backlog/bug-graph-webview-ready-timing-flakes-in-ci-plan.md`
   summary: CI flake in the graph keyboard suite (3.11): `ESC (ticket 11): focusEditorRequested focuses the driving editor with its cursor unchanged; with no editor nothing happens` failed with "focus stays where it was" in the stable run (933 passing, 1 failing); the same job's non-blocking 1.100.0 floor run failed `RETAKE_STEAL (bug 19)`.
   evidence: CI run 40398418336 on d89e711 (story 6, which changed only scripts/spike/*.sh). The next two runs on the same CI setup passed (eb4ddbc, f994870). Same family as bugs 19 and 21: focus-dependent tests under xvfb on the 2-CPU runner; not reproduced locally.
+  resolution: ticketed as backlog 27 (2026-10-27): `_bmad-output/backlog/bug-flaky-focus-and-timing-dependent-integration-tests.md`.
