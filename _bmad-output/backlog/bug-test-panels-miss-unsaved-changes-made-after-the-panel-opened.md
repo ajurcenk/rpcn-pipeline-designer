@@ -9,7 +9,7 @@ assignee: ""
 refined: false
 hitl: false
 risk: medium
-severity: P2
+severity: P3
 estimate: ""
 ---
 

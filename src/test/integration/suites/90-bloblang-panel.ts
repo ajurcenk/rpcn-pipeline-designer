@@ -2201,6 +2201,26 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.strictEqual(api().bloblangPanels.panelFor(two.uri, 'pipeline.processors[2]'), undefined);
 	});
 
+	test('DIRTY_RECORD (bug 25): the record of unsaved changes is right from the first edit after a save, and after a save or an undo to the saved text', async () => {
+		const doc = (await open('dirty-record.yaml', CONFIG)).document;
+		const { panels } = testBloblangPanels(undefined);
+		try {
+			await panels.show(doc.uri, FIRST);
+			assert.ok(!panels.hasUnsavedChanges(doc.uri), 'saved');
+			await insert(doc, 0, '# unsaved\n');
+			assert.ok(await waitFor(() => doc.isDirty && panels.hasUnsavedChanges(doc.uri), 5_000), 'the first edit counts');
+			assert.ok(await doc.save());
+			assert.ok(await waitFor(() => !panels.hasUnsavedChanges(doc.uri), 5_000), 'saved again');
+			const editor = await vscode.window.showTextDocument(doc);
+			await insert(doc, 0, '# again\n');
+			assert.ok(await waitFor(() => panels.hasUnsavedChanges(doc.uri), 5_000));
+			await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(editor.document));
+			assert.ok(await waitFor(() => !doc.isDirty && !panels.hasUnsavedChanges(doc.uri), 5_000), 'undone to the saved text');
+		} finally {
+			panels.dispose();
+		}
+	});
+
 	test('OVERWRITTEN_DIRTY (ticket 17): the overwritten config had unsaved changes, the moved one none: the name has none after', async () => {
 		const a = (await open('overwrite-dirty-a.yaml', CONFIG)).document;
 		const b = (await open('overwrite-dirty-b.yaml', CONFIG)).document;
@@ -2218,8 +2238,8 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		}
 		const { panels } = registry;
 		try {
-			// Dirty before its panel opens: the panel's opening records it (an edit's own event comes
-			// before VS Code marks the document dirty).
+			// Dirty before its panel opens: the panel's opening records it (VS Code marked the document
+			// dirty before b had a panel to hear it).
 			await insert(b, 0, '# unsaved\n');
 			assert.ok(await waitFor(() => b.isDirty, 5_000));
 			const moved = (await panels.show(a.uri, FIRST))!;

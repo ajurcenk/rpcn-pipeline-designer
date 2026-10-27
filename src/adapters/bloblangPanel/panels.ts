@@ -1012,23 +1012,33 @@ export class BloblangPanels implements vscode.Disposable {
 			// The shown Bloblang follows edits, so it always matches what the next run uses; each panel
 			// follows its processor (4.10).
 			vscode.workspace.onDidChangeTextDocument((e) => {
-				if (e.contentChanges.length === 0) {
-					return;
-				}
 				const entries = this.panelsOf(e.document.uri);
 				if (entries.length === 0) {
 					return;
 				}
-				const changes: TextChange[] = e.contentChanges.map((c) => ({ offset: c.rangeOffset, length: c.rangeLength, text: c.text }));
-				if (e.document.isDirty) {
-					this.dirty.add(e.document.uri.toString());
-				} else {
-					this.dirty.delete(e.document.uri.toString());
+				// VS Code marks a document modified (or saved) in an event of its own, with no content
+				// changes, after the edit's, whose `isDirty` is still the old one: the record and the saved
+				// positions follow that event (bug 25). A rename's own revert of the old name is not a save (4.17).
+				if (e.contentChanges.length === 0) {
+					const key = e.document.uri.toString();
+					if (this.renaming(key)) {
+						return;
+					}
+					if (e.document.isDirty) {
+						this.dirty.add(key);
+					} else {
+						this.dirty.delete(key);
+						for (const entry of entries) {
+							entry.markSaved();
+						}
+					}
+					return;
 				}
+				const changes: TextChange[] = e.contentChanges.map((c) => ({ offset: c.rangeOffset, length: c.rangeLength, text: c.text }));
 				for (const entry of entries) {
 					entry.mapThrough(changes);
 				}
-				this.match(e.document, entries);
+				this.match(e.document, entries, false);
 			}),
 			// A save moves the samples of the panels whose processor's link changed (4.10).
 			vscode.workspace.onDidSaveTextDocument((doc) => {
@@ -1053,7 +1063,7 @@ export class BloblangPanels implements vscode.Disposable {
 			vscode.workspace.onDidOpenTextDocument((doc) => {
 				const entries = this.panelsOf(doc.uri);
 				if (entries.some((entry) => entry.isReset)) {
-					this.match(doc, entries);
+					this.match(doc, entries, !doc.isDirty);
 				}
 			}),
 			// The no-binary state (4.15): every panel hears each binary change.
@@ -1195,9 +1205,10 @@ export class BloblangPanels implements vscode.Disposable {
 	/**
 	 * Matches `entries` (all the panels of `doc`) to its processors (4.10), when it parses; then each
 	 * panel posts what changed. A panel back from the removed state whose samples link a live panel has
-	 * is left with none, so two live panels never share one.
+	 * is left with none, so two live panels never share one. `saved`: `doc` has no unsaved changes, so
+	 * the matched places are the saved ones (an edit's own event can't tell, bug 25).
 	 */
-	private match(doc: vscode.TextDocument, entries: readonly BloblangPanel[]): void {
+	private match(doc: vscode.TextDocument, entries: readonly BloblangPanel[], saved: boolean): void {
 		const parsed = parsedDocument(doc).parsed;
 		if (parses(parsed)) {
 			try {
@@ -1207,7 +1218,7 @@ export class BloblangPanels implements vscode.Disposable {
 				const found = matchProcessors(processors, entries.map((entry) => entry.tracked()));
 				const text = doc.getText();
 				entries.forEach((entry, i) => entry.follow(found[i], text, processors));
-				if (!doc.isDirty) {
+				if (saved) {
 					entries.forEach((entry) => entry.markSaved());
 				}
 				const links = new Set([...wasLive].filter((entry) => !entry.removed && entry.ref).map((entry) => linkOf(entry.ref!)));
