@@ -154,6 +154,8 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 	suite('F6_DISPOSE', () => {
 		/** "Graph …" lines: a panel's own errors (not "Show graph:" / "Hide graph:"). */
 		const graphErrors = (lines: readonly string[]) => lines.filter((l) => l.startsWith('Graph '));
+		/** The types posted in `from`–`to`. */
+		const postedBetween = (handle: GraphPanelHandle, from: number, to: number) => handle.posted.slice(from, to).map((m) => m.type);
 
 		test('Hide graph while ready\'s snapshot is on its way: nothing posted after it, no error line', async () => {
 			const doc = await open('dispose-ready.yaml', VALID);
@@ -167,11 +169,15 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				// once, and Hide's synchronous part disposes the panel while that post is awaited.
 				const ready = handle.receive({ type: 'ready' });
 				const hidden = panels.hide(doc.uri);
+				// Hide's synchronous part has disposed the panel: nothing may follow.
+				const atDispose = handle.posted.length;
 				await ready;
 				await hidden;
 				// A tab close (the ×) during an update is the same disposal.
 				await settle();
-				assert.deepStrictEqual(handle.posted.slice(count).map((m) => m.type), ['snapshot'], 'only the snapshot, posted before the dispose');
+				// No await between the two counts: a real webview's `ready` can't post in between.
+				assert.deepStrictEqual(postedBetween(handle, count, atDispose), ['snapshot'], 'only the snapshot, posted before the dispose');
+				assert.strictEqual(handle.posted.length, atDispose, 'nothing posted after the dispose');
 				assert.strictEqual(panels.panelFor(doc.uri), undefined, 'the panel is gone');
 				assert.deepStrictEqual(graphErrors(lines), []);
 			} finally {
@@ -185,8 +191,11 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 			// A finding at the output: after the edit below it maps to another node, so the update
 			// would post a new status after the model.
 			const finding = [error(doc, 'stdout', 'output error')];
+			// The real webview's own `ready` (sent whenever it loads) would post a snapshot at a time the
+			// test does not control, during the edit's await (bug 21): only the test's `receive` drives it.
 			const panels = testPanels({
 				log: (l) => lines.push(l),
+				ignoreWebviewMessages: true,
 				diagnostics: { diagnosticsFor: () => finding, onDidChangeDiagnostics: () => ({ dispose: () => undefined }) },
 			});
 			try {
@@ -196,10 +205,12 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				const count = handle.posted.length;
 				// The registry posts the edit's model from the change event; the panel closes (as by its
 				// ×, or its last tab closing) in the same turn, while that post is awaited.
+				let atClose = -1;
 				const closed = new Promise<void>((resolve) => {
 					const sub = vscode.workspace.onDidChangeTextDocument((e) => {
 						if (e.document === doc) {
 							sub.dispose();
+							atClose = handle.posted.length;
 							handle.panel.dispose();
 							resolve();
 						}
@@ -208,7 +219,9 @@ suite('Pipeline graph: interactions across tickets (E3 retro, integration)', fun
 				await insert(doc, doc.getText().indexOf('output:'), 'pipeline:\n  processors:\n    - mapping: root = this\n');
 				await closed;
 				await settle();
-				assert.deepStrictEqual(handle.posted.slice(count).map((m) => m.type), ['model'], 'only the model posted before the close');
+				assert.ok(atClose >= 0, 'the panel closed in the change event');
+				assert.deepStrictEqual(postedBetween(handle, count, atClose), ['model'], 'only the model posted before the close');
+				assert.strictEqual(handle.posted.length, atClose, 'nothing posted after the close');
 				assert.deepStrictEqual(graphErrors(lines), []);
 			} finally {
 				panels.dispose();
