@@ -58,6 +58,7 @@
 - source_plan: `_bmad-output/backlog/bug-typing-rpcn-in-a-blank-file-offers-no-starter-snippet-plan.md`
   summary: In a detected config (also a blank one matched by `redpandaConnect.filePatterns`), accepting a section snippet after typing `rpcn-…` leaves `rpcn-` in front, since VS Code's YAML word stops at `-`; the README tells users to type `rpcn-` for the sections.
   evidence: Ticket 11 review finding 1. `SnippetCompletionProvider` sets `item.range` only for undetected blank files; the YAML language configuration has no `wordPattern`. Ticket 11's boundary kept detected files unchanged.
+  resolution: not a bug (checked 2026-10-27 in the 1.143.1 test host with YAML by Red Hat): in a detected config the sections are offered for `r`, `rpcn`, `rpcn-`, `rpcn-in` (with or without a trailing newline), VS Code's range covers the whole typed word including `-`, and a real accept after typing `rpcn-ou` leaves exactly `output:` / `stdout: {}`, no `rpcn-`. The assumed word pattern does not apply (Red Hat's language configuration covers `-`).
 
 - source_plan: `_bmad-output/backlog/story-quick-fix-inside-name-keyed-maps-plan.md`
   summary: Suite 50's Quick Fix tests (QUICK_FIX, OPTION_FIX, FIX_ALL, ticket 7's) sometimes get no action from the provider: `executeCodeActionProvider` lists only Copilot's "Fix" / "Explain".
