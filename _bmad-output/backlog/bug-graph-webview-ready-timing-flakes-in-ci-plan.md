@@ -3,7 +3,7 @@ title: 'Graph webview ready-timing flakes in CI'
 type: 'bugfix'
 ticket: '21'
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: 'eb4ddbca735abce75de7e704e963c81c28893876'
 route: 'oneshot'
 route_source: 'auto'
@@ -52,4 +52,4 @@ Quick review. Verdicts: 0 high, 1 medium, 1 low, 1 noted.
 - `npm run pretest && xvfb-run -a npx vscode-test --label stable --grep "F6_DISPOSE"` -- expected: all pass.
 - The reproduction loop above -- expected: no failure other than environmental ones.
 - The full stable suite (alone) -- expected: all pass.
-- With the user's go-ahead: the CI workflow's stable step, 8 attempts on one commit -- expected: all pass.
+- ~~With the user's go-ahead: the CI workflow's stable step, 8 attempts on one commit -- expected: all pass.~~ Not run: the user marked the bug done without the CI check (2026-10-26).
