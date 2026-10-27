@@ -69,13 +69,13 @@ With ticket 29, variables live in plain text in `redpandaConnect.env`, and nothi
 
 - parent — none
 - related — _bmad-output/backlog/story-environment-variables-set-in-the-settings.md (ticket 29, the plain `redpandaConnect.env` setting)
-- design — https://claude.ai/artifact/DaPANUeVy98mvkMr1YxtP5, artboard "B · Environment view in the Redpanda Connect sidebar" and "C · A missing variable, fixed from the test panel" (its quick input and Set action)
+- design — https://claude.ai/artifact/DaPANUeVy98mvkMr1YxtP5, artboards "B · Environment view in the Redpanda Connect sidebar", "B · Adding a secret variable (toggle Secret)" and "C · A missing variable, fixed from the test panel" (its quick input and Set action)
 
 ## Notes
 
 - Decision (user, 2026-10-27): option B, the sidebar view, over the full editor panel (C); the built-in Settings UI table (A) comes with ticket 29.
 - Assumption: secrets reach the binary through the child's process environment only, never a temporary env file, so a secret loses to the env file's value for the same name (AC6). Probed 2026-10-27: `--env-file` overrides the process environment on 4.100.0 and 4.112.0 (ticket 29's Notes).
 - Assumption: secrets are per machine (VS Code's secret storage does not sync); another machine asks for them through the missing-variable action.
-- Assumption: the prototype's B board has no Secret toggle yet; the toggle and the password input follow the same view, and the builder settles their exact place.
+- Design (2026-10-27): the add-variable quick input has a Secret switch; with it on, the value is a password input and the hint says where it is kept; secrets are their own group in the view, marked with a lock, and a clash with the env file is shown on both rows and in a note with an action to remove the env file's entry.
 - High risk check: a person runs the secret flows by hand on Linux (libsecret), macOS (Keychain) and Windows (Credential Manager), or the ones available, and in a Remote / WSL window, and reads the output channel for leaked values. The Windows check waits on story 1 (Windows support) where it needs a Windows build.
 - Open question: whether a secret marker in `redpandaConnect.env` is needed at all, or the view lists stored secrets by their own record; settle it at planning.
