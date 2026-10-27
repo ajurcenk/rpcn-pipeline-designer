@@ -41,6 +41,20 @@ export async function waitForAsync(predicate: () => Promise<boolean>, timeoutMs:
 }
 
 /**
+ * The focus state now, for a focus-dependent test's failure message (ticket 27): the active editor
+ * and its group, the active group and its active tab, and the visible editors.
+ */
+export function focusState(): string {
+	const name = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf('/') + 1);
+	const active = vscode.window.activeTextEditor;
+	const group = vscode.window.tabGroups.activeTabGroup;
+	const tab = group.activeTab;
+	const visible = vscode.window.visibleTextEditors.map((e) => `${name(e.document.uri)}@${e.viewColumn}`).join(', ');
+	return `editor ${active ? `${name(active.document.uri)}@${active.viewColumn}` : 'none'}, group ${group.viewColumn}`
+		+ ` (tab ${tab ? `${tab.label}${tab.input instanceof vscode.TabInputWebview ? ' [webview]' : ''}` : 'none'}), visible [${visible}]`;
+}
+
+/**
  * Whether `doc` is the active editor in `column` and that column's group is the active tab group
  * (bug 19): the two signals VS Code reports separately, so a group activated late can leave the
  * editor active while another group is.

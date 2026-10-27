@@ -47,7 +47,7 @@ import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
-import { EXTENSION_ID, focusedIn, runOnEditor, waitFor, waitForAsync } from '../helpers';
+import { EXTENSION_ID, focusedIn, focusState, runOnEditor, waitFor, waitForAsync } from '../helpers';
 
 const CONFIG = [
 	'input:',
@@ -149,11 +149,6 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		return editor;
 	}
 
-	/** The active editor and group, for a focus assertion's message (bug 19). */
-	const focusState = () => {
-		const active = vscode.window.activeTextEditor;
-		return `editor ${active ? `${path.basename(active.document.uri.fsPath)}@${active.viewColumn}` : 'none'}, group ${vscode.window.tabGroups.activeTabGroup.viewColumn}`;
-	};
 	/** The placement never logged a missed focus return since output line `from` (bug 19). */
 	const assertFocusKept = (from: number) => {
 		const missed = api().outputLines().slice(from).filter((l) => /^Test mapping: (focus did not stay in the YAML|could not return focus)/.test(l));

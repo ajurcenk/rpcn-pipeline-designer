@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
+import { EXTENSION_ID, focusState, runOnEditor, waitFor } from '../helpers';
 
 suite('Lint on save (integration)', function () {
 	this.timeout(90_000);
@@ -18,6 +18,43 @@ suite('Lint on save (integration)', function () {
 	const lintOf = (doc: vscode.TextDocument) => vscode.languages.getDiagnostics(doc.uri)
 		.filter((d) => d.source === 'Redpanda Connect')
 		.map((d) => [d.range.start.line + 1, d.severity, d.message]);
+
+	/**
+	 * The Quick Fixes at `range` once `want` is among them (ticket 27): VS Code's copy of the
+	 * diagnostics, which the request reads, can lag the extension's, so the request repeats until
+	 * then (10 s; the last list otherwise, which the caller's assertion shows).
+	 */
+	async function quickFixes(doc: vscode.TextDocument, range: vscode.Range, want: string): Promise<vscode.CodeAction[]> {
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+				'vscode.executeCodeActionProvider', doc.uri, range, vscode.CodeActionKind.QuickFix.value);
+			if (list.some((a) => a.title === want) || Date.now() > deadline) {
+				return list;
+			}
+			await new Promise((r) => setTimeout(r, 100));
+		}
+	}
+
+	/**
+	 * Runs `command` (`undo` / `redo`) on `doc` until its text is `text` (ticket 27): VS Code now and
+	 * then ignores the command on a busy machine (keyboard focus), and the text arrives after the
+	 * command resolves. Up to three tries, 5 s each (a command applied that late is not retried, so
+	 * never applied twice); each retry prints the focus state for the log. The number of tries.
+	 */
+	async function untilText(doc: vscode.TextDocument, command: string, text: string): Promise<number> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			if (attempt > 0) {
+				console.log(`[ticket 27] ${command} did not change ${path.basename(doc.uri.fsPath)}; retrying: ${focusState()}`);
+			}
+			const version = doc.version;
+			await runOnEditor(doc, command);
+			if (await waitFor(() => doc.getText() === text, 5_000) || doc.version !== version) {
+				return attempt + 1;
+			}
+		}
+		return 3;
+	}
 
 	async function openSaved(name: string, text: string): Promise<vscode.TextDocument> {
 		const file = path.join(dir, name);
@@ -149,8 +186,7 @@ suite('Lint on save (integration)', function () {
 		await editAndSave(doc); // appends '\n'
 		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
 		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
-		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const list = await quickFixes(doc, diagnostic.range, 'Change to `topic`');
 		const ours = list.filter((a) => a.title.startsWith('Change to'));
 		assert.strictEqual(ours[0]?.title, 'Change to `topic`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
@@ -165,8 +201,7 @@ suite('Lint on save (integration)', function () {
 		await editAndSave(doc); // appends '\n'
 		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
 		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
-		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const list = await quickFixes(doc, diagnostic.range, 'Change to `request_map`');
 		const ours = list.filter((a) => a.title.startsWith('Change to'));
 		assert.strictEqual(ours[0]?.title, 'Change to `request_map`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(ours[0].isPreferred, 'a clear winner is preferred');
@@ -182,8 +217,7 @@ suite('Lint on save (integration)', function () {
 		await editAndSave(doc);
 		assert.ok(await waitFor(() => lintOf(doc).length === 1, 15_000), JSON.stringify(lintOf(doc)));
 		const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect')!;
-		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-			'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+		const list = await quickFixes(doc, diagnostic.range, 'Change to `tcp`');
 		const ours = list.filter((a) => a.title.startsWith('Change to'));
 		assert.strictEqual(ours[0]?.title, 'Change to `tcp`', JSON.stringify(list.map((a) => a.title)));
 		assert.ok(await vscode.workspace.applyEdit(ours[0].edit!));
@@ -200,8 +234,7 @@ suite('Lint on save (integration)', function () {
 		const fix = async (message: string, title: string) => {
 			const diagnostic = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect' && d.message.startsWith(message))!;
 			assert.ok(diagnostic, `${message}: ${JSON.stringify(lintOf(doc))}`);
-			const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-				'vscode.executeCodeActionProvider', doc.uri, diagnostic.range, vscode.CodeActionKind.QuickFix.value);
+			const list = await quickFixes(doc, diagnostic.range, title);
 			const action = list.find((a) => a.title === title);
 			assert.ok(action, JSON.stringify(list.map((a) => a.title)));
 			assert.ok(await vscode.workspace.applyEdit(action.edit!));
@@ -230,18 +263,17 @@ suite('Lint on save (integration)', function () {
 		const saved = doc.getText();
 		assert.ok(await waitFor(() => lintOf(doc).length === 3, 15_000), JSON.stringify(lintOf(doc)));
 		const tpc = vscode.languages.getDiagnostics(doc.uri).find((d) => d.source === 'Redpanda Connect' && d.message.startsWith('value tpc'))!;
-		const list = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-			'vscode.executeCodeActionProvider', doc.uri, tpc.range, vscode.CodeActionKind.QuickFix.value);
+		const list = await quickFixes(doc, tpc.range, 'Fix all lint findings with a clear fix (3)');
 		const titles = list.map((a) => a.title);
 		const index = titles.indexOf('Fix all lint findings with a clear fix (3)');
 		assert.ok(index > titles.indexOf('Change to `tcp`') && titles.indexOf('Change to `tcp`') >= 0, JSON.stringify(titles));
 		assert.ok(await vscode.workspace.applyEdit(list[index].edit!));
 		const fixed = `${text.replace('network: tpc', 'network: tcp').replace('adress:', 'address:').replace('topci:', 'topic:')}\n`;
 		assert.strictEqual(doc.getText(), fixed);
-		await runOnEditor(doc, 'undo');
-		assert.strictEqual(doc.getText(), saved, 'one undo step reverts all three');
-		await runOnEditor(doc, 'redo');
-		assert.strictEqual(doc.getText(), fixed);
+		const undos = await untilText(doc, 'undo', saved);
+		assert.strictEqual(doc.getText(), saved, `one undo step reverts all three (${undos} tries): ${focusState()}; dirty ${doc.isDirty}, version ${doc.version}`);
+		const redos = await untilText(doc, 'redo', fixed);
+		assert.strictEqual(doc.getText(), fixed, `redo (${redos} tries): ${focusState()}`);
 		const lints = () => readCounter(counter).filter((l) => l === 'lint').length;
 		const before = lints();
 		assert.ok(await doc.save());
