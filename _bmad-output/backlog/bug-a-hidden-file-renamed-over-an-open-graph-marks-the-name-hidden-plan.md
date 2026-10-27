@@ -3,7 +3,7 @@ title: 'A hidden file renamed over a file whose graph is open leaves a graph ope
 type: 'bugfix'
 ticket: '26'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '5541b5e87b071f6448f26bf033bbc649a68dcaef'
 route: 'oneshot'
 route_source: 'auto'
@@ -51,3 +51,6 @@ Quick review. Verdicts: 0 high, 1 medium, 2 low.
 - `npm run pretest && xvfb-run -a npx vscode-test --label stable --grep "Extension tracer path|graph"` -- expected: all pass.
 - `xvfb-run -a npx vscode-test --label stable` (alone) -- expected: all pass.
   Result (2026-10-27): full stable suite 946 passing.
+
+**Manual checks:**
+- Dev host on 1.143.1: a hidden file with its editor open moved onto a file whose graph is open, with Replace: the graph stays and the name is not hidden. Done by the user (2026-10-27): no issues.
