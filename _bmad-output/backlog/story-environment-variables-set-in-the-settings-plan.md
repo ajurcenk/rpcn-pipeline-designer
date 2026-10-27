@@ -3,7 +3,7 @@ title: 'Environment variables set in the settings reach lint, Run, the live Blob
 type: 'feature'
 ticket: '29'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '6b4abd39f4f9b448c0396d9a06108130d9bf5abe'
 route: 'full'
 route_source: 'auto'
@@ -106,4 +106,4 @@ Quick review. Verdicts: 0 high, 2 medium, 3 low.
 **Manual checks:**
 - Dev host on 1.143.1: `redpandaConnect.env` with a variable the config uses, also set differently in the `.env` file: Run prints the setting's value; edit the setting, Run again: the new value, no restart.
 
-Result (2026-10-27, after the review patches): stable 969 passing; multiroot 5 passing; corpus 156 passed. Manual check: pending.
+Result (2026-10-27, after the review patches): stable 969 passing; multiroot 5 passing; corpus 156 passed. Manual check: done by the user on the 1.143.1 dev host (2026-10-27), no issues.
