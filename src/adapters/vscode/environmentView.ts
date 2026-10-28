@@ -40,7 +40,11 @@ export const SHOW_VALUE_COMMAND = 'redpandaConnect.environment.showValue';
 export const HIDE_VALUE_COMMAND = 'redpandaConnect.environment.hideValue';
 export const OPEN_ENV_FILE_COMMAND = 'redpandaConnect.environment.openEnvFile';
 export const REFRESH_VIEW_COMMAND = 'redpandaConnect.environment.refresh';
-/** Sets a missing variable, by name (ticket 32's test panel button calls it too): `(name | item, configUri?)`. */
+/**
+ * Sets a missing variable, by name (ticket 32's test panel button calls it too): `(name | item,
+ * configUri?)`; resolves with the name a value was set for (a secret's prefilled name can be
+ * edited), `undefined` when none was.
+ */
 export const SET_MISSING_COMMAND = 'redpandaConnect.setMissingVariable';
 
 /** What a masked value shows. */
@@ -583,18 +587,20 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		});
 	}
 
-	private async setPlain(at: { readonly uri: vscode.Uri; readonly folder: Scope }, name: string): Promise<boolean> {
+	/** The name set, `undefined` when nothing was. */
+	private async setPlain(at: { readonly uri: vscode.Uri; readonly folder: Scope }, name: string): Promise<string | undefined> {
 		const value = await this.askValue(name);
 		if (value === undefined) {
-			return false;
+			return undefined;
 		}
-		return this.writePlain(at.uri, name, value, newVariableLevel(at.folder, vscode.workspace.workspaceFolders?.length ?? 0));
+		return await this.writePlain(at.uri, name, value, newVariableLevel(at.folder, vscode.workspace.workspaceFolders?.length ?? 0)) ? name : undefined;
 	}
 
-	private async setSecret(at: { readonly uri: vscode.Uri; readonly folder: Scope }, name: string | undefined): Promise<boolean> {
-		const ok = await this.options.secrets.setCommand({ folder: at.folder, ...(name !== undefined ? { name } : {}) }, (o) => this.ui.input(o));
+	/** The name set (the prefilled one can be edited), `undefined` when nothing was. */
+	private async setSecret(at: { readonly uri: vscode.Uri; readonly folder: Scope }, name: string | undefined): Promise<string | undefined> {
+		const set = await this.options.secrets.setCommand({ folder: at.folder, ...(name !== undefined ? { name } : {}) }, (o) => this.ui.input(o));
 		this.refresh();
-		return ok;
+		return set;
 	}
 
 	/** "Add variable": plain or secret, then the name and the value. */
@@ -605,7 +611,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		}
 		const kind = await this.ui.pickKind(undefined);
 		if (kind === 'secret') {
-			return this.setSecret(at, undefined);
+			return (await this.setSecret(at, undefined)) !== undefined;
 		}
 		if (kind !== 'plain') {
 			return false;
@@ -620,22 +626,25 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		if (name === undefined || !isValidEnvName(name.trim())) {
 			return false;
 		}
-		return this.setPlain(at, name.trim());
+		return (await this.setPlain(at, name.trim())) !== undefined;
 	}
 
-	/** Sets a missing variable: plain or secret, then its value (a secret's name is prefilled). */
-	async setMissing(arg: EnvironmentNode | string | undefined, uri?: vscode.Uri): Promise<boolean> {
+	/**
+	 * Sets a missing variable: plain or secret, then its value (a secret's name is prefilled). The
+	 * name a value was set for, `undefined` when none was.
+	 */
+	async setMissing(arg: EnvironmentNode | string | undefined, uri?: vscode.Uri): Promise<string | undefined> {
 		const name = typeof arg === 'string' ? arg : arg?.kind === 'missing' ? arg.name : undefined;
 		if (name === undefined || secretNameProblem(name)) {
 			this.ui.error('Set a missing variable: no valid variable name was given.');
-			return false;
+			return undefined;
 		}
 		const at = this.target(uri);
 		if (!at) {
-			return false;
+			return undefined;
 		}
 		const kind = await this.ui.pickKind(name);
-		return kind === 'plain' ? this.setPlain(at, name) : kind === 'secret' ? this.setSecret(at, name) : false;
+		return kind === 'plain' ? this.setPlain(at, name) : kind === 'secret' ? this.setSecret(at, name) : undefined;
 	}
 
 	/** Edits a plain variable's value at its level, or sets a secret's value. */

@@ -15,8 +15,9 @@
 // empty (`root = ""`, as a real generate input's message starts) with no metadata, and the mapping runs as a `mapping`
 // processor on it, so its errors come back as a processor's.
 
-import type {
-	BloblangChanges, BloblangProcessorKind, BloblangResult, InputMeta, JsonValue, KeyChanges, ResultMeta,
+import {
+	isEnvName,
+	type BloblangChanges, type BloblangProcessorKind, type BloblangResult, type InputMeta, type JsonValue, type KeyChanges, type ResultMeta,
 } from '../shared/bloblangProtocol';
 
 /** The last step: one JSON line per message, its content and metadata, or the mapping's error. */
@@ -130,6 +131,26 @@ export type RunOutcome = BloblangResult | RunLintOutcome;
 
 /** The binary's marker of a run stopped by the config linter (spike 4.1 Q1). */
 export const CONFIG_LINT_ERROR = 'Config lint error';
+/** The run's message for `${VAR}`s nothing sets (spike 1.1): the names, space separated, in brackets. */
+const UNSET_VARIABLES = /required environment variables were not set: \[([^\]]*)\]/g;
+
+/**
+ * The variables a run's message says are not set (ticket 32): the tokens of each
+ * `required environment variables were not set: [A B]`, each a valid name (`isEnvName`), once each,
+ * in order; any other token, and the rest of the message, are ignored.
+ */
+export function missingVariablesOf(message: string): string[] {
+	const names: string[] = [];
+	for (const match of message.matchAll(UNSET_VARIABLES)) {
+		for (const token of match[1].split(/\s+/)) {
+			if (isEnvName(token) && !names.includes(token)) {
+				names.push(token);
+			}
+		}
+	}
+	return names;
+}
+
 /** An `{error}` that names its mapping line: `failed assignment (line N): …`. */
 const FAILED_ASSIGNMENT = /^failed assignment \(line (\d+)\)/;
 /** An `{error}` about an input the mapping cannot read as structured data (spike 4.1, bad-input). */

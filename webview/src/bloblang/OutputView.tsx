@@ -10,6 +10,8 @@
 // Ticket 16: a generate mapping's output (`marks` off, `changes` off) has no change marks and no
 // "Changed:" footer: there is no input to compare; its invalid-input card's hint (`generate`) says the
 // message is empty instead of pointing at an input.
+// Ticket 32: a run that could not happen because the config uses variables nothing sets
+// (`missingVariables`) has a Set NAME… button for each after its message (`onSetVariable`).
 
 import type { ReactNode } from 'react';
 import type { BloblangResult } from '../../../src/shared/bloblangProtocol';
@@ -33,6 +35,8 @@ export const DEFAULT_FILE_NAME = 'YAML';
 
 /** "Failed on mapping line N". */
 export const failedTitle = (line: number): string => `Failed on mapping line ${line}`;
+/** "Set NAME…" (ticket 32). */
+export const setVariableLabel = (name: string): string => `Set ${name}\u2026`;
 /** "Go to line F". */
 export const goToLineLabel = (line: number): string => `Go to line ${line}`;
 
@@ -70,10 +74,13 @@ interface CardProps {
 	readonly goTo?: number;
 	readonly onGoToLine: (line: number) => void;
 	readonly hint?: ReactNode;
+	/** The variables Set NAME… is offered for (ticket 32); none: no button. */
+	readonly variables?: readonly string[];
+	readonly onSetVariable?: (name: string) => void;
 }
 
 /** An error card: its title and subtitle, the message, and Go to line. */
-function ErrorCard({ title, subtitle, message, goTo, onGoToLine, hint }: CardProps) {
+function ErrorCard({ title, subtitle, message, goTo, onGoToLine, hint, variables, onSetVariable }: CardProps) {
 	return (
 		<div className="rpcn-bl-card rpcn-bl-card-error">
 			<p className="rpcn-bl-card-head">
@@ -87,16 +94,24 @@ function ErrorCard({ title, subtitle, message, goTo, onGoToLine, hint }: CardPro
 					<button type="button" className="rpcn-bl-link rpcn-bl-goto" onClick={() => onGoToLine(goTo)}>{goToLineLabel(goTo)}</button>
 				</div>
 			)}
+			{variables !== undefined && variables.length > 0 && onSetVariable && (
+				<div className="rpcn-bl-card-acts">
+					{variables.map((name) => (
+						<button key={name} type="button" className="rpcn-bl-link rpcn-bl-setvar" onClick={() => onSetVariable(name)}>{setVariableLabel(name)}</button>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
 
 /** The card of a result that is not `ok` or `deleted`. */
-function ProblemCard({ result, fileName, onGoToLine, generate }: {
+function ProblemCard({ result, fileName, onGoToLine, generate, onSetVariable }: {
 	readonly result: Exclude<BloblangResult, { kind: 'ok' | 'deleted' }>;
 	readonly fileName: string;
 	readonly onGoToLine: (line: number) => void;
 	readonly generate: boolean;
+	readonly onSetVariable?: (name: string) => void;
 }) {
 	switch (result.kind) {
 		case 'parseError':
@@ -133,7 +148,15 @@ function ProblemCard({ result, fileName, onGoToLine, generate }: {
 				/>
 			);
 		case 'error':
-			return <ErrorCard title={ERROR_TITLE} message={result.message} onGoToLine={onGoToLine} />;
+			return (
+				<ErrorCard
+					title={ERROR_TITLE}
+					message={result.message}
+					onGoToLine={onGoToLine}
+					variables={result.missingVariables}
+					onSetVariable={onSetVariable}
+				/>
+			);
 	}
 }
 
@@ -149,9 +172,11 @@ export interface OutputBodyProps {
 	readonly marks?: boolean;
 	/** A generate mapping's output (16): the invalid-input card's hint says the message is empty. */
 	readonly generate?: boolean;
+	/** Set NAME… on a run stopped by unset variables (ticket 32); `undefined`: no button. */
+	readonly onSetVariable?: (name: string) => void;
 }
 
-export function OutputBody({ result, tab, lastOk, fileName, onGoToLine, marks = true, generate = false }: OutputBodyProps) {
+export function OutputBody({ result, tab, lastOk, fileName, onGoToLine, marks = true, generate = false, onSetVariable }: OutputBodyProps) {
 	switch (result.kind) {
 		case 'ok':
 			return <OkOutput result={result} tab={tab} marks={marks} />;
@@ -164,7 +189,7 @@ export function OutputBody({ result, tab, lastOk, fileName, onGoToLine, marks = 
 		default:
 			return (
 				<>
-					<ProblemCard result={result} fileName={fileName} onGoToLine={onGoToLine} generate={generate} />
+					<ProblemCard result={result} fileName={fileName} onGoToLine={onGoToLine} generate={generate} onSetVariable={onSetVariable} />
 					{lastOk && (
 						<section className="rpcn-bl-stale" aria-label={LAST_OK_LABEL}>
 							<p className="rpcn-bl-stale-label">{LAST_OK_LABEL}</p>

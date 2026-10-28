@@ -11,7 +11,8 @@
 // child exited, and reads the output with `parseRunOutput`. `classify` (4.8): a run stopped by
 // `Config lint error` is parsed with `blobl` (`parseMapping`), so a Bloblang parse error becomes
 // `parseError` with the binary's mapping-relative position (the run's own lint positions are
-// config-relative and unreliable, spike 4.1 Q1), and any other lint message stays `error`; the
+// config-relative and unreliable, spike 4.1 Q1), and any other lint message stays `error` (with the
+// names an unset `${VAR}` message lists, ticket 32: `missingVariables`); the
 // file positions of `parseError` and `failed` come from the caller's `locate` (4.3's position map).
 // The live parse (4.5): `parseMapping` writes the Bloblang to a temporary file the same way and runs
 // `blobl --file` on it, stdin closed (parse only), read with `parseBloblParseOutput`. Never throws
@@ -22,7 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { buildRunArgs } from '../../core/args';
 import { BloblParseOutcome, parseBloblParseOutput } from '../../core/bloblangParse';
-import { parseRunOutput, testConfig, type RunOutcome } from '../../core/bloblangRun';
+import { missingVariablesOf, parseRunOutput, testConfig, type RunOutcome } from '../../core/bloblangRun';
 import type { BloblangProcessorKind, BloblangResult, InputMeta } from '../../shared/bloblangProtocol';
 import type { BinaryState } from './binary';
 import { type ArgsResult, buildBloblCommandLine, buildCommandLine, type CommandSettings, describeArgsFailure } from './commandLine';
@@ -132,7 +133,9 @@ export async function classify(
 			...(deps.run ? { run: deps.run } : {}),
 		});
 		if (parsed.kind !== 'parseError') {
-			return { kind: 'error', message: outcome.message };
+			// Ticket 32: the variables an unset `${VAR}` stopped it on, when it names any.
+			const missing = missingVariablesOf(outcome.message);
+			return missing.length > 0 ? { kind: 'error', message: outcome.message, missingVariables: missing } : { kind: 'error', message: outcome.message };
 		}
 		const at = locate(parsed.line, parsed.char);
 		return {

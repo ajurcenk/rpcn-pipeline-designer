@@ -165,12 +165,12 @@ suite('Environment view (integration, ticket 31)', function () {
 
 	test('SET_MISSING: plain writes the value to redpandaConnect.env; secret goes through ticket 30\'s set flow with the name prefilled; the view updates', async () => {
 		script(['plain'], ['eu-west']);
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, groupOf('missing')[0].node), true);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, groupOf('missing')[0].node), 'REGION', 'the name set');
 		assert.deepStrictEqual(config().inspect('env')?.globalValue, { TOPIC: 'events', REGION: 'eu-west' });
 		assert.ok(await waitFor(() => row('setting', 'REGION') !== undefined && !groupOf('missing').some((i) => i.label === 'REGION'), 5_000));
 
 		const asked = script(['secret'], [(o) => o.value, 'tok-31-zone']);
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'ZONE'), true);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'ZONE'), 'ZONE');
 		assert.strictEqual(asked[0].value, 'ZONE', 'the name is prefilled');
 		assert.strictEqual(asked[1].password, true, 'the value is a password input');
 		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'ZONE'), 'tok-31-zone');
@@ -181,11 +181,11 @@ suite('Environment view (integration, ticket 31)', function () {
 
 	test('SET_MISSING: a cancelled pick or input changes nothing', async () => {
 		script([undefined], []);
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), false);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), undefined);
 		script(['plain'], [undefined]);
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), false);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), undefined);
 		script(['secret'], [(o) => o.value, undefined]);
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), false);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), undefined);
 		assert.deepStrictEqual(config().inspect('env')?.globalValue, { TOPIC: 'events' });
 		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN']);
 		assert.deepStrictEqual(groupOf('missing').map((i) => i.label), ['REGION', 'ZONE']);

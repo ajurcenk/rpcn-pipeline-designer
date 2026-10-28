@@ -58,6 +58,9 @@
 // changes part, and a new message is said even when its run time is the same (`announcementKey`).
 // The page's `data-kind` makes the first paint, before the snapshot, output only already. The
 // removed notice says "This mapping was removed …".
+// Ticket 32: a "could not run" card listing unset variables (`missingVariables`) has Set NAME… for
+// each, which posts `setVariableRequested {name}`; the host's `variableSet` runs the current input
+// again with Run on change on (nothing runs with it off).
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
@@ -527,6 +530,11 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 				if (recovered) {
 					runNow();
 				}
+			} else if (message?.type === 'variableSet') {
+				// Set NAME… set a value (ticket 32): the input runs again with Run on change.
+				if (latest.current.runOnChange) {
+					runNow();
+				}
 			} else if (message?.type === 'result' && (noBinaryIn(binaryNow.current) || removedNow.current)) {
 				// A result arriving with no binary, or while removed (4.10), is dropped.
 				setRunning(false);
@@ -654,6 +662,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 	const okResult = result?.result.kind === 'ok' ? result.result : undefined;
 	const dimmed = result !== null && lastOk !== undefined && result.result.kind !== 'ok' && result.result.kind !== 'deleted';
 	const goToLine = useCallback((line: number) => post({ type: 'goToLine', line }), [post]);
+	const setVariable = useCallback((name: string) => post({ type: 'setVariableRequested', name }), [post]);
 	const noBinary = noBinaryIn(binary);
 	const removed = snapshot?.removed === true;
 
@@ -779,6 +788,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 											<OutputBody
 												result={result.result} tab={outputTab} lastOk={lastOk}
 												fileName={fileName ?? DEFAULT_FILE_NAME} onGoToLine={goToLine} marks={!generate} generate={generate}
+												onSetVariable={setVariable}
 											/>
 										)
 										: <p className="rpcn-bl-note rpcn-bl-pad">{generate ? GENERATE_EMPTY_TEXT : EMPTY_TEXT}</p>}

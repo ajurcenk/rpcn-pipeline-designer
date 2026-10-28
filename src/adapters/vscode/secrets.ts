@@ -274,16 +274,16 @@ export class SecretVariables implements vscode.Disposable {
 	/**
 	 * "Set secret variable": a folder (multi-root), a name, then the value (password input). With
 	 * `prefill` (ticket 31's Environment view, ticket 32's test panel), the folder is given and the
-	 * name input starts with `prefill.name`. `input` is the input box (a test seam). Returns whether
-	 * a value was set.
+	 * name input starts with `prefill.name`. `input` is the input box (a test seam). Returns the
+	 * name a value was set for (the user may edit the prefilled one), `undefined` when none was.
 	 */
 	async setCommand(
 		prefill?: { readonly folder: Scope; readonly name?: string },
 		input: (options: vscode.InputBoxOptions) => Thenable<string | undefined> = vscode.window.showInputBox,
-	): Promise<boolean> {
+	): Promise<string | undefined> {
 		const folder = prefill ? prefill.folder : await pickFolder('Set a secret variable for which folder?');
 		if (folder === null) {
-			return false;
+			return undefined;
 		}
 		const name = await input({
 			title: `Secret variable for ${labelOf(folder)}`,
@@ -294,7 +294,7 @@ export class SecretVariables implements vscode.Disposable {
 			validateInput: (text) => secretNameProblem(text.trim()),
 		});
 		if (name === undefined) {
-			return false;
+			return undefined;
 		}
 		const trimmed = name.trim();
 		const value = await input({
@@ -304,9 +304,10 @@ export class SecretVariables implements vscode.Disposable {
 			ignoreFocusOut: true,
 		});
 		if (value === undefined) {
-			return false;
+			return undefined;
 		}
-		return this.setAndTell(folder, trimmed, value);
+		// The name set (ticket 32: the prefilled one can be edited), `undefined` when nothing was.
+		return await this.setAndTell(folder, trimmed, value) ? trimmed : undefined;
 	}
 
 	/** `set`, then "Secret variable X is set" when it worked (the command's last step). */

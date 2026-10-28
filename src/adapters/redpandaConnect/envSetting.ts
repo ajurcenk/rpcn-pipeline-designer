@@ -21,16 +21,19 @@
 import { createHmac, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isEnvName } from '../../shared/bloblangProtocol';
 import { ENV_SETTING } from './commandLine';
 
 export { ENV_SETTING };
 /** The folder under the extension's global storage that holds the generated files. */
 export const ENV_SETTING_FOLDER = 'env-setting';
 
-const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** Whether `name` is a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`); `secretEnv.ts` (ticket 30) shares it. Pure. */
+/**
+ * Whether `name` is a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`); `secretEnv.ts` (ticket 30)
+ * shares it. The rule is the shared protocol's `isEnvName` (ticket 32: the test panel's names). Pure.
+ */
 export function isValidEnvName(name: string): boolean {
-	return KEY.test(name);
+	return isEnvName(name);
 }
 const FILE = /^env-[0-9a-f]{64}\.env$/;
 /** The HMAC key's file in the folder. */
@@ -53,7 +56,7 @@ export function validateEnvSetting(raw: unknown): EnvSettingVariables {
 	const variables: [string, string][] = [];
 	const invalid: string[] = [];
 	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-		if (KEY.test(key) && typeof value === 'string') {
+		if (isEnvName(key) && typeof value === 'string') {
 			variables.push([key, value]);
 		} else {
 			invalid.push(key);

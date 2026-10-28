@@ -79,7 +79,7 @@ suite('Environment view in a multi-root workspace (integration, ticket 31)', fun
 		assert.deepStrictEqual(view().model()?.missing, ['REGION']);
 
 		view().ui = { pickKind: async () => 'plain', input: async () => 'eu-b', error: (m) => assert.fail(m), info: () => undefined };
-		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), true);
+		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), 'REGION');
 		const inspected = settings('b').inspect('env');
 		assert.deepStrictEqual(inspected?.workspaceFolderValue, { TOPIC: 'b-topic', REGION: 'eu-b' });
 		assert.strictEqual(inspected?.workspaceValue, undefined);

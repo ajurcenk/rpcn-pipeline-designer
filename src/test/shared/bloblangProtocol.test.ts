@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import {
-	MAX_SAMPLE_NAME_LENGTH, parseBloblangHostMessage, parseBloblangWebviewMessage, type BloblangHostMessage, type BloblangResult,
+	isEnvName, MAX_SAMPLE_NAME_LENGTH, parseBloblangHostMessage, parseBloblangWebviewMessage, type BloblangHostMessage, type BloblangResult,
 	type BloblangSample, type BloblangWebviewMessage,
 } from '../../shared/bloblangProtocol';
 
@@ -251,5 +251,43 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			assert.doesNotThrow(() => parseBloblangWebviewMessage(message), `#${i}`);
 			assert.strictEqual(parseBloblangWebviewMessage(message), undefined, `#${i}`);
 		});
+	});
+	test('SET_VARIABLE (ticket 32): missingVariables, variableSet and setVariableRequested take valid names only', () => {
+		for (const result of [
+			{ kind: 'error', message: 'm', missingVariables: ['REGION', 'ZONE'] },
+			{ kind: 'error', message: 'm', missingVariables: ['_a1'] },
+			{ kind: 'error', message: 'm', missingVariables: [] },
+		]) {
+			assert.deepStrictEqual(parseBloblangHostMessage(resultOf(result)), resultOf(result));
+		}
+		assert.deepStrictEqual(parseBloblangHostMessage({ type: 'variableSet', name: 'REGION' }), { type: 'variableSet', name: 'REGION' });
+		const badHost: unknown[] = [
+			resultOf({ kind: 'error', message: 'm', missingVariables: 'REGION' }),
+			resultOf({ kind: 'error', message: 'm', missingVariables: ['REGION', 'bad-name'] }),
+			resultOf({ kind: 'error', message: 'm', missingVariables: ['1X'] }),
+			resultOf({ kind: 'error', message: 'm', missingVariables: [''] }),
+			resultOf({ kind: 'error', message: 'm', missingVariables: [1] }),
+			resultOf({ kind: 'error', message: 'm', missingVariables: null }),
+			{ type: 'variableSet' },
+			{ type: 'variableSet', name: '' },
+			{ type: 'variableSet', name: 'A B' },
+			{ type: 'variableSet', name: 7 },
+		];
+		badHost.forEach((message, i) => assert.strictEqual(parseBloblangHostMessage(message), undefined, `host #${i}`));
+		assert.deepStrictEqual(parseBloblangWebviewMessage({ type: 'setVariableRequested', name: 'REGION', value: 'x' }), { type: 'setVariableRequested', name: 'REGION' });
+		const badWebview: unknown[] = [
+			{ type: 'setVariableRequested' },
+			{ type: 'setVariableRequested', name: '' },
+			{ type: 'setVariableRequested', name: 'REGION ZONE' },
+			{ type: 'setVariableRequested', name: '9LIVES' },
+			{ type: 'setVariableRequested', name: 'a.b' },
+			{ type: 'setVariableRequested', name: ['REGION'] },
+			throwing({ type: 'setVariableRequested' }, 'name'),
+		];
+		badWebview.forEach((message, i) => {
+			assert.doesNotThrow(() => parseBloblangWebviewMessage(message), `webview #${i}`);
+			assert.strictEqual(parseBloblangWebviewMessage(message), undefined, `webview #${i}`);
+		});
+		assert.deepStrictEqual(['A', '_', 'a_1', 'A1', '1A', 'A-B', '', 'Ä'].map(isEnvName), [true, true, true, true, false, false, false, false]);
 	});
 });

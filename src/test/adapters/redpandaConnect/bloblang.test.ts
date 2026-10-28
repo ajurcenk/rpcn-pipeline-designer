@@ -152,13 +152,21 @@ suite('adapters/redpandaConnect runMappingTest (4.2, AD-21)', () => {
 			),
 		});
 		assert.deepStrictEqual(seen, ['run', 'blobl']);
-		assert.deepStrictEqual(outcome.result, { kind: 'error', message: lint.trim() });
+		// Ticket 32: with the names it lists.
+		assert.deepStrictEqual(outcome.result, { kind: 'error', message: lint.trim(), missingVariables: ['API_TOKEN'] });
 		// A mapping blobl parses fine: the lint message too.
 		const parses = await runMappingTest(OK, 'mapping', 'root = 1', '{}', {}, dir, {
 			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
 			run: routedRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: lint }, { kind: 'exited', exitCode: 0, stdout: '', stderr: '' }, []),
 		});
-		assert.deepStrictEqual(parses.result, { kind: 'error', message: lint.trim() });
+		assert.deepStrictEqual(parses.result, { kind: 'error', message: lint.trim(), missingVariables: ['API_TOKEN'] });
+		// Any other lint message lists none (ticket 32).
+		const other = 'level=error msg="Config lint error" lint="(3,5) field foo not recognised"\n';
+		const plainLint = await runMappingTest(OK, 'mapping', 'root = 1', '{}', {}, dir, {
+			argsEnvironment: { ...ENV, resourceFilesSetting: [], envFileSetting: '' },
+			run: routedRun({ kind: 'exited', exitCode: 1, stdout: '', stderr: other }, { kind: 'exited', exitCode: 0, stdout: '', stderr: '' }, []),
+		});
+		assert.deepStrictEqual(plainLint.result, { kind: 'error', message: other.trim() });
 		assert.deepStrictEqual(fs.readdirSync(dir), []);
 	});
 

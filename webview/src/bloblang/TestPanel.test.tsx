@@ -13,6 +13,8 @@
 // Ticket 4.18: From previous step (its presence, name and post, after a pending edit).
 // Ticket 4.11: the keyboard and screen-reader model (names, the Tab walk, the tabs pattern, Esc, the
 // one announcer, focus on the removed notice), every row of the plan's matrix but FOCUS_CSS (style.test.ts).
+// Ticket 32: Set NAME… on a run stopped by unset variables (OFFERED, BAD_NAME, OTHER_ERRORS, the
+// posted message, and the run after `variableSet` with Run on change on and off).
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,7 +25,7 @@ import type { BloblangHostMessage, BloblangSample, BloblangWebviewMessage } from
 import { DEFAULT_VIEW_STATE, readViewState, type ViewState } from './host';
 import {
 	DELETED_FOOTER, DELETED_TITLE, DIMMED_FOOTER, ERROR_TITLE, FAILED_NO_LINE_TITLE, INVALID_INPUT_TITLE, LAST_OK_LABEL,
-	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE,
+	PARSE_ERROR_FOOTER, PARSE_ERROR_TITLE, setVariableLabel,
 } from './OutputView';
 import {
 	DELETE_LABEL, FROM_PREVIOUS_LABEL, fromPreviousName, NAME_EXISTS_ERROR, NAME_LENGTH_ERROR, NEW_SAMPLE_LABEL, nextSampleName, RENAME_LABEL,
@@ -1552,5 +1554,84 @@ describe('Bloblang test panel: generate mapping (16)', () => {
 		expect(runs()).toEqual([]);
 		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null })).toMatch(/^Ran in 1 ms\. ./);
 		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null }, false)).toBe('Ran in 1 ms.');
+	});
+});
+
+describe('Bloblang test panel: Set NAME… (ticket 32)', () => {
+	const LINT = 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [REGION ZONE]"';
+	const UNSET = { kind: 'error', message: LINT, missingVariables: ['REGION', 'ZONE'] } as const;
+	const setButtons = () => [...host.querySelectorAll<HTMLButtonElement>('.rpcn-bl-card .rpcn-bl-setvar')];
+	const live = () => host.querySelector('.rpcn-bl-sr[aria-live="polite"]')?.textContent;
+
+	it('OFFERED: the could-not-run card shows Set REGION… and Set ZONE… after the message, real buttons in the Tab order', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: UNSET, durationMs: 3, binary: null });
+		expect(cardTitle()).toBe(ERROR_TITLE);
+		expect(cardMessage()).toBe(LINT);
+		expect(setButtons().map((b) => b.textContent)).toEqual(['Set REGION…', 'Set ZONE…']);
+		expect(setVariableLabel('REGION')).toBe('Set REGION…');
+		expect(setButtons().every((b) => b.type === 'button' && b.tabIndex === 0 && !b.disabled)).toBe(true);
+		// After the message, in the card.
+		const message = card()!.querySelector('.rpcn-bl-message')!;
+		expect(setButtons().every((b) => message.compareDocumentPosition(b) === Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+		// The announcer says the result as for any other could-not-run result.
+		expect(live()).toBe(announcement({ type: 'result', result: { kind: 'error', message: LINT }, durationMs: 3, binary: null }));
+	});
+
+	it('POSTED: a button posts setVariableRequested with its name, and runs nothing', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: UNSET, durationMs: 3, binary: null });
+		const before = posted.length;
+		await click(setButtons()[1]);
+		expect(posted.slice(before)).toEqual([{ type: 'setVariableRequested', name: 'ZONE' }]);
+	});
+
+	it.each([true, false])('SET_RERUN / NO_RERUN (Run on change %s): variableSet runs the current input again only with Run on change', async (runOnChange) => {
+		await render({ content: '{"a":1}', runOnChange });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: UNSET, durationMs: 3, binary: null });
+		const before = runs().length;
+		await send({ type: 'variableSet', name: 'REGION' });
+		expect(runs().length - before).toBe(runOnChange ? 1 : 0);
+		if (runOnChange) {
+			expect(runs()[runs().length - 1]).toEqual({ type: 'run', content: '{"a":1}', meta: {} });
+		}
+		// A malformed one is ignored.
+		await send({ type: 'variableSet', name: '1BAD' });
+		expect(runs().length - before).toBe(runOnChange ? 1 : 0);
+	});
+
+	it('BAD_NAME: a result whose list has an invalid name is not a valid result (no card changes); a valid list only gets buttons', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: { kind: 'error', message: 'x' }, durationMs: 1, binary: null });
+		await send({ type: 'result', result: { kind: 'error', message: LINT, missingVariables: ['REGION', 'bad-name'] }, durationMs: 1, binary: null });
+		expect(cardMessage()).toBe('x');
+		expect(setButtons()).toEqual([]);
+		await send({ type: 'result', result: { kind: 'error', message: LINT, missingVariables: [] }, durationMs: 1, binary: null });
+		expect(cardMessage()).toBe(LINT);
+		expect(setButtons()).toEqual([]);
+	});
+
+	it('OTHER_ERRORS: any other could-not-run result, and the other kinds, have no Set button', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		const others = [
+			{ kind: 'error', message: LINT },
+			{ kind: 'error', message: 'No Redpanda Connect binary.' },
+			{ kind: 'failed', message: 'failed assignment (line 1): x', mappingLine: 1, fileLine: 6 },
+			{ kind: 'failed', message: 'boom' },
+			{ kind: 'invalidInput', message: 'unable to reference message as structured' },
+			{ kind: 'parseError', message: 'expected', excerpt: '^', mappingLine: 1, mappingChar: 1, fileLine: 6, fileChar: 20 },
+			{ kind: 'deleted' },
+			OK_B2,
+		];
+		for (const result of others) {
+			await send({ type: 'result', result, durationMs: 1, binary: null });
+			expect(setButtons()).toEqual([]);
+			expect(host.querySelector('.rpcn-bl-setvar')).toBeNull();
+		}
 	});
 });

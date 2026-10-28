@@ -24,6 +24,8 @@
 // Ticket 4.18: From previous step (`sampleFromPreviousRequested`) on the fake `run`, and the
 // snapshot's `previousStep`; a run seam for non-string output metadata.
 // Ticket 23: From previous step from a generate input feeding `pipeline.processors[0]` (its run, chained).
+// Ticket 32: Set NAME… (`setVariableRequested`) on a run stopped by an unset variable, through ticket
+// 31's set action with its prompts replaced (`api().environment.ui`).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -40,6 +42,8 @@ import { samplesUri, type DeleteFile } from '../../../adapters/bloblangPanel/sam
 import { GRAPH_VIEW_TYPE } from '../../../adapters/graphPanel/panels';
 import { NO_BINARY_MESSAGE, runMappingTest } from '../../../adapters/redpandaConnect/bloblang';
 import { INSTALL_GUIDE_URL, type BinaryActions } from '../../../adapters/redpandaConnect/notify';
+import { WINDOW_SCOPE } from '../../../adapters/redpandaConnect/secretEnv';
+import type { EnvironmentUi } from '../../../adapters/vscode/environmentView';
 import { TEST_MAPPING_LENS_TITLE, testMappingLensTitle } from '../../../adapters/vscode/bloblangLens';
 import { LABEL_IN_SAMPLES_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR } from '../../../core/labelEdit';
 import { bloblangString } from '../../../core/bloblangRun';
@@ -528,8 +532,168 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const broken = await run(await show(doc.uri, 'pipeline.processors[4]'), '{"a":1}');
 		assert.deepStrictEqual(broken.result, {
 			kind: 'error', message: 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"',
+			missingVariables: ['BROKEN'],
 		});
 		assert.ok(!fs.existsSync(lastRun().target), 'the temp config is removed after a failed run');
+	});
+
+	suite('Set NAME… (ticket 32)', () => {
+		let originalUi: EnvironmentUi | undefined;
+		/** Each kind pick's name, and each input box's options. */
+		let picked: (string | undefined)[];
+		let asked: vscode.InputBoxOptions[];
+		const view = () => api().environment!;
+		/** Replaces ticket 31's prompts (its input seams): `kinds` answers the plain / secret pick, `inputs` each input box. */
+		function script(kinds: ('plain' | 'secret' | undefined)[], inputs: (string | undefined | ((o: vscode.InputBoxOptions) => string | undefined))[]): void {
+			view().ui = {
+				pickKind: async (name) => {
+					picked.push(name);
+					return kinds.shift();
+				},
+				input: async (options) => {
+					asked.push(options);
+					const next = inputs.shift();
+					return typeof next === 'function' ? next(options) : next;
+				},
+				error: () => undefined,
+				info: () => undefined,
+			};
+		}
+		const variableSets = (handle: BloblangPanelHandle) => handle.posted.filter((m) => m.type === 'variableSet');
+
+		/** The BROKEN processor's panel after a run the unset variable stopped. */
+		async function stopped(name: string): Promise<BloblangPanelHandle> {
+			const doc = (await open(name, CONFIG)).document;
+			const handle = await show(doc.uri, 'pipeline.processors[4]');
+			const result = (await run(handle, '{"a":1}')).result;
+			assert.deepStrictEqual(result.kind === 'error' && result.missingVariables, ['BROKEN']);
+			return handle;
+		}
+
+		setup(() => {
+			originalUi = view().ui;
+			picked = [];
+			asked = [];
+		});
+
+		teardown(async () => {
+			if (originalUi) {
+				view().ui = originalUi;
+			}
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		});
+
+		test('SET_RERUN (plain): ticket 31\'s set action runs for the name and the panel\'s config; the value is set; the panel gets variableSet', async () => {
+			const handle = await stopped('unset-plain.yaml');
+			const before = runs();
+			script(['plain'], ['eu-west']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.deepStrictEqual(picked, ['BROKEN']);
+			assert.strictEqual(asked[0].title, 'Value of BROKEN');
+			// No folder is open: a new plain variable goes to the user settings (ticket 31).
+			assert.deepStrictEqual(config().inspect('env')?.globalValue, { BROKEN: 'eu-west' });
+			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
+			// The run again is the webview's, with Run on change (TestPanel.test.tsx): the host starts none.
+			assert.strictEqual(runs(), before);
+		});
+
+		test('SET_RERUN (secret): a secret goes through ticket 30\'s set flow with the name prefilled; the host runs nothing itself', async () => {
+			const handle = await stopped('unset-secret.yaml');
+			const before = runs();
+			script(['secret'], [(o) => o.value, 'tok-32']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.strictEqual(asked[0].value, 'BROKEN', 'the name is prefilled');
+			assert.strictEqual(asked[1].password, true);
+			assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'BROKEN'), 'tok-32');
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['BROKEN']);
+			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
+			assert.strictEqual(runs(), before, 'whether it runs again is the webview\'s Run on change');
+		});
+
+		test('SET_RERUN (the run after it): the run the webview sends on variableSet gets the plain value; the unset-variable error is gone', async () => {
+			const handle = await stopped('unset-rerun.yaml');
+			script(['plain'], ['eu-west']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
+			// The webview's run on variableSet (Run on change on): the same input.
+			const { result } = await run(handle, '{"a":1}');
+			assert.strictEqual(result.kind, 'ok', JSON.stringify(result));
+			const envFiles = [...lastRunArgv().matchAll(/--env-file (\S+)/g)].map((m) => fs.readFileSync(m[1], 'utf8'));
+			assert.ok(envFiles.some((text) => text.includes('BROKEN="eu-west"')), JSON.stringify(envFiles));
+		});
+
+		test('OTHER_NAME: a secret set under another name than the requested one (its prefilled name edited) posts no variableSet', async () => {
+			const handle = await stopped('unset-other-name.yaml');
+			script(['secret'], [() => 'OTHER_32', 'tok-32-other']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'OTHER_32'), 'tok-32-other', 'the secret is set');
+			assert.deepStrictEqual(variableSets(handle), []);
+		});
+
+		test('MASKED: a name equal to a loaded secret value is left out of missingVariables (and is masked in the message)', async () => {
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'BROKEN'));
+			const doc = (await open('unset-masked.yaml', CONFIG)).document;
+			const handle = await show(doc.uri, 'pipeline.processors[4]');
+			const { result } = await run(handle, '{"a":1}');
+			assert.ok(result.kind === 'error', JSON.stringify(result));
+			assert.strictEqual(result.missingVariables, undefined, JSON.stringify(result));
+			assert.ok(!result.message.includes('BROKEN'), result.message);
+			script(['plain'], ['x']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.deepStrictEqual(picked, [], 'nothing is offered');
+		});
+
+		test('RELOAD: after the webview\'s ready (a reload shows no result), the earlier result\'s names are not offered', async () => {
+			const handle = await stopped('unset-reload.yaml');
+			await handle.receive({ type: 'ready' });
+			script(['plain'], ['x']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.deepStrictEqual(picked, []);
+			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+			assert.deepStrictEqual(variableSets(handle), []);
+		});
+
+		test('CANCEL: a cancelled pick, value or secret changes nothing and posts nothing', async () => {
+			const handle = await stopped('unset-cancel.yaml');
+			const before = { runs: runs(), posted: handle.posted.length };
+			for (const [kinds, inputs] of [
+				[[undefined], []],
+				[['plain'], [undefined]],
+				[['secret'], [(o: vscode.InputBoxOptions) => o.value, undefined]],
+			] as const) {
+				script([...kinds], [...inputs]);
+				await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			}
+			assert.deepStrictEqual(picked, ['BROKEN', 'BROKEN', 'BROKEN']);
+			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+			assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined);
+			assert.strictEqual(handle.posted.length, before.posted);
+			assert.strictEqual(runs(), before.runs);
+		});
+
+		test('UNKNOWN_REQUEST: a name the current result does not list, a malformed one, or any name after another result, is ignored', async () => {
+			const handle = await stopped('unset-unknown.yaml');
+			script(['plain', 'plain'], ['x', 'x']);
+			await handle.receive({ type: 'setVariableRequested', name: 'NOT_SET' });
+			await handle.receive({ type: 'setVariableRequested', name: 'bad name' });
+			await handle.receive({ type: 'setVariableRequested' });
+			assert.deepStrictEqual(picked, [], 'the set action never ran');
+			// Another processor's result lists nothing: BROKEN is not offered by it.
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === handle.uri.toString())!;
+			const other = await show(doc.uri, FIRST);
+			await run(other, '{"a":1}');
+			await other.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			// The same panel, after a result that lists nothing (its mapping fixed in the open document).
+			await setText(doc, CONFIG.replace('root = "${NOT_SET} BROKEN"', 'root = deleted()'));
+			assert.deepStrictEqual((await run(handle, '{"a":1}')).result, { kind: 'deleted' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			assert.deepStrictEqual(picked, []);
+			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+			assert.deepStrictEqual([...variableSets(handle), ...variableSets(other)], []);
+			assert.ok(await doc.save());
+		});
 	});
 
 	test('the run uses the processor\'s current text', async () => {

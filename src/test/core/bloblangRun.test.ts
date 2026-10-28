@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parse } from 'yaml';
-import { bloblangString, changesOf, GENERATE_RUN_INPUT, MAX_ERROR_LINES, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
+import { bloblangString, changesOf, GENERATE_RUN_INPUT, MAX_ERROR_LINES, missingVariablesOf, parseRunOutput, RESULT_MAPPING, testConfig, yamlQuoted } from '../../core/bloblangRun';
 import { REPO_ROOT } from '../helpers/fakeBinary';
 
 /** Route C's captures (spike 4.1, standalone 4.112.0). */
@@ -220,5 +220,17 @@ suite('core/bloblangRun (4.2, AD-21)', () => {
 	test('output that is not the result step\'s is an error', () => {
 		assert.deepStrictEqual(parseRunOutput(0, 'hello\n', '', NO_INPUT), { kind: 'error', message: 'Unexpected output: hello' });
 		assert.deepStrictEqual(parseRunOutput(0, '[1]\n', '', NO_INPUT), { kind: 'error', message: 'Unexpected output: [1]' });
+	});
+	test('MISSING_VARIABLES (ticket 32): the names of the unset-variables message, valid ones only, once each', () => {
+		const lint = (names: string) => `level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [${names}]"`;
+		assert.deepStrictEqual(missingVariablesOf(lint('REGION ZONE')), ['REGION', 'ZONE']);
+		assert.deepStrictEqual(missingVariablesOf(lint('X')), ['X']);
+		// BAD_NAME: a token that is not a name gets nothing; the rest of the message is not read.
+		assert.deepStrictEqual(missingVariablesOf(lint('REGION bad-name 1X  _ok')), ['REGION', '_ok']);
+		assert.deepStrictEqual(missingVariablesOf(lint('')), []);
+		assert.deepStrictEqual(missingVariablesOf(`${lint('A B')}\n${lint('B C')}`), ['A', 'B', 'C']);
+		assert.deepStrictEqual(missingVariablesOf('level=error msg="Config lint error" lint="(3,5) field foo not recognised"'), []);
+		assert.deepStrictEqual(missingVariablesOf('required environment variables were not set: REGION'), []);
+		assert.deepStrictEqual(missingVariablesOf('No Redpanda Connect binary.'), []);
 	});
 });

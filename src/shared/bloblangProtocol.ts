@@ -1,7 +1,8 @@
 // The host<->webview contract of the Bloblang test panel (AD-5, tickets 4.2 and 4.4; 4.16 adds
 // `addLabelRequested` and the snapshot's `unlabelledPath`; 4.10 its `removed`; 4.17 its `fileName` and
 // `samplesFile`; 4.11 `focusEditorRequested`, the graph's; 4.18 the snapshot's `previousStep` and
-// `sampleFromPreviousRequested`): every message of the second webview,
+// `sampleFromPreviousRequested`; ticket 32 the `error` result's `missingVariables`, `setVariableRequested`
+// and `variableSet`): every message of the second webview,
 // as discriminated unions on `type`, plus the pure validators both sides use on what they receive.
 // The panel adapter (`src/adapters/bloblangPanel`), the core run parser and `webview/src/bloblang` import it; no Bloblang panel message is defined anywhere else. This
 // module imports nothing but the graph protocol's `BinaryStatus` type (AD-15).
@@ -50,7 +51,8 @@ export interface BloblangChanges {
  * - `parseError`: the Bloblang does not parse;
  * - `invalidInput`: the input could not be used;
  * - `deleted`: the mapping deleted the message;
- * - `error`: any other failure (the binary's stderr, verbatim).
+ * - `error`: any other failure (the binary's stderr, verbatim); `missingVariables` (ticket 32): the
+ *   valid names a run stopped by `required environment variables were not set: [A B]` lists.
  */
 export type BloblangResult =
 	| { readonly kind: 'ok'; readonly content: string; readonly meta: ResultMeta; readonly changes: BloblangChanges }
@@ -66,7 +68,15 @@ export type BloblangResult =
 	}
 	| { readonly kind: 'invalidInput'; readonly message: string }
 	| { readonly kind: 'deleted' }
-	| { readonly kind: 'error'; readonly message: string };
+	| { readonly kind: 'error'; readonly message: string; readonly missingVariables?: readonly string[] };
+
+/** A variable name as `${NAME}` reads it (ticket 32). */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Whether `v` is a valid variable name: `[A-Za-z_][A-Za-z0-9_]*` (ticket 32). */
+export function isEnvName(v: unknown): v is string {
+	return typeof v === 'string' && ENV_NAME.test(v);
+}
 
 /** The longest sample name. */
 export const MAX_SAMPLE_NAME_LENGTH = 100;
@@ -112,7 +122,9 @@ export type BloblangHostMessage =
 	/** The samples changed; `samplesError` as in `snapshot`. */
 	| { readonly type: 'samples'; readonly samples: readonly BloblangSample[]; readonly selected: string | null; readonly samplesError?: string }
 	/** The binary's status changed. */
-	| { readonly type: 'binary'; readonly status: BinaryStatus };
+	| { readonly type: 'binary'; readonly status: BinaryStatus }
+	/** Ticket 32: `setVariableRequested` set a value for `name` (the webview runs again with Run on change). */
+	| { readonly type: 'variableSet'; readonly name: string };
 
 /** webview→host */
 export type BloblangWebviewMessage =
@@ -138,7 +150,9 @@ export type BloblangWebviewMessage =
 	 * From previous step (4.18): run the previous steps from the nearest one with a selected sample
 	 * and save the last output as a new sample of this processor.
 	 */
-	| { readonly type: 'sampleFromPreviousRequested' };
+	| { readonly type: 'sampleFromPreviousRequested' }
+	/** Set NAME… (ticket 32): set a variable the current `error` result lists in `missingVariables`. */
+	| { readonly type: 'setVariableRequested'; readonly name: string };
 
 type Obj = Record<string, unknown>;
 
@@ -206,8 +220,9 @@ function isResult(r: unknown): r is BloblangResult {
 			return isString(r.message) && isString(r.excerpt)
 				&& isPosition(r.mappingLine) && isPosition(r.mappingChar) && isPosition(r.fileLine) && isPosition(r.fileChar);
 		case 'invalidInput':
-		case 'error':
 			return isString(r.message);
+		case 'error':
+			return isString(r.message) && (r.missingVariables === undefined || (Array.isArray(r.missingVariables) && r.missingVariables.every(isEnvName)));
 		case 'deleted':
 			return true;
 		default:
@@ -256,6 +271,9 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 				break;
 			case 'binary':
 				ok = isBinaryStatus(message.status);
+				break;
+			case 'variableSet':
+				ok = isEnvName(message.name);
 				break;
 			default:
 				ok = false;
@@ -312,6 +330,10 @@ export function parseBloblangWebviewMessage(message: unknown): BloblangWebviewMe
 			case 'sampleRenamed': {
 				const { from, to } = message;
 				return isSampleName(from) && isSampleName(to) ? { type: 'sampleRenamed', from, to } : undefined;
+			}
+			case 'setVariableRequested': {
+				const name = message.name;
+				return isEnvName(name) ? { type: 'setVariableRequested', name } : undefined;
 			}
 			case 'goToLine': {
 				const line = message.line;

@@ -161,7 +161,8 @@ export function connectScript(options: ConnectScriptOptions): string {
  * then answers from the config's Bloblang as the real run would print: no line for `deleted()`,
  * `{error}` for a mapping containing `FAIL_ME` (`failed assignment (line 1)`, or of line N for
  * `FAIL_ON_<N>`, 4.8), `{error}` about unstructured input for `NOT_STRUCTURED` (4.8), a lint error on
- * stderr and exit 1 for `BROKEN`, a Bloblang `Config lint error` with config-relative positions and
+ * stderr and exit 1 for `BROKEN` while the variable `BROKEN` is unset (not in its environment or any
+ * `--env-file`, ticket 32), a Bloblang `Config lint error` with config-relative positions and
  * exit 1 for `ERR@` (4.8: the parse error `bloblParseBody` reports), else
  * a content: `{"a":1,"b":3,"c":4}` for a mapping with `root.c = 4` (FIELDS, 4.7), `{"a":1,"k":<@k>}`
  * for one with `root.k = @k` (META_IN, 4.7), else the content of `root.b = this.a + 1` on `{"a":1}`
@@ -183,7 +184,9 @@ export function mappingTestRunBody(capture: string): string {
 		`if [ -n "$n" ]; then echo '{"error":"failed assignment (line '"$n"'): expected number value, got null from field \`this.nope\`"}'; exit 0; fi`,
 		`if '${grep}' -q 'FAIL_ME' "$last"; then echo '{"error":"failed assignment (line 1): fake failure"}'; exit 0; fi`,
 		`if '${grep}' -q 'NOT_STRUCTURED' "$last"; then echo '{"error":"failed assignment (line 1): unable to reference message as structured (with '"'"'this'"'"'): parse as json: invalid character '"'"'o'"'"' in literal null (expecting '"'"'u'"'"')"}'; exit 0; fi`,
-		`if '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
+		// BROKEN is set when it is in the environment (a secret) or in an `--env-file` (ticket 32: the plain setting's).
+		'broken=${BROKEN+set}; prev=; for a in "$@"; do if [ "$prev" = --env-file ] && ' + `'${grep}' -q '^BROKEN=' "$a"; then broken=set; fi; prev=$a; done`,
+		`if [ -z "$broken" ] && '${grep}' -q 'BROKEN' "$last"; then echo 'level=error msg="Config lint error" lint="(1,1) required environment variables were not set: [BROKEN]"' >&2; exit 1; fi`,
 		`if '${grep}' -q 'SLOW_RUN' "$last"; then '${sleep}' 2; fi`,
 		// The config's YAML escapes each `"` of a Bloblang literal as `\"`.
 		String.raw`meta=$('${grep}' -o 'meta \(\\"\)\{0,1\}[A-Za-z0-9_]*\(\\"\)\{0,1\} = \\"[A-Za-z0-9_]*\\"' "$last"`

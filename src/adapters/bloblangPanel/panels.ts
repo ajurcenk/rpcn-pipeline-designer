@@ -91,6 +91,14 @@
 // `sampleRenamed`, `sampleSwitched`, `sampleDeleted`, `inputEdited`, `sampleFromPreviousRequested`,
 // `addLabelRequested`) are refused (logged, nothing posted). Tracking keeps it on its side of the
 // kinds (ticket 22's `sameSide`), so its kind never changes.
+// Ticket 32: an `error` result may list the variables an unset `${VAR}` stopped the run on
+// (`missingVariables`), and the webview offers Set NAME… for each. `setVariableRequested {name}` for
+// a name the panel's latest posted result lists (any other is logged and ignored) runs ticket 31's
+// set action (`SET_MISSING_COMMAND`, for the name and the panel's config: plain or secret, as there);
+// when it set a value, the panel gets `variableSet {name}` and the webview runs again with Run on
+// change (as Retry's recovery does). A cancelled set, or a secret set under another name (its
+// prefilled name can be edited), posts nothing. Nothing is offered once the webview shows no result
+// (`ready`, the no-binary or removed state), nor a name that secret masking would change.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -111,6 +119,7 @@ import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
 import { activeSecretValues, WINDOW_SCOPE } from '../redpandaConnect/secretEnv';
 import type { DetectionRegistry } from '../vscode/detection';
+import { SET_MISSING_COMMAND } from '../vscode/environmentView';
 import { parsedDocument } from '../vscode/parseCache';
 import { BloblangHints } from './hint';
 import { SampleStore, samplesUri, type DeleteFile } from './sampleStore';
@@ -252,6 +261,11 @@ export interface BloblangPanelsOptions {
 	 */
 	readonly confirmDelete?: (name: string) => Promise<boolean>;
 	/**
+	 * Sets a missing variable for a config (ticket 32): the name a value was set for, `undefined` when
+	 * none was. `undefined`: ticket 31's `SET_MISSING_COMMAND`.
+	 */
+	readonly setVariable?: (name: string, config: vscode.Uri) => Promise<string | undefined>;
+	/**
 	 * Asks for a label (4.16): `value` prefilled, `validate` the input box's check (`undefined`: valid);
 	 * resolves with the accepted name, `undefined` on Esc. `undefined`: `window.showInputBox`.
 	 */
@@ -306,6 +320,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	private relinking: Promise<void> | undefined;
 	/** While From previous step runs (4.18): another request is ignored. */
 	private seeding = false;
+	/**
+	 * The variables the latest posted result offers to set (ticket 32); none: `[]`, also once the
+	 * webview shows no result (it reloaded, or the no-binary or removed state was posted).
+	 */
+	private offered: readonly string[] = [];
 	/** The path of the processor the panel follows (4.10); while removed, its last one. */
 	path: string;
 	/** Its label (4.10); while removed, its last one. */
@@ -373,6 +392,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				return;
 			}
 			if (msg?.type === 'ready') {
+				// Ticket 32: a reloaded webview shows no result, so nothing is offered.
+				this.offered = [];
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
 				await this.run({ content: msg.content, meta: msg.meta });
@@ -386,6 +407,8 @@ class BloblangPanel implements BloblangPanelHandle {
 				await this.owner.actions?.setPath();
 			} else if (msg?.type === 'retryRequested') {
 				await this.owner.actions?.retry();
+			} else if (msg?.type === 'setVariableRequested') {
+				await this.setVariable(msg.name);
 			} else if (msg?.type === 'sampleAdded') {
 				await this.change({ type: 'add', sample: { name: msg.name, content: '', meta: {} } });
 			} else if (msg?.type === 'sampleRenamed') {
@@ -863,6 +886,21 @@ class BloblangPanel implements BloblangPanelHandle {
 	}
 
 	/**
+	 * Set NAME… (ticket 32): ticket 31's set action for `name`, which the latest result must list, and
+	 * the panel's config; `variableSet` when it set a value.
+	 */
+	private async setVariable(name: string): Promise<void> {
+		if (!this.offered.includes(name)) {
+			this.owner.log(`Test mapping: ${this.panel.title}: setVariableRequested ignored: the latest result does not list ${name}.`);
+			return;
+		}
+		// Only the requested name: a secret's prefilled name can be edited into another one.
+		if (await this.owner.setVariable(name, this.uri) === name && !this.disposed) {
+			await this.post({ type: 'variableSet', name });
+		}
+	}
+
+	/**
 	 * Single flight: one run child per panel at a time. An input arriving while one runs replaces
 	 * any input still waiting, and starts when the current run ends; only a run with no input
 	 * waiting after it posts its result. A run that throws posts an `error` result.
@@ -890,7 +928,9 @@ class BloblangPanel implements BloblangPanelHandle {
 							const text = line === undefined ? undefined : mappingLineText(current?.processor?.source ?? '', line);
 							this.hint = line !== undefined && text !== undefined ? { line, text } : undefined;
 							this.updateHint();
-							await this.post({ type: 'result', ...outcome, result: maskedResult(result, this.uri) });
+							const shown = maskedResult(result, this.uri);
+							this.offered = shown.kind === 'error' ? shown.missingVariables ?? [] : [];
+							await this.post({ type: 'result', ...outcome, result: shown });
 						}
 					}
 				} finally {
@@ -975,6 +1015,11 @@ class BloblangPanel implements BloblangPanelHandle {
 	private async post(message: BloblangHostMessage): Promise<void> {
 		if (this.disposed) {
 			return;
+		}
+		if ((message.type === 'binary' && message.status !== 'ok')
+			|| (message.type === 'snapshot' && (message.removed === true || message.binary !== 'ok'))) {
+			// Ticket 32: the webview drops its result in the no-binary and removed states, so nothing is offered.
+			this.offered = [];
 		}
 		this.posted.push(message);
 		if (this.posted.length > MAX_BLOBLANG_POSTED) {
@@ -1240,6 +1285,15 @@ export class BloblangPanels implements vscode.Disposable {
 	/** The binary's status, as the panel shows it. */
 	binaryStatus(): BinaryStatus {
 		return this.options.binary.state.kind;
+	}
+
+	/** Ticket 31's set action for `name` and `uri` (ticket 32): the name a value was set for, `undefined` when none was. */
+	async setVariable(name: string, uri: vscode.Uri): Promise<string | undefined> {
+		if (this.options.setVariable) {
+			return this.options.setVariable(name, uri);
+		}
+		const set = await vscode.commands.executeCommand<unknown>(SET_MISSING_COMMAND, name, uri);
+		return typeof set === 'string' ? set : undefined;
 	}
 
 	/** Asks whether to delete the sample `name` (4.9). */
@@ -1727,6 +1781,8 @@ function keyOf(uri: vscode.Uri, processorPath: string): string {
 /**
  * Ticket 30: an error result with the loaded secret values of `uri`'s folder masked (the binary's
  * text may quote one); a successful output or a deleted message is the pipeline's own data, as is.
+ * Ticket 32: a missing variable's name that masking would change is left out (it would show a
+ * secret value on its button).
  */
 function maskedResult(result: MappingTestOutcome['result'], uri: vscode.Uri): MappingTestOutcome['result'] {
 	const values = activeSecretValues();
@@ -1735,7 +1791,13 @@ function maskedResult(result: MappingTestOutcome['result'], uri: vscode.Uri): Ma
 	}
 	const scope = vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() ?? WINDOW_SCOPE;
 	const mask = (text: string) => values.mask(text, scope);
-	return result.kind === 'parseError'
-		? { ...result, message: mask(result.message), excerpt: mask(result.excerpt) }
-		: { ...result, message: mask(result.message) };
+	if (result.kind === 'parseError') {
+		return { ...result, message: mask(result.message), excerpt: mask(result.excerpt) };
+	}
+	if (result.kind === 'error' && result.missingVariables !== undefined) {
+		const { missingVariables, ...rest } = result;
+		const names = missingVariables.filter((name) => mask(name) === name);
+		return { ...rest, message: mask(result.message), ...(names.length > 0 ? { missingVariables: names } : {}) };
+	}
+	return { ...result, message: mask(result.message) };
 }
