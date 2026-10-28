@@ -10,7 +10,9 @@
 // is read for the config the command is for, and a relative value its own workspace folder's
 // settings define resolves against that folder; a workspace or user value against the first one.
 // `redpandaConnect.env` (ticket 29, also `resource`-scoped; VS Code merges its levels by key) becomes
-// an env file written by `envSetting.ts`, passed after `envFile`'s, so its variables win.
+// an env file written by `envSetting.ts`, passed after `envFile`'s, so its variables win. The
+// secrets `redpandaConnect.secretEnv` declares (ticket 30) are added to the child's process
+// environment only (`secretEnv.ts`), from the values loaded for the config's folder.
 
 import * as os from 'os';
 import * as path from 'path';
@@ -23,6 +25,7 @@ import {
 	describeArgsFailure, ENV_FILE_SETTING, ENV_SETTING, type EnvFileResult, RESOURCE_FILES_SETTING,
 } from './commandLine';
 import { activeEnvSettingFiles, encodeEnvFile, type EnvSettingFiles, validateEnvSetting } from './envSetting';
+import { activeSecretValues, type SecretValues, WINDOW_SCOPE } from './secretEnv';
 
 export type { ArgsFailure, ArgsFiles, ArgsResult, CommandLine, EnvFileResult };
 export { describeArgsFailure, ENV_FILE_SETTING, ENV_SETTING, RESOURCE_FILES_SETTING };
@@ -46,6 +49,12 @@ export interface ArgsEnvironment {
 	readonly envSetting?: unknown;
 	/** Where its env file is written (`<globalStorage>/env-setting`); without it, a non-empty setting fails. */
 	readonly envSettingFiles?: EnvSettingFiles;
+	/** Raw `redpandaConnect.secretEnv` value (ticket 30; may be malformed user input). */
+	readonly secretEnvSetting?: unknown;
+	/** Whose secrets: the config's folder URI string (or `WINDOW_SCOPE`) and how a log line names it. */
+	readonly secretScope?: { readonly scope: string; readonly label: string };
+	/** The loaded secret values; without them (or `secretScope`), no secret is added. */
+	readonly secretValues?: SecretValues;
 }
 
 export interface ArgsRequest {
@@ -78,8 +87,29 @@ export function commandSettings(env: () => ArgsEnvironment = defaultArgsEnvironm
 		files: () => resolveArgsFiles(env()),
 		envFile: () => resolveEnvFile(env()),
 		settingEnvFile: () => resolveSettingEnvFile(env()),
-		processEnv: () => env().processEnv,
+		processEnv: () => processEnvOf(env()),
 	};
+}
+
+/**
+ * The children's environment: `processEnv` plus the declared secrets (ticket 30) that have a value
+ * for the config's folder (one `redpandaConnect.env` or the env file also sets still goes: their
+ * `--env-file` wins in the binary). With none, `processEnv` itself. Never throws.
+ */
+function processEnvOf(env: ArgsEnvironment): NodeJS.ProcessEnv {
+	const values = env.secretValues;
+	if (!values || !env.secretScope) {
+		return env.processEnv;
+	}
+	const envFile = resolveEnvFile(env);
+	const secrets = values.environment({
+		scope: env.secretScope.scope,
+		scopeLabel: env.secretScope.label,
+		declared: env.secretEnvSetting,
+		envSettingNames: new Set(validateEnvSetting(env.envSetting).variables.map(([name]) => name)),
+		envFile: envFile.kind === 'ok' ? envFile.path : undefined,
+	});
+	return Object.keys(secrets).length === 0 ? env.processEnv : { ...env.processEnv, ...secrets };
 }
 
 /**
@@ -103,6 +133,11 @@ export function defaultArgsEnvironment(resource?: vscode.Uri): ArgsEnvironment {
 		processEnv: process.env,
 		envSetting: config.get<unknown>('env', {}),
 		envSettingFiles: activeEnvSettingFiles(),
+		secretEnvSetting: config.get<unknown>('secretEnv', []),
+		secretScope: folder
+			? { scope: folder.uri.toString(), label: `folder "${folder.name}"` }
+			: { scope: WINDOW_SCOPE, label: 'this window' },
+		secretValues: activeSecretValues(),
 	};
 }
 

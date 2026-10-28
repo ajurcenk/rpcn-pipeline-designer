@@ -95,12 +95,26 @@ export interface ConnectScriptOptions {
 	readonly run?: string;
 	/** Shell body run for `blobl …` (the `--file` mapping is the last argument, `$last`). Default: exit 0 (it parses). */
 	readonly blobl?: string;
+	/**
+	 * Ticket 30: each `lint`, `run` and `blobl` appends `<command> NAME=<value or <unset>> …` for these
+	 * variables of its environment to `file`, before its body.
+	 */
+	readonly envCapture?: { readonly file: string; readonly names: readonly string[] };
+}
+
+/** One line of `ConnectScriptOptions.envCapture`'s file, as the fake binary writes it. */
+export function envCaptureLine(command: 'lint' | 'run' | 'blobl', values: Readonly<Record<string, string | undefined>>): string {
+	return [command, ...Object.entries(values).map(([name, value]) => `${name}=${value ?? '<unset>'}`)].join(' ');
 }
 
 /** A fake `redpanda-connect` answering `--version` and `list --format jsonschema|json-full`, only with NO_COLOR=1. */
 export function connectScript(options: ConnectScriptOptions): string {
 	const count = (what: string) => (options.counterFile ? `echo ${what} >> '${options.counterFile}'` : ':');
 	const sleep = options.listSleepSeconds ? `sleep ${options.listSleepSeconds}` : ':';
+	const capture = options.envCapture;
+	const env = (what: string) => (capture
+		? `echo "${[what, ...capture.names.map((n) => `${n}=\${${n}-<unset>}`)].join(' ')}" >> '${capture.file}'`
+		: ':');
 	return [
 		NO_COLOR_CHECK,
 		'case "$*" in',
@@ -120,16 +134,19 @@ export function connectScript(options: ConnectScriptOptions): string {
 		';;',
 		'"lint "*)',
 		count('lint'),
+		env('lint'),
 		'for last in "$@"; do :; done',
 		options.lint ?? 'exit 0',
 		';;',
 		'"run "*)',
 		count('run'),
+		env('run'),
 		'for last in "$@"; do :; done',
 		options.run ?? 'exit 0',
 		';;',
 		'"blobl "*)',
 		count('blobl'),
+		env('blobl'),
 		'for last in "$@"; do :; done',
 		options.blobl ?? 'exit 0',
 		';;',

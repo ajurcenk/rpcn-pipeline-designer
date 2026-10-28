@@ -21,6 +21,8 @@ import { lintFile } from './adapters/redpandaConnect/lint';
 import { GraphPanels } from './adapters/graphPanel/panels';
 import { BloblangPanels } from './adapters/bloblangPanel/panels';
 import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
+import { SecretVariables } from './adapters/vscode/secrets';
+import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import type { JsonObject } from './core/schema';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -72,6 +74,11 @@ export interface ExtensionApi {
 	readonly schemaContributor: SchemaContributor;
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
 	readonly contributorRegistered: Promise<boolean>;
+	/**
+	 * Secret environment variables (ticket 30): set, remove and clear without the input boxes. Only
+	 * in `ExtensionMode.Test`: elsewhere any extension could read the values through it.
+	 */
+	readonly secrets?: Pick<SecretVariables, 'set' | 'remove' | 'clear' | 'reload' | 'settled' | 'recordedKeys' | 'values' | 'onDidChange'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -163,13 +170,19 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(channel);
 
 	const lines: string[] = [];
-	const log = (line: string) => {
+	// Ticket 30: every loaded secret value is masked in the output channel (text from the binary may quote one).
+	const log = (raw: string) => {
+		const line = activeSecretValues()?.mask(raw) ?? raw;
 		lines.push(line);
 		channel.appendLine(line);
 	};
 
 	// `redpandaConnect.env` (ticket 29): the commands write its env file under global storage.
 	context.subscriptions.push(activateEnvSetting(context.globalStorageUri.fsPath, log));
+	// `redpandaConnect.secretEnv` (ticket 30): the values, loaded from the secret storage, for every command.
+	const secrets = new SecretVariables({ store: context.secrets, memento: context.globalState, log });
+	setActiveSecretValues(secrets.values);
+	context.subscriptions.push(secrets, ...secrets.registerCommands(), new vscode.Disposable(() => setActiveSecretValues(undefined)));
 
 	const redpandaConnect = new RedpandaConnect({ log, notifier: createVsCodeNotifier(log) });
 	context.subscriptions.push(redpandaConnect);
@@ -192,6 +205,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		binary: redpandaConnect,
 		parse: (source, uri) => parseMapping(redpandaConnect.state, source, context.globalStorageUri.fsPath, { resource: uri }),
 		log,
+		secretsChanged: secrets.onDidChange,
 	});
 	const lintDiagnostics = new LintDiagnostics({
 		detection,
@@ -257,6 +271,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
+		...(context.extensionMode === vscode.ExtensionMode.Test ? { secrets } : {}),
 		outputLines: () => [...lines],
 	};
 }

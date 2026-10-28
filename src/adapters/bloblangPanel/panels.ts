@@ -109,6 +109,7 @@ import { hasTextTab, isTextTabOf, overwrittenBy, PENDING_RENAME_MS, PendingRenam
 import type { BinaryState } from '../redpandaConnect/binary';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { runMappingTest, type FilePosition, type MappingTestDependencies, type MappingTestOutcome } from '../redpandaConnect/bloblang';
+import { activeSecretValues, WINDOW_SCOPE } from '../redpandaConnect/secretEnv';
 import type { DetectionRegistry } from '../vscode/detection';
 import { parsedDocument } from '../vscode/parseCache';
 import { BloblangHints } from './hint';
@@ -889,7 +890,7 @@ class BloblangPanel implements BloblangPanelHandle {
 							const text = line === undefined ? undefined : mappingLineText(current?.processor?.source ?? '', line);
 							this.hint = line !== undefined && text !== undefined ? { line, text } : undefined;
 							this.updateHint();
-							await this.post({ type: 'result', ...outcome });
+							await this.post({ type: 'result', ...outcome, result: maskedResult(result, this.uri) });
 						}
 					}
 				} finally {
@@ -1418,8 +1419,9 @@ export class BloblangPanels implements vscode.Disposable {
 		}));
 	}
 
-	/** Writes `message` to the output channel and shows it. */
-	tell(message: string, kind: 'info' | 'error' = 'info'): void {
+	/** Writes `message` to the output channel and shows it (secret values masked, ticket 30). */
+	tell(raw: string, kind: 'info' | 'error' = 'info'): void {
+		const message = activeSecretValues()?.mask(raw) ?? raw;
 		this.log(`Test mapping: ${message}`);
 		if (this.options.showMessage) {
 			this.options.showMessage(message, kind);
@@ -1720,4 +1722,20 @@ function linkName(ref: SampleRef): string {
 
 function keyOf(uri: vscode.Uri, processorPath: string): string {
 	return `${uri.toString()}#${processorPath}`;
+}
+
+/**
+ * Ticket 30: an error result with the loaded secret values of `uri`'s folder masked (the binary's
+ * text may quote one); a successful output or a deleted message is the pipeline's own data, as is.
+ */
+function maskedResult(result: MappingTestOutcome['result'], uri: vscode.Uri): MappingTestOutcome['result'] {
+	const values = activeSecretValues();
+	if (!values || result.kind === 'ok' || result.kind === 'deleted') {
+		return result;
+	}
+	const scope = vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() ?? WINDOW_SCOPE;
+	const mask = (text: string) => values.mask(text, scope);
+	return result.kind === 'parseError'
+		? { ...result, message: mask(result.message), excerpt: mask(result.excerpt) }
+		: { ...result, message: mask(result.message) };
 }

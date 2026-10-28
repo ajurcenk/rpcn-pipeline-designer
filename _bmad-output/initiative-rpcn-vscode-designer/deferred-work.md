@@ -81,3 +81,8 @@
 - source_plan: `_bmad-output/backlog/bug-flaky-focus-and-timing-dependent-integration-tests-plan.md`
   summary: On the 1.100.0 floor, RETAKE_STEAL sometimes ends with the graph's webview group focused after the focus return to the YAML.
   evidence: CI run 40558514970 attempt 1 (floor, non-blocking): "focus stays in the YAML, in its group: editor none, group 2 (tab Graph: retake-steal.yaml [webview]), visible [retake-steal.yaml@1]"; attempt 2 and the stable runs passed. Only seen on 1.100.0.
+
+- source_plan: `_bmad-output/backlog/story-secret-environment-variables-kept-in-the-secret-storage-plan.md`
+  summary: The schema cache in the extension's global storage (`schema-<key>.json`, about 2 MB each) is never pruned, and live-parse temporary files (`bloblang-parse-*.blobl`) can be left behind.
+  evidence: found while building ticket 30 (2026-10-28): the test profile's storage held 7001 schema files (14 GB; the tests make a new fake binary per run) and 465 parse files dated from 2026-10-13. For a user, one stale file per binary they have used; nothing removes them.
+

@@ -3,14 +3,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
+import { SecretVariables } from '../../../adapters/vscode/secrets';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
+import { EXTENSION_ID, runOnEditor, userFilesHolding, waitFor } from '../helpers';
 
 suite('Run and Stop (integration)', function () {
 	this.timeout(90_000);
 	let dir: string;
 	let counter: string;
 	let events: string;
+	/** Ticket 30: what the fake binary saw of `SECRET_30` and `CLASH_30` in its environment, one line per start. */
+	let seen: string;
 	const originalPath = process.env.PATH;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
@@ -33,9 +36,11 @@ suite('Run and Stop (integration)', function () {
 		dir = makeTempDir('rpcn-run-');
 		counter = path.join(dir, 'counter');
 		events = path.join(dir, 'events');
+		seen = path.join(dir, 'seen');
 		// Like run_generate.yaml: prints, then waits; SIGINT ends it with exit 0 (spike).
 		const run = [
 			`echo "started cwd=$(pwd) argv=$*" >> '${events}'`,
+			`echo "SECRET_30=\${SECRET_30-<unset>} CLASH_30=\${CLASH_30-<unset>}" >> '${seen}'`,
 			`trap 'echo "interrupted" >> '"'${events}'"'; exit 0' INT`,
 			'echo tick',
 			'while :; do sleep 0.05; done',
@@ -51,6 +56,8 @@ suite('Run and Stop (integration)', function () {
 		vscode.window.terminals.filter((t) => t.name.startsWith('Redpanda Connect: ')).forEach((t) => t.dispose());
 		process.env.PATH = originalPath;
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
+		await api().secrets!.clear(async () => true);
+		await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -141,6 +148,228 @@ suite('Run and Stop (integration)', function () {
 			assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
 		} finally {
 			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 SET / EVERY_COMMAND / CHANGE / REMOVE / NO_VALUE / CLASH / CLEAR / NO_LEAK: a stored secret reaches Run\'s environment, never a file, an argv or a log line', async () => {
+		const seenLines = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter(Boolean) : []);
+		const envFile = path.join(dir, 'secret.env');
+		fs.writeFileSync(envFile, 'CLASH_30=from-file\n');
+		assert.ok(api().secrets, 'the test seam is there in test mode');
+		const secrets = api().secrets!;
+		try {
+			const doc = await open('secret.yaml', 'input:\n  generate:\n    mapping: root = "${SECRET_30}"\noutput:\n  stdout: {}\n');
+			/** Runs once and returns what the binary saw. */
+			const runOnce = async (): Promise<string> => {
+				const before = seenLines().length;
+				await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+				assert.ok(await waitFor(() => seenLines().length > before, 15_000), 'the binary was not started');
+				await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
+				assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
+				return seenLines()[before];
+			};
+
+			// EMPTY: no declared secret, the argv as before.
+			const plainStarts = eventLines().length;
+			assert.strictEqual(await runOnce(), 'SECRET_30=<unset> CLASH_30=<unset>');
+			assert.ok(eventLines()[plainStarts].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), eventLines()[plainStarts]);
+
+			// SET: no folder is open, so the value is the window's and the name goes to the user settings.
+			assert.strictEqual(await secrets.set(undefined, 'SECRET_30', 'tok-30-secret-a'), true);
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['SECRET_30']);
+			assert.ok(secrets.recordedKeys().includes('redpandaConnect.secret:window:SECRET_30'), JSON.stringify(secrets.recordedKeys()));
+			const starts = eventLines().length;
+			assert.strictEqual(await runOnce(), 'SECRET_30=tok-30-secret-a CLASH_30=<unset>');
+			assert.ok(eventLines()[starts].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), 'the argv is unchanged');
+
+			// CHANGE: the next run gets the new value, no restart.
+			await secrets.set(undefined, 'SECRET_30', 'tok-30-secret-b');
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['SECRET_30'], 'the name is added once');
+			assert.strictEqual(await runOnce(), 'SECRET_30=tok-30-secret-b CLASH_30=<unset>');
+
+			// CLASH: told once by name; the secret is still passed (the real binary lets the env file win, suite 61).
+			await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+			await secrets.set(undefined, 'CLASH_30', 'tok-30-secret-clash');
+			assert.strictEqual(await runOnce(), 'SECRET_30=tok-30-secret-b CLASH_30=tok-30-secret-clash');
+			await runOnce();
+			const clash = api().outputLines().filter((l) => l.startsWith('redpandaConnect.secretEnv: CLASH_30 is also set by the redpandaConnect.envFile file'));
+			assert.strictEqual(clash.length, 1, JSON.stringify(clash));
+			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+			assert.strictEqual(await runOnce(), 'SECRET_30=tok-30-secret-b CLASH_30=tok-30-secret-clash');
+
+			// REMOVE: the value goes, the name stays declared, so it is told once that it has none.
+			assert.strictEqual(await secrets.remove(undefined, 'SECRET_30'), true);
+			assert.strictEqual(await runOnce(), 'SECRET_30=<unset> CLASH_30=tok-30-secret-clash');
+			await runOnce();
+			const none = api().outputLines().filter((l) => l.startsWith('redpandaConnect.secretEnv: SECRET_30 has no value on this machine for this window'));
+			assert.strictEqual(none.length, 1, JSON.stringify(none));
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['SECRET_30', 'CLASH_30']);
+
+			// CLEAR: cancelled removes nothing; confirmed removes every recorded key.
+			assert.strictEqual(await secrets.clear(async () => false), 0);
+			assert.strictEqual(await runOnce(), 'SECRET_30=<unset> CLASH_30=tok-30-secret-clash');
+			assert.ok(await secrets.clear(async () => true) >= 1);
+			assert.deepStrictEqual(secrets.recordedKeys(), []);
+			assert.strictEqual(await runOnce(), 'SECRET_30=<unset> CLASH_30=<unset>');
+			await secrets.reload();
+			assert.deepStrictEqual(secrets.values.keys(), [], 'nothing is left in the secret storage');
+
+			// NO_LEAK: no value in the output channel, Run's terminal or a file.
+			const leaked = api().outputLines().filter((l) => l.includes('tok-30-secret'));
+			assert.deepStrictEqual(leaked, [], 'no value is logged');
+			assert.ok(!(api().run.outputOf(doc.uri) ?? '').includes('tok-30-secret'), 'no value in the terminal');
+			assert.deepStrictEqual(userFilesHolding('tok-30-secret'), [], 'no settings or storage file holds a value');
+		} finally {
+			await secrets.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 STORE_FAILS / bad name: a refused name or a failing store stores nothing and declares nothing; the error has no value', async () => {
+		assert.strictEqual(await api().secrets!.set(undefined, '1BAD', 'tok-30-secret-bad'), false);
+		assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined);
+		assert.ok(!api().secrets!.recordedKeys().some((k) => k.endsWith(':1BAD')));
+
+		const lines: string[] = [];
+		const state = new Map<string, unknown>();
+		const memento: vscode.Memento = {
+			keys: () => [...state.keys()],
+			get: <T>(key: string, fallback?: T) => (state.has(key) ? state.get(key) as T : fallback) as T,
+			update: async (key: string, value: unknown) => {
+				state.set(key, value);
+			},
+		};
+		const failing = new SecretVariables({
+			store: {
+				get: async () => {
+					throw new Error('keyring locked');
+				},
+				store: async (_key: string, value: string) => {
+					throw new Error(`keyring refused ${value}`);
+				},
+				delete: async () => undefined,
+				onDidChange: new vscode.EventEmitter<{ key: string }>().event,
+			},
+			memento,
+			log: (l) => lines.push(l),
+		});
+		try {
+			assert.strictEqual(await failing.set(undefined, 'FAIL_30', 'tok-30-secret-fail'), false);
+			assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined, 'nothing declared');
+			assert.deepStrictEqual(failing.recordedKeys(), [], 'nothing recorded');
+			assert.deepStrictEqual(failing.values.keys(), []);
+			assert.ok(lines.some((l) => l.startsWith('redpandaConnect.secretEnv: could not store FAIL_30 for this window: keyring refused')), JSON.stringify(lines));
+			assert.ok(!lines.some((l) => l.includes('tok-30-secret')), JSON.stringify(lines));
+		} finally {
+			failing.dispose();
+		}
+	});
+
+	test('ticket 30: overlapping set and remove keep the recorded keys right (their updates run one at a time)', async () => {
+		const state = new Map<string, unknown>();
+		const memento: vscode.Memento = {
+			keys: () => [...state.keys()],
+			get: <T>(key: string, fallback?: T) => (state.has(key) ? state.get(key) as T : fallback) as T,
+			// Slow, so two unserialized read-filter-writes would overlap.
+			update: async (key: string, value: unknown) => {
+				await new Promise((r) => setTimeout(r, 30));
+				state.set(key, value);
+			},
+		};
+		const stored = new Map<string, string>();
+		const changed = new vscode.EventEmitter<{ key: string }>();
+		const secrets = new SecretVariables({
+			store: {
+				get: async (key: string) => stored.get(key),
+				store: async (key: string, value: string) => {
+					stored.set(key, value);
+				},
+				delete: async (key: string) => {
+					stored.delete(key);
+				},
+				onDidChange: changed.event,
+			},
+			memento,
+			log: () => undefined,
+		});
+		try {
+			assert.ok(await secrets.set(undefined, 'REC_A_30', 'tok-30-secret-ra'));
+			const [removed, set] = await Promise.all([secrets.remove(undefined, 'REC_A_30'), secrets.set(undefined, 'REC_B_30', 'tok-30-secret-rb')]);
+			assert.ok(removed && set);
+			assert.deepStrictEqual(secrets.recordedKeys(), ['redpandaConnect.secret:window:REC_B_30']);
+		} finally {
+			secrets.dispose();
+			changed.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	/** A `SecretVariables` on an in-memory store and memento; `stored` and `changed` play another window. */
+	function fakeSecrets(extra: Partial<ConstructorParameters<typeof SecretVariables>[0]> = {}) {
+		const state = new Map<string, unknown>();
+		const stored = new Map<string, string>();
+		const changed = new vscode.EventEmitter<{ key: string }>();
+		const secrets = new SecretVariables({
+			store: {
+				get: async (key: string) => stored.get(key),
+				store: async (key: string, value: string) => {
+					stored.set(key, value);
+				},
+				delete: async (key: string) => {
+					stored.delete(key);
+				},
+				onDidChange: changed.event,
+			},
+			memento: {
+				keys: () => [...state.keys()],
+				get: <T>(key: string, fallback?: T) => (state.has(key) ? state.get(key) as T : fallback) as T,
+				update: async (key: string, value: unknown) => {
+					state.set(key, value);
+				},
+			},
+			log: () => undefined,
+			...extra,
+		});
+		return { secrets, stored, changed, dispose: () => { secrets.dispose(); changed.dispose(); } };
+	}
+
+	test('ticket 30 settle: another window\'s change inside the settle window is applied once it ends, with no other trigger', async () => {
+		const fake = fakeSecrets({ settleMs: 200 });
+		const key = 'redpandaConnect.secret:window:SETTLE_30';
+		try {
+			assert.ok(await fake.secrets.set(undefined, 'SETTLE_30', 'mine'));
+			// Another window writes the key inside this window's settle window: the load keeps this window's write.
+			fake.stored.set(key, 'theirs');
+			fake.changed.fire({ key });
+			await fake.secrets.settled;
+			assert.strictEqual(fake.secrets.values.get('window', 'SETTLE_30'), 'mine');
+			// No further event or setting change: the reload at the window's end brings the other value.
+			assert.ok(await waitFor(() => fake.secrets.values.get('window', 'SETTLE_30') === 'theirs', 2_000),
+				String(fake.secrets.values.get('window', 'SETTLE_30')));
+		} finally {
+			fake.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 declare undo: when the name cannot be added to secretEnv, the stored value and its record go, and only the failure is shown', async () => {
+		const messages: [string, string][] = [];
+		const fake = fakeSecrets({
+			updateSetting: async () => {
+				throw new Error('settings locked');
+			},
+			notify: (kind, message) => messages.push([kind, message]),
+		});
+		try {
+			assert.strictEqual(await fake.secrets.setAndTell(undefined, 'UNDO_30', 'tok-30-secret-undo'), false);
+			assert.deepStrictEqual([...fake.stored.keys()], [], 'the stored value is removed again');
+			assert.deepStrictEqual(fake.secrets.recordedKeys(), [], 'and its record');
+			assert.strictEqual(fake.secrets.values.get('window', 'UNDO_30'), undefined);
+			assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined, 'nothing declared');
+			assert.deepStrictEqual(messages, [['error', 'Could not set the secret variable UNDO_30: it could not be added to redpandaConnect.secretEnv: settings locked']]);
+		} finally {
+			fake.dispose();
 		}
 	});
 

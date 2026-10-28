@@ -3,13 +3,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
-import { connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
+import { connectScript, envCaptureLine, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, focusState, runOnEditor, waitFor } from '../helpers';
 
 suite('Lint on save (integration)', function () {
 	this.timeout(90_000);
 	let dir: string;
 	let counter: string;
+	/** Ticket 30: `SECRET_30` as each lint saw it. */
+	let seen: string;
 	const originalPath = process.env.PATH;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
@@ -82,9 +84,12 @@ suite('Lint on save (integration)', function () {
 			.join(path.delimiter);
 		dir = makeTempDir('rpcn-lint-');
 		counter = path.join(dir, 'counter');
+		seen = path.join(dir, 'seen');
 		// Lints like the spike: findings for lines that contain `nope:` or `codec:` in the target.
 		const syntaxLine = path.join(dir, 'syntax-line');
 		const lint = [
+			// Ticket 30: for secret-echo.yaml, an error quoting the secret, as a binary's message might.
+			`case "$last" in */secret-echo.yaml) echo "boom: token \${SECRET_30-none} refused" >&2; exit 3 ;; esac`,
 			// For syntax.yaml: a YAML syntax error at (1,1) naming the line in `syntax-line`, like real lint.
 			`case "$last" in */syntax.yaml) echo "$last(1,1) yaml: line $('${cat}' '${syntaxLine}'): did not find expected key" >&2; exit 1 ;; esac`,
 			'found=0',
@@ -96,7 +101,7 @@ suite('Lint on save (integration)', function () {
 			`for n in $('${grep}' -n 'request_mapp:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field request_mapp not recognised" >&2; found=1; done`,
 			'exit $found',
 		].join('\n');
-		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter }));
+		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, counterFile: counter, envCapture: { file: seen, names: ['SECRET_30'] } }));
 		await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok'
 			&& (api().redpandaConnect.state as { path: string }).path === bin, 30_000), JSON.stringify(api().redpandaConnect.state));
@@ -108,6 +113,8 @@ suite('Lint on save (integration)', function () {
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		await api().secrets!.clear(async () => true);
+		await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -200,6 +207,44 @@ suite('Lint on save (integration)', function () {
 			assert.deepStrictEqual(api().outputLines().filter((l) => l.includes('tok-29-secret')), [], 'no value is logged');
 		} finally {
 			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 EVERY_COMMAND / CHANGE: a stored secret reaches lint\'s environment; the next lint gets a new value; no value is logged', async () => {
+		const seenLines = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter(Boolean) : []);
+		try {
+			const doc = await openSaved('secret-lint.yaml', 'input:\n  generate:\n    nope: 1\n');
+			const lintOnce = async (): Promise<string> => {
+				const before = seenLines().length;
+				await editAndSave(doc);
+				assert.ok(await waitFor(() => seenLines().length > before, 15_000), 'lint did not run');
+				return seenLines()[seenLines().length - 1];
+			};
+			assert.strictEqual(await lintOnce(), envCaptureLine('lint', { SECRET_30: undefined }));
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-lint'));
+			assert.strictEqual(await lintOnce(), envCaptureLine('lint', { SECRET_30: 'tok-30-secret-lint' }));
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-lint2'));
+			assert.strictEqual(await lintOnce(), envCaptureLine('lint', { SECRET_30: 'tok-30-secret-lint2' }));
+			assert.deepStrictEqual(api().outputLines().filter((l) => l.includes('tok-30-secret')), [], 'no value is logged');
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 masking: a lint failure quoting a secret value is logged with ••••• in its place', async () => {
+		try {
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-echo'));
+			const doc = await openSaved('secret-echo.yaml', 'input:\n  generate:\n    mapping: root = 1\n');
+			const isLine = (l: string) => l.startsWith('Lint secret-echo.yaml:') && l.includes('boom: token');
+			await editAndSave(doc);
+			assert.ok(await waitFor(() => api().outputLines().some(isLine), 15_000), api().outputLines().slice(-5).join('\n'));
+			const line = api().outputLines().find(isLine)!;
+			assert.ok(line.includes('boom: token ••••• refused'), line);
+			assert.ok(!api().outputLines().some((l) => l.includes('tok-30-secret')), 'no value is logged');
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
 

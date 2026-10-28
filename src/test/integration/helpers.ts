@@ -98,3 +98,29 @@ export async function runOnEditor(
 	}
 	assert.fail(`${doc.uri.path} did not stay the active editor for ${command}`);
 }
+
+/**
+ * The files of the test host's user settings and of this extension's global storage that contain
+ * `text` (ticket 30: a secret value must be in neither), as paths relative to the user folder. The
+ * cached schemas (`schema-*.json`, many and large) are skipped: no variable reaches them.
+ */
+export function userFilesHolding(text: string): string[] {
+	const user = path.join(REPO_ROOT, '.vscode-test', 'user-data', 'User');
+	const found: string[] = [];
+	const walk = (at: string) => {
+		let stat: fs.Stats;
+		try {
+			stat = fs.statSync(at);
+		} catch {
+			return;
+		}
+		if (stat.isDirectory()) {
+			fs.readdirSync(at).filter((name) => !/^schema-.*\.json$/.test(name)).forEach((name) => walk(path.join(at, name)));
+		} else if (stat.isFile() && fs.readFileSync(at).includes(text)) {
+			found.push(path.relative(user, at));
+		}
+	};
+	walk(path.join(user, 'settings.json'));
+	walk(path.join(user, 'globalStorage', EXTENSION_ID));
+	return found;
+}

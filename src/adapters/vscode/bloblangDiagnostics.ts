@@ -54,6 +54,8 @@ export interface BloblangDiagnosticsOptions {
 	readonly log: (line: string) => void;
 	readonly debounceMs?: number;
 	readonly source?: BloblangDiagnosticsSource;
+	/** Fires when a secret variable's value changed (ticket 30): cached outcomes are dropped. */
+	readonly secretsChanged?: vscode.Event<unknown>;
 }
 
 /** A processor as last seen in its document. */
@@ -157,12 +159,17 @@ export class BloblangDiagnostics implements vscode.Disposable {
 			}),
 			options.binary.onDidChange(() => this.reset()),
 			this.source.onDidChangeConfiguration((e) => {
-				// The env file and the `env` setting's variables (ticket 29) change what a parse sees.
-				if (e.affectsConfiguration('redpandaConnect.envFile') || e.affectsConfiguration('redpandaConnect.env')) {
+				// The env file, the `env` setting's variables (ticket 29) and the declared secrets
+				// (ticket 30) change what a parse sees.
+				if (e.affectsConfiguration('redpandaConnect.envFile') || e.affectsConfiguration('redpandaConnect.env')
+					|| e.affectsConfiguration('redpandaConnect.secretEnv')) {
 					this.reset();
 				}
 			}),
 		);
+		if (options.secretsChanged) {
+			this.subscriptions.push(options.secretsChanged(() => this.reset()));
+		}
 		for (const doc of this.source.textDocuments) {
 			this.schedule(doc);
 		}

@@ -133,6 +133,82 @@ suite('Run and Stop with a real binary (integration, ticket 9)', function () {
 		});
 	}
 
+	// Ticket 30: a secret the env file or `redpandaConnect.env` also sets loses to them; one only the
+	// secret storage holds arrives, through `env()` and `${…}` alike.
+	const SECRET_CONFIG = [
+		'input:',
+		'  generate:',
+		'    count: 1',
+		'    interval: ""',
+		'    mapping: |',
+		'      root.secret = env("SECRET_30")',
+		'      root.interpolated = "${SECRET_30}"',
+		'      root.file_clash = env("FILE_CLASH_30")',
+		'      root.env_clash = env("ENV_CLASH_30")',
+		'output:',
+		'  stdout: {}',
+		'logger:',
+		'  level: off',
+		'',
+	].join('\n');
+	for (const ver of VERSIONS) {
+		test(`ticket 30 EVERY_COMMAND / CLASH with Redpanda Connect ${ver}: a stored secret reaches the pipeline; the env file and redpandaConnect.env win over it`, async function () {
+			const bin = binaryOf(ver);
+			if (!hasBinary(ver)) {
+				const message = `no cached executable Redpanda Connect ${ver} at ${bin}: run scripts/spike/fetch-binaries.sh`;
+				if (IN_CI) {
+					assert.fail(message);
+				}
+				console.warn(`skipped: ${message}`);
+				this.skip();
+			}
+			const dir = makeTempDir(`rpcn-run-secret-${ver}-`);
+			const secrets = api().secrets!;
+			try {
+				await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
+				assert.ok(await waitFor(() => {
+					const state = api().redpandaConnect.state;
+					return state.kind === 'ok' && state.path === bin && state.version === ver;
+				}, 30_000), `the extension resolved ${bin}: ${JSON.stringify(api().redpandaConnect.state)}`);
+				const envFile = path.join(dir, 'user.env');
+				fs.writeFileSync(envFile, 'FILE_CLASH_30=from-file\n');
+				await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+				await config().update('env', { ENV_CLASH_30: 'from-setting' }, vscode.ConfigurationTarget.Global);
+				for (const name of ['SECRET_30', 'FILE_CLASH_30', 'ENV_CLASH_30']) {
+					assert.ok(await secrets.set(undefined, name, `tok-30-secret-${name}`));
+				}
+				const file = path.join(dir, 'secret_values.yaml');
+				fs.writeFileSync(file, SECRET_CONFIG);
+				const doc = await vscode.workspace.openTextDocument(file);
+				await vscode.window.showTextDocument(doc);
+				assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 5_000));
+				await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+				assert.ok(await waitFor(() => (api().run.outputOf(doc.uri) ?? '').includes('"secret"')
+					&& api().run.phaseOf(doc.uri) === 'exited', 30_000), `no message: ${JSON.stringify(api().run.outputOf(doc.uri))}`);
+				const messages = (api().run.outputOf(doc.uri) ?? '').match(/\{"[^\r\n]*\}/g) ?? [];
+				assert.deepStrictEqual(JSON.parse(messages[messages.length - 1]), {
+					secret: 'tok-30-secret-SECRET_30', interpolated: 'tok-30-secret-SECRET_30', file_clash: 'from-file', env_clash: 'from-setting',
+				});
+				const clashes = api().outputLines().filter((l) => l.startsWith('redpandaConnect.secretEnv: ') && l.includes(' is also set by '));
+				assert.ok(clashes.some((l) => l.startsWith('redpandaConnect.secretEnv: FILE_CLASH_30 is also set by the redpandaConnect.envFile file')), JSON.stringify(clashes));
+				assert.ok(clashes.some((l) => l.startsWith('redpandaConnect.secretEnv: ENV_CLASH_30 is also set by redpandaConnect.env')), JSON.stringify(clashes));
+				assert.ok(!api().outputLines().some((l) => l.includes('tok-30-secret')), 'no value is logged');
+				// The terminal shows the argv, not the environment: the value is only in the pipeline's own output.
+				const argvLine = (api().run.outputOf(doc.uri) ?? '').split('\n').find((l) => l.includes('$ '));
+				assert.ok(argvLine && !argvLine.includes('tok-30-secret'), argvLine);
+			} finally {
+				await secrets.clear(async () => true);
+				await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+				await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+				await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+				await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+				vscode.window.terminals.filter((t) => t.name === 'Redpanda Connect: secret_values.yaml').forEach((t) => t.dispose());
+				await waitFor(() => !vscode.window.terminals.some((t) => t.name === 'Redpanda Connect: secret_values.yaml'), 10_000);
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
+
 	for (const ver of VERSIONS) {
 		test(`RUN / STOP / RERUN with Redpanda Connect ${ver}: output streams, Stop ends it with "Pipeline stopped", Run again reuses the terminal`, async function () {
 			const bin = binaryOf(ver);

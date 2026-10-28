@@ -14,6 +14,7 @@ import * as vscode from 'vscode';
 import { ArgsResult, buildRunCommand, describeArgsFailure } from '../redpandaConnect/args';
 import { BinaryState } from '../redpandaConnect/binary';
 import { runStreaming, StreamingChild, StreamingExit } from '../redpandaConnect/process';
+import { activeSecretValues } from '../redpandaConnect/secretEnv';
 
 export const RUN_COMMAND = 'redpandaConnect.run';
 export const STOP_COMMAND = 'redpandaConnect.stop';
@@ -186,8 +187,9 @@ export function defaultRunHost(): RunHost {
 		activeDocument: () => vscode.window.activeTextEditor?.document,
 		onDidChangeActiveTextEditor: vscode.window.onDidChangeActiveTextEditor,
 		findDocument: (uri) => vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString()),
-		showInformationMessage: (message) => { void vscode.window.showInformationMessage(message); },
-		showErrorMessage: (message) => { void vscode.window.showErrorMessage(message); },
+		// Ticket 30: loaded secret values are masked in messages.
+		showInformationMessage: (message) => { void vscode.window.showInformationMessage(activeSecretValues()?.mask(message) ?? message); },
+		showErrorMessage: (message) => { void vscode.window.showErrorMessage(activeSecretValues()?.mask(message) ?? message); },
 		setContext: (key, value) => { void vscode.commands.executeCommand('setContext', key, value); },
 		cwdFor: (uri) => vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath),
 	};

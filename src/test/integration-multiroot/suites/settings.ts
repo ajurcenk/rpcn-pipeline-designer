@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { TEST_MAPPING_COMMAND, type BloblangPanelHandle } from '../../../adapters/bloblangPanel/panels';
 import { type ExtensionApi } from '../../../extension';
 import {
-	bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, REPO_ROOT, writeFakeBinary,
+	bloblParseBody, connectScript, envCaptureLine, fixtureBodies, makeTempDir, mappingTestRunBody, REPO_ROOT, writeFakeBinary,
 } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, runOnEditor, waitFor } from '../../integration/helpers';
 
@@ -30,6 +30,8 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 	this.timeout(120_000);
 	let dir: string;
 	let capture: string;
+	/** Ticket 30: `SECRET_30` as each command saw it. */
+	let seen: string;
 	let edits = 0;
 	const originalPath = process.env.PATH;
 	const originals = new Map<string, string>();
@@ -160,6 +162,7 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		dir = makeTempDir('rpcn-multiroot-');
 		capture = path.join(dir, 'capture');
 		fs.mkdirSync(capture);
+		seen = path.join(dir, 'seen');
 		const lint = `printf '%s\\n' "$*" >> '${path.join(capture, 'lint-argv')}'\nexit 0`;
 		// Run and the test panel's run are both `run …`: every one goes to run-argv, the test run's
 		// (mappingTestRunBody) to argv too.
@@ -168,7 +171,7 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		process.env.PATH = (originalPath ?? '').split(path.delimiter)
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
-		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, run, blobl }));
+		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, lint, run, blobl, envCapture: { file: seen, names: ['SECRET_30'] } }));
 		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
 		await vscode.workspace.getConfiguration('redpandaConnect').update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok'
@@ -183,6 +186,10 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		await setWorkspaceEnvFile(undefined);
 		await setEnv(vscode.ConfigurationTarget.WorkspaceFolder, undefined, 'b');
 		await setEnv(vscode.ConfigurationTarget.Global, undefined);
+		await api().secrets!.clear(async () => true);
+		for (const name of ['a', 'b'] as const) {
+			await vscode.workspace.getConfiguration('redpandaConnect', folder(name).uri).update('secretEnv', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+		}
 	});
 
 	suiteTeardown(async () => {
@@ -253,5 +260,38 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 			assert.strictEqual(files[0], envOf('b'));
 			assert.strictEqual(fs.readFileSync(files[1], 'utf8'), 'C="b-c"\n');
 		}
+	});
+
+	test('ticket 30 SET / EVERY_COMMAND: a secret set for folder B is declared in B\'s folder settings and reaches every command on B\'s config, with B\'s value; A\'s config gets A\'s', async () => {
+		const seenLines = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter(Boolean) : []);
+		/** The distinct `SECRET_30` lines (without the command) every command on `name`'s config saw. */
+		const seenBy = async (name: FolderName) => {
+			// A live parse the last change scheduled may have started before all of it was in place.
+			await quiet();
+			const mark = seenLines().length;
+			const got = await exerciseArgv(name);
+			assert.ok(got.lint.length > 0 && got.run.length > 0 && got.parse.length > 0 && got.panel.length > 0, JSON.stringify(got));
+			const lines = seenLines().slice(mark);
+			assert.deepStrictEqual([...new Set(lines.map((l) => l.split(' ')[0]))].sort(), ['blobl', 'lint', 'run'], JSON.stringify(lines));
+			return [...new Set(lines.map((l) => l.slice(l.indexOf(' ') + 1)))];
+		};
+		const value = (v: string | undefined) => envCaptureLine('run', { SECRET_30: v }).slice('run '.length);
+		assert.ok(await api().secrets!.set(folder('b'), 'SECRET_30', 'tok-30-secret-b'));
+		const inspect = (name: FolderName) => vscode.workspace.getConfiguration('redpandaConnect', folder(name).uri).inspect('secretEnv');
+		assert.deepStrictEqual(inspect('b')?.workspaceFolderValue, ['SECRET_30']);
+		assert.strictEqual(inspect('a')?.workspaceFolderValue, undefined);
+		assert.strictEqual(inspect('b')?.workspaceValue, undefined);
+		assert.deepStrictEqual(await seenBy('b'), [value('tok-30-secret-b')], 'the config in B');
+		assert.deepStrictEqual(await seenBy('a'), [value(undefined)], 'the config in A: not declared there');
+
+		assert.ok(await api().secrets!.set(folder('a'), 'SECRET_30', 'tok-30-secret-a'));
+		assert.deepStrictEqual(await seenBy('a'), [value('tok-30-secret-a')], 'the config in A');
+		assert.deepStrictEqual(await seenBy('b'), [value('tok-30-secret-b')], 'the config in B keeps its own');
+
+		// NO_LEAK: neither the folder settings nor the workspace file hold a value; nothing is logged.
+		for (const file of [WORKSPACE_FILE, path.join(FIXTURE, 'a', '.vscode', 'settings.json'), path.join(FIXTURE, 'b', '.vscode', 'settings.json')]) {
+			assert.ok(!fs.existsSync(file) || !fs.readFileSync(file, 'utf8').includes('tok-30'), file);
+		}
+		assert.ok(!api().outputLines().some((l) => l.includes('tok-30')), 'no value is logged');
 	});
 });

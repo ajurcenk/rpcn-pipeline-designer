@@ -75,7 +75,16 @@
           },
           "default": {},
           "scope": "resource",
-          "markdownDescription": "Environment variables for lint, run and the Bloblang checks (live errors and the test panel), as `\"NAME\": \"value\"` pairs that `${NAME}` in a config reads. They win over `#redpandaConnect.envFile#` and over the environment VS Code was started with. User, workspace and folder values merge by name, the most specific winning. A name must match `[A-Za-z_][A-Za-z0-9_]*` and a value be a string; others are left out (and logged). The values are passed in an owner-only file in the extension's storage, but they are plain text in `settings.json`: keep secrets in the env file."
+          "markdownDescription": "Environment variables for lint, run and the Bloblang checks (live errors and the test panel), as `\"NAME\": \"value\"` pairs that `${NAME}` in a config reads. They win over `#redpandaConnect.envFile#` and over the environment VS Code was started with. User, workspace and folder values merge by name, the most specific winning. A name must match `[A-Za-z_][A-Za-z0-9_]*` and a value be a string; others are left out (and logged). The values are passed in an owner-only file in the extension's storage, but they are plain text in `settings.json`: keep secrets in the env file or in `#redpandaConnect.secretEnv#`."
+        },
+        "redpandaConnect.secretEnv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Names of secret environment variables for lint, run and the Bloblang checks (live errors and the test panel). Only the names are here, so this is safe to commit; the values are kept in VS Code's secret storage on this machine, per workspace folder, and set with **Redpanda Connect: Set secret variable** (which also adds the name here). They reach the binary in its process environment only, so `#redpandaConnect.env#` and `#redpandaConnect.envFile#` win for the same name. A name must match `[A-Za-z_][A-Za-z0-9_]*`. User, workspace and folder lists do not merge: the most specific list is used."
         }
       }
     },
@@ -120,6 +129,21 @@
         "command": "redpandaConnect.testMapping",
         "title": "Test mapping",
         "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.setSecret",
+        "title": "Set secret variable",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.removeSecret",
+        "title": "Remove secret variable",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.clearSecrets",
+        "title": "Clear stored secrets",
+        "category": "Redpanda Connect"
       }
     ],
     "menus": {
@@ -147,6 +171,15 @@
         {
           "command": "redpandaConnect.testMapping",
           "when": "editorLangId == yaml"
+        },
+        {
+          "command": "redpandaConnect.setSecret"
+        },
+        {
+          "command": "redpandaConnect.removeSecret"
+        },
+        {
+          "command": "redpandaConnect.clearSecrets"
         }
       ],
       "editor/title": [

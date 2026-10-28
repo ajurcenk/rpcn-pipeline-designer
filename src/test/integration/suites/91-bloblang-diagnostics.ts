@@ -14,7 +14,7 @@ import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import type { NodeStatus, NodeStatusById } from '../../../shared/protocol';
 import { BLOBLANG_SOURCE } from '../../../adapters/vscode/bloblangDiagnostics';
 import { type ExtensionApi } from '../../../extension';
-import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
+import { bloblParseBody, connectScript, envCaptureLine, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { live, settle, showGraph } from '../graphHelpers';
 import { EXTENSION_ID, runOnEditor, waitFor } from '../helpers';
 
@@ -97,6 +97,8 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 	let capture: string;
 	let counter: string;
 	let bin: string;
+	/** Ticket 30: `SECRET_30` as each lint and blobl saw it. */
+	let seen: string;
 	const originalPath = process.env.PATH;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
@@ -192,6 +194,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		capture = path.join(dir, 'capture');
 		fs.mkdirSync(capture);
 		counter = path.join(dir, 'counter');
+		seen = path.join(dir, 'seen');
 		const blobl = bloblParseBody(capture);
 		const grep = toolPath('grep');
 		const cut = toolPath('cut');
@@ -207,7 +210,7 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		process.env.PATH = (originalPath ?? '').split(path.delimiter)
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
-		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, blobl, lint, counterFile: counter }));
+		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, blobl, lint, counterFile: counter, envCapture: { file: seen, names: ['SECRET_30'] } }));
 		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
 		await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok'
@@ -224,6 +227,8 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		await api().secrets!.clear(async () => true);
+		await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -490,6 +495,34 @@ suite('Live Bloblang diagnostics (integration, 4.5)', function () {
 			assert.ok(last.startsWith(`blobl --env-file ${envFile} --file `), last);
 		} finally {
 			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 EVERY_COMMAND / CHANGE / REMOVE: a stored secret reaches blobl\'s environment; setting, changing or removing it parses again with no edit; no value is logged', async () => {
+		const parsesSeen = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter((l) => l.startsWith('blobl ')) : []);
+		/** Waits for a parse the secret change alone triggers, and returns what it saw. */
+		const reparsed = async (change: () => Promise<boolean>): Promise<string | undefined> => {
+			const count = parsesSeen().length;
+			assert.ok(await change());
+			assert.ok(await waitFor(() => parsesSeen().length > count, 10_000), 'no parse after the secret changed');
+			await quiet();
+			return parsesSeen().pop();
+		};
+		try {
+			const editor = await open('secret-parse.yaml', CONFIG);
+			await replace(editor, 'root.d = 1', 'root.d = 30');
+			await quiet();
+			assert.strictEqual(parsesSeen().pop(), envCaptureLine('blobl', { SECRET_30: undefined }));
+			assert.strictEqual(await reparsed(() => api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-parse')),
+				envCaptureLine('blobl', { SECRET_30: 'tok-30-secret-parse' }));
+			assert.strictEqual(await reparsed(() => api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-parse2')),
+				envCaptureLine('blobl', { SECRET_30: 'tok-30-secret-parse2' }));
+			assert.strictEqual(await reparsed(() => api().secrets!.remove(undefined, 'SECRET_30')), envCaptureLine('blobl', { SECRET_30: undefined }));
+			assert.ok(!bloblArgv().some((l) => l.includes('tok-30')), 'no value in an argv');
+			assert.ok(!api().outputLines().some((l) => l.includes('tok-30-secret')), 'no value is logged');
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
 

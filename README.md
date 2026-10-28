@@ -91,6 +91,7 @@ The graph works from the keyboard. Tab enters it at the first node (the input), 
 | `redpandaConnect.resourceFiles` | `[]` | Resource files passed to lint and run (`--resources`), each entry may be a glob. Can be set per folder. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the folder whose settings set it, else the first workspace folder. |
 | `redpandaConnect.envFile` | `""` | Environment file passed to lint, run and the Bloblang checks (`--env-file`). Can be set per folder. `~` expands to the home directory (on Linux and macOS, `~user` to that user's); a relative path resolves against the folder whose settings set it, else the first workspace folder. |
 | `redpandaConnect.env` | `{}` | Environment variables for lint, run and the Bloblang checks, as `"NAME": "value"` pairs (what `${NAME}` and `env("NAME")` read). They win over `envFile` and over the environment VS Code was started with. User, workspace and folder values merge by name, the most specific winning. See below. |
+| `redpandaConnect.secretEnv` | `[]` | Names of secret environment variables (safe to commit); their values are kept in VS Code's secret storage on this machine, per workspace folder, and set with **Redpanda Connect: Set secret variable**. User, workspace and folder lists do not merge: the most specific list is used. See below. |
 
 ### Environment variables
 
@@ -105,7 +106,21 @@ A config's `${NAME}` values come from three places, each winning over the one be
 
 Editing the setting takes effect at the next lint, run or Bloblang check, with no restart; the live Bloblang errors are checked again at once. A name must match `[A-Za-z_][A-Za-z0-9_]*` and a value be a string; other entries are left out, with one line in the "Redpanda Connect" output channel that names them (never their values). Values are passed exactly as written: spaces, `#`, quotes, backslashes, newlines and `$` included (`${…}` inside a value is not expanded).
 
-The extension passes the variables in a file it writes in its own storage folder (owner-only permissions, one file per set of variables; when the extension starts, files no window has used for a day are removed), as the last `--env-file`. If that file can't be written, the command does not run and says why: lint and the live Bloblang errors in the output channel, Run in the output channel and in a message, and the test panel as the run's error result in the panel itself (not in the output channel). The values are plain text in `settings.json`, so keep secrets in the `envFile` file instead.
+The extension passes the variables in a file it writes in its own storage folder (owner-only permissions, one file per set of variables; when the extension starts, files no window has used for a day are removed), as the last `--env-file`. If that file can't be written, the command does not run and says why: lint and the live Bloblang errors in the output channel, Run in the output channel and in a message, and the test panel as the run's error result in the panel itself (not in the output channel). The values are plain text in `settings.json`, so keep secrets in the `envFile` file or in the secret storage (below) instead.
+
+#### Secret variables
+
+For tokens and passwords, `redpandaConnect.secretEnv` lists only the names, so the setting can be committed, and the values stay in VS Code's secret storage on your machine (the operating system's keychain: Keychain on macOS, Credential Manager on Windows, the Secret Service / GNOME Keyring on Linux):
+
+```json
+"redpandaConnect.secretEnv": ["API_TOKEN"]
+```
+
+- **Redpanda Connect: Set secret variable** asks for the folder (when folders are open, the pick also offers **No folder (files outside the workspace folders)**), then the name, then the value in a password input. The value is stored for that folder, and the name is added to that folder's `redpandaConnect.secretEnv` (the workspace's with one folder open). A secret set with no folder open, or with **No folder**, is stored for files outside every workspace folder and its name is declared in the user settings, so other workspaces see the name too and report once that it has no value there. A name must match `[A-Za-z_][A-Za-z0-9_]*`. If the secret storage refuses the value, nothing is stored or added and an error says so.
+- **Redpanda Connect: Remove secret variable** removes one stored value; the name stays in the setting.
+- **Redpanda Connect: Clear stored secrets** removes every value this extension stored on this machine, after asking.
+
+Lint, Run, the live Bloblang errors and the test panel get each declared secret that has a value for the config's folder in their process environment, never in a file or on the command line. Setting, changing or removing a value takes effect at the next command, with no restart, and the live Bloblang errors are checked again. The env file and the `redpandaConnect.env` setting win over a secret of the same name (the binary reads them after its environment), and one line in the output channel names the variable and the source that wins. A declared name with no value on this machine is left out, with one line naming it and the command that sets it; a command that starts before the secrets have loaded runs without them, with one line saying so. The extension never writes a secret value itself, and text from the binary is masked: each loaded value of 4 or more characters is shown as `•••••` in the output channel, in messages and in the test panel's error results. The pipeline's own data (a test panel's successful output, Run's terminal) is shown as produced.
 
 ## Development
 

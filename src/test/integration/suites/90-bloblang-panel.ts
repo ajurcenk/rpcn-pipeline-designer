@@ -45,7 +45,7 @@ import { LABEL_IN_SAMPLES_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR } from '../
 import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
-import { bloblParseBody, connectScript, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
+import { bloblParseBody, connectScript, envCaptureLine, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
 import { EXTENSION_ID, focusedIn, focusState, runOnEditor, waitFor, waitForAsync } from '../helpers';
 
@@ -124,6 +124,8 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	let capture: string;
 	let counter: string;
 	let bin: string;
+	/** Ticket 30: `SECRET_30` as each run and blobl saw it. */
+	let seen: string;
 	const originalPath = process.env.PATH;
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
@@ -204,12 +206,18 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		capture = path.join(dir, 'capture');
 		fs.mkdirSync(capture);
 		counter = path.join(dir, 'counter');
-		const runBody = mappingTestRunBody(capture);
+		seen = path.join(dir, 'seen');
+		// Ticket 30: a mapping with SECRET_ERR fails quoting the secret; one with SECRET_OK outputs it.
+		const runBody = [
+			`if '${toolPath('grep')}' -q 'SECRET_ERR' "$last"; then echo "level=error msg=\"refused token \${SECRET_30-none}\"" >&2; exit 1; fi`,
+			`if '${toolPath('grep')}' -q 'SECRET_OK' "$last"; then c='{\\"s\\":\\"'"\${SECRET_30-none}"'\\"}'; printf '{"content":"%s","meta":{}}\\n' "$c"; exit 0; fi`,
+			mappingTestRunBody(capture),
+		].join('\n');
 		const bloblBody = bloblParseBody(capture);
 		process.env.PATH = (originalPath ?? '').split(path.delimiter)
 			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
 			.join(path.delimiter);
-		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, run: runBody, blobl: bloblBody, counterFile: counter }));
+		bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, run: runBody, blobl: bloblBody, counterFile: counter, envCapture: { file: seen, names: ['SECRET_30'] } }));
 		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
 		await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
 		assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok'
@@ -226,6 +234,8 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
 		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		await api().secrets!.clear(async () => true);
+		await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -978,6 +988,53 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.ok(argv.includes(`--env-file ${envFile} `), argv);
 		} finally {
 			await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 EVERY_COMMAND / CHANGE / NO_LEAK: a stored secret reaches the test run\'s environment, never its argv, its result or the output channel', async () => {
+		const runsSeen = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter((l) => l.startsWith('run ')) : []);
+		try {
+			const doc = (await open('secret-panel.yaml', CONFIG)).document;
+			const handle = await show(doc.uri, FIRST);
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-panel'));
+			const before = runsSeen().length;
+			const { result } = await run(handle, '{"a":1}');
+			assert.ok(await waitFor(() => runsSeen().length > before, 5_000));
+			assert.strictEqual(runsSeen().pop(), envCaptureLine('run', { SECRET_30: 'tok-30-secret-panel' }));
+			assert.ok(!lastRunArgv().includes('tok-30'), lastRunArgv());
+			assert.ok(!JSON.stringify(result).includes('tok-30'), JSON.stringify(result));
+			// CHANGE: removed, the next run has none.
+			assert.ok(await api().secrets!.remove(undefined, 'SECRET_30'));
+			const again = runsSeen().length;
+			await run(handle, '{"a":1}');
+			assert.ok(await waitFor(() => runsSeen().length > again, 5_000));
+			assert.strictEqual(runsSeen().pop(), envCaptureLine('run', { SECRET_30: undefined }));
+			assert.ok(!handle.posted.some((m) => JSON.stringify(m).includes('tok-30')), 'no value posted to the panel');
+			assert.ok(!api().outputLines().some((l) => l.includes('tok-30')), 'no value is logged');
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 30 masking: an error result quoting a secret value shows •••••; a successful output is shown as produced', async () => {
+		const text = CONFIG.replace('root.b = this.a + 1', 'root.b = "SECRET_ERR"');
+		try {
+			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'tok-30-secret-shown'));
+			const doc = (await open('secret-mask.yaml', text)).document;
+			const handle = await show(doc.uri, FIRST);
+			const { result } = await run(handle, '{"a":1}');
+			assert.ok(result.kind === 'error', JSON.stringify(result));
+			assert.ok(result.message.includes('refused token •••••'), result.message);
+			assert.ok(!result.message.includes('tok-30-secret'), result.message);
+
+			const okDoc = (await open('secret-ok.yaml', text.replace('SECRET_ERR', 'SECRET_OK'))).document;
+			const ok = await run(await show(okDoc.uri, FIRST), '{"a":1}');
+			assert.ok(ok.result.kind === 'ok', JSON.stringify(ok.result));
+			assert.ok(ok.result.content.includes('tok-30-secret-shown'), ok.result.content);
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
 

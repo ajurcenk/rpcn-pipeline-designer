@@ -28,6 +28,10 @@ export { ENV_SETTING };
 export const ENV_SETTING_FOLDER = 'env-setting';
 
 const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Whether `name` is a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`); `secretEnv.ts` (ticket 30) shares it. Pure. */
+export function isValidEnvName(name: string): boolean {
+	return KEY.test(name);
+}
 const FILE = /^env-[0-9a-f]{64}\.env$/;
 /** The HMAC key's file in the folder. */
 export const KEY_FILE = 'key';
