@@ -108,6 +108,22 @@ Editing the setting takes effect at the next lint, run or Bloblang check, with n
 
 The extension passes the variables in a file it writes in its own storage folder (owner-only permissions, one file per set of variables; when the extension starts, files no window has used for a day are removed), as the last `--env-file`. If that file can't be written, the command does not run and says why: lint and the live Bloblang errors in the output channel, Run in the output channel and in a message, and the test panel as the run's error result in the panel itself (not in the output channel). The values are plain text in `settings.json`, so keep secrets in the `envFile` file or in the secret storage (below) instead.
 
+#### The setting, the env file or a secret?
+
+| | `redpandaConnect.env` (setting) | `.env` (the `redpandaConnect.envFile` file) | `redpandaConnect.secretEnv` (secret) |
+|---|---|---|---|
+| Where the values are | `settings.json` (user, workspace or folder) | A file you choose | VS Code's secret storage (the OS keychain), on this machine only |
+| Format | JSON: `{ "TOPIC": "orders.v2" }` | dotenv lines: `TOPIC=orders.v2`, read strictly by Redpanda Connect | Names in the setting, values set with **Set secret variable** |
+| Read by | The extension, which passes them to the binary in a file of its own | The binary itself (`--env-file`) | The extension, which puts them in the command's environment |
+| Wins over | Everything | Secrets and VS Code's environment | VS Code's environment |
+| Levels | User, workspace and folder merge by name | One file per folder (the path can differ per folder) | One value per folder, per machine |
+| Outside VS Code | Only the extension knows it | The same file works with `rpk connect run --env-file .env` in a terminal or CI | Only the extension knows it |
+| Version control | Usually committed with the workspace settings | Usually git-ignored | The names can be committed; the values never reach a file |
+
+Use the env file when the same variables must also work outside VS Code (a terminal, CI, Docker), or to share a template such as `.env.example`. Use the setting for editor-only values and overrides: it wins, so a folder can point at another `TOPIC` without touching the shared `.env`. Use a secret for tokens and passwords; it loses to the other two for the same name, and the Environment view and the output channel say so.
+
+In full, highest first: `redpandaConnect.env`, then the env file, then the extension's `NO_COLOR=1`, then secrets, then VS Code's environment. The Environment view (below) marks the winner and crosses out the rest in this order.
+
 #### Secret variables
 
 For tokens and passwords, `redpandaConnect.secretEnv` lists only the names, so the setting can be committed, and the values stay in VS Code's secret storage on your machine (the operating system's keychain: Keychain on macOS, Credential Manager on Windows, the Secret Service / GNOME Keyring on Linux):
