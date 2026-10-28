@@ -85,6 +85,7 @@
 - source_plan: `_bmad-output/backlog/story-secret-environment-variables-kept-in-the-secret-storage-plan.md`
   summary: The schema cache in the extension's global storage (`schema-<key>.json`, about 2 MB each) is never pruned, and live-parse temporary files (`bloblang-parse-*.blobl`) can be left behind.
   evidence: found while building ticket 30 (2026-10-28): the test profile's storage held 7001 schema files (14 GB; the tests make a new fake binary per run) and 465 parse files dated from 2026-10-13. For a user, one stale file per binary they have used; nothing removes them.
+  resolution: not a user bug (checked 2026-10-28): `SchemaStore` (`src/adapters/redpandaConnect/schema.ts`, since 2026-10-06) touches each schema file on use and, after each successful write, deletes `schema-<16 hex>.json` files unused for more than 30 days; `parseMapping` removes its temporary file on every path, so a parse file is left only when the extension host is killed mid-parse (as test runs can be). The growth is the test profile's: each run makes new fake binaries, so a day of runs writes many schemas, all younger than 30 days. The test profile was cleaned by hand again (166 schemas, 6 parse files, 331 MB).
 
 - source_plan: `_bmad-output/backlog/story-secret-environment-variables-kept-in-the-secret-storage-plan.md`
   summary: Ticket 30's env-file clash warning scans `^NAME=` only, so a line with spaces around `=` (`API_TOKEN = x`), which the binary applies, gets no "the env file wins" warning.
