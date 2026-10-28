@@ -3,7 +3,7 @@ title: 'The test panel offers to set a variable its run found unset'
 type: 'feature'
 ticket: '32'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: 'd47d631e63160b91460793edf66d435f98ea2e97'
 route: 'full'
 route_source: 'auto'
@@ -107,4 +107,4 @@ Quick review. Verdicts: 0 high, 2 medium, 4 low.
 **Manual checks:**
 - Dev host on 1.143.1, `.vscode-test/manual-env-view`: a mapping using `${REGION}`; the test panel's "Set REGION…" by mouse and by keyboard; set as plain, the panel runs again; then the Environment view shows REGION under the setting.
 
-Result (2026-10-28, after the review patches): stable 1040 passing; multiroot 7 passing; corpus 156 passed; webview 317 passed. Manual check: pending.
+Result (2026-10-28, after the review patches): stable 1040 passing; multiroot 7 passing; corpus 156 passed; webview 317 passed. Manual check: done by the user on the 1.143.1 dev host (2026-10-28), example `.vscode-test/manual-env-view/region-check.yaml` (REGION set as plain, AREA as secret, by mouse and keyboard), no issues.
