@@ -16,7 +16,7 @@ estimate: ""
 
 ## Description
 
-After tickets 29 and 30, variables come from four places (the `env` setting, secrets, the env file and VS Code's environment) and nothing shows which value a config gets. When this is done, a Redpanda Connect container in the Activity Bar has an Environment view for the active config: its variables grouped by source, the value that wins marked, overridden ones crossed out, secrets masked, and every `${VAR}` the config uses but nothing sets flagged with an action that sets it. The test panel's "could not run" result for an unset variable offers the same action.
+After tickets 29 and 30, variables come from four places (the `env` setting, secrets, the env file and VS Code's environment) and nothing shows which value a config gets. When this is done, a Redpanda Connect container in the Activity Bar has an Environment view for the active config: its variables grouped by source, the value that wins marked, overridden ones crossed out, secrets masked, and every `${VAR}` the config uses but nothing sets flagged with an action that sets it. The test panel's button for an unset variable is ticket 32.
 
 ## Acceptance Criteria
 
@@ -33,7 +33,6 @@ After tickets 29 and 30, variables come from four places (the `env` setting, sec
    **Given** the config uses `${REGION}` and no source sets it
    **When** the view shows the config
    **Then** `REGION` is listed as missing with an action that sets it (as a plain or a secret variable)
-   **And** the test panel's "could not run" result for it offers the same action
 4. **Actions from the view**
    **Given** the view
    **When** the user adds, edits or removes a variable, or opens the env file
@@ -46,6 +45,7 @@ After tickets 29 and 30, variables come from four places (the `env` setting, sec
 ## Boundaries
 
 - Must not change: how variables reach the commands (tickets 29 and 30); the env file is read for display only.
+- Not part of this story: the test panel's set button (ticket 32).
 
 ## References
 
@@ -56,5 +56,5 @@ After tickets 29 and 30, variables come from four places (the `env` setting, sec
 ## Notes
 
 - Decision (user, 2026-10-27): split from ticket 30; option B (sidebar view) over the full editor panel (C).
-- Open question: how far "used" goes: `${VAR}` in the YAML only, or also Bloblang's `env("VAR")`; settle it at planning.
-- Open question: the display reads the env file's names and values with the extension's own reading of dotenv; where it differs from the binary's, the view may show what the binary does not do. Settle at planning (e.g. names only).
+- Decision (user, 2026-10-28): the test panel's set button is split off as ticket 32.
+- Decision (user, 2026-10-28): "used" is `${VAR}` in the YAML (`${VAR:default}` never missing) plus `env("VAR")` with a literal name; the env file's names are shown with values masked, read with the binary's strict `NAME=value` form, and a rejected line is flagged.
