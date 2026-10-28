@@ -3,7 +3,7 @@ title: 'Set secret variable declares the name at the level the folder count give
 type: 'bugfix'
 ticket: '33'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: '80895a4868e1c85dd98a6411e1e3d1a0ebfe440a'
 route: 'oneshot'
 route_source: 'auto'
@@ -71,4 +71,4 @@ Quick review. Verdicts: 0 high, 1 medium, 3 low, 0 false.
 
 ## Verification Result
 
-2026-10-28: the new test failed on the baseline and passes with the fix. After the review patches: multiroot 8 passing, stable 1040 passing. Before the patches, one stable run had 2 failures in ticket 32's Set NAME… block (OTHER_NAME: the secret was not set; CANCEL: nothing was offered). The code those tests run does not change here (a config in no folder still declares at the user level), and they passed in the next run, so they are recorded in deferred-work as a flake. Webview and corpus runs are not affected (no webview or core change) and were not run. Manual check: none needed beyond the tests (the reproduction is the multiroot test).
+2026-10-28: the new test failed on the baseline and passes with the fix. After the review patches: multiroot 8 passing, stable 1040 passing. Before the patches, one stable run had 2 failures in ticket 32's Set NAME… block (OTHER_NAME: the secret was not set; CANCEL: nothing was offered). The code those tests run does not change here (a config in no folder still declares at the user level), and they passed in the next run, so they are recorded in deferred-work as a flake. Webview and corpus runs are not affected (no webview or core change) and were not run. Manual check: none needed beyond the tests (the reproduction is the multiroot test); the user marked it done on 2026-10-28 without a dev-host check.
