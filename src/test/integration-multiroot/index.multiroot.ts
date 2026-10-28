@@ -3,6 +3,7 @@
 // a `*.test.js` file, so the stable and floor runs (which open no folder) never load it.
 import * as vscode from 'vscode';
 import './suites/settings';
+import './suites/environment';
 
 // As the stable run's root hook: the suites open detected YAML, so the graph does not auto-open.
 suiteSetup(async () => {

@@ -40,8 +40,15 @@ suite('adapters/redpandaConnect secretEnv', () => {
 	});
 
 	test('env file names: only NAME=… lines, as the binary reads them; export, spaces, NAME: v and comments are not', () => {
-		const names = envFileNames('A=1\nexport B=2\n  C=3\nD = 4\nF: 5\n# G=6\nH\nE_1="x"\r\nnot a line\n');
-		assert.deepStrictEqual([...names].sort(), ['A', 'E_1']);
+		// Ticket 31: export, NAME: v and a bare name make the binary reject the whole file, so each is checked on its own.
+		assert.deepStrictEqual([...envFileNames('A=1\n# G=6\nE_1="x"\r\n  C=3\nD=4\n')].sort(), ['A', 'E_1']);
+		for (const rejected of ['A=1\nexport B=2\n', 'A=1\nF: 5\n', 'A=1\nH\n', 'A=1\nnot a line\n']) {
+			assert.deepStrictEqual([...envFileNames(rejected)], [], rejected);
+		}
+	});
+
+	test('ticket 31: env file names: spaces around = are applied, as the binary applies them', () => {
+		assert.deepStrictEqual([...envFileNames('API_TOKEN = x\nB =2\nC= 3\n')].sort(), ['API_TOKEN', 'B', 'C']);
 	});
 
 	test('masking: values of 4+ characters become •••••, longer ones first; shorter ones are kept', () => {

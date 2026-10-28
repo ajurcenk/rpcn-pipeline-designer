@@ -144,6 +144,54 @@
         "command": "redpandaConnect.clearSecrets",
         "title": "Clear stored secrets",
         "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.environment.add",
+        "title": "Add variable",
+        "category": "Redpanda Connect",
+        "icon": "$(add)"
+      },
+      {
+        "command": "redpandaConnect.environment.edit",
+        "title": "Edit value",
+        "category": "Redpanda Connect",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "redpandaConnect.environment.remove",
+        "title": "Remove",
+        "category": "Redpanda Connect",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "redpandaConnect.environment.showValue",
+        "title": "Show value",
+        "category": "Redpanda Connect",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "redpandaConnect.environment.hideValue",
+        "title": "Hide value",
+        "category": "Redpanda Connect",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "redpandaConnect.environment.openEnvFile",
+        "title": "Open env file",
+        "category": "Redpanda Connect",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "redpandaConnect.environment.refresh",
+        "title": "Refresh",
+        "category": "Redpanda Connect",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "redpandaConnect.setMissingVariable",
+        "title": "Set variable",
+        "category": "Redpanda Connect",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -180,6 +228,38 @@
         },
         {
           "command": "redpandaConnect.clearSecrets"
+        },
+        {
+          "command": "redpandaConnect.environment.add",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.edit",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.remove",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.showValue",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.hideValue",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.openEnvFile",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.refresh",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.setMissingVariable",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -203,6 +283,85 @@
           "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath in redpandaConnect.graphOpenPaths",
           "group": "navigation"
         }
+      ],
+      "view/title": [
+        {
+          "command": "redpandaConnect.environment.add",
+          "when": "view == redpandaConnect.environment",
+          "group": "navigation@1"
+        },
+        {
+          "command": "redpandaConnect.environment.openEnvFile",
+          "when": "view == redpandaConnect.environment",
+          "group": "navigation@2"
+        },
+        {
+          "command": "redpandaConnect.environment.refresh",
+          "when": "view == redpandaConnect.environment",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "redpandaConnect.setMissingVariable",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^missing$/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.showValue",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\bmasked\\b/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.hideValue",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\brevealed\\b/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.edit",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable (plain|secret)\\b/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.remove",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable (plain\\b|secret hasValue\\b)/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.openEnvFile",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\benvFileSet\\b/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.setMissingVariable",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^missing$/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "redpandaConnect.environment.showValue",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\bmasked\\b/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "redpandaConnect.environment.hideValue",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\brevealed\\b/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "redpandaConnect.environment.edit",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable (plain|secret)\\b/",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "redpandaConnect.environment.remove",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable (plain\\b|secret hasValue\\b)/",
+          "group": "1_actions@4"
+        },
+        {
+          "command": "redpandaConnect.environment.openEnvFile",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\benvFileSet\\b/",
+          "group": "1_actions@5"
+        }
       ]
     },
     "grammars": [
@@ -221,7 +380,26 @@
           "source.yaml.1.0"
         ]
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "redpandaConnect",
+          "title": "Redpanda Connect",
+          "icon": "media/redpanda-connect.svg"
+        }
+      ]
+    },
+    "views": {
+      "redpandaConnect": [
+        {
+          "id": "redpandaConnect.environment",
+          "name": "Environment",
+          "contextualTitle": "Redpanda Connect",
+          "icon": "media/redpanda-connect.svg"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

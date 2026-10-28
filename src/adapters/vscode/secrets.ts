@@ -44,7 +44,7 @@ export interface SecretVariablesOptions {
 }
 
 /** A scope: a workspace folder, or the window (no folder). */
-type Scope = vscode.WorkspaceFolder | undefined;
+export type Scope = vscode.WorkspaceFolder | undefined;
 
 const scopeOf = (folder: Scope): string => (folder ? folder.uri.toString() : WINDOW_SCOPE);
 const labelOf = (folder: Scope): string => (folder ? `folder "${folder.name}"` : 'this window');
@@ -271,33 +271,42 @@ export class SecretVariables implements vscode.Disposable {
 		return keys.length - left.length;
 	}
 
-	/** "Set secret variable": a folder (multi-root), a name, then the value (password input). */
-	async setCommand(): Promise<void> {
-		const folder = await pickFolder('Set a secret variable for which folder?');
+	/**
+	 * "Set secret variable": a folder (multi-root), a name, then the value (password input). With
+	 * `prefill` (ticket 31's Environment view, ticket 32's test panel), the folder is given and the
+	 * name input starts with `prefill.name`. `input` is the input box (a test seam). Returns whether
+	 * a value was set.
+	 */
+	async setCommand(
+		prefill?: { readonly folder: Scope; readonly name?: string },
+		input: (options: vscode.InputBoxOptions) => Thenable<string | undefined> = vscode.window.showInputBox,
+	): Promise<boolean> {
+		const folder = prefill ? prefill.folder : await pickFolder('Set a secret variable for which folder?');
 		if (folder === null) {
-			return;
+			return false;
 		}
-		const name = await vscode.window.showInputBox({
+		const name = await input({
 			title: `Secret variable for ${labelOf(folder)}`,
 			prompt: 'The variable name, as ${NAME} reads it. It is added to redpandaConnect.secretEnv; the value is kept in the secret storage on this machine.',
 			placeHolder: 'API_TOKEN',
+			...(prefill?.name !== undefined ? { value: prefill.name } : {}),
 			ignoreFocusOut: true,
 			validateInput: (text) => secretNameProblem(text.trim()),
 		});
 		if (name === undefined) {
-			return;
+			return false;
 		}
 		const trimmed = name.trim();
-		const value = await vscode.window.showInputBox({
+		const value = await input({
 			title: `Value of ${trimmed} for ${labelOf(folder)}`,
 			prompt: 'Kept in the secret storage on this machine, never in a settings file.',
 			password: true,
 			ignoreFocusOut: true,
 		});
 		if (value === undefined) {
-			return;
+			return false;
 		}
-		await this.setAndTell(folder, trimmed, value);
+		return this.setAndTell(folder, trimmed, value);
 	}
 
 	/** `set`, then "Secret variable X is set" when it worked (the command's last step). */
@@ -346,7 +355,7 @@ export class SecretVariables implements vscode.Disposable {
 
 	registerCommands(): vscode.Disposable[] {
 		return [
-			vscode.commands.registerCommand(SET_SECRET_COMMAND, () => this.setCommand()),
+			vscode.commands.registerCommand(SET_SECRET_COMMAND, () => this.setCommand().then(() => undefined)),
 			vscode.commands.registerCommand(REMOVE_SECRET_COMMAND, () => this.removeCommand()),
 			vscode.commands.registerCommand(CLEAR_SECRETS_COMMAND, () => this.clearCommand()),
 		];

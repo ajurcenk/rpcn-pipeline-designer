@@ -184,6 +184,14 @@ function resolveArgsFiles(env: ArgsEnvironment): ArgsFiles | ArgsFailure {
 	return envFile.kind === 'ok' ? { kind: 'ok', resourceFiles, envFile: envFile.path } : envFile;
 }
 
+/**
+ * The `redpandaConnect.envFile` path the commands pass for a config (`resource`), resolved as they
+ * resolve it; the Environment view (ticket 31) reads it for display. Never throws.
+ */
+export function envFileFor(resource?: vscode.Uri): EnvFileResult {
+	return resolveEnvFile(defaultArgsEnvironment(resource));
+}
+
 /** The `redpandaConnect.envFile` setting as an absolute path (`undefined` when unset). Never throws. */
 function resolveEnvFile(env: ArgsEnvironment): EnvFileResult {
 	const envSetting = typeof env.envFileSetting === 'string' ? env.envFileSetting.trim() : '';

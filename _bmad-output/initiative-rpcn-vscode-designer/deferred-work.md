@@ -86,3 +86,12 @@
   summary: The schema cache in the extension's global storage (`schema-<key>.json`, about 2 MB each) is never pruned, and live-parse temporary files (`bloblang-parse-*.blobl`) can be left behind.
   evidence: found while building ticket 30 (2026-10-28): the test profile's storage held 7001 schema files (14 GB; the tests make a new fake binary per run) and 465 parse files dated from 2026-10-13. For a user, one stale file per binary they have used; nothing removes them.
 
+- source_plan: `_bmad-output/backlog/story-secret-environment-variables-kept-in-the-secret-storage-plan.md`
+  summary: Ticket 30's env-file clash warning scans `^NAME=` only, so a line with spaces around `=` (`API_TOKEN = x`), which the binary applies, gets no "the env file wins" warning.
+  evidence: re-probed 2026-10-28 on 4.100.0 and 4.112.0: `A = 1` sets A. The secret is still passed and the binary's precedence still applies; only the warning is missed. Ticket 31's `src/core/envFileRead.ts` reads the binary's rules and could be reused.
+  resolution: fixed in ticket 31 (review row 7): `envFileNames` reads with `envFileRead`.
+
+- source_plan: `_bmad-output/backlog/story-an-environment-view-shows-each-configs-variables-plan.md`
+  summary: Ticket 30's "Set secret variable" declares the name at folder level whenever a `.code-workspace` file is open (`workspaceFile !== undefined`), so a single folder opened through a workspace file gets folder settings, unlike ticket 31's rule (by the number of folders) and the README.
+  evidence: found in ticket 31's review (row 6); ticket 31 changed its own level choice only.
+

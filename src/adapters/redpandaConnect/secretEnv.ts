@@ -13,6 +13,7 @@
 // binary (output lines, messages, the test panel's error results). No `vscode` import.
 
 import * as fs from 'fs';
+import { readEnvFile } from '../../core/envFileRead';
 import { ENV_FILE_SETTING, ENV_SETTING } from './commandLine';
 import { isValidEnvName } from './envSetting';
 
@@ -89,20 +90,14 @@ export function declaredSecretNames(raw: unknown): DeclaredSecretNames {
 	return { names, invalid };
 }
 
-// Exactly what both binaries apply (probed 2026-10-28): `export NAME=`, `NAME: v`, leading spaces or
-// spaces around `=` are not.
-const ENV_FILE_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=/;
-
-/** The names an env file's content sets (`NAME=…` lines, as the binary reads them). Pure. */
+/**
+ * The names an env file's content sets, as the binary reads it (`envFileRead.ts`, re-probed
+ * 2026-10-28): `NAME=…` and `NAME = …` are applied; reading stops at a line starting with a space;
+ * a file the binary rejects (`export NAME=`, `NAME: v`, …) sets none. Pure.
+ */
 export function envFileNames(content: string): Set<string> {
-	const names = new Set<string>();
-	for (const line of content.split(/\r?\n/)) {
-		const match = ENV_FILE_LINE.exec(line);
-		if (match) {
-			names.add(match[1]);
-		}
-	}
-	return names;
+	const read = readEnvFile(content);
+	return new Set(read.problem?.kind === 'rejected' ? [] : read.variables.map((v) => v.name));
 }
 
 /** The log line for a declared name without a value here (the name only). */

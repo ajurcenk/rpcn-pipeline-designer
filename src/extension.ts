@@ -22,6 +22,7 @@ import { GraphPanels } from './adapters/graphPanel/panels';
 import { BloblangPanels } from './adapters/bloblangPanel/panels';
 import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import { SecretVariables } from './adapters/vscode/secrets';
+import { EnvironmentView } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import type { JsonObject } from './core/schema';
 
@@ -79,6 +80,11 @@ export interface ExtensionApi {
 	 * in `ExtensionMode.Test`: elsewhere any extension could read the values through it.
 	 */
 	readonly secrets?: Pick<SecretVariables, 'set' | 'remove' | 'clear' | 'reload' | 'settled' | 'recordedKeys' | 'values' | 'onDidChange'>;
+	/**
+	 * The Environment view (ticket 31): its items, the config it shows, its refreshes, and its prompts
+	 * and settings write to replace. Only in `ExtensionMode.Test`, as `secrets`: its items carry values.
+	 */
+	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'configUri' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -258,6 +264,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		vscode.languages.registerCodeLensProvider({ language: 'yaml' }, bloblangLens),
 	);
 
+	// The Environment view (ticket 31): reads the four sources for the active config; writes through the settings and `secrets`.
+	const environment = new EnvironmentView({ detection, secrets, log });
+	context.subscriptions.push(environment, ...environment.register());
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
@@ -271,7 +281,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(context.extensionMode === vscode.ExtensionMode.Test ? { secrets } : {}),
+		...(context.extensionMode === vscode.ExtensionMode.Test ? { secrets, environment } : {}),
 		outputLines: () => [...lines],
 	};
 }
