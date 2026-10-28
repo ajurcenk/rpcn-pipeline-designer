@@ -94,4 +94,5 @@
 - source_plan: `_bmad-output/backlog/story-an-environment-view-shows-each-configs-variables-plan.md`
   summary: Ticket 30's "Set secret variable" declares the name at folder level whenever a `.code-workspace` file is open (`workspaceFile !== undefined`), so a single folder opened through a workspace file gets folder settings, unlike ticket 31's rule (by the number of folders) and the README.
   evidence: found in ticket 31's review (row 6); ticket 31 changed its own level choice only.
+  resolution: ticketed as backlog 33 (2026-10-28): `_bmad-output/backlog/bug-set-secret-variable-declares-the-name-in-the-folder-settings-of-a-one-folder-workspace.md`.
 
