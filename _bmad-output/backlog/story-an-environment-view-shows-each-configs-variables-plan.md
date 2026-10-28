@@ -3,7 +3,7 @@ title: 'An Environment view shows each config''s variables, their sources and th
 type: 'feature'
 ticket: '31'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: '3e34f8f5d61efd082d3075b719443775a5a1cf61'
 route: 'full'
 route_source: 'auto'
@@ -114,4 +114,4 @@ Quick review. Verdicts: 0 high, 1 medium, 6 low. No value reaches a label, toolt
 **Manual checks:**
 - Dev host on 1.143.1: the view on a config with all four sources; reveal/hide; a missing `${REGION}` set as plain and as secret; a bad `.env` line flagged; keyboard only and with a screen reader (Orca), the items read their state.
 
-Result (2026-10-28, after the review patches): stable 1030 passing; multiroot 7 passing; corpus 156 passed; webview 311 passed. Manual checks: pending.
+Result (2026-10-28, after the review patches): stable 1030 passing; multiroot 7 passing; corpus 156 passed; webview 311 passed. Manual checks: done by the user on the 1.143.1 dev host (2026-10-28), example folder .vscode-test/manual-env-view, no issues.
