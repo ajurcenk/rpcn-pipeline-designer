@@ -123,7 +123,7 @@ export type EnvSettingWriter = (config: vscode.WorkspaceConfiguration, value: Re
 
 const defaultWriter: EnvSettingWriter = (config, value, target) => config.update('env', value, target);
 
-const TARGETS: Readonly<Record<SettingLevel, vscode.ConfigurationTarget>> = {
+export const SETTING_TARGETS: Readonly<Record<SettingLevel, vscode.ConfigurationTarget>> = {
 	user: vscode.ConfigurationTarget.Global,
 	workspace: vscode.ConfigurationTarget.Workspace,
 	folder: vscode.ConfigurationTarget.WorkspaceFolder,
@@ -153,7 +153,7 @@ export async function writeEnvSettingKey(
 	} else {
 		next[name] = value;
 	}
-	await write(config, Object.keys(next).length > 0 ? next : undefined, TARGETS[level]);
+	await write(config, Object.keys(next).length > 0 ? next : undefined, SETTING_TARGETS[level]);
 }
 
 /** `text` crossed out (a combining long stroke after each character). */

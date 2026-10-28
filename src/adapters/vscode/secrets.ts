@@ -17,6 +17,7 @@ import {
 	CLEAR_SECRETS_COMMAND, declaredSecretNames, isSecretKey, parseSecretKey, REMOVE_SECRET_COMMAND, SECRET_ENV_SETTING,
 	SecretValues, secretKey, secretNameProblem, SET_SECRET_COMMAND, WINDOW_SCOPE,
 } from '../redpandaConnect/secretEnv';
+import { newVariableLevel, SETTING_TARGETS } from './environmentView';
 
 /** How long a load trusts this window's write over an older value read back. */
 const WRITE_SETTLE_MS = 5_000;
@@ -397,22 +398,24 @@ export class SecretVariables implements vscode.Disposable {
 	}
 
 	/**
-	 * Adds `name` to `secretEnv` at the folder level (multi-root), the workspace level (one folder)
-	 * or the user level (no folder). When that level has no value yet, it starts from the effective
-	 * list, so the names of a less specific level are not hidden (lists do not merge). Returns why
-	 * it failed, if it did.
+	 * Adds `name` to `secretEnv` at the level a new plain variable gets (`newVariableLevel`): the
+	 * folder level with more than one workspace folder, the workspace level with one (also through a
+	 * workspace file), the user level with none. Lists do not merge, so when a more specific level
+	 * already has a list (a folder list from before bug 33), the name goes to that list instead, or
+	 * it would be hidden. When the chosen level has no value yet, it starts from the effective list,
+	 * so the names of a less specific level are not hidden either. Returns why it failed, if it did.
 	 */
 	private async declare(folder: Scope, name: string): Promise<string | undefined> {
 		const config = vscode.workspace.getConfiguration('redpandaConnect', folder?.uri);
-		const target = !folder
-			? vscode.ConfigurationTarget.Global
-			: vscode.workspace.workspaceFile
-				? vscode.ConfigurationTarget.WorkspaceFolder
-				: vscode.ConfigurationTarget.Workspace;
 		const inspected = config.inspect<unknown>('secretEnv');
-		const atTarget = target === vscode.ConfigurationTarget.Global
-			? inspected?.globalValue
-			: target === vscode.ConfigurationTarget.Workspace ? inspected?.workspaceValue : inspected?.workspaceFolderValue;
+		const values = { user: inspected?.globalValue, workspace: inspected?.workspaceValue, folder: inspected?.workspaceFolderValue };
+		const order = ['user', 'workspace', 'folder'] as const;
+		const ruled = newVariableLevel(folder, vscode.workspace.workspaceFolders?.length ?? 0);
+		const level = folder
+			? order.slice(order.indexOf(ruled)).reverse().find((l) => Array.isArray(values[l])) ?? ruled
+			: ruled;
+		const target = SETTING_TARGETS[level];
+		const atTarget = values[level];
 		const base = Array.isArray(atTarget) ? atTarget : (Array.isArray(config.get<unknown>('secretEnv')) ? config.get<unknown[]>('secretEnv')! : []);
 		if (base.includes(name)) {
 			return undefined;

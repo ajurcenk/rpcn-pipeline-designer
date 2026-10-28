@@ -294,4 +294,43 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		}
 		assert.ok(!api().outputLines().some((l) => l.includes('tok-30')), 'no value is logged');
 	});
+
+	// Last: it changes the workspace's folders. Removing the second folder keeps the first, so the
+	// extension host does not restart.
+	test('bug 33: in a workspace file holding one folder, a secret set for that folder is declared in the workspace settings', async () => {
+		const b = folder('b');
+		const changed = (count: number) => new Promise<void>((resolve) => {
+			const sub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+				if ((vscode.workspace.workspaceFolders ?? []).length === count) {
+					sub.dispose();
+					resolve();
+				}
+			});
+		});
+		const removed = changed(1);
+		assert.ok(vscode.workspace.updateWorkspaceFolders(1, 1));
+		await removed;
+		try {
+			assert.ok(vscode.workspace.workspaceFile, 'the workspace file is still open');
+			assert.ok(await api().secrets!.set(folder('a'), 'SECRET_33', 'tok-33-secret'));
+			const inspect = vscode.workspace.getConfiguration('redpandaConnect', folder('a').uri).inspect('secretEnv');
+			assert.deepStrictEqual(inspect?.workspaceValue, ['SECRET_33'], 'declared in the workspace file');
+			assert.strictEqual(inspect?.workspaceFolderValue, undefined, 'not in the folder\'s settings');
+
+			// A folder list declared before the fix stays, and gets the next name: the workspace list
+			// would be hidden by it (lists do not merge).
+			const a = () => vscode.workspace.getConfiguration('redpandaConnect', folder('a').uri);
+			await a().update('secretEnv', ['OLD_33'], vscode.ConfigurationTarget.WorkspaceFolder);
+			assert.ok(await api().secrets!.set(folder('a'), 'NEXT_33', 'tok-33-secret-next'));
+			assert.deepStrictEqual(a().inspect('secretEnv')?.workspaceFolderValue, ['OLD_33', 'NEXT_33'], 'added to the folder\'s list');
+			assert.deepStrictEqual(a().inspect('secretEnv')?.workspaceValue, ['SECRET_33'], 'the workspace list is unchanged');
+			assert.deepStrictEqual(a().get('secretEnv'), ['OLD_33', 'NEXT_33'], 'the effective list holds the new name');
+		} finally {
+			// b first: the suites after this one need both folders.
+			const added = changed(2);
+			assert.ok(vscode.workspace.updateWorkspaceFolders(1, 0, { uri: b.uri, name: b.name }));
+			await added;
+			await vscode.workspace.getConfiguration('redpandaConnect', folder('a').uri).update('secretEnv', undefined, vscode.ConfigurationTarget.Workspace);
+		}
+	});
 });
