@@ -3,7 +3,7 @@ title: 'Secret environment variables kept in the secret storage reach every comm
 type: 'feature'
 ticket: '30'
 created: '2026-10-27'
-status: 'built'
+status: done
 baseline_revision: '9a9da717f1ae80a73344aae9e36690bc4bf7dd22'
 route: 'full'
 route_source: 'auto'
@@ -115,4 +115,4 @@ Quick review. Verdicts: 1 high, 4 medium, 4 low, 1 false.
 **Manual checks (hitl):**
 - Dev host on 1.143.1 (Linux, GNOME Keyring / libsecret): set a secret, Run prints it via `env()`, the output channel and Run's terminal show no value; set again, remove, clear; reload the window: the secret is still there (after clear: gone). macOS / Windows / Remote-WSL when available.
 
-Result (2026-10-28, after the review patches): stable 990 passing; multiroot 6 passing; corpus 156 passed. Manual checks (hitl): pending.
+Result (2026-10-28, after the review patches): stable 990 passing; multiroot 6 passing; corpus 156 passed. Manual checks (hitl): done by the user on Linux, 1.143.1 dev host (2026-10-28), no issues: set, mask, run, set again, reload, remove, clear, settings hold the name only. macOS, Windows and Remote / WSL not run (not available; Windows waits on story 1).
