@@ -1,5 +1,6 @@
 {
   "type": "result",
+  "id": 2,
   "result": {
     "kind": "failed",
     "message": "failed assignment (line 2): field `this.price`: expected number value, got string (\"12.50\")",

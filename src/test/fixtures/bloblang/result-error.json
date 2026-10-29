@@ -1,5 +1,6 @@
 {
   "type": "result",
+  "id": 1,
   "result": {
     "kind": "error",
     "message": "level=error msg=\"Config lint error\" lint=\"(1,1) required environment variables were not set: [API_TOKEN]\""

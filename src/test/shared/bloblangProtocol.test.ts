@@ -29,7 +29,7 @@ const SAMPLES: readonly BloblangSample[] = [
 const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 	{ type: 'snapshot', title: 'Bloblang: first', kind: 'mapping', source: 'root = this', binary: 'ok', samples: [], selected: null },
 	{ type: 'snapshot', title: 'Bloblang: pipeline.processors[0]', kind: 'mutation', source: '', binary: 'missing', samples: SAMPLES, selected: 'order' },
-	...RESULTS.map((result, i): BloblangHostMessage => ({ type: 'result', result, durationMs: i * 1.5, binary: i % 2 ? null : 'rpk connect 4.112.0' })),
+	...RESULTS.map((result, i): BloblangHostMessage => ({ type: 'result', id: i, result, durationMs: i * 1.5, binary: i % 2 ? null : 'rpk connect 4.112.0' })),
 	{ type: 'samples', samples: [], selected: null },
 	{ type: 'samples', samples: SAMPLES, selected: null },
 	{ type: 'samples', samples: SAMPLES, selected: SAMPLES[1].name },
@@ -48,14 +48,14 @@ const HOST_MESSAGES: readonly BloblangHostMessage[] = [
 ];
 
 const okWith = (patch: Record<string, unknown>) => ({
-	type: 'result', durationMs: 1, binary: null,
+	type: 'result', id: 0, durationMs: 1, binary: null,
 	result: { kind: 'ok', content: '', meta: {}, changes: { fields: null, meta: NONE }, ...patch },
 });
 const snapshotWith = (patch: Record<string, unknown>) => ({
 	type: 'snapshot', title: 't', kind: 'mapping', source: '', binary: 'ok', samples: [], selected: null, ...patch,
 });
 const PARSE_ERROR = { kind: 'parseError', message: 'm', excerpt: 'e', mappingLine: 1, mappingChar: 1, fileLine: 1, fileChar: 1 };
-const resultOf = (result: unknown) => ({ type: 'result', result, durationMs: 1, binary: null });
+const resultOf = (result: unknown) => ({ type: 'result', id: 0, result, durationMs: 1, binary: null });
 
 /** An object whose `field` getter throws. */
 function throwing(base: Record<string, unknown>, field: string): Record<string, unknown> {
@@ -125,10 +125,10 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			{ type: 'binary' },
 			{ type: 'binary', status: 'broken' },
 			// result envelope
-			{ type: 'result', result: { kind: 'deleted' }, durationMs: -1, binary: null },
-			{ type: 'result', result: { kind: 'deleted' }, durationMs: Number.NaN, binary: null },
-			{ type: 'result', result: { kind: 'deleted' }, durationMs: 1 },
-			{ type: 'result', result: { kind: 'deleted' }, durationMs: 1, binary: 4 },
+			{ type: 'result', id: 0, result: { kind: 'deleted' }, durationMs: -1, binary: null },
+			{ type: 'result', id: 0, result: { kind: 'deleted' }, durationMs: Number.NaN, binary: null },
+			{ type: 'result', id: 0, result: { kind: 'deleted' }, durationMs: 1 },
+			{ type: 'result', id: 0, result: { kind: 'deleted' }, durationMs: 1, binary: 4 },
 			resultOf({ kind: 'nope' }),
 			resultOf(null),
 			// ok
@@ -252,7 +252,7 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			assert.strictEqual(parseBloblangWebviewMessage(message), undefined, `#${i}`);
 		});
 	});
-	test('SET_VARIABLE (ticket 32): missingVariables, variableSet and setVariableRequested take valid names only', () => {
+	test('SET_VARIABLE (tickets 32, 36): missingVariables, variableSet and setVariableRequested take valid names only, and result ids', () => {
 		for (const result of [
 			{ kind: 'error', message: 'm', missingVariables: ['REGION', 'ZONE'] },
 			{ kind: 'error', message: 'm', missingVariables: ['_a1'] },
@@ -272,17 +272,26 @@ suite('shared/bloblangProtocol (4.2, 4.4, AD-5)', () => {
 			{ type: 'variableSet', name: '' },
 			{ type: 'variableSet', name: 'A B' },
 			{ type: 'variableSet', name: 7 },
+			// Ticket 36: a result's id is a non-negative integer.
+			...[undefined, -1, 0.5, Number.NaN, '0', null].map((id) => ({ ...resultOf({ kind: 'deleted' }), id })),
 		];
 		badHost.forEach((message, i) => assert.strictEqual(parseBloblangHostMessage(message), undefined, `host #${i}`));
-		assert.deepStrictEqual(parseBloblangWebviewMessage({ type: 'setVariableRequested', name: 'REGION', value: 'x' }), { type: 'setVariableRequested', name: 'REGION' });
+		for (const id of [0, 1, 41]) {
+			assert.deepStrictEqual(parseBloblangHostMessage({ ...resultOf({ kind: 'deleted' }), id }), { ...resultOf({ kind: 'deleted' }), id });
+		}
+		assert.deepStrictEqual(parseBloblangWebviewMessage({ type: 'setVariableRequested', name: 'REGION', resultId: 3, value: 'x' }), { type: 'setVariableRequested', name: 'REGION', resultId: 3 });
 		const badWebview: unknown[] = [
 			{ type: 'setVariableRequested' },
-			{ type: 'setVariableRequested', name: '' },
-			{ type: 'setVariableRequested', name: 'REGION ZONE' },
-			{ type: 'setVariableRequested', name: '9LIVES' },
-			{ type: 'setVariableRequested', name: 'a.b' },
-			{ type: 'setVariableRequested', name: ['REGION'] },
-			throwing({ type: 'setVariableRequested' }, 'name'),
+			{ type: 'setVariableRequested', name: '', resultId: 0 },
+			{ type: 'setVariableRequested', name: 'REGION ZONE', resultId: 0 },
+			{ type: 'setVariableRequested', name: '9LIVES', resultId: 0 },
+			{ type: 'setVariableRequested', name: 'a.b', resultId: 0 },
+			{ type: 'setVariableRequested', name: ['REGION'], resultId: 0 },
+			throwing({ type: 'setVariableRequested', resultId: 0 }, 'name'),
+			// Ticket 36: NO_ID, a request without a valid result id.
+			{ type: 'setVariableRequested', name: 'REGION' },
+			...[-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '1', null].map((resultId) => ({ type: 'setVariableRequested', name: 'REGION', resultId })),
+			throwing({ type: 'setVariableRequested', name: 'REGION' }, 'resultId'),
 		];
 		badWebview.forEach((message, i) => {
 			assert.doesNotThrow(() => parseBloblangWebviewMessage(message), `webview #${i}`);

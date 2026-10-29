@@ -92,13 +92,17 @@
 // `addLabelRequested`) are refused (logged, nothing posted). Tracking keeps it on its side of the
 // kinds (ticket 22's `sameSide`), so its kind never changes.
 // Ticket 32: an `error` result may list the variables an unset `${VAR}` stopped the run on
-// (`missingVariables`), and the webview offers Set NAME… for each. `setVariableRequested {name}` for
-// a name the panel's latest posted result lists (any other is logged and ignored) runs ticket 31's
+// (`missingVariables`), and the webview offers Set NAME… for each. Each posted `result` has an `id`
+// (ticket 36: one counter per panel), which the webview sends back with the request.
+// `setVariableRequested {name, resultId}` for the id of the panel's latest posted result and a name
+// that result lists (any other is logged and ignored) runs ticket 31's
 // set action (`SET_MISSING_COMMAND`, for the name and the panel's config: plain or secret, as there);
 // when it set a value, the panel gets `variableSet {name}` and the webview runs again with Run on
 // change (as Retry's recovery does). A cancelled set, or a secret set under another name (its
-// prefilled name can be edited), posts nothing. Nothing is offered once the webview shows no result
-// (`ready`, the no-binary or removed state), nor a name that secret masking would change.
+// prefilled name can be edited), posts nothing. Nothing is offered once the webview drops its result
+// (the no-binary or removed state), nor a name that secret masking would change. A reloaded webview's
+// `ready` clears nothing (ticket 36): the id says which result the webview shows, so a result and a
+// `ready` that cross do not lose its Set NAME….
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -321,10 +325,12 @@ class BloblangPanel implements BloblangPanelHandle {
 	/** While From previous step runs (4.18): another request is ignored. */
 	private seeding = false;
 	/**
-	 * The variables the latest posted result offers to set (ticket 32); none: `[]`, also once the
-	 * webview shows no result (it reloaded, or the no-binary or removed state was posted).
+	 * The latest posted result's id and the variables it offers to set (tickets 32, 36); none before
+	 * the first result and once the webview drops its result (the no-binary or removed state was posted).
 	 */
-	private offered: readonly string[] = [];
+	private offered: { readonly id: number; readonly names: readonly string[] } | undefined;
+	/** The next posted result's id (ticket 36). */
+	private nextResultId = 0;
 	/** The path of the processor the panel follows (4.10); while removed, its last one. */
 	path: string;
 	/** Its label (4.10); while removed, its last one. */
@@ -392,8 +398,6 @@ class BloblangPanel implements BloblangPanelHandle {
 				return;
 			}
 			if (msg?.type === 'ready') {
-				// Ticket 32: a reloaded webview shows no result, so nothing is offered.
-				this.offered = [];
 				await this.postSnapshot();
 			} else if (msg?.type === 'run') {
 				await this.run({ content: msg.content, meta: msg.meta });
@@ -408,7 +412,7 @@ class BloblangPanel implements BloblangPanelHandle {
 			} else if (msg?.type === 'retryRequested') {
 				await this.owner.actions?.retry();
 			} else if (msg?.type === 'setVariableRequested') {
-				await this.setVariable(msg.name);
+				await this.setVariable(msg.name, msg.resultId);
 			} else if (msg?.type === 'sampleAdded') {
 				await this.change({ type: 'add', sample: { name: msg.name, content: '', meta: {} } });
 			} else if (msg?.type === 'sampleRenamed') {
@@ -887,10 +891,19 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	/**
 	 * Set NAME… (ticket 32): ticket 31's set action for `name`, which the latest result must list, and
-	 * the panel's config; `variableSet` when it set a value.
+	 * the panel's config; `variableSet` when it set a value. `resultId` must be the latest posted
+	 * result's id (ticket 36).
 	 */
-	private async setVariable(name: string): Promise<void> {
-		if (!this.offered.includes(name)) {
+	private async setVariable(name: string, resultId: number): Promise<void> {
+		if (this.offered === undefined) {
+			this.owner.log(`Test mapping: ${this.panel.title}: setVariableRequested ignored: no result is offered.`);
+			return;
+		}
+		if (this.offered.id !== resultId) {
+			this.owner.log(`Test mapping: ${this.panel.title}: setVariableRequested ignored: result ${resultId} is not the latest.`);
+			return;
+		}
+		if (!this.offered.names.includes(name)) {
 			this.owner.log(`Test mapping: ${this.panel.title}: setVariableRequested ignored: the latest result does not list ${name}.`);
 			return;
 		}
@@ -929,8 +942,9 @@ class BloblangPanel implements BloblangPanelHandle {
 							this.hint = line !== undefined && text !== undefined ? { line, text } : undefined;
 							this.updateHint();
 							const shown = maskedResult(result, this.uri);
-							this.offered = shown.kind === 'error' ? shown.missingVariables ?? [] : [];
-							await this.post({ type: 'result', ...outcome, result: shown });
+							const id = this.nextResultId++;
+							this.offered = { id, names: shown.kind === 'error' ? shown.missingVariables ?? [] : [] };
+							await this.post({ type: 'result', id, ...outcome, result: shown });
 						}
 					}
 				} finally {
@@ -1019,7 +1033,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		if ((message.type === 'binary' && message.status !== 'ok')
 			|| (message.type === 'snapshot' && (message.removed === true || message.binary !== 'ok'))) {
 			// Ticket 32: the webview drops its result in the no-binary and removed states, so nothing is offered.
-			this.offered = [];
+			this.offered = undefined;
 		}
 		this.posted.push(message);
 		if (this.posted.length > MAX_BLOBLANG_POSTED) {

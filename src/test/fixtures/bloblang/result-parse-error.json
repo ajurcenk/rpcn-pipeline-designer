@@ -1,5 +1,6 @@
 {
   "type": "result",
+  "id": 5,
   "result": {
     "kind": "parseError",
     "message": "required: expected comma or closing bracket",

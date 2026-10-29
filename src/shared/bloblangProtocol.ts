@@ -117,8 +117,12 @@ export type BloblangHostMessage =
 		readonly samplesFile?: string;
 		readonly previousStep?: string;
 	}
-	/** The result of the latest `run`, how long it took, and the binary that ran it (`null`: none). */
-	| { readonly type: 'result'; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
+	/**
+	 * The result of the latest `run`, how long it took, and the binary that ran it (`null`: none).
+	 * `id` (ticket 36): a non-negative integer the panel counts up per posted result; the webview
+	 * sends it back with `setVariableRequested`.
+	 */
+	| { readonly type: 'result'; readonly id: number; readonly result: BloblangResult; readonly durationMs: number; readonly binary: string | null }
 	/** The samples changed; `samplesError` as in `snapshot`. */
 	| { readonly type: 'samples'; readonly samples: readonly BloblangSample[]; readonly selected: string | null; readonly samplesError?: string }
 	/** The binary's status changed. */
@@ -151,8 +155,11 @@ export type BloblangWebviewMessage =
 	 * and save the last output as a new sample of this processor.
 	 */
 	| { readonly type: 'sampleFromPreviousRequested' }
-	/** Set NAME… (ticket 32): set a variable the current `error` result lists in `missingVariables`. */
-	| { readonly type: 'setVariableRequested'; readonly name: string };
+	/**
+	 * Set NAME… (ticket 32): set a variable the current `error` result lists in `missingVariables`;
+	 * `resultId` (ticket 36) is the `id` of the result the webview shows.
+	 */
+	| { readonly type: 'setVariableRequested'; readonly name: string; readonly resultId: number };
 
 type Obj = Record<string, unknown>;
 
@@ -162,6 +169,8 @@ const isKind = (v: unknown): v is BloblangProcessorKind => v === 'mapping' || v 
 const isBinaryStatus = (v: unknown): v is BinaryStatus => v === 'ok' || v === 'missing' || v === 'invalid' || v === 'unresolved';
 /** A 1-based line or char. */
 const isPosition = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
+/** A result id (ticket 36): a non-negative integer. */
+const isResultId = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 const isOptionalPosition = (v: unknown): boolean => v === undefined || isPosition(v);
 /** Absent, or a non-empty string (a file name). */
 const isOptionalName = (v: unknown): boolean => v === undefined || (isString(v) && v !== '');
@@ -262,7 +271,7 @@ export function parseBloblangHostMessage(message: unknown): BloblangHostMessage 
 					&& isOptionalName(message.fileName) && isOptionalName(message.samplesFile) && isOptionalName(message.previousStep);
 				break;
 			case 'result':
-				ok = isResult(message.result)
+				ok = isResultId(message.id) && isResult(message.result)
 					&& typeof message.durationMs === 'number' && Number.isFinite(message.durationMs) && message.durationMs >= 0
 					&& (message.binary === null || isString(message.binary));
 				break;
@@ -332,8 +341,8 @@ export function parseBloblangWebviewMessage(message: unknown): BloblangWebviewMe
 				return isSampleName(from) && isSampleName(to) ? { type: 'sampleRenamed', from, to } : undefined;
 			}
 			case 'setVariableRequested': {
-				const name = message.name;
-				return isEnvName(name) ? { type: 'setVariableRequested', name } : undefined;
+				const { name, resultId } = message;
+				return isEnvName(name) && isResultId(resultId) ? { type: 'setVariableRequested', name, resultId } : undefined;
 			}
 			case 'goToLine': {
 				const line = message.line;

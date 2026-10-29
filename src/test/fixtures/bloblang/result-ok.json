@@ -1,5 +1,6 @@
 {
   "type": "result",
+  "id": 4,
   "result": {
     "kind": "ok",
     "content": "{\"a\":1,\"b\":3,\"c\":4}",

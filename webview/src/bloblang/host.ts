@@ -56,7 +56,7 @@ export function readViewState(state: unknown): ViewState {
 
 /** A well-formed `ok` result, checked as the host's `result` message would be. */
 function isOkResult(v: unknown): v is Extract<BloblangResult, { kind: 'ok' }> {
-	const message = parseBloblangHostMessage({ type: 'result', result: v, durationMs: 0, binary: null });
+	const message = parseBloblangHostMessage({ type: 'result', id: 0, result: v, durationMs: 0, binary: null });
 	return message?.type === 'result' && message.result.kind === 'ok';
 }
 

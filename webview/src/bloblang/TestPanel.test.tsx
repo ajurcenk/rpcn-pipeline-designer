@@ -14,7 +14,8 @@
 // Ticket 4.11: the keyboard and screen-reader model (names, the Tab walk, the tabs pattern, Esc, the
 // one announcer, focus on the removed notice), every row of the plan's matrix but FOCUS_CSS (style.test.ts).
 // Ticket 32: Set NAME… on a run stopped by unset variables (OFFERED, BAD_NAME, OTHER_ERRORS, the
-// posted message, and the run after `variableSet` with Run on change on and off).
+// posted message, and the run after `variableSet` with Run on change on and off). Ticket 36: the
+// posted message carries the shown result's id (WEBVIEW_SENDS_ID).
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -41,9 +42,12 @@ let root: Root;
 let posted: BloblangWebviewMessage[];
 let saved: ViewState[];
 
+/** The id `send` gives a `result` sent without one (ticket 36: the host counts them per panel). */
+let nextResultId = 0;
 const send = async (message: BloblangHostMessage | Record<string, unknown>) => {
+	const data = message.type === 'result' && !('id' in message) ? { ...message, id: nextResultId++ } : message;
 	await act(async () => {
-		window.dispatchEvent(new MessageEvent('message', { data: JSON.parse(JSON.stringify(message)) }));
+		window.dispatchEvent(new MessageEvent('message', { data: JSON.parse(JSON.stringify(data)) }));
 	});
 };
 
@@ -1356,7 +1360,7 @@ describe('Bloblang test panel: keyboard and screen reader (4.11)', () => {
 		await withResult(OK_TOTAL);
 		await send({ type: 'result', result, durationMs: 5, binary: null });
 		expect(live()).toBe(text);
-		expect(announcement({ type: 'result', result: result as never, durationMs: 5, binary: null })).toBe(text);
+		expect(announcement({ type: 'result', id: 0, result: result as never, durationMs: 5, binary: null })).toBe(text);
 		const sr = host.querySelector('.rpcn-bl-sr');
 		expect([...host.querySelectorAll('[role="alert"], [role="status"], [aria-live]')]).toEqual([sr]);
 		expect(host.querySelector('.rpcn-bl-pill')?.hasAttribute('role')).toBe(false);
@@ -1542,8 +1546,8 @@ describe('Bloblang test panel: generate mapping (16)', () => {
 		await send({ type: 'result', result: { ...OK_GEN, content: '{"id":"y"}' }, durationMs: 30, binary: null });
 		expect(node()).toBe(second);
 		expect(live()).toBe('Ran in 12 ms.');
-		expect(announcementKey({ type: 'result', result: OK_GEN, durationMs: 1, binary: null }, false))
-			.not.toBe(announcementKey({ type: 'result', result: { ...OK_GEN, content: '{}' }, durationMs: 1, binary: null }, false));
+		expect(announcementKey({ type: 'result', id: 0, result: OK_GEN, durationMs: 1, binary: null }, false))
+			.not.toBe(announcementKey({ type: 'result', id: 0, result: { ...OK_GEN, content: '{}' }, durationMs: 1, binary: null }, false));
 	});
 
 	it('PROCESSOR_UNCHANGED: a mapping snapshot keeps the Input column, an empty input runs nothing, and the announcer says the changes', async () => {
@@ -1552,8 +1556,8 @@ describe('Bloblang test panel: generate mapping (16)', () => {
 		expect([...host.querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Input', 'Output']);
 		expect(host.querySelector<HTMLButtonElement>('.rpcn-bl-run')!.disabled).toBe(true);
 		expect(runs()).toEqual([]);
-		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null })).toMatch(/^Ran in 1 ms\. ./);
-		expect(announcement({ type: 'result', result: OK_B2, durationMs: 1, binary: null }, false)).toBe('Ran in 1 ms.');
+		expect(announcement({ type: 'result', id: 0, result: OK_B2, durationMs: 1, binary: null })).toMatch(/^Ran in 1 ms\. ./);
+		expect(announcement({ type: 'result', id: 0, result: OK_B2, durationMs: 1, binary: null }, false)).toBe('Ran in 1 ms.');
 	});
 });
 
@@ -1576,16 +1580,26 @@ describe('Bloblang test panel: Set NAME… (ticket 32)', () => {
 		const message = card()!.querySelector('.rpcn-bl-message')!;
 		expect(setButtons().every((b) => message.compareDocumentPosition(b) === Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 		// The announcer says the result as for any other could-not-run result.
-		expect(live()).toBe(announcement({ type: 'result', result: { kind: 'error', message: LINT }, durationMs: 3, binary: null }));
+		expect(live()).toBe(announcement({ type: 'result', id: 0, result: { kind: 'error', message: LINT }, durationMs: 3, binary: null }));
 	});
 
-	it('POSTED: a button posts setVariableRequested with its name, and runs nothing', async () => {
+	it('POSTED: a button posts setVariableRequested with its name and the result id, and runs nothing', async () => {
 		await render({ content: '{"a":1}' });
 		await send(SNAPSHOT);
-		await send({ type: 'result', result: UNSET, durationMs: 3, binary: null });
+		await send({ type: 'result', id: 4, result: UNSET, durationMs: 3, binary: null });
 		const before = posted.length;
 		await click(setButtons()[1]);
-		expect(posted.slice(before)).toEqual([{ type: 'setVariableRequested', name: 'ZONE' }]);
+		expect(posted.slice(before)).toEqual([{ type: 'setVariableRequested', name: 'ZONE', resultId: 4 }]);
+	});
+
+	it('WEBVIEW_SENDS_ID (ticket 36): after two results, a button posts the shown result\'s id', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', id: 7, result: { kind: 'error', message: LINT, missingVariables: ['ZONE'] }, durationMs: 3, binary: null });
+		await send({ type: 'result', id: 8, result: UNSET, durationMs: 3, binary: null });
+		const before = posted.length;
+		await click(setButtons()[0]);
+		expect(posted.slice(before)).toEqual([{ type: 'setVariableRequested', name: 'REGION', resultId: 8 }]);
 	});
 
 	it.each([true, false])('SET_RERUN / NO_RERUN (Run on change %s): variableSet runs the current input again only with Run on change', async (runOnChange) => {

@@ -25,7 +25,8 @@
 // snapshot's `previousStep`; a run seam for non-string output metadata.
 // Ticket 23: From previous step from a generate input feeding `pipeline.processors[0]` (its run, chained).
 // Ticket 32: Set NAME… (`setVariableRequested`) on a run stopped by an unset variable, through ticket
-// 31's set action with its prompts replaced (`api().environment.ui`).
+// 31's set action with its prompts replaced (`api().environment.ui`). Ticket 36: a request names its
+// result by id; only the latest posted result's is accepted, also after a late `ready`.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -48,7 +49,7 @@ import { TEST_MAPPING_LENS_TITLE, testMappingLensTitle } from '../../../adapters
 import { LABEL_IN_SAMPLES_ERROR, LABEL_RULE_ERROR, LABEL_TAKEN_ERROR } from '../../../core/labelEdit';
 import { bloblangString } from '../../../core/bloblangRun';
 import { type ExtensionApi } from '../../../extension';
-import type { BloblangHostMessage, BloblangResult } from '../../../shared/bloblangProtocol';
+import type { BloblangHostMessage } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, envCaptureLine, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
 import { EXTENSION_ID, focusedIn, focusState, runOnEditor, waitFor, waitForAsync } from '../helpers';
@@ -168,7 +169,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 	}
 
 	/** Posts `run {content, meta}` as the webview would and returns the result posted for it. */
-	async function run(handle: BloblangPanelHandle, input: string, meta: Record<string, string> = {}): Promise<{ result: BloblangResult; binary: string | null }> {
+	async function run(handle: BloblangPanelHandle, input: string, meta: Record<string, string> = {}): Promise<Extract<BloblangHostMessage, { type: 'result' }>> {
 		const before = results(handle).length;
 		await handle.receive({ type: 'run', content: input, meta });
 		const all = results(handle);
@@ -562,10 +563,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		const variableSets = (handle: BloblangPanelHandle) => handle.posted.filter((m) => m.type === 'variableSet');
 
 		/**
-		 * A panel whose webview has posted all its `ready` messages (bug 35): a `ready` arriving after the
-		 * test's own run would clear the offered names, as a reloaded webview shows no result. The test
-		 * build's StrictMode runs the webview's mount effect twice, so it posts `ready` twice: wait until
-		 * no new snapshot comes for a while.
+		 * A panel whose webview has posted all its `ready` messages (bug 35): the test build's StrictMode
+		 * runs the webview's mount effect twice, so it posts `ready` twice: wait until no new snapshot
+		 * comes for a while. Since ticket 36 a late `ready` clears nothing (LATE_READY); the wait keeps
+		 * the webview's own messages before the test's.
 		 */
 		async function shown(uri: vscode.Uri, processorPath: string): Promise<BloblangPanelHandle> {
 			const handle = await show(uri, processorPath);
@@ -579,13 +580,13 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			}
 		}
 
-		/** The BROKEN processor's panel after a run the unset variable stopped. */
-		async function stopped(name: string): Promise<BloblangPanelHandle> {
+		/** The BROKEN processor's panel after a run the unset variable stopped, and that result's id. */
+		async function stopped(name: string): Promise<{ handle: BloblangPanelHandle; id: number }> {
 			const doc = (await open(name, CONFIG)).document;
 			const handle = await shown(doc.uri, 'pipeline.processors[4]');
-			const result = (await run(handle, '{"a":1}')).result;
+			const { result, id } = await run(handle, '{"a":1}');
 			assert.deepStrictEqual(result.kind === 'error' && result.missingVariables, ['BROKEN']);
-			return handle;
+			return { handle, id };
 		}
 
 		setup(() => {
@@ -604,10 +605,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		});
 
 		test('SET_RERUN (plain): ticket 31\'s set action runs for the name and the panel\'s config; the value is set; the panel gets variableSet', async () => {
-			const handle = await stopped('unset-plain.yaml');
+			const { handle, id } = await stopped('unset-plain.yaml');
 			const before = runs();
 			script(['plain'], ['eu-west']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.deepStrictEqual(picked, ['BROKEN']);
 			assert.strictEqual(asked[0].title, 'Value of BROKEN');
 			// No folder is open: a new plain variable goes to the user settings (ticket 31).
@@ -618,10 +619,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		});
 
 		test('SET_RERUN (secret): a secret goes through ticket 30\'s set flow with the name prefilled; the host runs nothing itself', async () => {
-			const handle = await stopped('unset-secret.yaml');
+			const { handle, id } = await stopped('unset-secret.yaml');
 			const before = runs();
 			script(['secret'], [(o) => o.value, 'tok-32']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.strictEqual(asked[0].value, 'BROKEN', 'the name is prefilled');
 			assert.strictEqual(asked[1].password, true);
 			assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'BROKEN'), 'tok-32');
@@ -631,9 +632,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		});
 
 		test('SET_RERUN (the run after it): the run the webview sends on variableSet gets the plain value; the unset-variable error is gone', async () => {
-			const handle = await stopped('unset-rerun.yaml');
+			const { handle, id } = await stopped('unset-rerun.yaml');
 			script(['plain'], ['eu-west']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
 			// The webview's run on variableSet (Run on change on): the same input.
 			const { result } = await run(handle, '{"a":1}');
@@ -643,9 +644,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		});
 
 		test('OTHER_NAME: a secret set under another name than the requested one (its prefilled name edited) posts no variableSet', async () => {
-			const handle = await stopped('unset-other-name.yaml');
+			const { handle, id } = await stopped('unset-other-name.yaml');
 			script(['secret'], [() => 'OTHER_32', 'tok-32-other']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'OTHER_32'), 'tok-32-other', 'the secret is set');
 			assert.deepStrictEqual(variableSets(handle), []);
 		});
@@ -654,27 +655,83 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'BROKEN'));
 			const doc = (await open('unset-masked.yaml', CONFIG)).document;
 			const handle = await shown(doc.uri, 'pipeline.processors[4]');
-			const { result } = await run(handle, '{"a":1}');
+			const { result, id } = await run(handle, '{"a":1}');
 			assert.ok(result.kind === 'error', JSON.stringify(result));
 			assert.strictEqual(result.missingVariables, undefined, JSON.stringify(result));
 			assert.ok(!result.message.includes('BROKEN'), result.message);
 			script(['plain'], ['x']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.deepStrictEqual(picked, [], 'nothing is offered');
 		});
 
-		test('RELOAD: after the webview\'s ready (a reload shows no result), the earlier result\'s names are not offered', async () => {
-			const handle = await stopped('unset-reload.yaml');
+		test('LATE_READY (ticket 36): a ready (or two) after the result does not stop a request with its id', async () => {
+			const { handle, id } = await stopped('unset-late-ready.yaml');
+			// A hidden panel shown again during a run: its new webview's ready comes after the result.
 			await handle.receive({ type: 'ready' });
+			await handle.receive({ type: 'ready' });
+			script(['plain'], ['eu-west']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
+			assert.deepStrictEqual(picked, ['BROKEN']);
+			assert.deepStrictEqual(config().inspect('env')?.globalValue, { BROKEN: 'eu-west' });
+			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
+		});
+
+		test('STALE_ID (ticket 36): after another result, a request with the earlier one\'s id is ignored; the latest one\'s is accepted', async () => {
+			const { handle, id } = await stopped('unset-stale.yaml');
+			const next = await run(handle, '{"a":1}');
+			assert.deepStrictEqual(next.result.kind === 'error' && next.result.missingVariables, ['BROKEN'], 'the next result lists the name too');
+			assert.notStrictEqual(next.id, id);
+			script(['plain'], ['eu-west']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
+			assert.deepStrictEqual(picked, [], 'the earlier result\'s id is ignored');
+			assert.deepStrictEqual(variableSets(handle), []);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: next.id });
+			assert.deepStrictEqual(picked, ['BROKEN']);
+			assert.deepStrictEqual(variableSets(handle), [{ type: 'variableSet', name: 'BROKEN' }]);
+		});
+
+		test('NO_ID (ticket 36): a request without a result id, or with a malformed one, is ignored', async () => {
+			const { handle, id } = await stopped('unset-no-id.yaml');
 			script(['plain'], ['x']);
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			for (const resultId of [undefined, -1, id + 0.5, String(id), null]) {
+				await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId });
+			}
 			assert.deepStrictEqual(picked, []);
 			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
 			assert.deepStrictEqual(variableSets(handle), []);
 		});
 
+		test('NO_BINARY_REMOVED (ticket 36): once the binary is lost (the webview drops its result), its id is ignored', async () => {
+			const { handle, id } = await stopped('unset-no-binary.yaml');
+			script(['plain'], ['x']);
+			try {
+				await loseBinary('gone-set-name', dir);
+				assert.ok(await waitFor(() => binaries(handle).includes('missing'), 10_000), JSON.stringify(binaries(handle)));
+				await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
+			} finally {
+				await restoreBinary(bin);
+			}
+			assert.ok(await waitFor(() => binaries(handle).at(-1) === 'ok', 10_000), JSON.stringify(binaries(handle)));
+			assert.deepStrictEqual(picked, []);
+			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+			assert.deepStrictEqual(variableSets(handle), []);
+		});
+
+		test('NO_BINARY_REMOVED (ticket 36): once the processor is removed (the webview drops its result), its id is ignored', async () => {
+			const { handle, id } = await stopped('unset-removed.yaml');
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === handle.uri.toString())!;
+			await setText(doc, CONFIG.replace('    - mapping: root = "${NOT_SET} BROKEN"\n', ''));
+			assert.ok(await waitFor(() => lastSnapshot(handle)?.removed === true, 5_000), 'removed');
+			script(['plain'], ['x']);
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
+			assert.deepStrictEqual(picked, []);
+			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+			assert.deepStrictEqual(variableSets(handle), []);
+			assert.ok(await doc.save());
+		});
+
 		test('CANCEL: a cancelled pick, value or secret changes nothing and posts nothing', async () => {
-			const handle = await stopped('unset-cancel.yaml');
+			const { handle, id } = await stopped('unset-cancel.yaml');
 			const before = { runs: runs(), posted: handle.posted.length };
 			for (const [kinds, inputs] of [
 				[[undefined], []],
@@ -682,7 +739,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				[['secret'], [(o: vscode.InputBoxOptions) => o.value, undefined]],
 			] as const) {
 				script([...kinds], [...inputs]);
-				await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+				await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			}
 			assert.deepStrictEqual(picked, ['BROKEN', 'BROKEN', 'BROKEN']);
 			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
@@ -691,22 +748,24 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.strictEqual(runs(), before.runs);
 		});
 
-		test('UNKNOWN_REQUEST: a name the current result does not list, a malformed one, or any name after another result, is ignored', async () => {
-			const handle = await stopped('unset-unknown.yaml');
+		test('UNKNOWN_REQUEST: a name the current result does not list (NOT_LISTED), a malformed one, or any name after another result, is ignored', async () => {
+			const { handle, id } = await stopped('unset-unknown.yaml');
 			script(['plain', 'plain'], ['x', 'x']);
-			await handle.receive({ type: 'setVariableRequested', name: 'NOT_SET' });
-			await handle.receive({ type: 'setVariableRequested', name: 'bad name' });
-			await handle.receive({ type: 'setVariableRequested' });
+			await handle.receive({ type: 'setVariableRequested', name: 'NOT_SET', resultId: id });
+			await handle.receive({ type: 'setVariableRequested', name: 'bad name', resultId: id });
+			await handle.receive({ type: 'setVariableRequested', resultId: id });
 			assert.deepStrictEqual(picked, [], 'the set action never ran');
 			// Another processor's result lists nothing: BROKEN is not offered by it.
 			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === handle.uri.toString())!;
 			const other = await shown(doc.uri, FIRST);
-			await run(other, '{"a":1}');
-			await other.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			const otherId = (await run(other, '{"a":1}')).id;
+			await other.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: otherId });
 			// The same panel, after a result that lists nothing (its mapping fixed in the open document).
 			await setText(doc, CONFIG.replace('root = "${NOT_SET} BROKEN"', 'root = deleted()'));
-			assert.deepStrictEqual((await run(handle, '{"a":1}')).result, { kind: 'deleted' });
-			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN' });
+			const fixed = await run(handle, '{"a":1}');
+			assert.deepStrictEqual(fixed.result, { kind: 'deleted' });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: fixed.id });
+			await handle.receive({ type: 'setVariableRequested', name: 'BROKEN', resultId: id });
 			assert.deepStrictEqual(picked, []);
 			assert.strictEqual(config().inspect('env')?.globalValue, undefined);
 			assert.deepStrictEqual([...variableSets(handle), ...variableSets(other)], []);
