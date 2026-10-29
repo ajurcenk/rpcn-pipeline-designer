@@ -106,3 +106,4 @@
 - source_plan: `_bmad-output/backlog/bug-the-test-panels-set-name-tests-sometimes-get-their-request-ignored-plan.md`
   summary: A Set NAME… click can be ignored when a hidden test panel's webview is recreated while a run the old webview sent is still in flight, and its result reaches the new webview before the host handles the new `ready` (which clears the offered names).
   evidence: bug 35's review (finding 2): `retainContextWhenHidden: false` recreates the webview on reveal; the host does not tie a result to the webview that sent its run; `ready` sets `offered = []` (`panels.ts`). Needs a hide and reveal within one run; a click then only logs "setVariableRequested ignored", and Run offers the name again. Not reproduced.
+  resolution: ticketed as backlog 36 (2026-10-29): `_bmad-output/backlog/bug-set-name-is-ignored-after-the-test-panel-reloads-during-a-run.md`.
