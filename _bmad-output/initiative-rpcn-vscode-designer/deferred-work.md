@@ -107,3 +107,7 @@
   summary: A Set NAME… click can be ignored when a hidden test panel's webview is recreated while a run the old webview sent is still in flight, and its result reaches the new webview before the host handles the new `ready` (which clears the offered names).
   evidence: bug 35's review (finding 2): `retainContextWhenHidden: false` recreates the webview on reveal; the host does not tie a result to the webview that sent its run; `ready` sets `offered = []` (`panels.ts`). Needs a hide and reveal within one run; a click then only logs "setVariableRequested ignored", and Run offers the name again. Not reproduced.
   resolution: ticketed as backlog 36 (2026-10-29): `_bmad-output/backlog/bug-set-name-is-ignored-after-the-test-panel-reloads-during-a-run.md`.
+
+- source_plan: `_bmad-output/backlog/bug-the-graph-navigation-tests-are-flaky-on-ci-plan.md`
+  summary: Suite 84's `LATE_USER_EDITOR` ("another text editor made active past the wait: the late sequence moves no focus to the YAML") fails about 1 in 4 to 5 runs when both CPUs are kept busy locally ("the YAML group is not locked: 2 !== 1").
+  evidence: bug 37's loaded runs (2026-10-29, `taskset -c 0,1` with two busy loops): 3 failures in 13 runs of every graph suite, logs in `.vscode-test/bug37/fix-*.log` on that machine. It uses neither `withGraph` nor bug 37's wait; it has not failed on CI. Not checked on the commit before bug 37 (the user chose to commit first); the same lock-sequence family as bug 19 and the floor's RETAKE_STEAL.

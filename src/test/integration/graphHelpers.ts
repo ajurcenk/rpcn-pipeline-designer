@@ -79,12 +79,36 @@ export const SWITCH = [
 export const SWITCH_ID = 'path:pipeline.processors[0]';
 export const MAPPING_ID = 'path:pipeline.processors[0].switch[0].processors[0]';
 
+/**
+ * Waits until the graph's own webview has posted `ready` and the panel answered every one (bug 37):
+ * at least one, then none new for 500 ms (the test build's StrictMode posts two). Then it sends the
+ * host seam's `ready`, so the test gets a snapshot as before. A `ready` the webview posted after the
+ * test moved the cursor would carry that node in its snapshot, and the move would post no selection.
+ * For a panel just created by the extension's own registry: a panel made with
+ * `ignoreWebviewMessages` never counts one, and a revealed panel has counted its first load already.
+ */
+export async function graphReady(handle: GraphPanelHandle): Promise<void> {
+	// As the panel suite's first ready (PANEL, 80): a webview boot on a loaded runner can be slow.
+	assert.ok(await waitFor(() => handle.webviewReadies > 0, 30_000),
+		'the graph webview never posted ready (a panel made with ignoreWebviewMessages never counts one)');
+	let quiet = false;
+	for (let seen = handle.webviewReadies, round = 0; round < 20; seen = handle.webviewReadies, round++) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		if (handle.webviewReadies === seen) {
+			quiet = true;
+			break;
+		}
+	}
+	assert.ok(quiet, `the graph webview kept posting ready (${handle.webviewReadies})`);
+	await handle.receive({ type: 'ready' });
+}
+
 /** Opens `text` with its graph, and gets the webview's snapshot (the host seam). */
 export async function withGraph(name: string, text: string): Promise<{ doc: vscode.TextDocument; editor: vscode.TextEditor; handle: GraphPanelHandle }> {
 	const doc = await open(name, text);
 	const editor = vscode.window.visibleTextEditors.find((e) => e.document === doc)!;
 	const handle = await showGraph(doc);
-	await handle.receive({ type: 'ready' });
+	await graphReady(handle);
 	return { doc, editor, handle };
 }
 

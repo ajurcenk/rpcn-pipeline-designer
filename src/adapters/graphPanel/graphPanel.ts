@@ -35,10 +35,17 @@ export interface GraphPanelHandle {
 	 * late, by lock, skip, expiry or disposal). `open` resolves earlier; production never awaits it.
 	 */
 	readonly lockSettled: Promise<void>;
+	/**
+	 * Test seam (bug 37): the `ready` messages the webview itself posted and the panel has answered
+	 * (two in a development build, StrictMode). A test waits for them before it moves the cursor: a
+	 * later snapshot carries the cursor's node, so that move would post no `selection` of its own.
+	 */
+	readonly webviewReadies: number;
 }
 
 export class GraphPanel implements GraphPanelHandle {
 	readonly posted: HostMessage[] = [];
+	webviewReadies = 0;
 	private settle!: () => void;
 	readonly lockSettled = new Promise<void>((resolve) => {
 		this.settle = resolve;
@@ -106,7 +113,12 @@ export class GraphPanel implements GraphPanelHandle {
 		ignoreWebviewMessages = false,
 	) {
 		if (!ignoreWebviewMessages) {
-			this.subscriptions.push(panel.webview.onDidReceiveMessage((m) => this.receive(m)));
+			this.subscriptions.push(panel.webview.onDidReceiveMessage(async (m) => {
+				await this.receive(m);
+				if ((m as { type?: unknown } | null)?.type === 'ready') {
+					this.webviewReadies++;
+				}
+			}));
 		}
 	}
 
