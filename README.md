@@ -95,6 +95,8 @@ The graph works from the keyboard. Tab enters it at the first node (the input), 
 
 ### Environment variables
 
+![Setting a plain variable and a secret, the Environment view, the variable hovers and the test panel's Set REGION…](docs/media/env-and-secrets.gif)
+
 A config's `${NAME}` values come from three places, each winning over the one before: the environment VS Code was started with, the `redpandaConnect.envFile` file, and the `redpandaConnect.env` setting. A name only the env file or the environment sets still arrives. For example, in `settings.json`:
 
 ```json
