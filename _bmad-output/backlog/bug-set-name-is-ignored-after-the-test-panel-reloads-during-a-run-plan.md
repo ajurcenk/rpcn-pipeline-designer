@@ -3,7 +3,7 @@ title: 'Set NAME… names the result it belongs to'
 type: 'bugfix'
 ticket: '36'
 created: '2026-10-29'
-status: 'built'
+status: done
 baseline_revision: '680a2f35722eb75e65662c4582ed78e9eb0e3039'
 route: 'full'
 route_source: 'auto'
@@ -99,4 +99,4 @@ Quick review of the id design (the first, webview-only change was reverted after
 **Manual checks:**
 - Not reliably reproducible by hand (a hide and reveal inside one run); covered by LATE_READY.
 
-Result (2026-10-29, after the review patches): stable 1058 passing (LATE_READY, STALE_ID, NO_ID and both NO_BINARY_REMOVED tests ran and passed; LATE_READY failed with the `ready` clear put back); multiroot 8 passing; corpus 156 passed; webview 318 passed (POSTED, WEBVIEW_SENDS_ID). Manual check: none (not reproducible by hand; LATE_READY covers it).
+Result (2026-10-29, after the review patches): stable 1058 passing (LATE_READY, STALE_ID, NO_ID and both NO_BINARY_REMOVED tests ran and passed; LATE_READY failed with the `ready` clear put back); multiroot 8 passing; corpus 156 passed; webview 318 passed (POSTED, WEBVIEW_SENDS_ID). Manual check: none (not reproducible by hand; LATE_READY covers it). Marked done by the user on 2026-10-29.
