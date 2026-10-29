@@ -105,9 +105,20 @@ export function noValueLine(name: string, scopeLabel: string): string {
 	return `${SECRET_ENV_SETTING}: ${name} has no value on this machine for ${scopeLabel}, so commands run without it; set it with "${SET_SECRET_TITLE}".`;
 }
 
-/** The log line for a secret another source also sets (the names only). */
+/**
+ * Ticket 38: the license variables, which the binary's license lookup reads from its process
+ * environment only (never from an `--env-file`).
+ */
+export const LICENSE_ENV_NAMES: ReadonlySet<string> = new Set(['REDPANDA_LICENSE', 'REDPANDA_LICENSE_FILEPATH']);
+
+/**
+ * The log line for a secret another source also sets (the names only). For a license variable
+ * (ticket 38) the other source wins for `${NAME}` only: the license uses the secret.
+ */
 export function clashLine(name: string, winner: string, scopeLabel: string): string {
-	return `${SECRET_ENV_SETTING}: ${name} is also set by ${winner}, whose value wins over the secret for ${scopeLabel}.`;
+	return LICENSE_ENV_NAMES.has(name)
+		? `${SECRET_ENV_SETTING}: ${name} is also set by ${winner}, whose value wins for \${${name}} in configs for ${scopeLabel}; the license uses the secret (the binary reads the license from its process environment only).`
+		: `${SECRET_ENV_SETTING}: ${name} is also set by ${winner}, whose value wins over the secret for ${scopeLabel}.`;
 }
 
 /** The log line for left-out `secretEnv` entries. */

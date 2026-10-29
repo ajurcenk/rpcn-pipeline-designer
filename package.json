@@ -198,6 +198,18 @@
         "title": "Show value in the Environment view",
         "category": "Redpanda Connect",
         "icon": "$(eye)"
+      },
+      {
+        "command": "redpandaConnect.environment.checkLicense",
+        "title": "Check license",
+        "category": "Redpanda Connect",
+        "icon": "$(key)"
+      },
+      {
+        "command": "redpandaConnect.environment.openLicenseDocs",
+        "title": "Open the README's license section",
+        "category": "Redpanda Connect",
+        "icon": "$(book)"
       }
     ],
     "menus": {
@@ -270,6 +282,14 @@
         {
           "command": "redpandaConnect.environment.revealVariable",
           "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.checkLicense",
+          "when": "redpandaConnect.activeEditorDetected"
+        },
+        {
+          "command": "redpandaConnect.environment.openLicenseDocs",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -341,6 +361,26 @@
           "command": "redpandaConnect.environment.openEnvFile",
           "when": "view == redpandaConnect.environment && viewItem =~ /\\benvFileSet\\b/",
           "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.checkLicense",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^(group group-license|licenseState (?!checking)\\w+)$/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.openLicenseDocs",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\blicenseNone\\b/",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.environment.checkLicense",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^(group group-license|licenseState (?!checking)\\w+)$/",
+          "group": "1_actions@6"
+        },
+        {
+          "command": "redpandaConnect.environment.openLicenseDocs",
+          "when": "view == redpandaConnect.environment && viewItem =~ /\\blicenseNone\\b/",
+          "group": "1_actions@7"
         },
         {
           "command": "redpandaConnect.setMissingVariable",

@@ -16,19 +16,30 @@
 // "Hide value" and every refresh mask them again. No value goes into a log line or a message.
 // Refreshes on: the active editor, the config's edits (debounced like the live check), a change of
 // `env`, `secretEnv` or `envFile`, a secret, the workspace folders, and the env file on disk.
+//
+// Ticket 38: a **License** group, after the sources, says where the binary would take the Enterprise
+// license from for the config (`licenseSource`, from the same inputs; the string itself is never
+// shown) and, after **Check license**, the binary's answer (`src/adapters/redpandaConnect/license.ts`,
+// a tiny `run` with the commands' own command line): loaded (type and expiry), not loaded (the
+// binary's reason, masked) or none. Each config's last result is kept until its next check (a refresh
+// does not clear it); nothing checks in the background.
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { readEnvFile } from '../../core/envFileRead';
 import { envUsage } from '../../core/envUsage';
-import { describeArgsFailure, envFileFor } from '../redpandaConnect/args';
+import { licenseExpiryDate } from '../../core/licenseLog';
+import { commandSettings, defaultArgsEnvironment, describeArgsFailure, envFileFor } from '../redpandaConnect/args';
+import type { BinaryState } from '../redpandaConnect/binary';
 import { isValidEnvName, validateEnvSetting } from '../redpandaConnect/envSetting';
-import { declaredSecretNames, secretNameProblem, WINDOW_SCOPE } from '../redpandaConnect/secretEnv';
+import { checkLicense, type LicenseCheckResult } from '../redpandaConnect/license';
+import { activeSecretValues, declaredSecretNames, maskSecrets, secretNameProblem, WINDOW_SCOPE } from '../redpandaConnect/secretEnv';
 import { BLOBLANG_DEBOUNCE_MS } from './bloblangDiagnostics';
 import type { DetectionRegistry } from './detection';
 import {
-	type EnvironmentInputs, type EnvironmentModel, environmentModel, type EnvironmentVariable, type EnvSource, type SettingLevel,
+	DEFAULT_LICENSE_FILE, type EnvironmentInputs, type EnvironmentModel, environmentModel, type EnvironmentVariable, type EnvSource,
+	LICENSE_FILE_VAR, LICENSE_VAR, licenseSource, type LicenseSourceInfo, type SettingLevel,
 } from './environmentModel';
 import type { Scope, SecretVariables } from './secrets';
 
@@ -51,6 +62,13 @@ export const SET_MISSING_COMMAND = 'redpandaConnect.setMissingVariable';
  * config in the view, reveals the row and focuses the view. Resolves with whether the row was found.
  */
 export const REVEAL_VARIABLE_COMMAND = 'redpandaConnect.environment.revealVariable';
+/** Ticket 38: runs the license check for the config shown (or `uri`); resolves with its result. */
+export const CHECK_LICENSE_COMMAND = 'redpandaConnect.environment.checkLicense';
+/** Ticket 38: opens the README's license section. */
+export const OPEN_LICENSE_DOCS_COMMAND = 'redpandaConnect.environment.openLicenseDocs';
+/** The README's license section (the repository in `package.json` and the heading's anchor). */
+export const LICENSE_README_ANCHOR = 'enterprise-license';
+export const DEFAULT_LICENSE_README_URL = `https://github.com/ajurcenk/rpcn-pipeline-designer#${LICENSE_README_ANCHOR}`;
 
 /** What a masked value shows. */
 export const VIEW_MASK = '••••••••';
@@ -84,12 +102,19 @@ export type EnvironmentNode =
 	| { readonly kind: 'group'; readonly source: EnvSource | 'missing' }
 	| { readonly kind: 'variable'; readonly variable: EnvironmentVariable }
 	| { readonly kind: 'missing'; readonly name: string }
-	| { readonly kind: 'note'; readonly id: string; readonly text: string; readonly warning: boolean };
+	| { readonly kind: 'note'; readonly id: string; readonly text: string; readonly warning: boolean }
+	/** Ticket 38: the License group (not a variable source). */
+	| { readonly kind: 'licenseGroup' }
+	/** Ticket 38: a row of the License group: where the license comes from, a variable it does not read, the check's state. */
+	| { readonly kind: 'license'; readonly row: 'source' | 'state' | 'notRead'; readonly id: string };
+
+/** Ticket 38: a config's license check, as the view keeps it. */
+export type LicenseState = { readonly kind: 'notChecked' } | { readonly kind: 'checking' } | LicenseCheckResult;
 
 /** One shown item, flattened (the test seam). */
 export interface EnvironmentItem {
-	/** The group's source (`missing` for the Missing group); for a group itself, its own. */
-	readonly group: EnvSource | 'missing';
+	/** The group's source (`missing` for the Missing group, `license` for the License group); for a group itself, its own. */
+	readonly group: EnvSource | 'missing' | 'license';
 	readonly node: EnvironmentNode;
 	/** The label as text (without the strikethrough). */
 	readonly label: string;
@@ -98,6 +123,10 @@ export interface EnvironmentItem {
 	readonly description: string;
 	readonly contextValue: string;
 	readonly accessibility: string;
+	/** The command the item runs when chosen (Enter or a click), if any. */
+	readonly command?: string;
+	/** The tooltip as text (empty when none). */
+	readonly tooltip: string;
 }
 
 /** The prompts and messages (tests replace them). */
@@ -161,9 +190,12 @@ export async function writeEnvSettingKey(
 	await write(config, Object.keys(next).length > 0 ? next : undefined, SETTING_TARGETS[level]);
 }
 
-/** Whether a source's values are masked until "Show value": all but the setting and the extension's. */
-export function masksValue(source: EnvSource): boolean {
-	return source !== 'setting' && source !== 'extension';
+/**
+ * Whether a row's value is masked until "Show value": all sources but the setting and the
+ * extension's, and the license string (ticket 38: `REDPANDA_LICENSE`) from any source.
+ */
+export function masksValue(source: EnvSource, name?: string): boolean {
+	return name === LICENSE_VAR || (source !== 'setting' && source !== 'extension');
 }
 
 /** A row's state, as the view words it. */
@@ -190,6 +222,13 @@ function oneLine(value: string): string {
 	return value.replace(/\r?\n/g, '⏎');
 }
 
+const fileExists = (file: string): boolean => {
+	try {
+		return fs.statSync(file).isFile();
+	} catch {
+		return false;
+	}
+};
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const keyOf = (v: { readonly source: EnvSource; readonly name: string }) => `${v.source}:${v.name}`;
 
@@ -199,6 +238,12 @@ export interface EnvironmentViewOptions {
 	readonly log: (line: string) => void;
 	readonly ui?: EnvironmentUi;
 	readonly debounceMs?: number;
+	/** Ticket 38: the binary the license check runs (none: the check says so). */
+	readonly binaryState?: () => BinaryState;
+	/** Ticket 38: where the check's temporary config is written (the extension's storage). */
+	readonly storageDir?: string;
+	/** Ticket 38: the README's license section. */
+	readonly licenseReadmeUrl?: string;
 }
 
 export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>, vscode.Disposable {
@@ -209,8 +254,17 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	private readonly changeEmitter = new vscode.EventEmitter<EnvironmentNode | undefined>();
 	private readonly refreshEmitter = new vscode.EventEmitter<void>();
 	private readonly subscriptions: vscode.Disposable[] = [];
+	/** Ticket 38: the default license file the source resolution checks (tests replace it). */
+	licenseDefaultPath = DEFAULT_LICENSE_FILE;
+	/** Ticket 38: opens the README link (tests replace it). */
+	openExternal: (uri: vscode.Uri) => Thenable<boolean> = (uri) => vscode.env.openExternal(uri);
 	private config: vscode.Uri | undefined;
 	private cached: EnvironmentModel | undefined;
+	private cachedInputs: EnvironmentInputs | undefined;
+	private cachedLicense: LicenseSourceInfo | undefined;
+	/** Ticket 38: each config's last license check, by URI; kept across refreshes. */
+	private readonly licenseResults = new Map<string, LicenseState>();
+	private readonly licenseChecks = new Map<string, Promise<LicenseState>>();
 	private readonly revealed = new Set<string>();
 	private timer: NodeJS.Timeout | undefined;
 	private watcher: { readonly path: string; readonly disposable: vscode.Disposable } | undefined;
@@ -276,6 +330,10 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			command(SET_MISSING_COMMAND, (arg: EnvironmentNode | string, uri?: vscode.Uri | string) =>
 				this.setMissing(arg, typeof uri === 'string' ? vscode.Uri.parse(uri) : uri)),
 			command(REVEAL_VARIABLE_COMMAND, (uri: vscode.Uri | string, source: EnvSource, name: string) => this.revealVariable(uri, source, name)),
+			// From the License group's inline action or its state row (an item), or with a config URI.
+			command(CHECK_LICENSE_COMMAND, (arg?: EnvironmentNode | vscode.Uri | string) =>
+				this.checkLicense(typeof arg === 'string' ? vscode.Uri.parse(arg) : arg instanceof vscode.Uri ? arg : undefined)),
+			command(OPEN_LICENSE_DOCS_COMMAND, () => this.openLicenseDocs()),
 		];
 	}
 
@@ -299,8 +357,31 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		if (!this.config) {
 			return undefined;
 		}
-		this.cached ??= this.compute(this.config);
+		this.cached ??= environmentModel(this.inputs(this.config));
 		return this.cached;
+	}
+
+	/** Ticket 38: where the binary would take the license from for the config shown. */
+	license(): LicenseSourceInfo | undefined {
+		if (!this.config) {
+			return undefined;
+		}
+		this.cachedLicense ??= this.licenseFor(this.inputs(this.config));
+		return this.cachedLicense;
+	}
+
+	/** Ticket 38: the last license check of `uri` (default: the config shown). */
+	licenseState(uri: vscode.Uri | undefined = this.config): LicenseState {
+		return (uri && this.licenseResults.get(uri.toString())) || { kind: 'notChecked' };
+	}
+
+	private licenseFor(inputs: EnvironmentInputs): LicenseSourceInfo {
+		return licenseSource(inputs, { path: this.licenseDefaultPath, exists: fileExists(this.licenseDefaultPath) });
+	}
+
+	private inputs(uri: vscode.Uri): EnvironmentInputs {
+		this.cachedInputs ??= this.inputsFor(uri);
+		return this.cachedInputs;
 	}
 
 	/**
@@ -318,6 +399,8 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			this.timer = undefined;
 		}
 		this.cached = undefined;
+		this.cachedInputs = undefined;
+		this.cachedLicense = undefined;
 		this.revealed.clear();
 		this.updateTitle();
 		this.watch(this.config ? this.model()?.envFilePath : undefined);
@@ -328,9 +411,9 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	/** Every shown item, depth first (the test seam). */
 	items(): EnvironmentItem[] {
 		const out: EnvironmentItem[] = [];
-		const walk = (nodes: readonly EnvironmentNode[], group: EnvSource | 'missing' | undefined) => {
+		const walk = (nodes: readonly EnvironmentNode[], group: EnvironmentItem['group'] | undefined) => {
 			for (const node of nodes) {
-				const g = node.kind === 'group' ? node.source : group!;
+				const g = node.kind === 'group' ? node.source : node.kind === 'licenseGroup' ? 'license' : group!;
 				const item = this.getTreeItem(node);
 				const label = typeof item.label === 'string' ? item.label : item.label?.label ?? '';
 				out.push({
@@ -341,6 +424,8 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 					description: typeof item.description === 'string' ? item.description : '',
 					contextValue: item.contextValue ?? '',
 					accessibility: item.accessibilityInformation?.label ?? label,
+					...(item.command ? { command: item.command.command } : {}),
+					tooltip: typeof item.tooltip === 'string' ? item.tooltip : item.tooltip?.value ?? '',
 				});
 				walk(this.getChildren(node), g);
 			}
@@ -356,7 +441,16 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		}
 		if (!node) {
 			const groups: EnvironmentNode[] = model.groups.map((g) => ({ kind: 'group', source: g.source }));
-			return model.missing.length > 0 ? [{ kind: 'group', source: 'missing' }, ...groups] : groups;
+			const missing: EnvironmentNode[] = model.missing.length > 0 ? [{ kind: 'group', source: 'missing' }] : [];
+			return [...missing, ...groups, { kind: 'licenseGroup' }];
+		}
+		if (node.kind === 'licenseGroup') {
+			const notRead = this.license()?.notRead ?? [];
+			return [
+				{ kind: 'license', row: 'source', id: 'license:source' },
+				...notRead.map((n): EnvironmentNode => ({ kind: 'license', row: 'notRead', id: `license:notRead:${n.source}:${n.name}` })),
+				{ kind: 'license', row: 'state', id: 'license:state' },
+			];
 		}
 		if (node.kind !== 'group') {
 			return [];
@@ -380,7 +474,10 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	getParent(node: EnvironmentNode): EnvironmentNode | undefined {
 		switch (node.kind) {
 			case 'group':
+			case 'licenseGroup':
 				return undefined;
+			case 'license':
+				return { kind: 'licenseGroup' };
 			case 'missing':
 				return { kind: 'group', source: 'missing' };
 			case 'variable':
@@ -394,6 +491,10 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		switch (node.kind) {
 			case 'group':
 				return this.groupItem(node.source);
+			case 'licenseGroup':
+				return this.licenseGroupItem();
+			case 'license':
+				return this.licenseItem(node);
 			case 'missing': {
 				const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);
 				item.id = `missing:${node.name}`;
@@ -452,8 +553,112 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		return item;
 	}
 
+	// --- the License group (ticket 38) ---
+
+	/** The check's state as one line (its reason masked when it was kept). */
+	private licenseStateText(state: LicenseState): { readonly text: string; readonly short: string; readonly icon: string } {
+		switch (state.kind) {
+			case 'notChecked':
+				return { text: 'Not checked', short: 'not checked', icon: 'circle-large-outline' };
+			case 'checking':
+				return { text: 'Checking…', short: 'checking', icon: 'sync~spin' };
+			case 'loaded':
+				return {
+					text: `Loaded: ${state.licenseType || 'unknown type'}, expires ${licenseExpiryDate(state.expiresAt) || 'at an unknown date'}`,
+					short: 'loaded', icon: 'pass',
+				};
+			case 'failed':
+				return { text: `Not loaded: ${oneLine(state.reason) || 'no reason given'}`, short: 'not loaded', icon: 'error' };
+			case 'none':
+				return { text: 'No license loaded', short: 'none loaded', icon: 'circle-slash' };
+			case 'error':
+				return { text: `Check failed: ${oneLine(state.reason)}`, short: 'check failed', icon: 'warning' };
+		}
+	}
+
+	/** `text` with `uri`'s loaded secret values and every license string its sources hold masked. */
+	private maskLicense(text: string, uri: vscode.Uri): string {
+		const folder = vscode.workspace.getWorkspaceFolder(uri);
+		const secretsMasked = activeSecretValues()?.mask(text, folder ? folder.uri.toString() : WINDOW_SCOPE) ?? text;
+		return maskSecrets(secretsMasked, this.licenseFor(this.inputsFor(uri)).values);
+	}
+
+	private licenseSourceText(info: LicenseSourceInfo | undefined): { readonly label: string; readonly description: string; readonly none: boolean } {
+		const source = info?.source ?? { kind: 'none' };
+		switch (source.kind) {
+			case 'string':
+				return { label: `Source: ${LICENSE_VAR}`, description: `from ${SOURCE_NAMES[source.from]} · value masked`, none: false };
+			case 'file':
+				return source.from === 'default'
+					? { label: `Source: the default file ${source.path}`, description: `no ${LICENSE_VAR} or ${LICENSE_FILE_VAR} is set`, none: false }
+					// A secret's or VS Code's environment value is masked, as in their rows.
+					: { label: `Source: the file in ${LICENSE_FILE_VAR}`, description: `from ${SOURCE_NAMES[source.from]} · path masked`, none: false };
+			case 'none':
+				return { label: 'No license set', description: 'enterprise connectors need one · open the README section', none: true };
+		}
+	}
+
+	private licenseGroupItem(): vscode.TreeItem {
+		const state = this.licenseState();
+		const shown = this.licenseStateText(state);
+		const source = this.licenseSourceText(this.license());
+		const item = new vscode.TreeItem('License', vscode.TreeItemCollapsibleState.Expanded);
+		item.id = 'group:license';
+		item.description = shown.short;
+		item.tooltip = 'The Redpanda Enterprise license the binary would load for this config. Check license runs the binary once to see.';
+		item.iconPath = new vscode.ThemeIcon('key');
+		item.contextValue = `group group-license${state.kind === 'checking' ? ' checking' : ''}`;
+		item.accessibilityInformation = { label: `License: ${source.label}, ${shown.text}` };
+		return item;
+	}
+
+	private licenseItem(node: Extract<EnvironmentNode, { kind: 'license' }>): vscode.TreeItem {
+		if (node.row === 'notRead') {
+			const [, , source, name] = node.id.split(':');
+			const where = source === 'setting' ? SOURCE_NAMES.setting : SOURCE_NAMES.envFile;
+			const text = `${name} in ${where} is not used for the license`;
+			const item = new vscode.TreeItem(text, vscode.TreeItemCollapsibleState.None);
+			item.id = node.id;
+			item.description = 'the binary reads it from its process environment only: set it as a secret';
+			item.iconPath = new vscode.ThemeIcon('warning');
+			item.contextValue = 'licenseNote';
+			item.tooltip = `${text}: the binary looks the license up in its process environment (a secret or VS Code's environment), not in --env-file files. ${where} still gives \${${name}} its value.`;
+			item.accessibilityInformation = { label: `${text}: the binary reads it from its process environment only, so set it as a secret` };
+			return item;
+		}
+		if (node.row === 'source') {
+			const shown = this.licenseSourceText(this.license());
+			const item = new vscode.TreeItem(shown.label, vscode.TreeItemCollapsibleState.None);
+			item.id = node.id;
+			item.description = shown.description;
+			item.iconPath = new vscode.ThemeIcon(shown.none ? 'info' : 'key');
+			item.contextValue = shown.none ? 'licenseSource licenseNone' : 'licenseSource';
+			item.tooltip = shown.none
+				? `No ${LICENSE_VAR} or ${LICENSE_FILE_VAR} is set and there is no ${this.licenseDefaultPath}. Enterprise connectors need a Redpanda Enterprise license; the README says how to set one.`
+				: `${shown.label} (${shown.description}). The binary reads ${LICENSE_VAR}, else the file in ${LICENSE_FILE_VAR}, else ${this.licenseDefaultPath}.`;
+			if (shown.none) {
+				item.command = { command: OPEN_LICENSE_DOCS_COMMAND, title: "Open the README's license section" };
+			}
+			item.accessibilityInformation = { label: `License source: ${shown.label}, ${shown.description}` };
+			return item;
+		}
+		const state = this.licenseState();
+		const shown = this.licenseStateText(state);
+		const item = new vscode.TreeItem(shown.text, vscode.TreeItemCollapsibleState.None);
+		item.id = node.id;
+		item.iconPath = new vscode.ThemeIcon(shown.icon);
+		item.contextValue = `licenseState ${state.kind}`;
+		item.description = state.kind === 'notChecked' ? "Check license runs the binary once with this config's environment" : '';
+		item.tooltip = state.kind === 'checking' ? shown.text : `${shown.text}. Check license runs the binary again.`;
+		if (state.kind !== 'checking') {
+			item.command = { command: CHECK_LICENSE_COMMAND, title: 'Check license' };
+		}
+		item.accessibilityInformation = { label: `License state: ${shown.text}${state.kind === 'checking' ? '' : ', press Enter to check the license'}` };
+		return item;
+	}
+
 	private variableItem(v: EnvironmentVariable): vscode.TreeItem {
-		const masks = masksValue(v.source);
+		const masks = masksValue(v.source, v.name);
 		const revealed = this.revealed.has(keyOf(v));
 		const masked = masks && v.value !== undefined && !revealed;
 		const shown = v.value === undefined ? 'no value' : masked ? VIEW_MASK : JSON.stringify(oneLine(v.value)).slice(1, -1) || '(empty)';
@@ -513,6 +718,10 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	// --- reading ---
 
 	private compute(uri: vscode.Uri): EnvironmentModel {
+		return environmentModel(this.inputsFor(uri));
+	}
+
+	private inputsFor(uri: vscode.Uri): EnvironmentInputs {
 		const config = vscode.workspace.getConfiguration('redpandaConnect', uri);
 		const folder = vscode.workspace.getWorkspaceFolder(uri);
 		const inspected = config.inspect<unknown>('env');
@@ -539,14 +748,14 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		} else {
 			envFileUnusable = describeArgsFailure(resolved);
 		}
-		return environmentModel({
+		return {
 			setting,
 			secrets,
 			envFile,
 			envFileUnusable,
 			processEnv: process.env,
 			usage: envUsage(this.textOf(uri)),
-		});
+		};
 	}
 
 	private textOf(uri: vscode.Uri): string {
@@ -778,6 +987,75 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Ticket 38: **Check license** for `uri` (default: the config shown): runs the binary once with the
+	 * config's command line and keeps the result for that config until its next check. A check
+	 * already running for it is joined. Nothing with a value is logged or shown.
+	 */
+	async checkLicense(uri: vscode.Uri | undefined = this.config): Promise<LicenseState> {
+		if (!uri) {
+			this.ui.error('Open a Redpanda Connect config first: the license is checked with its environment.');
+			return { kind: 'notChecked' };
+		}
+		const key = uri.toString();
+		const running = this.licenseChecks.get(key);
+		if (running) {
+			return running;
+		}
+		const check = this.runLicenseCheck(uri).finally(() => this.licenseChecks.delete(key));
+		this.licenseChecks.set(key, check);
+		return check;
+	}
+
+	private async runLicenseCheck(uri: vscode.Uri): Promise<LicenseState> {
+		const key = uri.toString();
+		this.licenseResults.set(key, { kind: 'checking' });
+		this.changeEmitter.fire(undefined);
+		let result: LicenseState;
+		try {
+			result = await this.licenseCheckResult(uri);
+		} catch (err) {
+			// Never left `checking`; the reason is masked, else not given (it may quote a value).
+			let reason = 'the check could not finish.';
+			try {
+				reason = `the check could not finish: ${this.maskLicense(reasonOf(err), uri)}`;
+			} catch {
+				// Keep the reason without the error's text.
+			}
+			result = { kind: 'error', reason };
+		}
+		this.licenseResults.set(key, result);
+		this.options.log(`Environment view: license check for ${path.basename(uri.fsPath)}: ${this.licenseStateText(result).text}`);
+		this.changeEmitter.fire(undefined);
+		this.refreshEmitter.fire();
+		return result;
+	}
+
+	/** The check's result for `uri`, its reason masked. */
+	private async licenseCheckResult(uri: vscode.Uri): Promise<LicenseState> {
+		const state = this.options.binaryState?.() ?? { kind: 'missing' as const };
+		const storageDir = this.options.storageDir;
+		let result: LicenseState;
+		if (!storageDir) {
+			result = { kind: 'error', reason: 'The extension has no storage folder for the check.' };
+		} else {
+			const cwd = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
+			result = await checkLicense({ state, settings: commandSettings(() => defaultArgsEnvironment(uri)) }, storageDir, { cwd });
+		}
+		// Masked once, when kept: the reason comes from the binary and may quote a value.
+		return result.kind === 'failed' || result.kind === 'error' ? { ...result, reason: this.maskLicense(result.reason, uri) } : result;
+	}
+
+	/** Ticket 38: opens the README's license section. */
+	async openLicenseDocs(): Promise<boolean> {
+		try {
+			return await this.openExternal(vscode.Uri.parse(this.options.licenseReadmeUrl ?? DEFAULT_LICENSE_README_URL));
+		} catch (err) {
+			this.ui.error(`Could not open the README: ${reasonOf(err)}`);
+			return false;
+		}
 	}
 
 	/** Opens the env file in an editor. */

@@ -61,7 +61,7 @@ export function envHoverMarkdown(model: EnvironmentModel, configUri: vscode.Uri,
 	const used = rows.find((v) => v.state === 'used');
 	const lines: string[] = [`**${ENV_HOVER_TITLE}** ${code(name)}`];
 	if (used) {
-		const masked = masksValue(used.source) && used.value !== undefined;
+		const masked = masksValue(used.source, used.name) && used.value !== undefined;
 		const value = used.value === undefined ? 'no value' : masked ? code(VIEW_MASK) : shownValue(used.value);
 		const show = masked ? ` · ${commandLink('Show value', REVEAL_VARIABLE_COMMAND, [configUri.toString(), used.source, name])}` : '';
 		lines.push(`${value} from ${origin(used, model)}${show}`);

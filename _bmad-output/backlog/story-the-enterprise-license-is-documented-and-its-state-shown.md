@@ -25,7 +25,7 @@ When this is done, the README explains the setups that fit the extension (the li
 1. **The setups are documented**
    **Given** the README
    **When** a user looks for how to use an enterprise license
-   **Then** it gives the binary's order (`REDPANDA_LICENSE`, `REDPANDA_LICENSE_FILEPATH`, the default file) and how to set each in the extension: the string as a secret variable (`redpandaConnect.secretEnv`), a file path in `redpandaConnect.env` or the env file, the default file needing nothing; and it says not to put the string in `redpandaConnect.env` or a committed env file
+   **Then** it gives the binary's order (`REDPANDA_LICENSE`, `REDPANDA_LICENSE_FILEPATH`, the default file) and how to set each in the extension: the string as a secret variable (`redpandaConnect.secretEnv`), a file path as a secret variable or in VS Code's environment, the default file needing nothing; and it says that `redpandaConnect.env` and the env file do not set the license (the binary reads it before its env files)
 2. **A loaded license is shown**
    **Given** a config whose environment gives the binary a valid license
    **When** the user looks at its license state
@@ -65,4 +65,5 @@ When this is done, the README explains the setups that fit the extension (the li
 - Decision (user, 2026-10-29): the state shows in a License group of the Environment view, beside the variables it reads.
 - Decision (user, 2026-10-29): it is read on demand (a Check license action), by a tiny `run` with the active config's environment, and the last result stays until checked again; no background runs.
 - Decision (user, 2026-10-29): only the type and expiry are shown; `license_org` is left out.
+- Decision (user, 2026-10-29, during the build): the binary ignores both license variables from an `--env-file` (probed on 4.100.0 and 4.112.0); a license is set as a secret or in VS Code's environment, and the setting or env file get a warning row instead.
 - Open question: on Windows (story 1) the default file path differs; out of scope until then.

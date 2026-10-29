@@ -97,6 +97,15 @@ suite('adapters/redpandaConnect secretEnv', () => {
 		}
 	});
 
+	test('ticket 38: a license variable also set by the setting or the env file: the line says the license uses the secret; other names unchanged', () => {
+		for (const name of ['REDPANDA_LICENSE', 'REDPANDA_LICENSE_FILEPATH']) {
+			const line = clashLine(name, 'redpandaConnect.env', 'this window');
+			assert.strictEqual(line, `redpandaConnect.secretEnv: ${name} is also set by redpandaConnect.env, whose value wins for \${${name}} in configs for this window; the license uses the secret (the binary reads the license from its process environment only).`);
+		}
+		assert.strictEqual(clashLine('TOKEN', 'redpandaConnect.env', 'this window'),
+			'redpandaConnect.secretEnv: TOKEN is also set by redpandaConnect.env, whose value wins over the secret for this window.');
+	});
+
 	test('before the first load, a missing value is not logged; CHANGE / REMOVE take effect at once', () => {
 		const lines: string[] = [];
 		const values = new SecretValues((l) => lines.push(l));

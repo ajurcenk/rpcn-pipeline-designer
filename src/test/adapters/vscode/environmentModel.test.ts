@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { readEnvFile } from '../../../core/envFileRead';
 import { envUsage } from '../../../core/envUsage';
-import { type EnvironmentInputs, environmentModel } from '../../../adapters/vscode/environmentModel';
+import { type EnvironmentInputs, environmentModel, licenseSource } from '../../../adapters/vscode/environmentModel';
 
 const base: EnvironmentInputs = { setting: [], secrets: [], processEnv: {}, usage: [] };
 const states = (model: ReturnType<typeof environmentModel>) => Object.fromEntries(model.groups.map((g) => [
@@ -92,5 +92,54 @@ suite('adapters/vscode environmentModel', () => {
 		const bySetting = environmentModel({ ...base, setting: [{ name: 'NO_COLOR', value: '0', level: 'user' }] });
 		assert.deepStrictEqual(states(bySetting).extension, ['NO_COLOR:overridden>setting']);
 		assert.ok(!environmentModel({ ...base, processEnv: { NO_COLOR: '1' } }).groups.some((g) => g.source === 'extension'), 'not listed when nothing uses or sets it');
+	});
+});
+
+// Ticket 38: where the binary takes the Enterprise license from (its process environment only).
+suite('adapters/vscode licenseSource', () => {
+	const absent = { path: '/etc/redpanda/redpanda.license', exists: false };
+	const present = { ...absent, exists: true };
+
+	test('SOURCE_STRING: REDPANDA_LICENSE from a secret wins over VS Code\'s environment and over the file variable', () => {
+		const info = licenseSource({
+			...base,
+			secrets: [{ name: 'REDPANDA_LICENSE', value: 'lic-secret' }],
+			processEnv: { REDPANDA_LICENSE: 'lic-env', REDPANDA_LICENSE_FILEPATH: '/p' },
+		}, present);
+		assert.deepStrictEqual(info.source, { kind: 'string', from: 'secret' });
+		assert.deepStrictEqual([...info.values].sort(), ['/p', 'lic-env', 'lic-secret'], 'the file path from VS Code\'s environment is masked too');
+		assert.deepStrictEqual(licenseSource({ ...base, processEnv: { REDPANDA_LICENSE: 'lic-env' } }, absent).source, { kind: 'string', from: 'process' });
+	});
+
+	test('SOURCE_FILE: no string; REDPANDA_LICENSE_FILEPATH from a secret or VS Code\'s environment', () => {
+		assert.deepStrictEqual(licenseSource({ ...base, processEnv: { REDPANDA_LICENSE_FILEPATH: '/p' } }, present).source, { kind: 'file', path: '/p', from: 'process' });
+		assert.deepStrictEqual(licenseSource({ ...base, secrets: [{ name: 'REDPANDA_LICENSE_FILEPATH', value: '/s' }], processEnv: { REDPANDA_LICENSE_FILEPATH: '/p' } }, absent).source,
+			{ kind: 'file', path: '/s', from: 'secret' });
+	});
+
+	test('SOURCE_DEFAULT / SOURCE_NONE: the default file when it exists, else none; empty values and secrets without a value are not set', () => {
+		const empty = { ...base, secrets: [{ name: 'REDPANDA_LICENSE', value: undefined }], processEnv: { REDPANDA_LICENSE: '', REDPANDA_LICENSE_FILEPATH: '' } };
+		assert.deepStrictEqual(licenseSource(empty, present).source, { kind: 'file', path: '/etc/redpanda/redpanda.license', from: 'default' });
+		assert.deepStrictEqual(licenseSource(empty, absent).source, { kind: 'none' });
+		assert.deepStrictEqual(licenseSource(empty, absent).values, []);
+	});
+
+	test('the setting and the env file are not read for the license (the binary reads them for ${NAME} only); their values are masked', () => {
+		const info = licenseSource({
+			...base,
+			setting: [{ name: 'REDPANDA_LICENSE', value: 'lic-setting', level: 'user' }],
+			envFile: { path: '/e', read: readEnvFile('REDPANDA_LICENSE_FILEPATH=/f\nREDPANDA_LICENSE=lic-file\n') },
+		}, absent);
+		assert.deepStrictEqual(info.source, { kind: 'none' });
+		assert.deepStrictEqual(info.notRead, [
+			{ name: 'REDPANDA_LICENSE', source: 'setting' },
+			{ name: 'REDPANDA_LICENSE', source: 'envFile' },
+			{ name: 'REDPANDA_LICENSE_FILEPATH', source: 'envFile' },
+		]);
+		assert.deepStrictEqual(info.values, ['lic-setting', 'lic-file']);
+	});
+
+	test('the license variables are not in the model\'s Missing (the config does not use them)', () => {
+		assert.deepStrictEqual(environmentModel({ ...base, usage: envUsage('a: 1') }).missing, []);
 	});
 });

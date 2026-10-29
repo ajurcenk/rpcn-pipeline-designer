@@ -14,11 +14,12 @@ import { WINDOW_SCOPE } from '../../../adapters/redpandaConnect/secretEnv';
 import {
 	ADD_VARIABLE_COMMAND, EDIT_VARIABLE_COMMAND, EnvironmentView, type EnvironmentItem, type EnvSettingWriter, type EnvironmentUi, HIDE_VALUE_COMMAND, NO_CONFIG_MESSAGE, OPEN_ENV_FILE_COMMAND,
 	REMOVE_VARIABLE_COMMAND, REVEAL_VARIABLE_COMMAND, SET_MISSING_COMMAND, SHOW_VALUE_COMMAND, VIEW_MASK,
+	CHECK_LICENSE_COMMAND, OPEN_LICENSE_DOCS_COMMAND,
 } from '../../../adapters/vscode/environmentView';
-import { ENV_HOVER_TITLE, EnvHoverProvider } from '../../../adapters/vscode/envHover';
+import { ENV_HOVER_TITLE, EnvHoverProvider, envHoverMarkdown } from '../../../adapters/vscode/envHover';
 import type { SecretVariables } from '../../../adapters/vscode/secrets';
 import { type ExtensionApi } from '../../../extension';
-import { makeTempDir } from '../../helpers/fakeBinary';
+import { connectScript, makeTempDir, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor, waitForAsync } from '../helpers';
 import { hoverText, schemaFrom, useSchemaBinary } from '../schemaHarness';
 
@@ -482,6 +483,249 @@ suite('Environment view (integration, ticket 31)', function () {
 			assert.match(text, /`ZONE`/);
 			assert.match(text, /Missing/);
 			assert.deepStrictEqual(links(text)[0][2], ['ZONE', doc.uri.toString()]);
+		});
+	});
+	// --- Ticket 38: the License group and Check license, with a fake binary whose `run` prints the
+	// license line the real one would for REDPANDA_LICENSE / REDPANDA_LICENSE_FILEPATH / a default file.
+	suite('License group (ticket 38)', function () {
+		const originalPath = process.env.PATH;
+		const originalLicense = { string: process.env.REDPANDA_LICENSE, file: process.env.REDPANDA_LICENSE_FILEPATH };
+		let licenseDir: string;
+		let argvFile: string;
+		let defaultFile: string;
+		let fakeBin: string;
+		let originalDefault: string;
+		let opened: string[];
+		const GOOD = 'good-lic-38-value';
+		const BAD = 'bad-lic-38-value';
+		const licenseRows = () => items().filter((i) => i.group === 'license');
+		const licenseRow = (id: string) => licenseRows().find((i) => i.node.kind === 'license' && i.node.id === id);
+		const sourceRow = () => licenseRow('license:source')!;
+		const stateRow = () => licenseRow('license:state')!;
+		const argvLines = () => (fs.existsSync(argvFile) ? fs.readFileSync(argvFile, 'utf8').split('\n').filter(Boolean) : []);
+		/** Nothing shown, logged, told or passed on a command line holds a license string. */
+		const assertNoValue = (...values: string[]) => {
+			const shown = JSON.stringify([items().map((i) => [i.label, i.description, i.accessibility, i.tooltip]), api().outputLines(), errors, infos, argvLines()]);
+			for (const value of values) {
+				assert.ok(!shown.includes(value), `a license string is shown, logged or passed: ${value}`);
+			}
+			assert.ok(!argvLines().some((l) => l.includes('--redpanda-license')), 'NO_FLAG');
+		};
+		const check = () => vscode.commands.executeCommand<{ kind: string }>(CHECK_LICENSE_COMMAND);
+		const setEnv = (name: 'REDPANDA_LICENSE' | 'REDPANDA_LICENSE_FILEPATH', value: string | undefined) => {
+			if (value === undefined) {
+				delete process.env[name];
+			} else {
+				process.env[name] = value;
+			}
+			view().refresh();
+		};
+
+		suiteSetup(async () => {
+			licenseDir = makeTempDir('rpcn-license-');
+			argvFile = path.join(licenseDir, 'argv');
+			defaultFile = path.join(licenseDir, 'default.license');
+			const loaded = `echo 'level=info msg="Successfully loaded Redpanda license" @service=redpanda-connect expires_at="2027-03-09T15:18:26-05:00" license_org=org-38 license_type=enterprise' >&2`;
+			const run = [
+				`printf '%s\\n' "run $*" >> '${argvFile}'`,
+				'if [ -n "$REDPANDA_LICENSE" ]; then',
+				'  case "$REDPANDA_LICENSE" in',
+				`    good-*) ${loaded} ;;`,
+				`    exit-*) echo 'level=error msg="Config lint error" lint="fake lint failure"' >&2; exit 1 ;;`,
+				'    *) echo "level=error msg=\\"Failed to read Redpanda License\\" @service=redpanda-connect error=\\"validating license: $REDPANDA_LICENSE is not a license\\"" >&2 ;;',
+				'  esac',
+				'elif [ -n "$REDPANDA_LICENSE_FILEPATH" ]; then',
+				`  if [ -f "$REDPANDA_LICENSE_FILEPATH" ]; then ${loaded}; else echo "level=error msg=\\"Failed to read Redpanda License\\" error=\\"reading license file: open $REDPANDA_LICENSE_FILEPATH: no such file or directory\\"" >&2; fi`,
+				`elif [ -f '${defaultFile}' ]; then ${loaded}`,
+				'fi',
+				'exit 0',
+			].join('\n');
+			const capture = (what: string) => `printf '%s\\n' "${what} $*" >> '${argvFile}'\nexit 0`;
+			delete process.env.REDPANDA_LICENSE;
+			delete process.env.REDPANDA_LICENSE_FILEPATH;
+			process.env.PATH = (originalPath ?? '').split(path.delimiter)
+				.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
+				.join(path.delimiter);
+			fakeBin = writeFakeBinary(licenseDir, 'redpanda-connect', connectScript({ version: '4.112.0', run, lint: capture('lint'), blobl: capture('blobl') }));
+			await config().update('binaryPath', fakeBin, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok' && (api().redpandaConnect.state as { path: string }).path === fakeBin, 30_000),
+				JSON.stringify(api().redpandaConnect.state));
+			originalDefault = view().licenseDefaultPath;
+		});
+
+		setup(() => {
+			opened = [];
+			view().licenseDefaultPath = defaultFile;
+			view().openExternal = async (uri) => {
+				opened.push(uri.toString(true));
+				return true;
+			};
+			fs.rmSync(defaultFile, { force: true });
+			view().refresh();
+		});
+
+		teardown(() => {
+			delete process.env.REDPANDA_LICENSE;
+			delete process.env.REDPANDA_LICENSE_FILEPATH;
+			view().licenseDefaultPath = originalDefault;
+		});
+
+		suiteTeardown(async () => {
+			process.env.PATH = originalPath;
+			for (const [name, value] of [['REDPANDA_LICENSE', originalLicense.string], ['REDPANDA_LICENSE_FILEPATH', originalLicense.file]] as const) {
+				if (value !== undefined) {
+					process.env[name] = value;
+				}
+			}
+			await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
+			fs.rmSync(licenseDir, { recursive: true, force: true });
+		});
+
+		test('NOT_CHECKED / SOURCE_NONE: a License group after the sources: "No license set" opening the README section, and "Not checked" with Check license', async () => {
+			const groups = items().filter((i) => i.node.kind === 'group' || i.node.kind === 'licenseGroup').map((i) => i.group);
+			assert.deepStrictEqual(groups, ['missing', 'setting', 'envFile', 'secret', 'process', 'license']);
+			const group = items().find((i) => i.node.kind === 'licenseGroup')!;
+			assert.strictEqual(group.label, 'License');
+			assert.strictEqual(group.contextValue, 'group group-license', 'the inline Check license action');
+			assert.strictEqual(sourceRow().label, 'No license set');
+			assert.match(sourceRow().description, /enterprise connectors need one/);
+			assert.match(sourceRow().contextValue, /\blicenseNone\b/);
+			assert.strictEqual(sourceRow().command, OPEN_LICENSE_DOCS_COMMAND);
+			assert.strictEqual(await vscode.commands.executeCommand(OPEN_LICENSE_DOCS_COMMAND), true);
+			assert.deepStrictEqual(opened, ['https://github.com/ajurcenk/rpcn-pipeline-designer#enterprise-license']);
+			assert.strictEqual(stateRow().label, 'Not checked');
+			assert.strictEqual(stateRow().contextValue, 'licenseState notChecked');
+			assert.strictEqual(stateRow().command, CHECK_LICENSE_COMMAND, 'Enter on the row checks');
+			// Keyboard and screen reader: the group and rows say what they are.
+			assert.strictEqual(group.accessibility, 'License: No license set, Not checked');
+			assert.strictEqual(stateRow().accessibility, 'License state: Not checked, press Enter to check the license');
+			assert.ok(!groupOf('missing').some((i) => /^REDPANDA_LICENSE/.test(i.label)), 'the license variables are not Missing');
+		});
+
+		test('NO_LINE: with no source, the check says no license loaded; NO_FLAG: no --redpanda-license, the temporary config removed', async () => {
+			const before = argvLines().length;
+			assert.deepStrictEqual(await check(), { kind: 'none' });
+			assert.strictEqual(stateRow().label, 'No license loaded');
+			const runs = argvLines().slice(before).filter((l) => l.startsWith('run '));
+			assert.strictEqual(runs.length, 1, JSON.stringify(argvLines()));
+			const target = runs[0].split(' ').pop()!;
+			assert.match(path.basename(target), /^license-check-[0-9a-f]+\.yaml$/);
+			assert.ok(!fs.existsSync(target), 'the temporary config is removed');
+			assert.ok(runs[0].includes(`--env-file ${envFile}`), `the config's env file is passed: ${runs[0]}`);
+			assertNoValue();
+		});
+
+		test('SOURCE_STRING / LOADED: REDPANDA_LICENSE as a secret: the source row masks it; the check shows type and expiry, no org', async () => {
+			assert.ok(await api().secrets!.set(undefined, 'REDPANDA_LICENSE', GOOD));
+			assert.ok(await waitFor(() => sourceRow()?.label === 'Source: REDPANDA_LICENSE', 5_000), JSON.stringify(licenseRows().map((i) => i.label)));
+			assert.strictEqual(sourceRow().description, 'from a secret · value masked');
+			assert.strictEqual(sourceRow().command, undefined);
+			assert.deepStrictEqual(await check(), { kind: 'loaded', licenseType: 'enterprise', expiresAt: '2027-03-09T15:18:26-05:00' });
+			assert.strictEqual(stateRow().label, 'Loaded: enterprise, expires 2027-03-09');
+			assert.strictEqual(items().find((i) => i.node.kind === 'licenseGroup')!.description, 'loaded');
+			assert.ok(!JSON.stringify(items()).includes('org-38'), 'the organisation is not shown');
+			assertNoValue(GOOD);
+		});
+
+		test('FAILED: a bad REDPANDA_LICENSE (VS Code\'s environment, or a secret) shows the binary\'s reason with the string masked', async () => {
+			setEnv('REDPANDA_LICENSE', BAD);
+			assert.strictEqual(sourceRow().label, 'Source: REDPANDA_LICENSE');
+			assert.strictEqual(sourceRow().description, "from VS Code's environment · value masked");
+			const result = await check() as { kind: string; reason: string };
+			assert.strictEqual(result.kind, 'failed');
+			assert.ok(!result.reason.includes(BAD), result.reason);
+			assert.match(stateRow().label, /^Not loaded: validating license: •+ is not a license$/);
+			assertNoValue(BAD);
+			setEnv('REDPANDA_LICENSE', undefined);
+			assert.ok(await api().secrets!.set(undefined, 'REDPANDA_LICENSE', BAD));
+			assert.ok(await waitFor(() => sourceRow()?.description === 'from a secret · value masked', 5_000));
+			assert.strictEqual((await check()).kind, 'failed');
+			assert.match(stateRow().label, /^Not loaded: validating license: •+ is not a license$/);
+			assertNoValue(BAD);
+		});
+
+		test('SOURCE_FILE: REDPANDA_LICENSE_FILEPATH (VS Code\'s environment, or a secret) names its source, the path masked as the view masks it; a missing file fails with the binary\'s reason, an existing one loads', async () => {
+			const file = path.join(licenseDir, 'missing.license');
+			setEnv('REDPANDA_LICENSE_FILEPATH', file);
+			assert.strictEqual(sourceRow().label, 'Source: the file in REDPANDA_LICENSE_FILEPATH');
+			assert.strictEqual(sourceRow().description, "from VS Code's environment · path masked");
+			assert.strictEqual((await check()).kind, 'failed');
+			assert.match(stateRow().label, /^Not loaded: reading license file: open •+: no such file or directory$/);
+			assertNoValue(file);
+			fs.writeFileSync(file, 'license');
+			assert.strictEqual((await check()).kind, 'loaded');
+			assert.strictEqual(stateRow().label, 'Loaded: enterprise, expires 2027-03-09');
+			fs.rmSync(file);
+			setEnv('REDPANDA_LICENSE_FILEPATH', undefined);
+			assert.ok(await api().secrets!.set(undefined, 'REDPANDA_LICENSE_FILEPATH', file));
+			assert.ok(await waitFor(() => sourceRow()?.description === 'from a secret · path masked', 5_000), JSON.stringify(licenseRows().map((i) => i.description)));
+			assert.strictEqual(sourceRow().label, 'Source: the file in REDPANDA_LICENSE_FILEPATH');
+			assert.strictEqual((await check()).kind, 'failed');
+			assert.match(stateRow().label, /^Not loaded: reading license file: open •+: no such file or directory$/);
+			assertNoValue(file);
+		});
+
+		test('SOURCE_DEFAULT: neither variable; the default file exists: the source row names it and the check loads it', async () => {
+			fs.writeFileSync(defaultFile, 'license');
+			view().refresh();
+			assert.strictEqual(sourceRow().label, `Source: the default file ${defaultFile}`);
+			assert.strictEqual(sourceRow().description, 'no REDPANDA_LICENSE or REDPANDA_LICENSE_FILEPATH is set');
+			assert.strictEqual((await check()).kind, 'loaded');
+		});
+
+		test('NOT_READ: REDPANDA_LICENSE in redpandaConnect.env or the env file is flagged as not read for the license, its value masked', async () => {
+			fs.writeFileSync(envFile, `API_TOKEN=${FILE_VALUE}\nBROKERS=k:9092\nREDPANDA_LICENSE=${GOOD}-file\n`);
+			await config().update('env', { TOPIC: 'events', REDPANDA_LICENSE: `${GOOD}-setting` }, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => licenseRows().filter((i) => i.contextValue === 'licenseNote').length === 2, 15_000), JSON.stringify(licenseRows().map((i) => i.label)));
+			assert.deepStrictEqual(licenseRows().filter((i) => i.contextValue === 'licenseNote').map((i) => i.label), [
+				'REDPANDA_LICENSE in redpandaConnect.env is not used for the license',
+				'REDPANDA_LICENSE in the env file is not used for the license',
+			]);
+			assert.strictEqual(sourceRow().label, 'No license set', 'the binary does not read them for the license');
+			assert.deepStrictEqual(await check(), { kind: 'none' });
+			// REDPANDA_LICENSE is masked in every group, the plain setting's row too, and in the hover.
+			assert.ok(row('setting', 'REDPANDA_LICENSE')!.description.startsWith(VIEW_MASK), row('setting', 'REDPANDA_LICENSE')!.description);
+			assert.match(row('setting', 'REDPANDA_LICENSE')!.accessibility, /value masked$/);
+			assert.ok(row('setting', 'TOPIC')!.description.startsWith('events'), 'other plain values stay in clear');
+			assertNoValue(`${GOOD}-file`, `${GOOD}-setting`);
+			const hover = envHoverMarkdown(view().modelFor(doc.uri), doc.uri, 'REDPANDA_LICENSE', undefined).value;
+			assert.ok(hover.includes(`\`${VIEW_MASK}\` from ${SETTING_LABEL}`), hover);
+			assert.ok(!hover.includes(GOOD), hover);
+			assert.strictEqual(links(hover)[0][0], 'Show value');
+			// Show value still reveals it on request.
+			await vscode.commands.executeCommand(SHOW_VALUE_COMMAND, row('setting', 'REDPANDA_LICENSE')!.node);
+			assert.ok(row('setting', 'REDPANDA_LICENSE')!.description.startsWith(`${GOOD}-setting`));
+		});
+
+		test('KEPT: a config\'s last result stays through refreshes and another config shown, until its next check', async () => {
+			assert.ok(await api().secrets!.set(undefined, 'REDPANDA_LICENSE', GOOD));
+			assert.strictEqual((await check()).kind, 'loaded');
+			view().refresh();
+			assert.strictEqual(stateRow().label, 'Loaded: enterprise, expires 2027-03-09');
+			const other = path.join(dir, 'license-other.yaml');
+			fs.writeFileSync(other, 'input:\n  stdin: {}\noutput:\n  stdout: {}\n');
+			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(other), { preview: false });
+			assert.ok(await waitFor(() => view().configUri?.fsPath === other, 10_000));
+			assert.strictEqual(stateRow().label, 'Not checked', 'the other config has its own state');
+			await vscode.window.showTextDocument(doc, { preview: false });
+			assert.ok(await waitFor(() => view().configUri?.toString() === doc.uri.toString(), 10_000));
+			assert.strictEqual(stateRow().label, 'Loaded: enterprise, expires 2027-03-09');
+			assert.strictEqual(view().licenseState(doc.uri).kind, 'loaded');
+		});
+
+		test('CHECK_FAILS: a run that fails without a license line, and no binary, show the reason in the group', async () => {
+			setEnv('REDPANDA_LICENSE', 'exit-38-value');
+			assert.strictEqual((await check()).kind, 'error');
+			assert.strictEqual(stateRow().label, 'Check failed: The check run failed (exit 1): Config lint error: fake lint failure');
+			assertNoValue('exit-38-value');
+			await config().update('binaryPath', path.join(licenseDir, 'nope'), vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => api().redpandaConnect.state.kind !== 'ok', 30_000));
+			const before = argvLines().length;
+			assert.strictEqual((await check()).kind, 'error');
+			assert.strictEqual(stateRow().label, 'Check failed: No Redpanda Connect binary was found.');
+			assert.strictEqual(argvLines().length, before, 'nothing ran');
+			await config().update('binaryPath', fakeBin, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok', 30_000));
 		});
 	});
 });

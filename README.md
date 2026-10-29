@@ -148,6 +148,24 @@ Values from the env file, the secrets and VS Code's environment are masked (`•
 
 Hovering `${NAME}`, `${NAME:default}` or `env("NAME")` (a literal name) in a detected config shows the same thing for that one variable, read when you hover: the value the commands get and its source (with the settings level, or the env file's line), and each weaker source it overrides. Values the view masks are masked in the hover too; its **Show value** opens the Environment view on that config with that row revealed. A variable nothing sets offers **Set variable…** (the view's action); a `${NAME:default}` that nothing sets shows the default in use. On `env("NAME")` it shows beside the Bloblang hover.
 
+### Enterprise license
+
+Enterprise connectors need a Redpanda Enterprise Edition license that covers Redpanda Connect; without one they fail with "this feature requires a valid Redpanda Enterprise Edition license…". The binary looks the license up by itself, in this order:
+
+1. `REDPANDA_LICENSE`: the license string.
+2. `REDPANDA_LICENSE_FILEPATH`: the path of a license file.
+3. `/etc/redpanda/redpanda.license`, the default file.
+
+The binary reads the two variables from its process environment, before it reads any `--env-file`. So, in the extension:
+
+- **The license string**: a secret variable. Run **Redpanda Connect: Set secret variable**, name it `REDPANDA_LICENSE` and paste the string; only the name lands in `redpandaConnect.secretEnv`, and the string stays in VS Code's secret storage. Starting VS Code with `REDPANDA_LICENSE` in its environment works too.
+- **A license file elsewhere**: `REDPANDA_LICENSE_FILEPATH` with the file's path, as a secret variable or in the environment VS Code was started with.
+- **The default file**: nothing to set; the binary finds `/etc/redpanda/redpanda.license` when neither variable is set.
+
+`redpandaConnect.env` and the `redpandaConnect.envFile` file reach the binary as `--env-file`, which it reads only for `${NAME}`, not for its license, so a license variable there has no effect on the license (the Environment view says so). Never put the license string in `redpandaConnect.env` (plain text in `settings.json`) or in an env file you commit.
+
+The Environment view's **License** group, after the variable groups, shows for the active config where the binary would take the license from: `REDPANDA_LICENSE` from a secret or VS Code's environment (the value is never shown), the file in `REDPANDA_LICENSE_FILEPATH`, the default file, or **No license set** (which opens this section). **Check license** (on the group, or Enter on its state row) runs the binary once, with a tiny config that ends at once and the same command line and environment as Run, and reads what it logs: **Loaded** with the license type and expiry date (the organisation is not shown), **Not loaded** with the binary's reason, or **No license loaded**. Each config keeps its last result until it is checked again; nothing is checked in the background. Text from the binary is masked like other output, the extension writes the license string nowhere, and it never passes `--redpanda-license`.
+
 ## Development
 
 ```sh

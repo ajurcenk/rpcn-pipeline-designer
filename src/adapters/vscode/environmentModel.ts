@@ -134,3 +134,72 @@ export function environmentModel(inputs: EnvironmentInputs): EnvironmentModel {
 		missing: inputs.usage.filter((u) => u.required && !winner.has(u.name)).map((u) => u.name),
 	};
 }
+
+// --- Ticket 38: where the binary takes the Enterprise license from ---
+
+/** The license string the binary reads first. */
+export const LICENSE_VAR = 'REDPANDA_LICENSE';
+/** The license file the binary reads when `LICENSE_VAR` is not set. */
+export const LICENSE_FILE_VAR = 'REDPANDA_LICENSE_FILEPATH';
+/** The file the binary reads when neither variable is set (Linux and macOS). */
+export const DEFAULT_LICENSE_FILE = '/etc/redpanda/redpanda.license';
+/** The sources the binary's license lookup reads: its process environment, strongest first. */
+export const LICENSE_SOURCES = ['secret', 'process'] as const;
+export type LicenseEnvSource = typeof LICENSE_SOURCES[number];
+
+export type LicenseSource =
+	| { readonly kind: 'string'; readonly from: LicenseEnvSource }
+	| { readonly kind: 'file'; readonly path: string; readonly from: LicenseEnvSource | 'default' }
+	| { readonly kind: 'none' };
+
+export interface LicenseSourceInfo {
+	readonly source: LicenseSource;
+	/**
+	 * The license variables `redpandaConnect.env` or the env file set: the binary reads them for
+	 * `${NAME}` only, not for its license (it looks the license up in its process environment before
+	 * it reads any `--env-file`; probed 2026-10-29 on 4.100.0 and 4.112.0).
+	 */
+	readonly notRead: readonly { readonly name: string; readonly source: 'setting' | 'envFile' }[];
+	/**
+	 * The values to mask in text: the license string from any source, and a license file path from a
+	 * secret or VS Code's environment (sources the view masks).
+	 */
+	readonly values: readonly string[];
+}
+
+/**
+ * Where the binary would take the license from for a config, from the view's inputs: `REDPANDA_LICENSE`
+ * from the strongest process-environment source that sets it (a secret over VS Code's environment, as
+ * the commands' environment is built), else `REDPANDA_LICENSE_FILEPATH` likewise, else the default
+ * file when it exists. An empty value is not set (the binary ignores it). Pure.
+ */
+export function licenseSource(inputs: EnvironmentInputs, defaultFile: { readonly path: string; readonly exists: boolean }): LicenseSourceInfo {
+	const secret = (name: string) => inputs.secrets.find((s) => s.name === name)?.value;
+	const valueIn = (source: LicenseEnvSource, name: string) => (source === 'secret' ? secret(name) : inputs.processEnv[name]) || undefined;
+	const strongest = (name: string) => LICENSE_SOURCES.find((s) => valueIn(s, name) !== undefined);
+	const read = inputs.envFile && !('error' in inputs.envFile.read) ? inputs.envFile.read : undefined;
+	const notRead: { name: string; source: 'setting' | 'envFile' }[] = [];
+	const values: string[] = [];
+	for (const name of [LICENSE_VAR, LICENSE_FILE_VAR]) {
+		const inSetting = inputs.setting.find((v) => v.name === name)?.value;
+		const inFile = read?.variables.filter((v) => v.name === name).pop()?.value;
+		if (inSetting) {
+			notRead.push({ name, source: 'setting' });
+		}
+		if (inFile) {
+			notRead.push({ name, source: 'envFile' });
+		}
+		if (name === LICENSE_VAR) {
+			values.push(...[inSetting, inFile, secret(name), inputs.processEnv[name]].filter((v): v is string => !!v));
+		} else {
+			values.push(...[secret(name), inputs.processEnv[name]].filter((v): v is string => !!v));
+		}
+	}
+	const stringFrom = strongest(LICENSE_VAR);
+	const fileFrom = strongest(LICENSE_FILE_VAR);
+	const source: LicenseSource = stringFrom ? { kind: 'string', from: stringFrom }
+		: fileFrom ? { kind: 'file', path: valueIn(fileFrom, LICENSE_FILE_VAR)!, from: fileFrom }
+			: defaultFile.exists ? { kind: 'file', path: defaultFile.path, from: 'default' }
+				: { kind: 'none' };
+	return { source, notRead, values };
+}

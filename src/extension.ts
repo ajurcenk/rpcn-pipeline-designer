@@ -23,7 +23,7 @@ import { BloblangPanels } from './adapters/bloblangPanel/panels';
 import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import { SecretVariables } from './adapters/vscode/secrets';
 import { EnvHoverProvider } from './adapters/vscode/envHover';
-import { EnvironmentView } from './adapters/vscode/environmentView';
+import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import type { JsonObject } from './core/schema';
 
@@ -85,7 +85,8 @@ export interface ExtensionApi {
 	 * The Environment view (ticket 31): its items, the config it shows, its refreshes, and its prompts
 	 * and settings write to replace. Only in `ExtensionMode.Test`, as `secrets`: its items carry values.
 	 */
-	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'modelFor' | 'configUri' | 'visible' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'>;
+	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'modelFor' | 'configUri' | 'visible' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'
+		| 'license' | 'licenseState' | 'licenseDefaultPath' | 'openExternal'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -266,7 +267,15 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	);
 
 	// The Environment view (ticket 31): reads the four sources for the active config; writes through the settings and `secrets`.
-	const environment = new EnvironmentView({ detection, secrets, log });
+	// Ticket 38: its License group's check runs the binary with the config's command line, its temporary config in global storage.
+	const environment = new EnvironmentView({
+		detection,
+		secrets,
+		log,
+		binaryState: () => redpandaConnect.state,
+		storageDir: context.globalStorageUri.fsPath,
+		licenseReadmeUrl: licenseReadmeUrl(context.extension.packageJSON as { repository?: { url?: unknown } }),
+	});
 	context.subscriptions.push(environment, ...environment.register());
 	// The variable hover (ticket 34), beside the Bloblang and YAML hovers: the view's model for the hovered config, read on each hover.
 	context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'yaml' }, new EnvHoverProvider({
@@ -290,6 +299,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		...(context.extensionMode === vscode.ExtensionMode.Test ? { secrets, environment } : {}),
 		outputLines: () => [...lines],
 	};
+}
+
+/** Ticket 38: the README's license section, from `package.json`'s repository (else the default). */
+export function licenseReadmeUrl(packageJson: { repository?: { url?: unknown } } | undefined): string {
+	const url = packageJson?.repository?.url;
+	return typeof url === 'string' && /^https:\/\//.test(url)
+		? `${url.replace(/\.git$/, '').replace(/\/+$/, '')}#${LICENSE_README_ANCHOR}`
+		: DEFAULT_LICENSE_README_URL;
 }
 
 export function deactivate() {}
