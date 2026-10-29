@@ -3,7 +3,7 @@ title: 'Hovering a variable in the YAML shows its value and source'
 type: 'feature'
 ticket: '34'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: 'b40c0d966ee81eb51233d54967f9e70f7109945f'
 route: 'full'
 route_source: 'auto'
@@ -109,4 +109,4 @@ Quick review. Verdicts: 0 high, 2 medium, 4 low, 1 false. No masked value reache
 **Manual checks:**
 - Dev host on 1.143.1, `.vscode-test/manual-env-view/env-demo.yaml`: hover each variable (TOPIC, API_TOKEN, BROKERS, PORT, HOME, REGION, `env("ZONE")`); Show value on API_TOKEN; Set variable… on REGION.
 
-Result (2026-10-28, after the review patches): stable 1054 passing (every HOVER test ran and passed); multiroot 8 passing (the folder-level hover); corpus 156 passed; webview 317 passed. Manual check: pending.
+Result (2026-10-28, after the review patches): stable 1054 passing (every HOVER test ran and passed); multiroot 8 passing (the folder-level hover); corpus 156 passed; webview 317 passed. Manual check: done by the user on the 1.143.1 dev host (2026-10-28), `.vscode-test/manual-env-view/env-demo.yaml` (each variable's hover, Show value, Set variable… on REGION, `env("ZONE")` beside the Bloblang hover), no issues.
