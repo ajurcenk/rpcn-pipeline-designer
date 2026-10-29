@@ -3,7 +3,7 @@ title: 'The graph tests wait for the webview''s own ready'
 type: 'bugfix'
 ticket: '37'
 created: '2026-10-29'
-status: 'built'
+status: done
 baseline_revision: 'e3efd515da310ce60d03f51f32bcaa1665cb1c5d'
 route: 'oneshot'
 route_source: 'auto'
@@ -51,4 +51,4 @@ Quick review. Verdicts: 0 high, 0 medium, 7 low, 0 false. The reviewer confirmed
 
 ## Verification Result
 
-2026-10-29, after the review patches: every graph suite ("Pipeline graph") 10 times on 2 loaded CPUs: CURSOR and DRIVING passed in all 10 (before the fix, CURSOR failed 1 in 12 loaded navigation runs); stable 1058 passing; multiroot 8 passing. In those loaded runs `LATE_USER_EDITOR` (suite 84, the lock sequence of bug 19) failed 2 of 10, and once in an earlier loaded loop; it does not use `withGraph` or the new wait, and it has not failed on CI: recorded in deferred-work as an older flake under heavy load (user decision, 2026-10-29). Webview and corpus runs are not affected (no webview or core change). CI after the push is the check that matters.
+2026-10-29, after the review patches: every graph suite ("Pipeline graph") 10 times on 2 loaded CPUs: CURSOR and DRIVING passed in all 10 (before the fix, CURSOR failed 1 in 12 loaded navigation runs); stable 1058 passing; multiroot 8 passing. In those loaded runs `LATE_USER_EDITOR` (suite 84, the lock sequence of bug 19) failed 2 of 10, and once in an earlier loaded loop; it does not use `withGraph` or the new wait, and it has not failed on CI: recorded in deferred-work as an older flake under heavy load (user decision, 2026-10-29). Webview and corpus runs are not affected (no webview or core change). CI after the push is the check that matters. Marked done by the user on 2026-10-29 at the push; no manual check (a test-only change).
