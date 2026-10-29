@@ -192,6 +192,12 @@
         "title": "Set variable",
         "category": "Redpanda Connect",
         "icon": "$(add)"
+      },
+      {
+        "command": "redpandaConnect.environment.revealVariable",
+        "title": "Show value in the Environment view",
+        "category": "Redpanda Connect",
+        "icon": "$(eye)"
       }
     ],
     "menus": {
@@ -259,6 +265,10 @@
         },
         {
           "command": "redpandaConnect.setMissingVariable",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.revealVariable",
           "when": "false"
         }
       ],

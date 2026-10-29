@@ -144,6 +144,8 @@ The Redpanda Connect icon in the Activity Bar opens the **Environment** view for
 
 Values from the env file, the secrets and VS Code's environment are masked (`••••••••`) until **Show value** on that row; **Hide value**, and any refresh of the view, mask them again. Plain variables can be added, edited and removed (at the settings level they come from), secrets set and their value removed, and **Open env file** opens the file. The env file is read the way the binary reads it, for display only: when a line would make the binary reject the file (`export NAME=…`, `NAME: value`, a quote left open), or stop reading it (a line starting with a space, more text after a value), the group says so and names the line. The view only reads: it changes nothing in how variables reach lint, Run, the live Bloblang errors and the test panel.
 
+Hovering `${NAME}`, `${NAME:default}` or `env("NAME")` (a literal name) in a detected config shows the same thing for that one variable, read when you hover: the value the commands get and its source (with the settings level, or the env file's line), and each weaker source it overrides. Values the view masks are masked in the hover too; its **Show value** opens the Environment view on that config with that row revealed. A variable nothing sets offers **Set variable…** (the view's action); a `${NAME:default}` that nothing sets shows the default in use. On `env("NAME")` it shows beside the Bloblang hover.
+
 ## Development
 
 ```sh

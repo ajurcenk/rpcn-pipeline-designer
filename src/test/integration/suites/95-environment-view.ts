@@ -13,12 +13,14 @@ import { EnvSettingFiles } from '../../../adapters/redpandaConnect/envSetting';
 import { WINDOW_SCOPE } from '../../../adapters/redpandaConnect/secretEnv';
 import {
 	ADD_VARIABLE_COMMAND, EDIT_VARIABLE_COMMAND, EnvironmentView, type EnvironmentItem, type EnvSettingWriter, type EnvironmentUi, HIDE_VALUE_COMMAND, NO_CONFIG_MESSAGE, OPEN_ENV_FILE_COMMAND,
-	REMOVE_VARIABLE_COMMAND, SET_MISSING_COMMAND, SHOW_VALUE_COMMAND, VIEW_MASK,
+	REMOVE_VARIABLE_COMMAND, REVEAL_VARIABLE_COMMAND, SET_MISSING_COMMAND, SHOW_VALUE_COMMAND, VIEW_MASK,
 } from '../../../adapters/vscode/environmentView';
+import { ENV_HOVER_TITLE, EnvHoverProvider } from '../../../adapters/vscode/envHover';
 import type { SecretVariables } from '../../../adapters/vscode/secrets';
 import { type ExtensionApi } from '../../../extension';
 import { makeTempDir } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, waitFor } from '../helpers';
+import { EXTENSION_ID, waitFor, waitForAsync } from '../helpers';
+import { hoverText, schemaFrom, useSchemaBinary } from '../schemaHarness';
 
 const CONFIG = [
 	'input:',
@@ -331,5 +333,155 @@ suite('Environment view (integration, ticket 31)', function () {
 		assert.deepStrictEqual(items(), []);
 		await vscode.commands.executeCommand('workbench.action.files.revert');
 		assert.ok(await waitFor(() => !doc.isDirty, 5_000));
+	});
+	// --- Ticket 34: the variable hover, read from the view's model for the hovered config ---
+
+	/** The variable hovers at `marker` (+ `delta`) in `d`, as markdown; every hover there is checked for values. */
+	async function envHovers(marker: string, delta = 2, d: vscode.TextDocument = doc): Promise<string[]> {
+		const at = d.getText().indexOf(marker);
+		assert.ok(at >= 0, marker);
+		const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', d.uri, d.positionAt(at + delta));
+		const texts = (hovers ?? []).flatMap((h) => h.contents).map((c) => (typeof c === 'string' ? c : 'value' in c ? c.value : ''));
+		const ours = texts.filter((t) => t.startsWith(`**${ENV_HOVER_TITLE}**`));
+		for (const t of ours) {
+			for (const value of [SECRET_VALUE, FILE_VALUE, process.env.HOME!]) {
+				assert.ok(!t.includes(value), `a masked value in the hover: ${t}`);
+			}
+		}
+		return ours;
+	}
+	async function envHover(marker: string, delta = 2, d: vscode.TextDocument = doc): Promise<string> {
+		const ours = await envHovers(marker, delta, d);
+		assert.strictEqual(ours.length, 1, `one variable hover at ${marker}: ${JSON.stringify(ours)}`);
+		return ours[0];
+	}
+	/** The command links in a hover: `[label, command, args]`. */
+	function links(markdown: string): [string, string, unknown[]][] {
+		return [...markdown.matchAll(/\[([^\]]+)\]\(command:([^?)]+)\?([^)]+)\)/g)].map((m) => [m[1], m[2], JSON.parse(decodeURIComponent(m[3])) as unknown[]]);
+	}
+	const SETTING_LABEL = '**Settings (redpandaConnect.env)** (user settings)';
+
+	test('HOVER PLAIN: ${TOPIC} shows the setting\'s value in clear and its level; no link', async function () {
+		this.timeout(180_000);
+		const text = await envHover('${TOPIC}');
+		assert.match(text, /`TOPIC`/);
+		assert.ok(text.includes(`\`events\` from ${SETTING_LABEL}`), text);
+		assert.deepStrictEqual(links(text), []);
+		assert.ok(!/Overrides/.test(text));
+	});
+
+	test('HOVER OVERRIDES: ${API_TOKEN} is from the env file (its line), masked, and overrides the secret; ${HOME} is masked', async function () {
+		this.timeout(180_000);
+		const text = await envHover('${API_TOKEN}');
+		assert.ok(text.includes(`\`${VIEW_MASK}\` from **Env file** (.env, line 1)`), text);
+		assert.ok(text.includes('Overrides: **Secrets**'), text);
+		const [[label, command, args]] = links(text);
+		assert.deepStrictEqual([label, command, args], ['Show value', REVEAL_VARIABLE_COMMAND, [doc.uri.toString(), 'envFile', 'API_TOKEN']]);
+		const home = await envHover('${HOME}');
+		assert.ok(home.includes(`\`${VIEW_MASK}\` from **VS Code environment**`), home);
+	});
+
+	test('HOVER MASKED_SHOW: Show value shows this config in the view with its env-file API_TOKEN row revealed, the others masked', async function () {
+		this.timeout(180_000);
+		const text = await envHover('${API_TOKEN}');
+		// Another config shown first: the link's config replaces it.
+		const other = path.join(dir, 'other.yaml');
+		fs.writeFileSync(other, 'input:\n  stdin: {}\noutput:\n  stdout: {}\n');
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(other), { preview: false });
+		assert.ok(await waitFor(() => view().configUri?.fsPath === other, 10_000));
+		const [[, command, args]] = links(text);
+		assert.strictEqual(await vscode.commands.executeCommand(command, ...args), true);
+		assert.strictEqual(view().configUri?.toString(), doc.uri.toString());
+		assert.ok(row('envFile', 'API_TOKEN')!.description.startsWith(FILE_VALUE), row('envFile', 'API_TOKEN')!.description);
+		assert.ok(row('secret', 'API_TOKEN')!.description.startsWith(VIEW_MASK));
+		assert.ok(row('envFile', 'BROKERS')!.description.startsWith(VIEW_MASK));
+		assert.ok(!(await envHover('${API_TOKEN}')).includes(FILE_VALUE), 'the hover stays masked');
+		assert.strictEqual(await vscode.commands.executeCommand(REVEAL_VARIABLE_COMMAND, doc.uri.toString(), 'setting', 'NOPE'), false, 'no such row');
+		assert.ok(!api().outputLines().some((l) => l.includes(SECRET_VALUE) || l.includes(FILE_VALUE)), 'no value is logged');
+		assert.ok(!api().outputLines().some((l) => l.includes('could not reveal')), api().outputLines().slice(-5).join('\n'));
+		assert.ok(await waitFor(() => view().visible, 5_000), 'the view is shown');
+	});
+
+	test('HOVER MISSING: ${REGION} is missing; Set variable… runs the set action for REGION and this config; cancelled changes nothing', async function () {
+		this.timeout(180_000);
+		const text = await envHover('${REGION}');
+		assert.match(text, /Missing: the config uses it without a default and no source sets it/);
+		const [[label, command, args]] = links(text);
+		assert.deepStrictEqual([label, command, args], ['Set variable…', SET_MISSING_COMMAND, ['REGION', doc.uri.toString()]]);
+		script([undefined], []);
+		assert.strictEqual(await vscode.commands.executeCommand(command, ...args), undefined);
+		assert.deepStrictEqual(config().inspect('env')?.globalValue, { TOPIC: 'events' });
+		script(['plain'], ['eu-west']);
+		assert.strictEqual(await vscode.commands.executeCommand(command, ...args), 'REGION');
+		assert.deepStrictEqual(config().inspect('env')?.globalValue, { TOPIC: 'events', REGION: 'eu-west' });
+		assert.ok((await envHover('${REGION}')).includes(`\`eu-west\` from ${SETTING_LABEL}`));
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('HOVER DEFAULT / DEFAULT_SET: ${PORT:8080} shows the default in use; once PORT is set, its value', async function () {
+		this.timeout(180_000);
+		assert.ok((await envHover('${PORT')).includes('Not set: the default `8080` is used.'));
+		await config().update('env', { TOPIC: 'events', PORT: '9090' }, vscode.ConfigurationTarget.Global);
+		const text = await envHover('${PORT');
+		assert.ok(text.includes(`\`9090\` from ${SETTING_LABEL}`), text);
+		assert.ok(!text.includes('default'), text);
+	});
+
+	test('HOVER CURRENT: a value changed after a hover shows on the next hover', async function () {
+		this.timeout(180_000);
+		assert.ok((await envHover('${TOPIC}')).includes('`events`'));
+		await config().update('env', { TOPIC: 'orders' }, vscode.ConfigurationTarget.Global);
+		assert.ok((await envHover('${TOPIC}')).includes('`orders`'));
+		fs.writeFileSync(envFile, 'BROKERS=k:9092\n');
+		const token = await envHover('${API_TOKEN}');
+		assert.ok(token.includes(`\`${VIEW_MASK}\` from **Secrets**`), `the env file on disk is read on the hover: ${token}`);
+		fs.writeFileSync(envFile, 'BROKERS=k:9092\nexport X=1\n');
+		const region = await envHover('${REGION}');
+		assert.ok(region.includes('Env file: The binary will not use this file: line 2'), `the env file's note on any hover: ${region}`);
+	});
+
+	test('HOVER NOT_A_USE: plain text, ${!…}, env(this.name) and an undetected file get no variable hover', async function () {
+		this.timeout(180_000);
+		assert.deepStrictEqual(await envHovers('interval', 1), []);
+		const other = path.join(dir, 'not-a-use.yaml');
+		fs.writeFileSync(other, 'input:\n  generate:\n    mapping: |\n      root.a = "${! this.x }"\n      root.b = env(this.name)\noutput:\n  stdout: {}\n');
+		const d = await vscode.workspace.openTextDocument(other);
+		await vscode.window.showTextDocument(d, { preview: false });
+		assert.ok(await waitFor(() => api().detection.isDetected(d.uri), 10_000));
+		assert.deepStrictEqual(await envHovers('${!', 4, d), []);
+		assert.deepStrictEqual(await envHovers('env(this', 2, d), []);
+		const plain = path.join(dir, 'plain.yaml');
+		fs.writeFileSync(plain, 'just: "${TOPIC}"\n');
+		const p = await vscode.workspace.openTextDocument(plain);
+		await vscode.window.showTextDocument(p, { preview: false });
+		assert.strictEqual(api().detection.isDetected(p.uri), false);
+		assert.deepStrictEqual(await envHovers('${TOPIC}', 2, p), []);
+	});
+
+	test('HOVER TRUST: the markdown enables only the two commands', () => {
+		const provider = new EnvHoverProvider({ isDetected: (u) => api().detection.isDetected(u), modelFor: (u) => view().modelFor(u) });
+		const hover = provider.provideHover(doc, doc.positionAt(doc.getText().indexOf('${API_TOKEN}') + 2));
+		const md = hover!.contents[0] as vscode.MarkdownString;
+		assert.deepStrictEqual(md.isTrusted, { enabledCommands: [REVEAL_VARIABLE_COMMAND, SET_MISSING_COMMAND] });
+		assert.deepStrictEqual(hover!.range, new vscode.Range(doc.positionAt(doc.getText().indexOf('${API_TOKEN}')), doc.positionAt(doc.getText().indexOf('${API_TOKEN}') + '${API_TOKEN}'.length)));
+	});
+	// The Bloblang hover needs a schema: the fake binary's, for this test only.
+	suite('with a schema', function () {
+		const h = useSchemaBinary();
+
+		test('HOVER ENV_CALL: env("ZONE") has the variable hover (missing) beside the Bloblang hover', async function () {
+			this.timeout(180_000);
+			await schemaFrom(h.fakeBinary, '4.112.0');
+			const at = doc.positionAt(doc.getText().indexOf('env("ZONE")') + 1);
+			let all = '';
+			assert.ok(await waitForAsync(async () => {
+				all = await hoverText(doc, at);
+				return all.includes('**env** function');
+			}, 60_000), `no Bloblang hover on env("ZONE"): ${all}`);
+			const text = await envHover('env("ZONE")', 6);
+			assert.match(text, /`ZONE`/);
+			assert.match(text, /Missing/);
+			assert.deepStrictEqual(links(text)[0][2], ['ZONE', doc.uri.toString()]);
+		});
 	});
 });

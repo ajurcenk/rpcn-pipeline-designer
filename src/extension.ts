@@ -22,6 +22,7 @@ import { GraphPanels } from './adapters/graphPanel/panels';
 import { BloblangPanels } from './adapters/bloblangPanel/panels';
 import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import { SecretVariables } from './adapters/vscode/secrets';
+import { EnvHoverProvider } from './adapters/vscode/envHover';
 import { EnvironmentView } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import type { JsonObject } from './core/schema';
@@ -84,7 +85,7 @@ export interface ExtensionApi {
 	 * The Environment view (ticket 31): its items, the config it shows, its refreshes, and its prompts
 	 * and settings write to replace. Only in `ExtensionMode.Test`, as `secrets`: its items carry values.
 	 */
-	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'configUri' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'>;
+	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'modelFor' | 'configUri' | 'visible' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -267,6 +268,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	// The Environment view (ticket 31): reads the four sources for the active config; writes through the settings and `secrets`.
 	const environment = new EnvironmentView({ detection, secrets, log });
 	context.subscriptions.push(environment, ...environment.register());
+	// The variable hover (ticket 34), beside the Bloblang and YAML hovers: the view's model for the hovered config, read on each hover.
+	context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'yaml' }, new EnvHoverProvider({
+		isDetected: (uri) => detection.isDetected(uri),
+		modelFor: (uri) => environment.modelFor(uri),
+	})));
 
 	return {
 		redpandaConnect,

@@ -77,6 +77,12 @@ suite('Environment view in a multi-root workspace (integration, ticket 31)', fun
 		assert.strictEqual(state(row('process', 'HOME'))?.state, 'used');
 		assert.strictEqual(view().model()?.envFilePath, path.join(folder('b').uri.fsPath, ENV_NAME));
 		assert.deepStrictEqual(view().model()?.missing, ['REGION']);
+		// Ticket 34: the hover names the folder settings level.
+		const doc = vscode.window.activeTextEditor!.document;
+		const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', doc.uri,
+			doc.positionAt(doc.getText().indexOf('${TOPIC}') + 2));
+		const texts = hovers.flatMap((h) => h.contents).map((c) => (typeof c === 'string' ? c : 'value' in c ? c.value : ''));
+		assert.ok(texts.some((t) => t.includes('`b-topic` from **Settings (redpandaConnect.env)** (folder settings)')), JSON.stringify(texts));
 
 		view().ui = { pickKind: async () => 'plain', input: async () => 'eu-b', error: (m) => assert.fail(m), info: () => undefined };
 		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), 'REGION');

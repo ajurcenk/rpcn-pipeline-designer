@@ -50,3 +50,44 @@ export function envUsage(text: string): EnvUse[] {
 		.map(([name, required]) => ({ name, required }))
 		.sort((a, b) => order.get(a.name)! - order.get(b.name)!);
 }
+
+/** One variable use in the text (ticket 34's hover). */
+export interface EnvReference {
+	readonly name: string;
+	/** `${NAME:default}`'s default (possibly empty); `undefined` without one and for `env("NAME")`. */
+	readonly default?: string;
+	readonly form: 'reference' | 'call';
+	/** The use's start offset (inclusive) and end offset (exclusive) in the text. */
+	readonly start: number;
+	readonly end: number;
+}
+
+/**
+ * The variable use under `offset` (`start <= offset < end`), by the same rules as `envUsage`: a
+ * `${NAME}` / `${NAME:default}` or an `env("NAME")` with a literal name a variable can have. Pure.
+ */
+export function envReferenceAt(text: string, offset: number): EnvReference | undefined {
+	for (const match of text.matchAll(REFERENCE)) {
+		const start = match.index ?? 0;
+		const end = start + match[0].length;
+		if (offset >= start && offset < end) {
+			return NAME.test(match[1])
+				? { name: match[1], ...(match[2] !== undefined ? { default: match[2].slice(1) } : {}), form: 'reference', start, end }
+				: undefined;
+		}
+		if (start > offset) {
+			break;
+		}
+	}
+	for (const match of text.matchAll(ENV_CALL)) {
+		const start = match.index ?? 0;
+		const end = start + match[0].length;
+		if (offset >= start && offset < end) {
+			return { name: match[2], form: 'call', start, end };
+		}
+		if (start > offset) {
+			break;
+		}
+	}
+	return undefined;
+}

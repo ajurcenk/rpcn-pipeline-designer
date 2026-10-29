@@ -46,6 +46,11 @@ export const REFRESH_VIEW_COMMAND = 'redpandaConnect.environment.refresh';
  * edited), `undefined` when none was.
  */
 export const SET_MISSING_COMMAND = 'redpandaConnect.setMissingVariable';
+/**
+ * Reveals one row's value (ticket 34's hover "Show value"): `(configUri, source, name)`; shows that
+ * config in the view, reveals the row and focuses the view. Resolves with whether the row was found.
+ */
+export const REVEAL_VARIABLE_COMMAND = 'redpandaConnect.environment.revealVariable';
 
 /** What a masked value shows. */
 export const VIEW_MASK = '••••••••';
@@ -156,6 +161,25 @@ export async function writeEnvSettingKey(
 	await write(config, Object.keys(next).length > 0 ? next : undefined, SETTING_TARGETS[level]);
 }
 
+/** Whether a source's values are masked until "Show value": all but the setting and the extension's. */
+export function masksValue(source: EnvSource): boolean {
+	return source !== 'setting' && source !== 'extension';
+}
+
+/** A row's state, as the view words it. */
+export function variableStateText(v: EnvironmentVariable): string {
+	switch (v.state) {
+		case 'used':
+			return 'used';
+		case 'overridden':
+			return `overridden by ${SOURCE_NAMES[v.overriddenBy!]}`;
+		case 'ignored':
+			return 'not used: the binary rejects the file';
+		case 'noValue':
+			return v.overriddenBy ? `no value here, set by ${SOURCE_NAMES[v.overriddenBy]}` : 'no value on this machine';
+	}
+}
+
 /** `text` crossed out (a combining long stroke after each character). */
 function strike(text: string): string {
 	return [...text].map((c) => `${c}\u0336`).join('');
@@ -248,13 +272,21 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			command(HIDE_VALUE_COMMAND, (node: EnvironmentNode) => this.setRevealed(node, false)),
 			command(OPEN_ENV_FILE_COMMAND, () => this.openEnvFile()),
 			command(REFRESH_VIEW_COMMAND, () => this.refresh()),
-			command(SET_MISSING_COMMAND, (arg: EnvironmentNode | string, uri?: vscode.Uri) => this.setMissing(arg, uri)),
+			// A hover's command link passes the config URI as a string.
+			command(SET_MISSING_COMMAND, (arg: EnvironmentNode | string, uri?: vscode.Uri | string) =>
+				this.setMissing(arg, typeof uri === 'string' ? vscode.Uri.parse(uri) : uri)),
+			command(REVEAL_VARIABLE_COMMAND, (uri: vscode.Uri | string, source: EnvSource, name: string) => this.revealVariable(uri, source, name)),
 		];
 	}
 
 	/** The config the view shows, if any. */
 	get configUri(): vscode.Uri | undefined {
 		return this.config;
+	}
+
+	/** Whether the tree view is visible (the test seam). */
+	get visible(): boolean {
+		return this.treeView?.visible ?? false;
 	}
 
 	/** The view's message (shown instead of the tree), if any. */
@@ -269,6 +301,14 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		}
 		this.cached ??= this.compute(this.config);
 		return this.cached;
+	}
+
+	/**
+	 * The model for any config, read now (current settings, secrets, env file on disk and the
+	 * document's text); ticket 34's hover. Not cached: the view's own model is unaffected.
+	 */
+	modelFor(uri: vscode.Uri): EnvironmentModel {
+		return this.compute(uri);
 	}
 
 	/** Re-reads everything; masks every revealed value again. */
@@ -336,6 +376,20 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		return children;
 	}
 
+	/** For `TreeView.reveal`: a row's group. */
+	getParent(node: EnvironmentNode): EnvironmentNode | undefined {
+		switch (node.kind) {
+			case 'group':
+				return undefined;
+			case 'missing':
+				return { kind: 'group', source: 'missing' };
+			case 'variable':
+				return { kind: 'group', source: node.variable.source };
+			case 'note':
+				return { kind: 'group', source: node.id.slice(0, node.id.indexOf(':')) as EnvSource };
+		}
+	}
+
 	getTreeItem(node: EnvironmentNode): vscode.TreeItem {
 		switch (node.kind) {
 			case 'group':
@@ -399,7 +453,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	}
 
 	private variableItem(v: EnvironmentVariable): vscode.TreeItem {
-		const masks = v.source !== 'setting' && v.source !== 'extension';
+		const masks = masksValue(v.source);
 		const revealed = this.revealed.has(keyOf(v));
 		const masked = masks && v.value !== undefined && !revealed;
 		const shown = v.value === undefined ? 'no value' : masked ? VIEW_MASK : JSON.stringify(oneLine(v.value)).slice(1, -1) || '(empty)';
@@ -431,16 +485,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	}
 
 	private stateText(v: EnvironmentVariable): string {
-		switch (v.state) {
-			case 'used':
-				return 'used';
-			case 'overridden':
-				return `overridden by ${SOURCE_NAMES[v.overriddenBy!]}`;
-			case 'ignored':
-				return 'not used: the binary rejects the file';
-			case 'noValue':
-				return v.overriddenBy ? `no value here, set by ${SOURCE_NAMES[v.overriddenBy]}` : 'no value on this machine';
-		}
+		return variableStateText(v);
 	}
 
 	private emptyText(source: EnvSource, model: EnvironmentModel): string {
@@ -706,6 +751,33 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		}
 		// The whole tree: its nodes are rebuilt on each read, so this one is not the shown object.
 		this.changeEmitter.fire(undefined);
+	}
+
+	/**
+	 * Ticket 34's "Show value": shows `uri`'s config in the view (a refresh, so other rows are masked
+	 * again), reveals the `source` row of `name`, then selects it and focuses the view. Whether the
+	 * row was found and revealed; nothing is logged or shown with its value.
+	 */
+	async revealVariable(uriArg: vscode.Uri | string | undefined, source: EnvSource | undefined, name: string | undefined): Promise<boolean> {
+		const uri = typeof uriArg === 'string' ? vscode.Uri.parse(uriArg) : uriArg;
+		if (!uri || !source || !name || !this.options.detection.isDetected(uri)) {
+			return false;
+		}
+		this.config = uri;
+		this.refresh();
+		const variable = this.model()?.groups.find((g) => g.source === source)?.variables.find((v) => v.name === name);
+		if (!variable) {
+			return false;
+		}
+		const node: EnvironmentNode = { kind: 'variable', variable };
+		this.setRevealed(node, true);
+		try {
+			await this.treeView?.reveal(node, { select: true, focus: true });
+		} catch (err) {
+			this.options.log(`Environment view: could not reveal ${name}: ${reasonOf(err)}`);
+			return false;
+		}
+		return true;
 	}
 
 	/** Opens the env file in an editor. */
