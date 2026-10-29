@@ -101,3 +101,4 @@
 - source_plan: `_bmad-output/backlog/bug-set-secret-variable-declares-the-name-in-the-folder-settings-of-a-one-folder-workspace-plan.md`
   summary: Ticket 32's suite 90 tests OTHER_NAME ("the secret is set": OTHER_32's value undefined) and CANCEL (nothing offered, `picked` empty) failed together once in a local stable run, then passed on the next run.
   evidence: `.vscode-test/bug33-stable-run1.log` (2026-10-28, 1038 passing, 2 failing); the next stable run on the same machine had 1040 passing. Bug 33's change does not touch a no-folder config's path. Not reproduced; possibly the secret reload after the previous test's teardown (WRITE_SETTLE_MS) racing the next set.
+  resolution: ticketed as backlog 35 (2026-10-28), after a third failure in CI (run 40794701387): `_bmad-output/backlog/bug-the-test-panels-set-name-tests-sometimes-get-their-request-ignored.md`.
