@@ -3,7 +3,7 @@ title: 'The Set NAME… tests wait for the webview before their run'
 type: 'bugfix'
 ticket: '35'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: 'cb6bde5923f9db7e186a1328e895cf063b90e70b'
 route: 'oneshot'
 route_source: 'auto'
@@ -48,4 +48,4 @@ Quick review. Verdicts: 0 high, 1 medium, 4 low, 0 false. The reviewer confirmed
 
 ## Verification Result
 
-2026-10-28: with the first wait, the Set NAME… block passed 6 of 6 runs and stable 1054 passing. After the review patch (wait for the snapshots to settle): the block 6 of 6 (15 passing each), stable 1054 passing, multiroot 8 passing. Corpus and webview runs are not affected (a test file only). The CI run after the push is the check that matters (the failure was seen there once).
+2026-10-28: with the first wait, the Set NAME… block passed 6 of 6 runs and stable 1054 passing. After the review patch (wait for the snapshots to settle): the block 6 of 6 (15 passing each), stable 1054 passing, multiroot 8 passing. Corpus and webview runs are not affected (a test file only). The CI run after the push is the check that matters (the failure was seen there once). Marked done by the user on 2026-10-29 at the push; no manual check (a test-only change).
