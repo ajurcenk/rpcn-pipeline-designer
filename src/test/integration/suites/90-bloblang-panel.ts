@@ -561,10 +561,28 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		}
 		const variableSets = (handle: BloblangPanelHandle) => handle.posted.filter((m) => m.type === 'variableSet');
 
+		/**
+		 * A panel whose webview has posted all its `ready` messages (bug 35): a `ready` arriving after the
+		 * test's own run would clear the offered names, as a reloaded webview shows no result. The test
+		 * build's StrictMode runs the webview's mount effect twice, so it posts `ready` twice: wait until
+		 * no new snapshot comes for a while.
+		 */
+		async function shown(uri: vscode.Uri, processorPath: string): Promise<BloblangPanelHandle> {
+			const handle = await show(uri, processorPath);
+			const snapshots = () => handle.posted.filter((m) => m.type === 'snapshot').length;
+			assert.ok(await waitFor(() => snapshots() > 0, 15_000), 'the webview never posted ready');
+			for (let seen = snapshots(); ; seen = snapshots()) {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				if (snapshots() === seen) {
+					return handle;
+				}
+			}
+		}
+
 		/** The BROKEN processor's panel after a run the unset variable stopped. */
 		async function stopped(name: string): Promise<BloblangPanelHandle> {
 			const doc = (await open(name, CONFIG)).document;
-			const handle = await show(doc.uri, 'pipeline.processors[4]');
+			const handle = await shown(doc.uri, 'pipeline.processors[4]');
 			const result = (await run(handle, '{"a":1}')).result;
 			assert.deepStrictEqual(result.kind === 'error' && result.missingVariables, ['BROKEN']);
 			return handle;
@@ -635,7 +653,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		test('MASKED: a name equal to a loaded secret value is left out of missingVariables (and is masked in the message)', async () => {
 			assert.ok(await api().secrets!.set(undefined, 'SECRET_30', 'BROKEN'));
 			const doc = (await open('unset-masked.yaml', CONFIG)).document;
-			const handle = await show(doc.uri, 'pipeline.processors[4]');
+			const handle = await shown(doc.uri, 'pipeline.processors[4]');
 			const { result } = await run(handle, '{"a":1}');
 			assert.ok(result.kind === 'error', JSON.stringify(result));
 			assert.strictEqual(result.missingVariables, undefined, JSON.stringify(result));
@@ -682,7 +700,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.deepStrictEqual(picked, [], 'the set action never ran');
 			// Another processor's result lists nothing: BROKEN is not offered by it.
 			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === handle.uri.toString())!;
-			const other = await show(doc.uri, FIRST);
+			const other = await shown(doc.uri, FIRST);
 			await run(other, '{"a":1}');
 			await other.receive({ type: 'setVariableRequested', name: 'BROKEN' });
 			// The same panel, after a result that lists nothing (its mapping fixed in the open document).
