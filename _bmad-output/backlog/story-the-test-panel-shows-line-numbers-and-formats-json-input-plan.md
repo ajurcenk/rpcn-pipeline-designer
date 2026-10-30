@@ -3,7 +3,7 @@ title: 'The test panel shows line numbers and formats JSON input'
 type: 'feature'
 ticket: '40'
 created: '2026-10-30'
-status: 'built'
+status: done
 baseline_revision: '4562cd1710d4425e8b18d0f3c9d31aa1a880986f'
 route: 'full'
 route_source: 'auto'
@@ -97,4 +97,4 @@ Quick review. Verdicts: 0 high, 1 medium, 5 low, 0 false. Confirmed: the gutter'
 **Manual checks:**
 - Dev host on 1.143.1: a one-line JSON input, Format JSON, the gutter while scrolling a long input and a long line; copy the output; a non-JSON input (button disabled); keyboard only; a generate input's panel; light and dark themes.
 
-Result (2026-10-30, after the review patches): webview 331 passed (every matrix row jsdom can check); stable 1085 passing; multiroot 10 passing; corpus 156 passed. The undoable `execCommand` path runs only in a real webview (happy-dom takes the fallback): covered by the manual check. Manual check: pending.
+Result (2026-10-30, after the review patches): webview 331 passed (every matrix row jsdom can check); stable 1085 passing; multiroot 10 passing; corpus 156 passed. The undoable `execCommand` path runs only in a real webview (happy-dom takes the fallback): covered by the manual check. Manual check: done by the user on the 1.143.1 dev host, `.vscode-test/manual-panel` (2026-10-30): line numbers, Format JSON, Ctrl+Z undo, already formatted, scrolling and a long line, not JSON, copy, the Metadata tab, light and dark themes; no issues.

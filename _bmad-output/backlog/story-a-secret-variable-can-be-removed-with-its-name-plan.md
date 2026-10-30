@@ -3,7 +3,7 @@ title: 'A secret variable can be removed with its name'
 type: 'feature'
 ticket: '39'
 created: '2026-10-29'
-status: 'built'
+status: done
 baseline_revision: '7c873b6ae206280ea9713761b0784d99d182f449'
 route: 'full'
 route_source: 'auto'
