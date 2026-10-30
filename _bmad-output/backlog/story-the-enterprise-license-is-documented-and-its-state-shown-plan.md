@@ -3,7 +3,7 @@ title: 'The Enterprise license is documented and its state shown in the Environm
 type: 'feature'
 ticket: '38'
 created: '2026-10-29'
-status: 'built'
+status: done
 baseline_revision: '5cac67019569e8aef74cd3b2eb34d72038913391'
 route: 'full'
 route_source: 'auto'
@@ -109,4 +109,4 @@ Quick review. Verdicts: 0 high, 2 medium, 4 low, 0 false. No path puts a license
 **Manual checks:**
 - Dev host on 1.143.1 with the real 4.112.0 binary: the machine's default `/etc/redpanda/redpanda.license` (LOADED, with type and expiry, no org); a bad `REDPANDA_LICENSE` secret (FAILED); `REDPANDA_LICENSE_FILEPATH` to a missing file (FAILED); keyboard and screen reader on the group.
 
-Result (2026-10-29, after the review patches): stable 1081 passing (every License group test ran and passed); multiroot 8 passing; corpus 156 passed; webview 318 passed. Manual check: pending.
+Result (2026-10-29, after the review patches): stable 1081 passing (every License group test ran and passed); multiroot 8 passing; corpus 156 passed; webview 318 passed. Manual check: done by the user on the 1.143.1 dev host with the real 4.112.0 binary and the machine's default license (2026-10-29), `.vscode-test/manual-license`, no issues. The user noted that a declared secret with no value has no Remove action in the view (only the value can be removed there; the name is removed by editing `redpandaConnect.secretEnv`): offered as a follow-up story.
