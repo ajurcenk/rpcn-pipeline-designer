@@ -62,8 +62,15 @@
 // each, which posts `setVariableRequested {name, resultId}` (ticket 36: the shown result's `id`);
 // the host's `variableSet` runs the current input again with Run on change on (nothing runs with it
 // off).
+// Ticket 40: the input's text box has a line-number gutter (not part of the text, hidden from screen
+// readers, scrolled with the box; the box does not wrap lines, so one number is one line), and its
+// footer has **Format JSON**, which re-indents a valid JSON input with 2 spaces as an edit (as typing:
+// saved to the selected sample and run with Run on change; an input already formatted changes
+// nothing). It is disabled, with the reason in its title and name, when the input is not valid JSON.
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+	useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import {
 	parseBloblangHostMessage, type BinaryStatus, type BloblangHostMessage, type BloblangSample, type BloblangWebviewMessage, type InputMeta,
 } from '../../../src/shared/bloblangProtocol';
@@ -109,6 +116,24 @@ export const ADD_LABEL_LABEL = 'Add label';
 export const REMOVED_TITLE = 'Processor removed';
 export const removedText = (file: string, generate = false): string =>
 	`This ${generate ? 'mapping' : 'processor'} was removed from ${file}. Undo the change to bring it back.`;
+
+/** Format JSON (40): its label, its title, and its title and name while the input is not valid JSON. */
+export const FORMAT_JSON_LABEL = 'Format JSON';
+export const FORMAT_JSON_TITLE = 'Re-indent the input JSON with 2 spaces';
+export const NOT_JSON_REASON = 'The input is not valid JSON';
+export const FORMAT_JSON_UNAVAILABLE = 'Format JSON: the input is not valid JSON';
+
+/**
+ * `text` re-indented with 2 spaces when it is valid JSON, else `undefined` (40). As `JSON.parse` and
+ * `JSON.stringify` do: `1.0` becomes `1`, and big integers may lose precision.
+ */
+export function formatJson(text: string): string | undefined {
+	try {
+		return JSON.stringify(JSON.parse(text), null, 2);
+	} catch {
+		return undefined;
+	}
+}
 
 /** The panel's accessible name (4.11). */
 export const panelName = (title: string): string => `Bloblang test panel: ${title}`;
@@ -254,16 +279,55 @@ function ColumnHead({ id, label, selected, count, onSelect }: TabsProps) {
 	);
 }
 
-function lineCount(text: string): string {
-	const lines = text === '' ? 0 : text.split('\n').length;
-	let json = false;
-	try {
-		JSON.parse(text);
-		json = true;
-	} catch {
-		// Not JSON: the count alone.
-	}
+/** The lines of `text` as the text box shows them: `\r\n`, `\r` and `\n` each end one (40). */
+const splitLines = (text: string): string[] => text.split(/\r\n|\r|\n/);
+
+/** `text` with `\n` line endings and no trailing newline: what Format JSON compares (40). */
+const normalised = (text: string): string => text.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+
+function lineCount(text: string, json: boolean): string {
+	const lines = text === '' ? 0 : splitLines(text).length;
 	return `${lines} ${lines === 1 ? 'line' : 'lines'}${json ? ' · JSON' : ''}`;
+}
+
+/**
+ * The input's text box with its line-number gutter (40). The gutter is `aria-hidden`, not selectable
+ * and outside the text box's value; it moves with the box's scroll, and the box does not wrap lines,
+ * so each number is one line of the text (an empty text is one line).
+ */
+function InputBox({ content, onChange }: { readonly content: string; readonly onChange: (text: string) => void }) {
+	const box = useRef<HTMLTextAreaElement>(null);
+	const numbers = useRef<HTMLDivElement>(null);
+	const lines = splitLines(content).length;
+	const follow = () => {
+		if (box.current && numbers.current) {
+			numbers.current.style.transform = `translateY(${-box.current.scrollTop}px)`;
+		}
+	};
+	// Lines added or removed can move the box's scroll without a scroll event.
+	useLayoutEffect(follow, [content]);
+	return (
+		<div className="rpcn-bl-inbox" style={{ '--rpcn-bl-gutter': `${Math.max(2, String(lines).length)}ch` } as CSSProperties}>
+			<div className="rpcn-bl-gutter" aria-hidden="true">
+				<div className="rpcn-bl-gutter-nums" ref={numbers}>
+					{Array.from({ length: lines }, (_, i) => i + 1).join('\n')}
+				</div>
+			</div>
+			<textarea
+				ref={box}
+				id="rpcn-bl-input"
+				className="rpcn-bl-input"
+				aria-label="Input content"
+				spellCheck={false}
+				wrap="off"
+				rows={12}
+				value={content}
+				placeholder='{"a": 1}'
+				onChange={(event) => onChange(event.target.value)}
+				onScroll={follow}
+			/>
+		</div>
+	);
 }
 
 /** The no-binary state (4.15, the prototype's): the named region, its text and the binary actions. */
@@ -589,6 +653,29 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 		schedule(text, runOnChange);
 	};
 
+	/** The input re-indented (40), `undefined` when it is not valid JSON. */
+	const formatted = useMemo(() => formatJson(content), [content]);
+	/**
+	 * Format JSON (40): an edit, as typing, and one the text box can undo (`insertText` over the whole
+	 * text; its `input` event is the textarea's `onChange`); where `execCommand` does not, the edit is
+	 * set directly. An input already formatted (but for line endings or a trailing newline) changes nothing.
+	 */
+	const formatInput = () => {
+		if (formatted === undefined || normalised(content) === formatted) {
+			return;
+		}
+		const box = main.current?.querySelector<HTMLTextAreaElement>('#rpcn-bl-input');
+		let inserted = false;
+		if (box && typeof document.execCommand === 'function') {
+			box.focus();
+			box.select();
+			inserted = document.execCommand('insertText', false, formatted);
+		}
+		if (!inserted) {
+			contentChanged(formatted);
+		}
+	};
+
 	const rowsChanged = (next: readonly EditableRow[]) => {
 		setRows(next);
 		latest.current = { ...latest.current, rows: next };
@@ -755,16 +842,7 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 									<div className="rpcn-bl-colbody" role="tabpanel" id="rpcn-bl-in-panel" aria-labelledby={`rpcn-bl-in-tab-${inputTab}`}>
 										{inputTab === 'content'
 											? (
-												<textarea
-													id="rpcn-bl-input"
-													className="rpcn-bl-input"
-													aria-label="Input content"
-													spellCheck={false}
-													rows={12}
-													value={content}
-													placeholder='{"a": 1}'
-													onChange={(event) => contentChanged(event.target.value)}
-												/>
+												<InputBox content={content} onChange={contentChanged} />
 											)
 											: (
 												<InputMetadata
@@ -781,7 +859,20 @@ export function TestPanel({ post, initialState, saveState, fileName: pageFile, s
 												/>
 											)}
 									</div>
-									<footer className="rpcn-bl-foot">{lineCount(content)}</footer>
+									<footer className="rpcn-bl-foot rpcn-bl-in-foot">
+										<span>{lineCount(content, formatted !== undefined)}</span>
+										{/* Only with the Content tab, whose text it changes; while unavailable it stays a Tab stop, so its reason can be reached (aria-disabled). */}
+										{inputTab === 'content' && (
+											<button
+												type="button" className="rpcn-bl-btn rpcn-bl-format" aria-disabled={formatted === undefined ? true : undefined}
+												title={formatted === undefined ? NOT_JSON_REASON : FORMAT_JSON_TITLE}
+												aria-label={formatted === undefined ? FORMAT_JSON_UNAVAILABLE : undefined}
+												onClick={formatInput}
+											>
+												{FORMAT_JSON_LABEL}
+											</button>
+										)}
+									</footer>
 								</section>
 							)}
 							<section className="rpcn-bl-col rpcn-bl-out" aria-label={OUTPUT_LABEL}>

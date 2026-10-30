@@ -33,7 +33,7 @@ import {
 	SAMPLE_LABEL, UNSAVED_INPUT,
 } from './SamplePicker';
 import {
-	ADD_LABEL_LABEL, announcement, announcementKey, EMPTY_TEXT, GENERATE_EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
+	ADD_LABEL_LABEL, announcement, announcementKey, EMPTY_TEXT, FORMAT_JSON_LABEL, FORMAT_JSON_TITLE, FORMAT_JSON_UNAVAILABLE, formatJson, NOT_JSON_REASON, GENERATE_EMPTY_TEXT, NO_BINARY_TEXT, NO_BINARY_TITLE, NO_LABEL_AFTER, NO_LABEL_BEFORE, REMOVED_TITLE, removedText, RUN_DEBOUNCE_MS,
 	panelName, RUNNING_TEXT, SAMPLES_ERROR_PREFIX, TestPanel, TOOLBAR_LABEL,
 } from './TestPanel';
 
@@ -1269,14 +1269,14 @@ describe('Bloblang test panel: keyboard and screen reader (4.11)', () => {
 		expect(host.querySelector('.rpcn-bl-check')?.textContent).toBe('Run on change');
 	});
 
-	it('TAB_WALK: picker, New, Rename, Delete, Run on change, Run, input tab, content, output tab, output content; Go to line when shown', async () => {
+	it('TAB_WALK: picker, New, Rename, Delete, Run on change, Run, input tab, content, Format JSON, output tab, output content; Go to line when shown', async () => {
 		await withResult();
 		expect(tabStops().map(stopName)).toEqual([
 			'rpcn-bl-sample', 'New sample', 'Rename', 'Delete', 'rpcn-bl-auto', 'Run',
-			'rpcn-bl-in-tab-content', 'Input content', 'rpcn-bl-out-tab-content', 'Output content',
+			'rpcn-bl-in-tab-content', 'Input content', 'Format JSON', 'rpcn-bl-out-tab-content', 'Output content',
 		]);
 		await send({ type: 'result', result: FAILED, durationMs: 3, binary: null });
-		expect(tabStops().map(stopName).slice(8)).toEqual(['rpcn-bl-out-tab-content', 'Go to line 10', 'Output content']);
+		expect(tabStops().map(stopName).slice(9)).toEqual(['rpcn-bl-out-tab-content', 'Go to line 10', 'Output content']);
 	});
 
 	it('TAB_WALK_PREVIOUS (4.18): From previous step is a Tab stop after Delete', async () => {
@@ -1647,5 +1647,208 @@ describe('Bloblang test panel: Set NAME… (ticket 32)', () => {
 			expect(setButtons()).toEqual([]);
 			expect(host.querySelector('.rpcn-bl-setvar')).toBeNull();
 		}
+	});
+});
+
+describe('Bloblang test panel: line numbers and Format JSON (ticket 40)', () => {
+	const FILE = 'orders.samples.json';
+	const SAMPLE: BloblangSample = { name: 'one', content: '{"a":1}', meta: {} };
+	const gutter = () => host.querySelector<HTMLElement>('.rpcn-bl-in .rpcn-bl-gutter');
+	const gutterNumbers = () => gutter()?.textContent?.split('\n');
+	const textarea = () => host.querySelector<HTMLTextAreaElement>('textarea')!;
+	const format = () => host.querySelector<HTMLButtonElement>('.rpcn-bl-format');
+	const outputLines = () => [...host.querySelectorAll<HTMLElement>('.rpcn-bl-output > [data-line]')];
+	const intents = () => posted.filter((m) => m.type !== 'ready' && m.type !== 'run');
+	const css = readFileSync(resolve(process.cwd(), 'webview/src/bloblang/bloblang.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	const rule = (selector: string) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+		.filter((m) => m[1].split(',').map((x) => x.trim()).includes(selector))
+		.map((m) => m[2]).join('\n');
+
+	it('IN_GUTTER: one number per line, empty lines counted; hidden from screen readers, not selectable, not in the value', async () => {
+		await render({ content: 'a\nb\n\nc' });
+		await send(SNAPSHOT);
+		expect(gutterNumbers()).toEqual(['1', '2', '3', '4']);
+		expect(gutter()?.getAttribute('aria-hidden')).toBe('true');
+		expect(gutter()?.contains(textarea())).toBe(false);
+		expect(textarea().value).toBe('a\nb\n\nc');
+		expect(textarea().getAttribute('wrap')).toBe('off');
+		expect(rule('.rpcn-bl-gutter')).toMatch(/user-select:\s*none/);
+		expect(rule('.rpcn-bl-input')).toMatch(/white-space:\s*pre;/);
+	});
+
+	it('IN_EDIT and IN_SCROLL: the gutter follows each edit at once, and the box\'s scroll', async () => {
+		await render();
+		await send(SNAPSHOT);
+		expect(gutterNumbers()).toEqual(['1']);
+		await type('{\n"a": 1\n}');
+		expect(gutterNumbers()).toEqual(['1', '2', '3']);
+		await type('{}');
+		expect(gutterNumbers()).toEqual(['1']);
+		await type(Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n'));
+		expect(gutterNumbers()?.length).toBe(40);
+		await act(async () => {
+			textarea().scrollTop = 120;
+			textarea().dispatchEvent(new Event('scroll'));
+		});
+		const nums = host.querySelector<HTMLElement>('.rpcn-bl-gutter-nums')!;
+		expect(nums.style.transform).toBe(`translateY(${-textarea().scrollTop}px)`);
+	});
+
+	it('OUT_GUTTER and OUT_COPY: numbers 1-N beside the output lines, marks on the same lines; the numbers are not in the text', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		await send({ type: 'result', result: OK_B2, durationMs: 4, binary: null });
+		expect(outputLines().map((l) => l.dataset.line)).toEqual(['1', '2', '3']);
+		expect(outputLines()[1].querySelector('.rpcn-bl-mark')?.textContent).toBe('  "b": 2');
+		expect(outputText()).toBe('{\n  "b": 2\n}');
+		expect(markedText()).toEqual(['  "b": 2']);
+		const pre = host.querySelector<HTMLElement>('.rpcn-bl-output')!;
+		expect([pre.tagName, pre.tabIndex]).toEqual(['PRE', 0]);
+		// Verbatim output (not JSON) is numbered too.
+		await send({ type: 'result', result: { ...OK_B2, content: 'x\ny', changes: { fields: null, meta: OK_B2.changes.meta } }, durationMs: 4, binary: null });
+		expect(outputLines().map((l) => l.dataset.line)).toEqual(['1', '2']);
+		expect(outputText()).toBe('x\ny');
+		// The number is generated content: not selectable, so not copied, and an empty alternative text.
+		const before = rule('.rpcn-bl-output > [data-line]::before');
+		expect(before).toMatch(/content:\s*attr\(data-line\)\s*\/\s*""/);
+		expect(before).toMatch(/user-select:\s*none/);
+	});
+
+	it('FORMAT: re-indents with 2 spaces as an edit: saved to the sample, and run with Run on change', async () => {
+		vi.useFakeTimers();
+		await render({}, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		await type('{"a":1,"b":[1,2]}');
+		await wait();
+		posted = [];
+		expect(format()?.getAttribute('aria-disabled')).toBeNull();
+		expect(format()?.textContent).toBe(FORMAT_JSON_LABEL);
+		expect(format()?.title).toBe(FORMAT_JSON_TITLE);
+		expect(format()?.getAttribute('aria-label')).toBeNull();
+		await click(format());
+		const pretty = '{\n  "a": 1,\n  "b": [\n    1,\n    2\n  ]\n}';
+		expect(textarea().value).toBe(pretty);
+		expect(gutterNumbers()?.length).toBe(7);
+		await wait();
+		expect(intents()).toEqual([{ type: 'inputEdited', content: pretty, meta: {} }]);
+		expect(runs()).toEqual([{ type: 'run', content: pretty, meta: {} }]);
+	});
+
+	it('FORMAT with Run on change off: saved, nothing runs', async () => {
+		vi.useFakeTimers();
+		await render({ content: '{"a":1}', runOnChange: false }, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		posted = [];
+		await click(format());
+		await wait();
+		expect(intents()).toEqual([{ type: 'inputEdited', content: '{\n  "a": 1\n}', meta: {} }]);
+		expect(runs()).toEqual([]);
+	});
+
+	it('FORMAT_SAME: an input already formatted posts nothing and runs nothing', async () => {
+		vi.useFakeTimers();
+		const pretty = '{\n  "a": 1\n}';
+		await render({ content: pretty }, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, samples: [{ ...SAMPLE, content: pretty }], selected: 'one' });
+		await wait();
+		posted = [];
+		expect(format()?.getAttribute('aria-disabled')).toBeNull();
+		await click(format());
+		await wait();
+		expect(posted).toEqual([]);
+		expect(textarea().value).toBe(pretty);
+	});
+
+	it('FORMAT_SAME: CRLF line endings or a trailing newline alone are already formatted: nothing posted, nothing runs', async () => {
+		vi.useFakeTimers();
+		await render({}, 'orders.yaml', FILE);
+		await send({ ...SNAPSHOT, samples: [SAMPLE], selected: 'one' });
+		for (const text of ['{\r\n  "a": 1\r\n}', '{\n  "a": 1\n}\n', '{\r\n  "a": 1\r\n}\r\n']) {
+			await type(text);
+			await wait();
+			posted = [];
+			await click(format());
+			await wait();
+			expect(posted).toEqual([]);
+			expect(textarea().value).toBe(text);
+		}
+	});
+
+	it('IN_GUTTER with CR: a lone \\r and \\r\\n each end one line, as the box shows them', async () => {
+		await render({ content: 'a\rb\r\nc\nd' });
+		await send(SNAPSHOT);
+		expect(gutterNumbers()).toEqual(['1', '2', '3', '4']);
+		expect(host.querySelector('.rpcn-bl-in .rpcn-bl-foot')?.textContent).toContain('4 lines');
+	});
+
+	it('METADATA_TAB: Format JSON is only under the Content tab', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		expect(format()).not.toBeNull();
+		await click(tab('in', 'meta'));
+		expect(format()).toBeNull();
+		await click(tab('in', 'content'));
+		expect(format()).not.toBeNull();
+	});
+
+	it('NOT_JSON: aria-disabled (still a Tab stop) with the reason in its title and accessible name; a click does nothing; also for an empty input', async () => {
+		vi.useFakeTimers();
+		await render({ content: 'not json' });
+		await send(SNAPSHOT);
+		await wait();
+		expect(format()?.getAttribute('aria-disabled')).toBe('true');
+		expect(format()?.disabled).toBe(false);
+		expect(format()?.tabIndex).toBe(0);
+		expect(format()?.title).toBe(NOT_JSON_REASON);
+		expect(format()?.getAttribute('aria-label')).toBe(FORMAT_JSON_UNAVAILABLE);
+		expect(FORMAT_JSON_UNAVAILABLE).toBe('Format JSON: the input is not valid JSON');
+		posted = [];
+		await click(format());
+		await wait();
+		expect(posted).toEqual([]);
+		expect(textarea().value).toBe('not json');
+		await type('');
+		expect(format()?.getAttribute('aria-disabled')).toBe('true');
+		expect(format()?.title).toBe(NOT_JSON_REASON);
+		await type('[1]');
+		expect(format()?.getAttribute('aria-disabled')).toBeNull();
+		expect(rule('.rpcn-bl-btn[aria-disabled="true"]')).toMatch(/opacity:\s*0\.5/);
+	});
+
+	it('KEYBOARD: a native button, a Tab stop after the content, named for screen readers', async () => {
+		await render({ content: '{"a":1}' });
+		await send(SNAPSHOT);
+		const button = format()!;
+		expect([button.tagName, button.type, button.tabIndex]).toEqual(['BUTTON', 'button', 0]);
+		const stops = [...host.querySelectorAll<HTMLElement>('main button, main textarea, main [tabindex]')]
+			.filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled);
+		expect(stops.indexOf(button)).toBe(stops.indexOf(textarea()) + 1);
+		// Unavailable, it stays in the same place in the Tab order, so its reason is reached.
+		await type('not json');
+		const after = [...host.querySelectorAll<HTMLElement>('main button, main textarea, main [tabindex]')]
+			.filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled);
+		expect(after.indexOf(format()!)).toBe(after.indexOf(textarea()) + 1);
+		expect(format()?.getAttribute('aria-label')).toBe(FORMAT_JSON_UNAVAILABLE);
+		expect(rule('.rpcn-bl-btn:focus-visible')).toMatch(/outline:\s*1px solid var\(--vscode-focusBorder\)/);
+	});
+
+	it('GENERATE: the output gutter only; no input, no gutter beside it, no Format JSON', async () => {
+		await act(async () => {
+			root.render(
+				<TestPanel post={(m) => posted.push(m)} initialState={DEFAULT_VIEW_STATE} saveState={(s) => saved.push(s)} fileName="gen.yaml" kind="generate" />,
+			);
+		});
+		await send({ ...SNAPSHOT, kind: 'generate' });
+		await send({ type: 'result', result: { ...OK_B2, changes: { fields: null, meta: OK_B2.changes.meta } }, durationMs: 4, binary: null });
+		expect(host.querySelector('.rpcn-bl-gutter')).toBeNull();
+		expect(format()).toBeNull();
+		expect(outputLines().map((l) => l.dataset.line)).toEqual(['1', '2', '3']);
+	});
+
+	it('formatJson: 2 spaces; as JSON.parse and JSON.stringify do; undefined when not JSON', () => {
+		expect(formatJson('{"a":1,"b":[1,2]}')).toBe('{\n  "a": 1,\n  "b": [\n    1,\n    2\n  ]\n}');
+		expect(formatJson('1.0')).toBe('1');
+		expect(formatJson('')).toBeUndefined();
+		expect(formatJson('not json')).toBeUndefined();
 	});
 });

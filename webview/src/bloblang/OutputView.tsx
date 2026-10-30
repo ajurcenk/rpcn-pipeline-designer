@@ -12,8 +12,11 @@
 // message is empty instead of pointing at an input.
 // Ticket 32: a run that could not happen because the config uses variables nothing sets
 // (`missingVariables`) has a Set NAME… button for each after its message (`onSetVariable`).
+// Ticket 40: the output content has a line-number gutter: each line's number is its `data-line`,
+// drawn by the stylesheet's `::before` (so it is not in the text, not copied, not selectable and not
+// read by screen readers); the lines, the change marks and the focusable `pre` are unchanged.
 
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { BloblangResult } from '../../../src/shared/bloblangProtocol';
 import { changeTags, markedLines, shownContent } from './changes';
 import type { PanelTab } from './host';
@@ -48,9 +51,12 @@ function OkContent({ result, marks }: { readonly result: OkResult; readonly mark
 	const fields = result.changes.fields;
 	const marked = marks ? markedLines(shown, fields ? [...fields.added, ...fields.changed] : []) : new Set<number>();
 	return (
-		<pre className="rpcn-bl-output" aria-label="Output content" tabIndex={0}>
+		<pre
+			className="rpcn-bl-output" aria-label="Output content" tabIndex={0}
+			style={{ '--rpcn-bl-gutter': `${Math.max(2, String(shown.lines.length).length)}ch` } as CSSProperties}
+		>
 			{shown.lines.map((line, i) => (
-				<span key={i}>
+				<span key={i} data-line={i + 1}>
 					<span className={marked.has(i) ? 'rpcn-bl-line rpcn-bl-mark' : 'rpcn-bl-line'}>{line}</span>
 					{i < shown.lines.length - 1 ? '\n' : ''}
 				</span>

@@ -181,18 +181,50 @@ body {
 	min-height: 0;
 	overflow: auto;
 }
+/* The input's text box and its line-number gutter (40): the same font, line height and top padding,
+   so each number sits beside its line; the box does not wrap (a horizontal scroll instead). */
+.rpcn-bl-inbox {
+	--rpcn-bl-code-line: 1.5;
+	box-sizing: border-box;
+	display: flex;
+	height: 100%;
+	min-height: 240px;
+	overflow: hidden;
+	background: var(--vscode-input-background);
+}
+.rpcn-bl-gutter {
+	flex: none;
+	box-sizing: content-box;
+	width: var(--rpcn-bl-gutter, 2ch);
+	padding: 12px 8px 12px 12px;
+	overflow: hidden;
+	text-align: right;
+	white-space: pre;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+	line-height: var(--rpcn-bl-code-line);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground));
+	user-select: none;
+	-webkit-user-select: none;
+	pointer-events: none;
+}
 .rpcn-bl-input {
 	box-sizing: border-box;
 	display: block;
-	width: 100%;
-	height: 100%;
+	flex: 1 1 auto;
+	width: auto;
+	min-width: 0;
 	min-height: 240px;
 	resize: none;
 	margin: 0;
-	padding: 12px 16px;
+	padding: 12px 16px 12px 8px;
 	border: 0;
+	white-space: pre;
+	overflow: auto;
 	font-family: var(--vscode-editor-font-family);
 	font-size: var(--vscode-editor-font-size);
+	line-height: var(--rpcn-bl-code-line);
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 }
@@ -211,8 +243,26 @@ body {
 	font-family: var(--vscode-editor-font-family);
 	font-size: var(--vscode-editor-font-size);
 }
+/* The output's line numbers (40): each line's `data-line`, hung in the left padding so a wrapped
+   line's rest stays aligned with its text; generated content, so not copied, not selectable, and
+   with an empty alternative text for screen readers. */
 .rpcn-bl-output {
-	padding: 12px 16px;
+	--rpcn-bl-gutter-box: calc(var(--rpcn-bl-gutter, 2ch) + 20px);
+	padding: 12px 16px 12px var(--rpcn-bl-gutter-box);
+}
+.rpcn-bl-output > [data-line]::before {
+	content: attr(data-line);
+	content: attr(data-line) / "";
+	display: inline-block;
+	box-sizing: border-box;
+	width: var(--rpcn-bl-gutter-box);
+	margin-left: calc(-1 * var(--rpcn-bl-gutter-box));
+	padding-right: 12px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground));
+	user-select: none;
+	-webkit-user-select: none;
 }
 .rpcn-bl-message {
 	padding: 6px 8px;
@@ -287,6 +337,14 @@ body {
 	padding: 8px 16px;
 	border-top: 1px solid var(--vscode-panel-border, transparent);
 	color: var(--vscode-descriptionForeground);
+}
+/* The input's footer (40): the line count, and Format JSON at its end. */
+.rpcn-bl-in-foot {
+	align-items: center;
+}
+.rpcn-bl-format {
+	margin: -2px 0 -2px auto;
+	padding: 1px 8px;
 }
 .rpcn-bl-tag {
 	font-family: var(--vscode-editor-font-family);
@@ -536,10 +594,10 @@ body {
 	font-family: inherit;
 	cursor: pointer;
 }
-.rpcn-bl-btn:hover:not(:disabled) {
+.rpcn-bl-btn:hover:not(:disabled):not([aria-disabled="true"]) {
 	background: var(--vscode-button-secondaryHoverBackground);
 }
-.rpcn-bl-btn:disabled {
+.rpcn-bl-btn:disabled, .rpcn-bl-btn[aria-disabled="true"] {
 	opacity: 0.5;
 	cursor: default;
 }
