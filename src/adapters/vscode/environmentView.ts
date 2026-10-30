@@ -23,6 +23,10 @@
 // a tiny `run` with the commands' own command line): loaded (type and expiry), not loaded (the
 // binary's reason, masked) or none. Each config's last result is kept until its next check (a refresh
 // does not clear it); nothing checks in the background.
+//
+// Ticket 39: a secret's Remove asks first (value only, the default, or the value and its name, naming
+// the settings file), and a declared secret with no value gets **Remove name**; both take the name
+// out of the `secretEnv` list the config uses through `SecretVariables`.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -47,6 +51,8 @@ export const ENVIRONMENT_VIEW_ID = 'redpandaConnect.environment';
 export const ADD_VARIABLE_COMMAND = 'redpandaConnect.environment.add';
 export const EDIT_VARIABLE_COMMAND = 'redpandaConnect.environment.edit';
 export const REMOVE_VARIABLE_COMMAND = 'redpandaConnect.environment.remove';
+/** Ticket 39: removes a declared secret name that has no value from `redpandaConnect.secretEnv`. */
+export const REMOVE_NAME_COMMAND = 'redpandaConnect.environment.removeName';
 export const SHOW_VALUE_COMMAND = 'redpandaConnect.environment.showValue';
 export const HIDE_VALUE_COMMAND = 'redpandaConnect.environment.hideValue';
 export const OPEN_ENV_FILE_COMMAND = 'redpandaConnect.environment.openEnvFile';
@@ -134,6 +140,8 @@ export interface EnvironmentUi {
 	input(options: vscode.InputBoxOptions): Thenable<string | undefined>;
 	/** Plain or secret, for `name` (a new variable when `undefined`). */
 	pickKind(name: string | undefined): Thenable<'plain' | 'secret' | undefined>;
+	/** Ticket 39: a secret with a value: remove its value only (the first, default choice) or the value and its name (`where`: the settings file). */
+	pickRemoval(name: string, where: string): Thenable<SecretRemovalChoice | undefined>;
 	error(message: string): void;
 	info(message: string): void;
 }
@@ -148,6 +156,7 @@ export const defaultEnvironmentUi: EnvironmentUi = {
 		const picked = await vscode.window.showQuickPick(items, { title: name ? `Set ${name} as` : 'Add a variable as' });
 		return picked?.kind_;
 	},
+	pickRemoval: (name, where) => pickSecretRemoval(name, where),
 	error: (message) => void vscode.window.showErrorMessage(message),
 	info: (message) => void vscode.window.showInformationMessage(message),
 };
@@ -169,6 +178,54 @@ export const SETTING_TARGETS: Readonly<Record<SettingLevel, vscode.Configuration
  */
 export function newVariableLevel(folder: Scope, folderCount: number): SettingLevel {
 	return !folder || folderCount === 0 ? 'user' : folderCount > 1 ? 'folder' : 'workspace';
+}
+
+/**
+ * Ticket 39: a settings level as a message names it, with its file: "the user settings", "the
+ * folder settings (<folder>/.vscode/settings.json)", "the workspace settings (<the .code-workspace
+ * file>, or the single folder's .vscode/settings.json)".
+ */
+export function settingsLevelText(folder: Scope, level: SettingLevel): string {
+	if (level === 'user') {
+		return 'the user settings';
+	}
+	const folderFile = (f: vscode.WorkspaceFolder) => path.join(f.uri.fsPath, '.vscode', 'settings.json');
+	if (level === 'folder') {
+		return folder ? `the folder settings (${folderFile(folder)})` : 'the folder settings';
+	}
+	const workspaceFile = vscode.workspace.workspaceFile;
+	const first = vscode.workspace.workspaceFolders?.[0];
+	const file = workspaceFile ? (workspaceFile.scheme === 'file' ? workspaceFile.fsPath : 'an unsaved workspace') : first ? folderFile(first) : undefined;
+	return file ? `the workspace settings (${file})` : 'the workspace settings';
+}
+
+/** Ticket 39: how a secret with a value is removed: its value only (the default), or the value and its name. */
+export type SecretRemovalChoice = 'value' | 'both';
+
+/** Ticket 39: the value-only / value-and-name pick; `where` names the settings file the name leaves. */
+export async function pickSecretRemoval(name: string, where: string): Promise<SecretRemovalChoice | undefined> {
+	const items: (vscode.QuickPickItem & { choice: SecretRemovalChoice })[] = [
+		{ label: 'Remove the value only', description: 'the name stays in redpandaConnect.secretEnv', choice: 'value' },
+		{ label: 'Remove the value and the name', description: `the name leaves redpandaConnect.secretEnv in ${where}`, choice: 'both' },
+	];
+	const picked = await vscode.window.showQuickPick(items, { title: `Remove the secret variable ${name}` });
+	return picked?.choice;
+}
+
+/**
+ * Ticket 39: the message after a name left `redpandaConnect.secretEnv`, with the list that now applies
+ * to the folder (its own was emptied and removed) and whether that list still declares the name.
+ */
+export function nameRemovedText(
+	name: string, where: string, withValue: boolean,
+	after: { readonly nowApplies?: string; readonly appliesTo?: string; readonly stillDeclaredIn?: string } = {},
+): string {
+	const removed = withValue
+		? `Secret variable ${name} is removed: its value, and its name from redpandaConnect.secretEnv in ${where}.`
+		: `${name} is removed from redpandaConnect.secretEnv in ${where}.`;
+	const to = after.appliesTo ?? 'this folder';
+	return after.stillDeclaredIn ? `${removed} It is still declared in ${after.stillDeclaredIn}, whose list now applies to ${to}.`
+		: after.nowApplies ? `${removed} The list in ${after.nowApplies} now applies to ${to}.` : removed;
 }
 
 /**
@@ -322,6 +379,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			command(ADD_VARIABLE_COMMAND, () => this.add()),
 			command(EDIT_VARIABLE_COMMAND, (node: EnvironmentNode) => this.edit(node)),
 			command(REMOVE_VARIABLE_COMMAND, (node: EnvironmentNode) => this.remove(node)),
+			command(REMOVE_NAME_COMMAND, (node: EnvironmentNode) => this.removeName(node)),
 			command(SHOW_VALUE_COMMAND, (node: EnvironmentNode) => this.setRevealed(node, true)),
 			command(HIDE_VALUE_COMMAND, (node: EnvironmentNode) => this.setRevealed(node, false)),
 			command(OPEN_ENV_FILE_COMMAND, () => this.openEnvFile()),
@@ -926,7 +984,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		return ok;
 	}
 
-	/** Removes a plain variable from its level, or a secret's value (its name stays declared). */
+	/** Removes a plain variable from its level, or a secret's value (and, when chosen, its name: ticket 39). */
 	async remove(node: EnvironmentNode | undefined): Promise<boolean> {
 		const v = node?.kind === 'variable' ? node.variable : undefined;
 		const at = this.target();
@@ -939,12 +997,45 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		if (v.source !== 'secret') {
 			return false;
 		}
+		if (v.value === undefined) {
+			return this.removeName(node);
+		}
+		// Ticket 39: the value only (the default), or the value and the name.
+		const where = this.options.secrets.declaredAt(at.folder, v.name);
+		const choice = where ? await this.ui.pickRemoval(v.name, where) : 'value';
+		if (choice === undefined) {
+			return false;
+		}
+		if (choice === 'both') {
+			const removed = await this.options.secrets.removeValueAndName(at.folder, v.name);
+			if (removed.ok) {
+				this.ui.info(nameRemovedText(v.name, removed.where ?? where!, true, removed));
+			}
+			this.refresh();
+			return removed.ok;
+		}
 		const ok = await this.options.secrets.remove(at.folder, v.name);
 		if (ok) {
 			this.ui.info(`Secret variable ${v.name} is removed; the name stays in redpandaConnect.secretEnv.`);
 		}
 		this.refresh();
 		return ok;
+	}
+
+	/** Ticket 39: "Remove name" on a secret with no value: the name leaves the `secretEnv` list the config uses. */
+	async removeName(node: EnvironmentNode | undefined): Promise<boolean> {
+		// A row with a value keeps its name: its Remove asks first.
+		const v = node?.kind === 'variable' && node.variable.source === 'secret' && node.variable.value === undefined ? node.variable : undefined;
+		const at = this.target();
+		if (!v || !at) {
+			return false;
+		}
+		const removed = await this.options.secrets.removeName(at.folder, v.name);
+		if (removed.ok && removed.where) {
+			this.ui.info(nameRemovedText(v.name, removed.where, false, removed));
+		}
+		this.refresh();
+		return removed.ok;
 	}
 
 	/** "Show value" / "Hide value" for one row. */

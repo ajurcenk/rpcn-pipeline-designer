@@ -164,6 +164,12 @@
         "icon": "$(trash)"
       },
       {
+        "command": "redpandaConnect.environment.removeName",
+        "title": "Remove name",
+        "category": "Redpanda Connect",
+        "icon": "$(close)"
+      },
+      {
         "command": "redpandaConnect.environment.showValue",
         "title": "Show value",
         "category": "Redpanda Connect",
@@ -257,6 +263,10 @@
         },
         {
           "command": "redpandaConnect.environment.remove",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.environment.removeName",
           "when": "false"
         },
         {
@@ -358,6 +368,11 @@
           "group": "inline"
         },
         {
+          "command": "redpandaConnect.environment.removeName",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable secret(?! hasValue)\\b/",
+          "group": "inline"
+        },
+        {
           "command": "redpandaConnect.environment.openEnvFile",
           "when": "view == redpandaConnect.environment && viewItem =~ /\\benvFileSet\\b/",
           "group": "inline"
@@ -405,6 +420,11 @@
         {
           "command": "redpandaConnect.environment.remove",
           "when": "view == redpandaConnect.environment && viewItem =~ /^variable (plain\\b|secret hasValue\\b)/",
+          "group": "1_actions@4"
+        },
+        {
+          "command": "redpandaConnect.environment.removeName",
+          "when": "view == redpandaConnect.environment && viewItem =~ /^variable secret(?! hasValue)\\b/",
           "group": "1_actions@4"
         },
         {

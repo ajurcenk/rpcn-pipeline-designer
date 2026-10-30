@@ -7,8 +7,9 @@
 // The secret storage cannot list its keys on 1.100, so the keys this extension stored are recorded
 // in `globalState` (not synced) for "Clear stored secrets". Three commands: "Set secret variable"
 // (the folder in a multi-root workspace, a name, then the value in a password input; the name is
-// added to that folder's `secretEnv`), "Remove secret variable" (the value only: the declared name
-// stays) and "Clear stored secrets" (every recorded key, after a confirmation). No value is ever
+// added to that folder's `secretEnv`), "Remove secret variable" (ticket 39: a stored value, or a
+// declared name without one; for a value, the value only or the value and its name) and "Clear
+// stored secrets" (every recorded key, after a confirmation). No value is ever
 // logged or shown in a message. The composition root makes `values` the one the commands read
 // (`setActiveSecretValues`).
 
@@ -17,7 +18,10 @@ import {
 	CLEAR_SECRETS_COMMAND, declaredSecretNames, isSecretKey, parseSecretKey, REMOVE_SECRET_COMMAND, SECRET_ENV_SETTING,
 	SecretValues, secretKey, secretNameProblem, SET_SECRET_COMMAND, WINDOW_SCOPE,
 } from '../redpandaConnect/secretEnv';
-import { newVariableLevel, SETTING_TARGETS } from './environmentView';
+import type { SettingLevel } from './environmentModel';
+import {
+	nameRemovedText, newVariableLevel, pickSecretRemoval, type SecretRemovalChoice, SETTING_TARGETS, settingsLevelText,
+} from './environmentView';
 
 /** How long a load trusts this window's write over an older value read back. */
 const WRITE_SETTLE_MS = 5_000;
@@ -40,8 +44,25 @@ export interface SecretVariablesOptions {
 	readonly log: (line: string) => void;
 	/** Test seams: the settle window (default `WRITE_SETTLE_MS`), the setting write and the messages. */
 	readonly settleMs?: number;
-	readonly updateSetting?: (config: vscode.WorkspaceConfiguration, value: string[], target: vscode.ConfigurationTarget) => Thenable<void>;
+	readonly updateSetting?: (config: vscode.WorkspaceConfiguration, value: unknown[] | undefined, target: vscode.ConfigurationTarget) => Thenable<void>;
 	readonly notify?: (kind: 'error' | 'info', message: string) => void;
+	/** Ticket 39 test seams: "Remove secret variable"'s value-only / value-and-name pick and its confirmation for a name without a value. */
+	readonly pickRemoval?: (name: string, where: string) => Thenable<SecretRemovalChoice | undefined>;
+	readonly confirmRemoveName?: (name: string, where: string) => Thenable<boolean>;
+}
+
+/**
+ * Ticket 39: what removing a name did. `ok`: everything asked was done (a name declared nowhere
+ * counts as removed); `where`: the settings it left (noting when other folders' configs use that
+ * list too); `nowApplies`: the less specific list that applies to the folder once its emptied list is
+ * removed (`appliesTo`: to what); `stillDeclaredIn`: that list, when it still holds the name.
+ */
+export interface NameRemoval {
+	readonly ok: boolean;
+	readonly where?: string;
+	readonly nowApplies?: string;
+	readonly appliesTo?: string;
+	readonly stillDeclaredIn?: string;
 }
 
 /** A scope: a workspace folder, or the window (no folder). */
@@ -235,6 +256,48 @@ export class SecretVariables implements vscode.Disposable {
 	}
 
 	/**
+	 * Ticket 39: where `name` is declared for `folder` (the settings of the `secretEnv` list the
+	 * config uses, as a message names them), `undefined` when that list does not hold it.
+	 */
+	declaredAt(folder: Scope, name: string): string | undefined {
+		const used = usedSecretList(folder);
+		return used && declaredSecretNames(used.list).names.includes(name) ? usedListText(folder, used.level) : undefined;
+	}
+
+	/**
+	 * Ticket 39: removes `name` from the `secretEnv` list the config uses (its value is left as is),
+	 * with an error message when the settings cannot be written.
+	 */
+	async removeName(folder: Scope, name: string): Promise<NameRemoval> {
+		const removed = await this.undeclare(folder, name);
+		if (removed.problem !== undefined) {
+			this.options.log(`${SECRET_ENV_SETTING}: could not remove ${name} from ${removed.where} for ${labelOf(folder)}: ${removed.problem}`);
+			this.notify('error', `Could not remove ${name} from ${SECRET_ENV_SETTING} in ${removed.where}: ${removed.problem}`);
+			return { ok: false, ...(removed.where !== undefined ? { where: removed.where } : {}) };
+		}
+		await this.reload();
+		return { ok: true, ...removed };
+	}
+
+	/**
+	 * Ticket 39: removes the value of `name`, then its name. When the value cannot be removed nothing
+	 * else changes; when the name cannot, the error says the value is removed and the name is not.
+	 */
+	async removeValueAndName(folder: Scope, name: string): Promise<NameRemoval> {
+		if (!(await this.remove(folder, name))) {
+			return { ok: false };
+		}
+		const removed = await this.undeclare(folder, name);
+		if (removed.problem !== undefined) {
+			this.options.log(`${SECRET_ENV_SETTING}: the value of ${name} for ${labelOf(folder)} is removed, but the name could not be removed from ${removed.where}: ${removed.problem}`);
+			this.notify('error', `The value of the secret variable ${name} is removed, but its name is not: it could not be removed from ${SECRET_ENV_SETTING} in ${removed.where}: ${removed.problem}`);
+			return { ok: false, ...(removed.where !== undefined ? { where: removed.where } : {}) };
+		}
+		await this.reload();
+		return { ok: true, ...removed };
+	}
+
+	/**
 	 * Removes every recorded key (and every loaded one) from the secret storage, once `confirm`
 	 * resolves `true`; returns how many were removed (0 when cancelled).
 	 */
@@ -320,30 +383,63 @@ export class SecretVariables implements vscode.Disposable {
 		return ok;
 	}
 
-	/** "Remove secret variable": a folder (multi-root), then one of its stored names. */
-	async removeCommand(): Promise<void> {
+	/**
+	 * "Remove secret variable": a folder (multi-root), then one of its stored names or (ticket 39) a
+	 * declared name without a value. A stored one that is declared asks: the value only (the default)
+	 * or the value and its name; one without a value is removed from the setting after a
+	 * confirmation. Both name the settings file. `pick` is the name pick (a test seam).
+	 */
+	async removeCommand(
+		pick: (items: RemoveItem[], options: vscode.QuickPickOptions) => Thenable<RemoveItem | undefined> = (items, options) => vscode.window.showQuickPick(items, options),
+	): Promise<void> {
 		const folder = await pickFolder('Remove a secret variable of which folder?');
 		if (folder === null) {
 			return;
 		}
 		const scope = scopeOf(folder);
-		const names = new Set<string>();
+		const stored = new Set<string>();
 		for (const key of [...this.recordedKeys(), ...this.values.keys()]) {
 			const parsed = parseSecretKey(key);
 			if (parsed?.scope === scope) {
-				names.add(parsed.name);
+				stored.add(parsed.name);
 			}
 		}
-		if (names.size === 0) {
-			this.notify('info', `No secret variable is stored for ${labelOf(folder)}.`);
+		const declared = declaredSecretNames(vscode.workspace.getConfiguration('redpandaConnect', folder?.uri).get<unknown>('secretEnv', [])).names;
+		const items: RemoveItem[] = [
+			...[...stored].sort().map((name) => ({ label: name, description: 'value stored on this machine', name, hasValue: true })),
+			...declared.filter((n) => !stored.has(n)).sort().map((name) => ({ label: name, description: `declared in ${SECRET_ENV_SETTING}, no value on this machine`, name, hasValue: false })),
+		];
+		if (items.length === 0) {
+			this.notify('info', `No secret variable is stored or declared for ${labelOf(folder)}.`);
 			return;
 		}
-		const name = await vscode.window.showQuickPick([...names].sort(), {
+		const picked = await pick(items, {
 			title: `Remove a secret variable of ${labelOf(folder)}`,
-			placeHolder: 'The value is removed from the secret storage; the name stays in redpandaConnect.secretEnv.',
+			placeHolder: 'A stored value, or a declared name without one',
 		});
-		if (name !== undefined && await this.remove(folder, name)) {
-			this.notify('info', `Secret variable ${name} is removed for ${labelOf(folder)}.`);
+		if (picked === undefined) {
+			return;
+		}
+		const { name } = picked;
+		const where = this.declaredAt(folder, name);
+		if (!picked.hasValue) {
+			if (where === undefined || !(await (this.options.confirmRemoveName ?? confirmRemoveName)(name, where))) {
+				return;
+			}
+			const removed = await this.removeName(folder, name);
+			if (removed.ok) {
+				this.notify('info', nameRemovedText(name, removed.where ?? where, false, removed));
+			}
+			return;
+		}
+		const choice: SecretRemovalChoice | undefined = where === undefined ? 'value' : await (this.options.pickRemoval ?? pickSecretRemoval)(name, where);
+		if (choice === 'both') {
+			const removed = await this.removeValueAndName(folder, name);
+			if (removed.ok) {
+				this.notify('info', nameRemovedText(name, removed.where ?? where!, true, removed));
+			}
+		} else if (choice === 'value' && await this.remove(folder, name)) {
+			this.notify('info', `Secret variable ${name} is removed for ${labelOf(folder)}${where ? `; the name stays in ${SECRET_ENV_SETTING}` : ''}.`);
 		}
 	}
 
@@ -422,12 +518,75 @@ export class SecretVariables implements vscode.Disposable {
 		}
 		try {
 			const next = [...base.filter((n): n is string => typeof n === 'string'), name];
-			await (this.options.updateSetting ? this.options.updateSetting(config, next, target) : config.update('secretEnv', next, target));
+			await this.writeSetting(config, next, target);
 			return undefined;
 		} catch (err) {
 			return reasonOf(err);
 		}
 	}
+
+	private writeSetting(config: vscode.WorkspaceConfiguration, value: unknown[] | undefined, target: vscode.ConfigurationTarget): Thenable<void> {
+		return this.options.updateSetting ? this.options.updateSetting(config, value, target) : config.update('secretEnv', value, target);
+	}
+
+	/**
+	 * Ticket 39: removes `name` from the `secretEnv` list the config uses (the most specific level that
+	 * has a list: lists do not merge); a list left with no name is removed at that level, not kept as
+	 * `[]`. Reports the settings it left, why the write failed, and the less specific list that still
+	 * holds the name afterwards, if any. A name that list does not hold is left alone.
+	 */
+	private async undeclare(folder: Scope, name: string): Promise<{ readonly where?: string; readonly problem?: string; readonly nowApplies?: string; readonly appliesTo?: string; readonly stillDeclaredIn?: string }> {
+		const used = usedSecretList(folder);
+		if (!used || !used.list.includes(name)) {
+			return {};
+		}
+		const where = usedListText(folder, used.level);
+		const next = used.list.filter((n) => n !== name);
+		try {
+			await this.writeSetting(used.config, next.length > 0 ? next : undefined, SETTING_TARGETS[used.level]);
+		} catch (err) {
+			return { where, problem: reasonOf(err) };
+		}
+		// A folder's emptied list removed: a less specific list (another level's names) now applies to it.
+		const after = next.length === 0 && used.level !== 'user' ? usedSecretList(folder) : undefined;
+		if (!after || after.level === used.level) {
+			return { where };
+		}
+		const nowApplies = settingsLevelText(folder, after.level);
+		const appliesTo = folder ? 'this folder' : 'files outside the workspace folders';
+		return { where, nowApplies, appliesTo, ...(declaredSecretNames(after.list).names.includes(name) ? { stillDeclaredIn: nowApplies } : {}) };
+	}
+}
+
+/** Ticket 39: an item of "Remove secret variable"'s name pick. */
+export interface RemoveItem extends vscode.QuickPickItem {
+	readonly name: string;
+	readonly hasValue: boolean;
+}
+
+/**
+ * Ticket 39: the settings of the list at `level`, as a message names them, noting when the configs
+ * of other folders use that list too (it is not the folder's own and folders are open).
+ */
+function usedListText(folder: Scope, level: SettingLevel): string {
+	const text = settingsLevelText(folder, level);
+	const count = vscode.workspace.workspaceFolders?.length ?? 0;
+	if (folder) {
+		return level !== 'folder' && count > 1 ? `${text}, also used by the other folders' configs` : text;
+	}
+	return count > 0 ? `${text}, also used by the workspace folders' configs` : text;
+}
+
+/**
+ * Ticket 39: the `secretEnv` list `folder`'s configs use (the window's without one): the most
+ * specific level that has a list, as `inspect` reads them.
+ */
+function usedSecretList(folder: Scope): { readonly config: vscode.WorkspaceConfiguration; readonly level: SettingLevel; readonly list: unknown[] } | undefined {
+	const config = vscode.workspace.getConfiguration('redpandaConnect', folder?.uri);
+	const inspected = config.inspect<unknown>('secretEnv');
+	const values: Record<SettingLevel, unknown> = { user: inspected?.globalValue, workspace: inspected?.workspaceValue, folder: inspected?.workspaceFolderValue };
+	const level = (['folder', 'workspace', 'user'] as const).find((l) => Array.isArray(values[l]));
+	return level ? { config, level, list: values[level] as unknown[] } : undefined;
 }
 
 /** The label of the pick item for configs outside every workspace folder (the window's secrets). */
@@ -451,6 +610,16 @@ async function pickFolder(title: string): Promise<Scope | null> {
 	];
 	const picked = await vscode.window.showQuickPick(items, { title });
 	return picked ? picked.folder : null;
+}
+
+async function confirmRemoveName(name: string, where: string): Promise<boolean> {
+	const action = 'Remove name';
+	const answer = await vscode.window.showWarningMessage(
+		`Remove ${name} from ${SECRET_ENV_SETTING} in ${where}? It has no value on this machine.`,
+		{ modal: true },
+		action,
+	);
+	return answer === action;
 }
 
 async function confirmClear(count: number): Promise<boolean> {

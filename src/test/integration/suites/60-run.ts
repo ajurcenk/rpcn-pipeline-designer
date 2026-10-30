@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
-import { SecretVariables } from '../../../adapters/vscode/secrets';
+import { type RemoveItem, SecretVariables } from '../../../adapters/vscode/secrets';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, runOnEditor, userFilesHolding, waitFor } from '../helpers';
 
@@ -370,6 +370,142 @@ suite('Run and Stop (integration)', function () {
 			assert.deepStrictEqual(messages, [['error', 'Could not set the secret variable UNDO_30: it could not be added to redpandaConnect.secretEnv: settings locked']]);
 		} finally {
 			fake.dispose();
+		}
+	});
+
+	test('ticket 39 COMMAND: Remove secret variable lists stored names and declared ones without a value; each removal asks, naming the settings file', async () => {
+		const messages: [string, string][] = [];
+		const choices: ('value' | 'both' | undefined)[] = [];
+		const confirms: boolean[] = [];
+		const asked: string[] = [];
+		const fake = fakeSecrets({
+			notify: (kind, message) => messages.push([kind, message]),
+			pickRemoval: async (name, where) => {
+				asked.push(`pick ${name} in ${where}`);
+				return choices.shift();
+			},
+			confirmRemoveName: async (name, where) => {
+				asked.push(`confirm ${name} in ${where}`);
+				return confirms.shift() ?? false;
+			},
+		});
+		let listed: RemoveItem[] = [];
+		const picking = (name: string | undefined) => async (items: RemoveItem[]) => {
+			listed = items;
+			return items.find((i) => i.name === name);
+		};
+		try {
+			assert.ok(await fake.secrets.set(undefined, 'CMD_A_39', 'tok-39-cmd-a'));
+			await config().update('secretEnv', ['CMD_A_39', 'CMD_B_39'], vscode.ConfigurationTarget.Global);
+			await fake.secrets.reload();
+
+			// The list: the stored name, then the declared one without a value.
+			await fake.secrets.removeCommand(picking(undefined));
+			assert.deepStrictEqual(listed.map((i) => [i.name, i.hasValue]), [['CMD_A_39', true], ['CMD_B_39', false]]);
+			assert.deepStrictEqual([...messages], [], 'cancelled: nothing');
+
+			// CANCEL: the confirmation and the choice, cancelled, change nothing.
+			await fake.secrets.removeCommand(picking('CMD_B_39'));
+			choices.push(undefined);
+			await fake.secrets.removeCommand(picking('CMD_A_39'));
+			assert.deepStrictEqual(asked, ['confirm CMD_B_39 in the user settings', 'pick CMD_A_39 in the user settings']);
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['CMD_A_39', 'CMD_B_39']);
+			assert.strictEqual(fake.secrets.values.get('window', 'CMD_A_39'), 'tok-39-cmd-a');
+
+			// Without a value: the name, after the confirmation.
+			confirms.push(true);
+			await fake.secrets.removeCommand(picking('CMD_B_39'));
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['CMD_A_39']);
+			assert.deepStrictEqual(messages.pop(), ['info', 'CMD_B_39 is removed from redpandaConnect.secretEnv in the user settings.']);
+
+			// With a value, value only (the default): the name stays.
+			choices.push('value');
+			await fake.secrets.removeCommand(picking('CMD_A_39'));
+			assert.strictEqual(fake.secrets.values.get('window', 'CMD_A_39'), undefined);
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['CMD_A_39']);
+			assert.deepStrictEqual(messages.pop(), ['info', 'Secret variable CMD_A_39 is removed for this window; the name stays in redpandaConnect.secretEnv.']);
+
+			// Value and name; the last name removes the setting.
+			assert.ok(await fake.secrets.set(undefined, 'CMD_A_39', 'tok-39-cmd-a2'));
+			choices.push('both');
+			await fake.secrets.removeCommand(picking('CMD_A_39'));
+			assert.deepStrictEqual([...fake.stored.keys()], []);
+			assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined, 'removed, not []');
+			assert.deepStrictEqual(messages.pop(), ['info', 'Secret variable CMD_A_39 is removed: its value, and its name from redpandaConnect.secretEnv in the user settings.']);
+
+			// Nothing left.
+			await fake.secrets.removeCommand(picking(undefined));
+			assert.deepStrictEqual(messages.pop(), ['info', 'No secret variable is stored or declared for this window.']);
+			assert.ok(!messages.some(([, m]) => m.includes('tok-39')), JSON.stringify(messages));
+		} finally {
+			fake.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('ticket 39 VALUE_FAILS / NAME_FAILS: a failing delete changes nothing; a failing settings write says the value is removed and the name is not', async () => {
+		const messages: [string, string][] = [];
+		const lines: string[] = [];
+		const state = new Map<string, unknown>();
+		const memento: vscode.Memento = {
+			keys: () => [...state.keys()],
+			get: <T>(key: string, fallback?: T) => (state.has(key) ? state.get(key) as T : fallback) as T,
+			update: async (key: string, value: unknown) => {
+				state.set(key, value);
+			},
+		};
+		const stored = new Map<string, string>([['redpandaConnect.secret:window:FAIL_39', 'tok-39-fail']]);
+		let deleteFails = true;
+		let writeFails = false;
+		const secrets = new SecretVariables({
+			store: {
+				get: async (key: string) => stored.get(key),
+				store: async (key: string, value: string) => {
+					stored.set(key, value);
+				},
+				delete: async (key: string) => {
+					if (deleteFails) {
+						throw new Error('keyring locked');
+					}
+					stored.delete(key);
+				},
+				onDidChange: new vscode.EventEmitter<{ key: string }>().event,
+			},
+			memento,
+			log: (l) => lines.push(l),
+			notify: (kind, message) => messages.push([kind, message]),
+			updateSetting: async (c, value, target) => {
+				if (writeFails) {
+					throw new Error('settings locked');
+				}
+				await c.update('secretEnv', value, target);
+			},
+		});
+		try {
+			await config().update('secretEnv', ['FAIL_39'], vscode.ConfigurationTarget.Global);
+			await secrets.reload();
+			assert.strictEqual(secrets.values.get('window', 'FAIL_39'), 'tok-39-fail');
+
+			// VALUE_FAILS: the error, and nothing else changes.
+			assert.deepStrictEqual(await secrets.removeValueAndName(undefined, 'FAIL_39'), { ok: false });
+			assert.deepStrictEqual([...messages], [['error', 'Could not remove the secret variable FAIL_39: keyring locked']]);
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['FAIL_39'], 'the name stays');
+			assert.ok(stored.has('redpandaConnect.secret:window:FAIL_39'));
+
+			// NAME_FAILS: the value goes, the name stays, and the error says so and why.
+			messages.length = 0;
+			deleteFails = false;
+			writeFails = true;
+			assert.strictEqual((await secrets.removeValueAndName(undefined, 'FAIL_39')).ok, false);
+			assert.deepStrictEqual([...messages], [['error',
+				'The value of the secret variable FAIL_39 is removed, but its name is not: it could not be removed from redpandaConnect.secretEnv in the user settings: settings locked']]);
+			assert.deepStrictEqual([...stored.keys()], []);
+			assert.strictEqual(secrets.values.get('window', 'FAIL_39'), undefined);
+			assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['FAIL_39']);
+			assert.ok(![...lines, ...messages.map(([, m]) => m)].some((l) => l.includes('tok-39')), 'no value in a message or a log line');
+		} finally {
+			secrets.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
 

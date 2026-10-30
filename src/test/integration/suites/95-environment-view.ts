@@ -13,7 +13,7 @@ import { EnvSettingFiles } from '../../../adapters/redpandaConnect/envSetting';
 import { WINDOW_SCOPE } from '../../../adapters/redpandaConnect/secretEnv';
 import {
 	ADD_VARIABLE_COMMAND, EDIT_VARIABLE_COMMAND, EnvironmentView, type EnvironmentItem, type EnvSettingWriter, type EnvironmentUi, HIDE_VALUE_COMMAND, NO_CONFIG_MESSAGE, OPEN_ENV_FILE_COMMAND,
-	REMOVE_VARIABLE_COMMAND, REVEAL_VARIABLE_COMMAND, SET_MISSING_COMMAND, SHOW_VALUE_COMMAND, VIEW_MASK,
+	REMOVE_NAME_COMMAND, REMOVE_VARIABLE_COMMAND, REVEAL_VARIABLE_COMMAND, SET_MISSING_COMMAND, SHOW_VALUE_COMMAND, VIEW_MASK,
 	CHECK_LICENSE_COMMAND, OPEN_LICENSE_DOCS_COMMAND,
 } from '../../../adapters/vscode/environmentView';
 import { ENV_HOVER_TITLE, EnvHoverProvider, envHoverMarkdown } from '../../../adapters/vscode/envHover';
@@ -59,11 +59,25 @@ suite('Environment view (integration, ticket 31)', function () {
 	let originalUi: EnvironmentUi;
 	let originalWrite: EnvSettingWriter;
 
-	/** Replaces the prompts: `kinds` answers the plain / secret pick, `inputs` each input box in turn (a function gets its options). */
-	function script(kinds: ('plain' | 'secret' | undefined)[], inputs: (string | undefined | ((o: vscode.InputBoxOptions) => string | undefined))[]): vscode.InputBoxOptions[] {
+	/** Ticket 39: each removal pick's name and settings file. */
+	const removalsAsked: [string, string][] = [];
+	/**
+	 * Replaces the prompts: `kinds` answers the plain / secret pick, `inputs` each input box in turn (a
+	 * function gets its options), `removals` each secret removal pick (ticket 39).
+	 */
+	function script(
+		kinds: ('plain' | 'secret' | undefined)[],
+		inputs: (string | undefined | ((o: vscode.InputBoxOptions) => string | undefined))[],
+		removals: ('value' | 'both' | undefined)[] = [],
+	): vscode.InputBoxOptions[] {
 		const asked: vscode.InputBoxOptions[] = [];
+		removalsAsked.length = 0;
 		view().ui = {
 			pickKind: async () => kinds.shift(),
+			pickRemoval: async (name, where) => {
+				removalsAsked.push([name, where]);
+				return removals.shift();
+			},
 			input: async (options) => {
 				asked.push(options);
 				const next = inputs.shift();
@@ -204,12 +218,14 @@ suite('Environment view (integration, ticket 31)', function () {
 		assert.strictEqual(config().inspect('env')?.globalValue, undefined);
 		assert.ok(await waitFor(() => row('setting', 'TOPIC') === undefined && groupOf('missing').some((i) => i.label === 'TOPIC'), 5_000));
 
-		const asked = script([], ['tok-31-new']);
+		// Ticket 39: Remove asks; "value only" removes the value as before.
+		const asked = script([], ['tok-31-new'], ['value']);
 		assert.strictEqual(await vscode.commands.executeCommand(EDIT_VARIABLE_COMMAND, row('secret', 'API_TOKEN')!.node), true);
 		assert.strictEqual(asked[0].password, true);
 		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'API_TOKEN'), 'tok-31-new');
 
 		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'API_TOKEN')!.node), true);
+		assert.deepStrictEqual(removalsAsked, [['API_TOKEN', 'the user settings']]);
 		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'API_TOKEN'), undefined);
 		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN'], 'the name stays declared');
 		assert.ok(await waitFor(() => (row('secret', 'API_TOKEN')?.node as { variable?: { state: string } } | undefined)?.variable?.state === 'noValue', 5_000));
@@ -219,6 +235,74 @@ suite('Environment view (integration, ticket 31)', function () {
 		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === envFile, 5_000));
 		assert.strictEqual(view().configUri?.toString(), doc.uri.toString(), 'another editor active: the view keeps the last config');
 		assert.ok(row('setting', 'TOPIC') === undefined && row('envFile', 'BROKERS') !== undefined);
+		assert.deepStrictEqual(errors, []);
+	});
+
+	// --- Ticket 39: a secret variable removed with its name ---
+
+	/** The menus' `when` regex of a view command (`inline` group), from package.json. */
+	function menuRegex(command: string): RegExp {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as { contributes: { menus: Record<string, { command: string; when?: string; group?: string }[]> } };
+		const entry = pkg.contributes.menus['view/item/context'].find((m) => m.command === command && m.group === 'inline');
+		const source = /viewItem =~ \/(.*)\/$/.exec(entry?.when ?? '')?.[1];
+		assert.ok(source, JSON.stringify(entry));
+		return new RegExp(source);
+	}
+	const stateOf = (i: EnvironmentItem | undefined) => (i?.node.kind === 'variable' ? i.node.variable.state : undefined);
+
+	test('ticket 39 NAME_ONLY / LAST_NAME: Remove name on a declared secret with no value takes it out of secretEnv; the last one removes the setting', async () => {
+		await config().update('secretEnv', ['API_TOKEN', 'NOVAL_39'], vscode.ConfigurationTarget.Global);
+		assert.ok(await waitFor(() => row('secret', 'NOVAL_39') !== undefined, 5_000), JSON.stringify(items().map((i) => i.label)));
+		const noValue = row('secret', 'NOVAL_39')!;
+		assert.strictEqual(stateOf(noValue), 'noValue');
+		assert.match(noValue.contextValue, menuRegex(REMOVE_NAME_COMMAND), 'Remove name on a row with no value');
+		assert.doesNotMatch(noValue.contextValue, menuRegex(REMOVE_VARIABLE_COMMAND));
+		assert.doesNotMatch(row('secret', 'API_TOKEN')!.contextValue, menuRegex(REMOVE_NAME_COMMAND), 'not on a row with a value');
+		assert.doesNotMatch(row('setting', 'TOPIC')!.contextValue, menuRegex(REMOVE_NAME_COMMAND));
+
+		script([], []);
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_NAME_COMMAND, noValue.node), true);
+		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN']);
+		assert.ok(await waitFor(() => row('secret', 'NOVAL_39') === undefined, 5_000), 'the row is gone');
+		assert.deepStrictEqual(infos, ['NOVAL_39 is removed from redpandaConnect.secretEnv in the user settings.']);
+		assert.deepStrictEqual(removalsAsked, [], 'no value: nothing to choose');
+
+		// LAST_NAME: the value first (value only), then the name: the setting goes, not `[]`.
+		script([], [], ['value']);
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'API_TOKEN')!.node), true);
+		assert.ok(await waitFor(() => stateOf(row('secret', 'API_TOKEN')) === 'noValue', 5_000));
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_NAME_COMMAND, row('secret', 'API_TOKEN')!.node), true);
+		assert.strictEqual(config().inspect('secretEnv')?.globalValue, undefined, 'the setting is removed at that level');
+		assert.ok(await waitFor(() => groupOf('secret').every((i) => i.node.kind === 'note'), 5_000), JSON.stringify(groupOf('secret').map((i) => i.label)));
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('ticket 39 VALUE_DEFAULT / VALUE_AND_NAME / CANCEL: Remove on a secret with a value asks, naming the settings file', async () => {
+		assert.ok(await api().secrets!.set(undefined, 'BOTH_39', 'tok-39-both'));
+		assert.ok(await waitFor(() => row('secret', 'BOTH_39') !== undefined, 5_000));
+
+		// CANCEL: nothing changes.
+		script([], [], [undefined]);
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'BOTH_39')!.node), false);
+		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'BOTH_39'), 'tok-39-both');
+		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN', 'BOTH_39']);
+
+		// VALUE_AND_NAME: the value goes, then the name.
+		script([], [], ['both']);
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'BOTH_39')!.node), true);
+		assert.deepStrictEqual(removalsAsked, [['BOTH_39', 'the user settings']]);
+		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'BOTH_39'), undefined);
+		assert.ok(!api().secrets!.recordedKeys().some((k) => k.endsWith(':BOTH_39')), 'its record goes too');
+		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN']);
+		assert.ok(await waitFor(() => row('secret', 'BOTH_39') === undefined, 5_000));
+		assert.deepStrictEqual(infos, ['Secret variable BOTH_39 is removed: its value, and its name from redpandaConnect.secretEnv in the user settings.']);
+
+		// VALUE_DEFAULT: the value only; the name stays.
+		script([], [], ['value']);
+		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'API_TOKEN')!.node), true);
+		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'API_TOKEN'), undefined);
+		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN']);
+		assert.ok(![...infos, ...errors, ...api().outputLines()].some((l) => l.includes('tok-39') || l.includes(SECRET_VALUE)), 'no value in a message or a log line');
 		assert.deepStrictEqual(errors, []);
 	});
 

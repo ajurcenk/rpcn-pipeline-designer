@@ -77,10 +77,11 @@ export interface ExtensionApi {
 	/** Resolves with whether the `rpcn-schema` contributor was registered with Red Hat YAML. Never rejects. */
 	readonly contributorRegistered: Promise<boolean>;
 	/**
-	 * Secret environment variables (ticket 30): set, remove and clear without the input boxes. Only
-	 * in `ExtensionMode.Test`: elsewhere any extension could read the values through it.
+	 * Secret environment variables (ticket 30): set, remove (ticket 39: also the name) and clear
+	 * without the input boxes. Only in `ExtensionMode.Test`: elsewhere any extension could read the
+	 * values through it.
 	 */
-	readonly secrets?: Pick<SecretVariables, 'set' | 'remove' | 'clear' | 'reload' | 'settled' | 'recordedKeys' | 'values' | 'onDidChange'>;
+	readonly secrets?: Pick<SecretVariables, 'set' | 'remove' | 'removeName' | 'removeValueAndName' | 'declaredAt' | 'clear' | 'reload' | 'settled' | 'recordedKeys' | 'values' | 'onDidChange'>;
 	/**
 	 * The Environment view (ticket 31): its items, the config it shows, its refreshes, and its prompts
 	 * and settings write to replace. Only in `ExtensionMode.Test`, as `secrets`: its items carry values.

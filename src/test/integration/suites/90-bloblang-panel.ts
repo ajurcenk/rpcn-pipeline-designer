@@ -551,6 +551,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 					picked.push(name);
 					return kinds.shift();
 				},
+				pickRemoval: async () => 'value',
 				input: async (options) => {
 					asked.push(options);
 					const next = inputs.shift();

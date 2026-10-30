@@ -295,6 +295,55 @@ suite('Per-folder settings in a multi-root workspace (integration, ticket 28)', 
 		assert.ok(!api().outputLines().some((l) => l.includes('tok-30')), 'no value is logged');
 	});
 
+	test('ticket 39 STILL_DECLARED / level: a name leaves the folder\'s list the config uses; with that list gone, the workspace\'s still declares it and says so', async () => {
+		const settingsOf = (name: FolderName) => vscode.workspace.getConfiguration('redpandaConnect', folder(name).uri);
+		const folderFile = (name: FolderName) => path.join(folder(name).uri.fsPath, '.vscode', 'settings.json');
+		try {
+			// A secret set for B (two folders: declared in B's folder settings), removed with its name.
+			assert.ok(await api().secrets!.set(folder('b'), 'BOTH_39', 'tok-39-secret-b'));
+			assert.deepStrictEqual(settingsOf('b').inspect('secretEnv')?.workspaceFolderValue, ['BOTH_39']);
+			assert.strictEqual(api().secrets!.declaredAt(folder('b'), 'BOTH_39'), `the folder settings (${folderFile('b')})`);
+			assert.deepStrictEqual(await api().secrets!.removeValueAndName(folder('b'), 'BOTH_39'),
+				{ ok: true, where: `the folder settings (${folderFile('b')})` });
+			assert.strictEqual(settingsOf('b').inspect('secretEnv')?.workspaceFolderValue, undefined, 'the last name: the setting goes from B\'s settings');
+			assert.strictEqual(api().secrets!.values.get(folder('b').uri.toString(), 'BOTH_39'), undefined);
+
+			// A folder list beside a workspace one: the folder's is the one used, so the name leaves it.
+			await settingsOf('a').update('secretEnv', ['STILL_39'], vscode.ConfigurationTarget.Workspace);
+			await settingsOf('b').update('secretEnv', ['STILL_39', 'KEEP_39'], vscode.ConfigurationTarget.WorkspaceFolder);
+			assert.deepStrictEqual(await api().secrets!.removeName(folder('b'), 'STILL_39'), { ok: true, where: `the folder settings (${folderFile('b')})` },
+				'B\'s list still applies (lists do not merge): not declared elsewhere');
+			assert.deepStrictEqual(settingsOf('b').inspect('secretEnv')?.workspaceFolderValue, ['KEEP_39']);
+			assert.deepStrictEqual(settingsOf('b').inspect('secretEnv')?.workspaceValue, ['STILL_39'], 'the workspace list is unchanged');
+
+			// STILL_DECLARED: B's list left empty goes, and the workspace list now applies.
+			await settingsOf('b').update('secretEnv', ['STILL_39'], vscode.ConfigurationTarget.WorkspaceFolder);
+			assert.deepStrictEqual(await api().secrets!.removeName(folder('b'), 'STILL_39'), {
+				ok: true, where: `the folder settings (${folderFile('b')})`,
+				nowApplies: `the workspace settings (${WORKSPACE_FILE})`, appliesTo: 'this folder', stillDeclaredIn: `the workspace settings (${WORKSPACE_FILE})`,
+			});
+			assert.strictEqual(settingsOf('b').inspect('secretEnv')?.workspaceFolderValue, undefined);
+			assert.deepStrictEqual(settingsOf('b').get('secretEnv'), ['STILL_39']);
+			const shared = `the workspace settings (${WORKSPACE_FILE}), also used by the other folders' configs`;
+			assert.strictEqual(api().secrets!.declaredAt(folder('b'), 'STILL_39'), shared, 'B now uses the shared list');
+
+			// A folder without its own list: the name leaves the workspace list, which the other folders use too.
+			assert.strictEqual(api().secrets!.declaredAt(folder('a'), 'STILL_39'), shared);
+			assert.deepStrictEqual(await api().secrets!.removeName(folder('a'), 'STILL_39'), { ok: true, where: shared });
+			assert.strictEqual(settingsOf('a').inspect('secretEnv')?.workspaceValue, undefined);
+			assert.ok(!fs.readFileSync(WORKSPACE_FILE, 'utf8').includes('STILL_39'));
+
+			// "No folder" with a workspace list: the window's configs use it, and so do the folders'.
+			await settingsOf('a').update('secretEnv', ['NOF_39', 'KEEP_39'], vscode.ConfigurationTarget.Workspace);
+			const window = `the workspace settings (${WORKSPACE_FILE}), also used by the workspace folders' configs`;
+			assert.strictEqual(api().secrets!.declaredAt(undefined, 'NOF_39'), window);
+			assert.deepStrictEqual(await api().secrets!.removeName(undefined, 'NOF_39'), { ok: true, where: window });
+			assert.deepStrictEqual(settingsOf('a').inspect('secretEnv')?.workspaceValue, ['KEEP_39']);
+		} finally {
+			await settingsOf('a').update('secretEnv', undefined, vscode.ConfigurationTarget.Workspace);
+		}
+	});
+
 	// Last: it changes the workspace's folders. Removing the second folder keeps the first, so the
 	// extension host does not restart.
 	test('bug 33: in a workspace file holding one folder, a secret set for that folder is declared in the workspace settings', async () => {

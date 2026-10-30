@@ -6,13 +6,14 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { type EnvironmentItem, type EnvironmentUi, SET_MISSING_COMMAND } from '../../../adapters/vscode/environmentView';
+import { type EnvironmentItem, type EnvironmentUi, REMOVE_NAME_COMMAND, SET_MISSING_COMMAND } from '../../../adapters/vscode/environmentView';
 import { type ExtensionApi } from '../../../extension';
 import { REPO_ROOT } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../../integration/helpers';
 
 type FolderName = 'a' | 'b';
 const FIXTURE = path.join(REPO_ROOT, 'test', 'multiroot');
+const WORKSPACE_FILE = path.join(FIXTURE, 'multiroot.code-workspace');
 const CONFIG_NAME = 'env-31.yaml';
 const ENV_NAME = '.env-31';
 const CONFIG = [
@@ -84,7 +85,7 @@ suite('Environment view in a multi-root workspace (integration, ticket 31)', fun
 		const texts = hovers.flatMap((h) => h.contents).map((c) => (typeof c === 'string' ? c : 'value' in c ? c.value : ''));
 		assert.ok(texts.some((t) => t.includes('`b-topic` from **Settings (redpandaConnect.env)** (folder settings)')), JSON.stringify(texts));
 
-		view().ui = { pickKind: async () => 'plain', input: async () => 'eu-b', error: (m) => assert.fail(m), info: () => undefined };
+		view().ui = { pickKind: async () => 'plain', pickRemoval: async () => 'value', input: async () => 'eu-b', error: (m) => assert.fail(m), info: () => undefined };
 		assert.strictEqual(await vscode.commands.executeCommand(SET_MISSING_COMMAND, 'REGION'), 'REGION');
 		const inspected = settings('b').inspect('env');
 		assert.deepStrictEqual(inspected?.workspaceFolderValue, { TOPIC: 'b-topic', REGION: 'eu-b' });
@@ -96,5 +97,36 @@ suite('Environment view in a multi-root workspace (integration, ticket 31)', fun
 		assert.ok(await waitFor(() => view().model()?.missing.join() === 'TOPIC,API_TOKEN,BROKERS,REGION', 5_000), JSON.stringify(view().model()));
 		assert.strictEqual(view().model()?.envFilePath, undefined);
 		assert.ok(!view().items().some((i) => i.node.kind === 'variable' && i.group !== 'process'), 'none of B\'s variables');
+	});
+
+	test('ticket 39 STILL_DECLARED: Remove name on B\'s own list says the workspace list now applies to B; on A, without its own list, that the list is shared', async () => {
+		const workspaceText = fs.readFileSync(WORKSPACE_FILE, 'utf8');
+		const infos: string[] = [];
+		view().ui = { pickKind: async () => undefined, pickRemoval: async () => undefined, input: async () => undefined, error: (m) => assert.fail(m), info: (m) => infos.push(m) };
+		try {
+			await settings('a').update('secretEnv', ['VIEW_39', 'OTHER_39'], vscode.ConfigurationTarget.Workspace);
+			await settings('b').update('secretEnv', ['VIEW_39'], vscode.ConfigurationTarget.WorkspaceFolder);
+			await show('b');
+			assert.ok(await waitFor(() => row('secret', 'VIEW_39') !== undefined && row('secret', 'OTHER_39') === undefined, 5_000), JSON.stringify(view().items().map((i) => i.label)));
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_NAME_COMMAND, row('secret', 'VIEW_39')!.node), true);
+			assert.strictEqual(settings('b').inspect('secretEnv')?.workspaceFolderValue, undefined, 'B\'s emptied list is removed');
+			assert.deepStrictEqual(infos, [`VIEW_39 is removed from redpandaConnect.secretEnv in the folder settings (${path.join(folder('b').uri.fsPath, '.vscode', 'settings.json')}). `
+				+ `It is still declared in the workspace settings (${WORKSPACE_FILE}), whose list now applies to this folder.`]);
+			assert.ok(await waitFor(() => row('secret', 'VIEW_39') !== undefined && row('secret', 'OTHER_39') !== undefined, 5_000), 'the workspace list\'s names show for B');
+
+			infos.length = 0;
+			await show('a');
+			assert.ok(await waitFor(() => row('secret', 'OTHER_39') !== undefined, 5_000));
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_NAME_COMMAND, row('secret', 'OTHER_39')!.node), true);
+			assert.deepStrictEqual(settings('a').inspect('secretEnv')?.workspaceValue, ['VIEW_39']);
+			assert.deepStrictEqual(infos, [`OTHER_39 is removed from redpandaConnect.secretEnv in the workspace settings (${WORKSPACE_FILE}), also used by the other folders' configs.`]);
+		} finally {
+			view().ui = originalUi;
+			await settings('a').update('secretEnv', undefined, vscode.ConfigurationTarget.Workspace);
+			await settings('b').update('secretEnv', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+			if (fs.readFileSync(WORKSPACE_FILE, 'utf8') !== workspaceText) {
+				fs.writeFileSync(WORKSPACE_FILE, workspaceText);
+			}
+		}
 	});
 });
