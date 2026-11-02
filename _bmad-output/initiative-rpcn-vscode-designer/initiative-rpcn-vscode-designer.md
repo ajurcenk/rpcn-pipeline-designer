@@ -48,3 +48,5 @@ Capability boundary: one solo owner with agent lanes; epics are cut by separatel
 - Decision: "production" for every epic means a green CI build whose `.vsix` installs in VS Code (user, 2026-10-06).
 - Decision: repo ticket store in the project repo github.com/ajurcenk/rpcn-pipeline-designer (user, 2026-10-06).
 - Decision: a second release, "Bloblang check and test" (CAP-15–CAP-17), is epic 4 after the three first-release epics; brief and spec amended 2026-10-12 (user, 2026-10-12).
+- Decision: epic 5, "Deploy to Redpanda Cloud", brings Cloud deployment (BYOC and Dedicated) into scope (user, 2026-11-02).
+- Source conflict: spec Non-goals — "BYOC or Cloud deployment" vs epic 5 (user decision 2026-11-02); the spec is not yet amended, so epic 5's requirements are its own (covers empty).

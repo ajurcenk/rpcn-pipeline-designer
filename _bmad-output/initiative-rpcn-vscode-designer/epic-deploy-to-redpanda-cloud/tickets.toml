@@ -1,0 +1,104 @@
+# tickets.toml — epic-deploy-to-redpanda-cloud's agreed children. The order of the tables is the build order; `id` names a child for good.
+# Lanes after the tracer (2): deploy (3 → 6 → 7 → 8) and lifecycle (4 → 5); both meet the cloud adapter and src/extension.ts, so a story in one lane names the other's done work it builds on.
+
+[[entry]]
+id = 1
+type = "spike"
+title = "Probe the Redpanda Cloud APIs on a real cluster"
+description = "With a service account the user creates, calls the Control Plane API (list clusters, a cluster's Data Plane address) and the Data Plane API (pipeline create, get, list, update, start, stop, delete; secrets list, create, delete) on the user's BYOC and, if any, Dedicated cluster, and records the exact requests, responses, errors, rate limits, whether Dedicated offers the pipeline API, how the Connect version and allowed components are reported, and any config validation, as the API contract the stories build on."
+verify = "The findings file holds the request and response of each call on the real cluster and a proposed API contract the user approves."
+covers = ["R1", "R2", "R11"]
+after = []
+hitl = true
+risk = "medium"
+unknown = "Whether Dedicated clusters offer the pipeline API, and whether any API reports allowed components or validates a config."
+
+[[entry]]
+id = 2
+type = "story"
+title = "Tracer: connect a service account, pick a cluster and deploy a config as written"
+description = "The thinnest path through every layer: Connect service account (client ID, then the secret in a password box, kept in the secret storage), a token cache, the cluster list, a Deploy command and editor-title button that creates a pipeline from the active config unchanged on a chosen cluster, a minimal Cloud view section showing it with its state, and a local fake of both APIs for the integration tests."
+verify = "Integration tests against the fake create a pipeline and see it running in the view; the user deploys a config with no variables to their real cluster from the dev host."
+covers = ["R1", "R2", "R3"]
+after = [1]
+hitl = false
+risk = "high"
+references = ["https://claude.ai/artifact/JXvum3sCSPMWEDeP6e2ivt"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Deploy again updates the mapped pipeline"
+description = "Writes and reads the committed sidecar and the pipeline's tag, so a second Deploy updates the same pipeline; replacing a running pipeline's config opens a diff of the deployed and local config and asks for a confirmation; resources come from a setting chosen on the first deploy."
+verify = "Integration tests: a second deploy updates rather than creates; a running pipeline is replaced only after the confirmation; the user updates their real pipeline."
+covers = ["R4", "R5", "R6"]
+after = [2]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "Start, stop and delete a pipeline, with its state and error"
+description = "Commands and Cloud view actions to start, stop and delete (after a confirmation) a pipeline, with its state (starting, running, stopping, stopped, error, completed) and error message shown and refreshed."
+verify = "Integration tests drive each action and state against the fake; the user stops, starts and deletes a pipeline on their real cluster."
+covers = ["R9"]
+after = [2]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "The Cloud view: clusters, pipelines and the deployed config"
+description = "Completes the Cloud view: the service account, its clusters (cloud, region, Connect version, or that a cluster offers no pipeline API), their pipelines with the local file each came from, the deployed config opened read-only, Compare with the local file, refresh, and the actions of entry 4 in the view's menus."
+verify = "Integration tests read the view's items for every node kind and open the deployed config; the user browses their real organization."
+covers = ["R2", "R10"]
+after = [2, 4]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 6
+type = "story"
+title = "Translate the config for the Cloud"
+description = "Before sending, rewrites `${VAR}` to `${secrets.VAR}`, includes resource files in the config or refuses with the reason, and reports local-only parts (stdin, stdout, local files and programs, `http_server`) as warnings in the Problems panel; the local file is never changed."
+verify = "Unit tests of the translation on the corpus configs; integration tests check the YAML the fake receives; the user deploys a config that uses variables and a resource file."
+covers = ["R7"]
+after = [3]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Create the missing cloud secrets"
+description = "Lists the cluster's secrets, and when the translated config references ones it lacks, offers in one confirmation (naming each and where its value comes from) to create them from the local secret or plain values before deploying; values never enter the config, a log line or a message."
+verify = "Integration tests against the fake check the secrets created and that no value reaches the YAML, the output channel or a message; the user deploys a config whose secrets their cluster lacks."
+covers = ["R8"]
+after = [6]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 8
+type = "story"
+title = "Check the config against the cluster before deploying"
+description = "Before Deploy sends the config, checks it against what the cluster runs (its Connect version and components, as entry 1 found the APIs report them) and the local lint, and stops with the findings when the cluster cannot run it."
+verify = "Integration tests with a fake cluster that lacks a component the config uses; the user deploys a config their cluster cannot run and sees why."
+covers = ["R11"]
+after = [1, 6, "1.5", "2.4"]
+hitl = false
+risk = "medium"
+unknown = "Which APIs report a cluster's components or validate a config; settled by entry 1."
+
+[[entry]]
+id = 9
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup across the epic's code, scoped when it starts from the build records and the review findings deferred during the epic; no new behavior."
+verify = "All runs pass and the deferred findings it takes are closed in deferred-work."
+covers = []
+after = [2, 3, 4, 5, 6, 7, 8]
+hitl = false
+risk = "low"
