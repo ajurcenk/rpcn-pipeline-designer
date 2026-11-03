@@ -110,3 +110,5 @@ context:
 | 4 | start/stop follow from the view's cached state, not the server's | medium | `from: pipeline.state` (~:1496) comes from the last list; a stale Stopped row over a real Error ends the follow on the old Error or waits the grace on an unchanged state | patch |
 | 5 | A raw unknown state is lowercased in older messages (`state_paused`) | low | `pipelineStateText(...).toLowerCase()` at ~:1030, ~:1043, ~:1354, ~:1494; `stateWord` does it right | patch |
 | 6 | (triage) The `.cloud.json` lookup from the tag accepts an absolute or `..` path outside the workspace | low | `mappingsOf` (~:1536) adds `sidecarPath(tag)` for an absolute tag; the tag comes from the Cloud; only a parsing mapping with the same ids is deleted, but nothing outside the workspace should be touched | patch |
+
+**Manual check result (user, 2026-11-03):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (stop and start from the row and the palette, delete with the confirmation, the mapped `.cloud.json` removed).
