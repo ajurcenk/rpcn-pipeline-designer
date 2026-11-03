@@ -3,7 +3,7 @@ title: 'Tracer: connect a service account, pick a cluster and deploy a config as
 type: 'feature'
 ticket: '2'
 created: '2026-11-02'
-status: 'in-review'
+status: 'done'
 baseline_revision: '0221c5362fea1e93a682806d37c5b3e1b87b9c29'
 route: 'full'
 route_source: 'auto'
