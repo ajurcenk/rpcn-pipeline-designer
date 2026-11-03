@@ -109,3 +109,5 @@ context:
 | 5 | The read-only `redpanda-cloud:` document gets Run, Deploy and the Test-mapping lens | low | `when` clauses in package.json check only `activeEditorDetected`/`untitled`; bloblangLens.ts:68 excludes only `untitled`; seen every time the diff is open | patch |
 | 6 | UNCHANGED log says "already runs" for a stopped or errored pipeline | low | log at ~944 ignores the state | patch |
 | 7 | `deployedConfigs` entries never removed; an open diff stays on the old config after the update | low | real but rarely met; the fix adds a change event and bookkeeping | reject |
+
+**Manual check result (user, 2026-11-03):** passed on the 1.143.1 dev host against the real organization: "tested, no issues". The log confirms the real API echoes `100m`/`400M` unchanged, so an unchanged deploy is "nothing changed", not a resize. The first create went to `STATE_ERROR` with no reason before running (the spike's intermittent error). Information messages were hidden at first by a per-source Do Not Disturb (errors only) for the extension in the test profile, not by the code.
