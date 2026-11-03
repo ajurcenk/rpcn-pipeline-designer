@@ -3,7 +3,7 @@ title: 'Probe the Redpanda Cloud APIs on a real cluster'
 type: 'chore'
 ticket: '1'
 created: '2026-11-02'
-status: 'built'
+status: done
 baseline_revision: '452ff63799ad36d252fdda7438d3776dede9bb67'
 route: 'full'
 route_source: 'auto'
@@ -117,3 +117,4 @@ Quick review of the probe, two runs' captures, the findings and AD-23. Verdicts:
 | 13 | Paging never exercised | low | patch | Marked open. |
 | 14 | A quoted value with `"` or `\` untested | low | patch | Tested in run 3: the pipeline ran. |
 - AD-23 adopted by the user 2026-11-02 (the rewritten text, after the review).
+- Marked done by the user on 2026-11-02.
