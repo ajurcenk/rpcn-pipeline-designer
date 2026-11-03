@@ -3,7 +3,7 @@ title: 'Deploy shows the pipeline size every time, pre-set to the deployed size'
 type: 'feature'
 ticket: ''
 created: '2026-11-03'
-status: 'built'
+status: 'done'
 baseline_revision: 'c7621925011b3c06bbd5e2df9e3e2a3f471fcb26'
 route: 'oneshot'
 route_source: 'auto'
@@ -40,3 +40,5 @@ context: []
 | 3 | The real size pick (pre-set, "current" mark, "Current size" item) is untested | medium | the suite stubs `pickUnits`; the stub's default copies the logic | patch (`sizeChoices` + unit test) |
 | 4 | An update of a pipeline the Cloud returned without resources looks like a new one (pre-set 1, never "nothing changed") | low | real, but not new (5.3 behaved the same) and not met: the API returned resources on every pipeline in the spike and the manual checks | reject |
 | 5 | One header comment line breaks the ~100-column wrap | low | cloudView.ts header ~:18 | patch |
+
+**Manual check result (user, 2026-11-03):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (the size pick on every deploy, pre-set to the deployed size when deploying the same pipeline again).
