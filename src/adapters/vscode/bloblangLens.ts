@@ -65,7 +65,7 @@ export class BloblangLensProvider implements vscode.CodeLensProvider, vscode.Dis
 	}
 
 	async provideCodeLenses(doc: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-		if (doc.uri.scheme === 'untitled' || !this.detection.isDetected(doc.uri)) {
+		if (doc.uri.scheme === 'untitled' || doc.uri.scheme === 'redpanda-cloud' || !this.detection.isDetected(doc.uri)) {
 			return [];
 		}
 		const processors = bloblangProcessors(parsedDocument(doc).parsed);

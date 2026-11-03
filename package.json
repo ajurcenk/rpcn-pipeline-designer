@@ -85,6 +85,13 @@
           "default": [],
           "scope": "resource",
           "markdownDescription": "Names of secret environment variables for lint, run and the Bloblang checks (live errors and the test panel). Only the names are here, so this is safe to commit; the values are kept in VS Code's secret storage on this machine, per workspace folder, and set with **Redpanda Connect: Set secret variable** (which also adds the name here). They reach the binary in its process environment only, so `#redpandaConnect.env#` and `#redpandaConnect.envFile#` win for the same name. A name must match `[A-Za-z_][A-Za-z0-9_]*`. User, workspace and folder lists do not merge: the most specific list is used."
+        },
+        "redpandaConnect.cloud.computeUnits": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 15,
+          "scope": "resource",
+          "markdownDescription": "The size of the pipelines **Deploy to Redpanda Cloud** creates and updates, in compute units: one unit is 0.1 CPU and 400 MB of memory (1–15). When unset, the first deploy asks and saves the choice to the workspace settings (the folder's settings in a multi-root workspace). Changing it changes a deployed pipeline's size on its next deploy."
         }
       }
     },
@@ -246,15 +253,15 @@
       "commandPalette": [
         {
           "command": "redpandaConnect.showGraph",
-          "when": "redpandaConnect.activeEditorDetected && resourcePath not in redpandaConnect.graphOpenPaths"
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud && resourcePath not in redpandaConnect.graphOpenPaths"
         },
         {
           "command": "redpandaConnect.hideGraph",
-          "when": "redpandaConnect.activeEditorDetected && resourcePath in redpandaConnect.graphOpenPaths || activeWebviewPanelId == 'redpandaConnect.graph'"
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.graphOpenPaths || activeWebviewPanelId == 'redpandaConnect.graph'"
         },
         {
           "command": "redpandaConnect.run",
-          "when": "redpandaConnect.activeEditorDetected"
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud"
         },
         {
           "command": "redpandaConnect.stop",
@@ -319,7 +326,7 @@
         },
         {
           "command": "redpandaConnect.environment.checkLicense",
-          "when": "redpandaConnect.activeEditorDetected"
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud"
         },
         {
           "command": "redpandaConnect.environment.openLicenseDocs",
@@ -334,7 +341,7 @@
         },
         {
           "command": "redpandaConnect.cloud.deploy",
-          "when": "redpandaConnect.activeEditorDetected && resourceScheme != untitled"
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != untitled && resourceScheme != redpanda-cloud"
         },
         {
           "command": "redpandaConnect.cloud.refresh",
@@ -344,7 +351,7 @@
       "editor/title": [
         {
           "command": "redpandaConnect.run",
-          "when": "resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths",
+          "when": "resourceScheme != untitled && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.detectedPaths",
           "group": "navigation"
         },
         {
@@ -354,17 +361,17 @@
         },
         {
           "command": "redpandaConnect.showGraph",
-          "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath not in redpandaConnect.graphOpenPaths",
+          "when": "resourcePath in redpandaConnect.detectedPaths && resourceScheme != redpanda-cloud && resourcePath not in redpandaConnect.graphOpenPaths",
           "group": "navigation"
         },
         {
           "command": "redpandaConnect.hideGraph",
-          "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath in redpandaConnect.graphOpenPaths",
+          "when": "resourcePath in redpandaConnect.detectedPaths && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.graphOpenPaths",
           "group": "navigation"
         },
         {
           "command": "redpandaConnect.cloud.deploy",
-          "when": "resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths",
+          "when": "resourceScheme != untitled && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.detectedPaths",
           "group": "navigation"
         }
       ],

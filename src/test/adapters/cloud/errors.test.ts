@@ -71,8 +71,8 @@ suite('Cloud errors (ticket 5.2, AD-23)', () => {
 
 	test('a pipeline answer: state, error status and tags', () => {
 		assert.deepStrictEqual(pipelineFrom({ id: 'p1', display_name: 'orders', state: 'STATE_ERROR', status: { error: 'boom' }, tags: { k: 'v', n: 1 } }),
-			{ id: 'p1', displayName: 'orders', state: 'STATE_ERROR', error: 'boom', tags: { k: 'v' } });
-		assert.deepStrictEqual(pipelineFrom({ id: 'p2', state: 'STATE_ERROR' }), { id: 'p2', displayName: 'p2', state: 'STATE_ERROR', tags: {} });
+			{ id: 'p1', displayName: 'orders', state: 'STATE_ERROR', error: 'boom', tags: { k: 'v' }, description: '', configYaml: '' });
+		assert.deepStrictEqual(pipelineFrom({ id: 'p2', state: 'STATE_ERROR' }), { id: 'p2', displayName: 'p2', state: 'STATE_ERROR', tags: {}, description: '', configYaml: '' });
 		assert.strictEqual(pipelineFrom({ display_name: 'no id' }), undefined);
 		assert.strictEqual(pipelineStateText('STATE_RUNNING'), 'Running');
 		assert.strictEqual(pipelineStateText('STATE_COMPLETED'), 'Completed');

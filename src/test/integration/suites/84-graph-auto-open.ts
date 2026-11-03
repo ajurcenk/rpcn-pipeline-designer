@@ -29,18 +29,18 @@ suite('Pipeline graph: auto-open, Hide and rename (3.10, integration)', function
 		assert.strictEqual(command('redpandaConnect.hideGraph')?.icon, '$(eye-closed)');
 		type Item = { command: string; when: string; group?: string };
 		const palette = Object.fromEntries(contributes.menus.commandPalette.map((m: Item) => [m.command, m.when]));
-		assert.strictEqual(palette['redpandaConnect.showGraph'], 'redpandaConnect.activeEditorDetected && resourcePath not in redpandaConnect.graphOpenPaths');
+		assert.strictEqual(palette['redpandaConnect.showGraph'], 'redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud && resourcePath not in redpandaConnect.graphOpenPaths');
 		assert.strictEqual(palette['redpandaConnect.hideGraph'],
-			'redpandaConnect.activeEditorDetected && resourcePath in redpandaConnect.graphOpenPaths || activeWebviewPanelId == \'redpandaConnect.graph\'');
+			'redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.graphOpenPaths || activeWebviewPanelId == \'redpandaConnect.graph\'');
 		const title = (id: string) => contributes.menus['editor/title'].filter((m: Item) => m.command === id);
 		assert.deepStrictEqual(title('redpandaConnect.showGraph'), [{
 			command: 'redpandaConnect.showGraph',
-			when: 'resourcePath in redpandaConnect.detectedPaths && resourcePath not in redpandaConnect.graphOpenPaths',
+			when: 'resourcePath in redpandaConnect.detectedPaths && resourceScheme != redpanda-cloud && resourcePath not in redpandaConnect.graphOpenPaths',
 			group: 'navigation',
 		}]);
 		assert.deepStrictEqual(title('redpandaConnect.hideGraph'), [{
 			command: 'redpandaConnect.hideGraph',
-			when: 'resourcePath in redpandaConnect.detectedPaths && resourcePath in redpandaConnect.graphOpenPaths',
+			when: 'resourcePath in redpandaConnect.detectedPaths && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.graphOpenPaths',
 			group: 'navigation',
 		}]);
 		// No default keybinding.

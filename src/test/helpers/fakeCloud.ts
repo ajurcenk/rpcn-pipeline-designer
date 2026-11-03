@@ -4,8 +4,11 @@
 //   - the Control Plane `GET /v1/clusters` (04, paged by `pageSize`) and `GET /v1/clusters/{id}` (07),
 //   - each cluster's Data Plane at `/dp/{cluster id}` (its own address as `dataplane_api.url`):
 //     `GET|POST /v1/redpanda-connect/pipelines` (09; a create the lint rejects: 400 with `LintHint`s, 26;
-//     else 200 in `STATE_STARTING`, 29) and `GET …/pipelines/{id}`, which walks the pipeline's state
-//     sequence one step per call (30, 31: `STATE_ERROR` with or without a `status`).
+//     else 200 in `STATE_STARTING`, 29), `GET …/pipelines/{id}`, which walks the pipeline's state
+//     sequence one step per call (30, 31: `STATE_ERROR` with or without a `status`), and
+//     `PUT …/pipelines/{id}` (ticket 5.3), which replaces it (45–48: a missing description or tags is
+//     cleared, a missing config 400; the new config linted as on create) and restarts a running or
+//     starting one (55–57: `RUNNING` right after the `PUT`, then `STARTING`, then `RUNNING`).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
 
@@ -81,6 +84,8 @@ export class FakeCloud {
 	clustersError: { readonly status: number; readonly body: unknown } | undefined;
 	/** The state sequence a created pipeline walks through (its GETs, one step each). */
 	createSequence: FakeState[] = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+	/** The states a running or starting pipeline walks through after an update (its GETs); the `PUT` answers the first. */
+	restartSequence: FakeState[] = [{ state: 'STATE_RUNNING' }, { state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 	private server: http.Server | undefined;
 	private nextPipeline = 1;
 
@@ -221,6 +226,28 @@ export class FakeCloud {
 		return rest;
 	}
 
+	/** The create's (and update's) lint: a 400 with `LintHint`s for a config holding the marker (26). */
+	private lint(config: string): [number, unknown] | undefined {
+		const lines = config.split('\n');
+		const at = lines.findIndex((l) => l.includes(FAKE_LINT_MARKER));
+		if (at < 0) {
+			return undefined;
+		}
+		return [400, {
+			code: 'INVALID_ARGUMENT',
+			message: 'invalid pipeline configuration',
+			details: [{
+				'@type': 'redpanda.api.common.v1.ExternalError',
+				message: 'invalid pipeline configuration',
+				details: [
+					{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION', domain: 'redpanda.com/dataplane', metadata: {} },
+					{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: at + 1, column: 3, hint: `unable to infer component type: ${FAKE_LINT_MARKER}`, lint_type: '' },
+					{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: lines.length, column: 1, hint: 'second fake hint', lint_type: '' },
+				],
+			}],
+		}];
+	}
+
 	private pipelines(c: FakeCluster, req: FakeRequest, id: string | undefined): [number, unknown] {
 		if (req.method === 'GET' && !id) {
 			if (c.pipelinesError) {
@@ -239,22 +266,9 @@ export class FakeCloud {
 				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error (line 1:1): unexpected token [', details: [] }];
 			}
 			const config = typeof body.config_yaml === 'string' ? body.config_yaml : '';
-			const lines = config.split('\n');
-			const at = lines.findIndex((l) => l.includes(FAKE_LINT_MARKER));
-			if (at >= 0) {
-				return [400, {
-					code: 'INVALID_ARGUMENT',
-					message: 'invalid pipeline configuration',
-					details: [{
-						'@type': 'redpanda.api.common.v1.ExternalError',
-						message: 'invalid pipeline configuration',
-						details: [
-							{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION', domain: 'redpanda.com/dataplane', metadata: {} },
-							{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: at + 1, column: 3, hint: `unable to infer component type: ${FAKE_LINT_MARKER}`, lint_type: '' },
-							{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: lines.length, column: 1, hint: 'second fake hint', lint_type: '' },
-						],
-					}],
-				}];
+			const rejected = this.lint(config);
+			if (rejected) {
+				return rejected;
 			}
 			const resources = body.resources as { cpu_shares?: string; memory_shares?: string } | undefined;
 			const pipeline: FakePipeline = {
@@ -283,6 +297,43 @@ export class FakeCloud {
 				} else {
 					delete p.status;
 				}
+			}
+			return [200, { pipeline: this.shown(p) }];
+		}
+		if (req.method === 'PUT' && id) {
+			const p = c.pipelines.find((x) => x.id === id);
+			if (!p) {
+				return [404, { code: 'NOT_FOUND', message: 'pipeline not found', details: [] }];
+			}
+			let body: Record<string, unknown>;
+			try {
+				body = JSON.parse(req.body) as Record<string, unknown>;
+			} catch {
+				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error', details: [] }];
+			}
+			if (typeof body.config_yaml !== 'string' || !body.config_yaml) {
+				return [400, { code: 'INVALID_ARGUMENT', message: 'a pipeline needs a configuration before it can run', details: [] }];
+			}
+			if (body.tags !== undefined && (body.tags === null || typeof body.tags !== 'object' || Array.isArray(body.tags))) {
+				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error (line 1:1): unexpected token [', details: [] }];
+			}
+			const rejected = this.lint(body.config_yaml);
+			if (rejected) {
+				return rejected;
+			}
+			const resources = body.resources as { cpu_shares?: string; memory_shares?: string } | undefined;
+			// Replace: what the body leaves out is cleared (47, 48).
+			p.display_name = typeof body.display_name === 'string' ? body.display_name : '';
+			p.description = typeof body.description === 'string' ? body.description : '';
+			p.config_yaml = body.config_yaml;
+			p.resources = { cpu_shares: resources?.cpu_shares ?? '', memory_shares: resources?.memory_shares ?? '' };
+			p.tags = (body.tags as Record<string, string> | undefined) ?? {};
+			if (p.state === 'STATE_RUNNING' || p.state === 'STATE_STARTING') {
+				const [first, ...rest] = this.restartSequence;
+				p.state = first?.state ?? p.state;
+				p.sequence = rest.length > 0 ? rest : [{ state: p.state }];
+			} else {
+				p.sequence = [{ state: p.state, ...(p.status ? { error: p.status.error } : {}) }];
 			}
 			return [200, { pipeline: this.shown(p) }];
 		}

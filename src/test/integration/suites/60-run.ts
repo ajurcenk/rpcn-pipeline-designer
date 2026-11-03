@@ -565,13 +565,13 @@ suite('Run and Stop (integration)', function () {
 			command: 'redpandaConnect.runUntitled', title: 'Save the file to run it.', category: 'Redpanda Connect', icon: '$(play)', enablement: 'false',
 		});
 		const palette = Object.fromEntries(contributes.menus.commandPalette.map((m: { command: string; when: string }) => [m.command, m.when]));
-		assert.strictEqual(palette['redpandaConnect.run'], 'redpandaConnect.activeEditorDetected');
+		assert.strictEqual(palette['redpandaConnect.run'], 'redpandaConnect.activeEditorDetected && resourceScheme != redpanda-cloud');
 		assert.strictEqual(palette['redpandaConnect.stop'], 'redpandaConnect.activeEditorRunning');
 		assert.strictEqual(palette['redpandaConnect.runUntitled'], 'false');
 		// The run entries; the graph's Show / Hide toggle (3.10) is checked by the graph suite.
 		const runEntries = contributes.menus['editor/title'].filter((m: { command: string }) => m.command.startsWith('redpandaConnect.run'));
 		assert.deepStrictEqual(runEntries, [
-			{ command: 'redpandaConnect.run', when: 'resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths', group: 'navigation' },
+			{ command: 'redpandaConnect.run', when: 'resourceScheme != untitled && resourceScheme != redpanda-cloud && resourcePath in redpandaConnect.detectedPaths', group: 'navigation' },
 			{ command: 'redpandaConnect.runUntitled', when: 'resourceScheme == untitled && resourcePath in redpandaConnect.detectedPaths', group: 'navigation' },
 		]);
 	});

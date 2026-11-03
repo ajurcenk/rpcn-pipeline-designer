@@ -366,7 +366,7 @@ export class GraphPanels implements vscode.Disposable {
 
 	private shouldAutoOpen(doc: vscode.TextDocument): boolean {
 		const key = doc.uri.toString();
-		if (doc.uri.scheme === 'untitled' || this.hidden.has(key) || this.panels.has(key)) {
+		if (doc.uri.scheme === 'untitled' || doc.uri.scheme === 'redpanda-cloud' || this.hidden.has(key) || this.panels.has(key)) {
 			return false;
 		}
 		try {

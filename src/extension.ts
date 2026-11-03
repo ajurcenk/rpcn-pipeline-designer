@@ -92,9 +92,9 @@ export interface ExtensionApi {
 	/**
 	 * The Cloud view and deploy (ticket 5.2): its items, its prompts to replace, the three hosts' base
 	 * URLs (production otherwise; unreachable in test mode until a suite sets its fake's), the deploy's
-	 * poll interval and timeout, and the token cache. Only in `ExtensionMode.Test`.
+	 * poll interval, timeout and restart grace, and the token cache. Only in `ExtensionMode.Test`.
 	 */
-	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
+	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
