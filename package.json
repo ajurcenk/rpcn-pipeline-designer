@@ -216,6 +216,30 @@
         "title": "Open the README's license section",
         "category": "Redpanda Connect",
         "icon": "$(book)"
+      },
+      {
+        "command": "redpandaConnect.cloud.connect",
+        "title": "Connect service account",
+        "category": "Redpanda Connect",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "redpandaConnect.cloud.disconnect",
+        "title": "Disconnect service account",
+        "category": "Redpanda Connect",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "redpandaConnect.cloud.deploy",
+        "title": "Deploy to Redpanda Cloud",
+        "category": "Redpanda Connect",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "redpandaConnect.cloud.refresh",
+        "title": "Refresh",
+        "category": "Redpanda Connect",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -300,6 +324,21 @@
         {
           "command": "redpandaConnect.environment.openLicenseDocs",
           "when": "false"
+        },
+        {
+          "command": "redpandaConnect.cloud.connect"
+        },
+        {
+          "command": "redpandaConnect.cloud.disconnect",
+          "when": "redpandaConnect.cloud.connected"
+        },
+        {
+          "command": "redpandaConnect.cloud.deploy",
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme != untitled"
+        },
+        {
+          "command": "redpandaConnect.cloud.refresh",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -322,6 +361,11 @@
           "command": "redpandaConnect.hideGraph",
           "when": "resourcePath in redpandaConnect.detectedPaths && resourcePath in redpandaConnect.graphOpenPaths",
           "group": "navigation"
+        },
+        {
+          "command": "redpandaConnect.cloud.deploy",
+          "when": "resourceScheme != untitled && resourcePath in redpandaConnect.detectedPaths",
+          "group": "navigation"
         }
       ],
       "view/title": [
@@ -339,6 +383,26 @@
           "command": "redpandaConnect.environment.refresh",
           "when": "view == redpandaConnect.environment",
           "group": "navigation@3"
+        },
+        {
+          "command": "redpandaConnect.cloud.connect",
+          "when": "view == redpandaConnect.cloud && !redpandaConnect.cloud.connected",
+          "group": "navigation@1"
+        },
+        {
+          "command": "redpandaConnect.cloud.refresh",
+          "when": "view == redpandaConnect.cloud && redpandaConnect.cloud.connected",
+          "group": "navigation@2"
+        },
+        {
+          "command": "redpandaConnect.cloud.connect",
+          "when": "view == redpandaConnect.cloud && redpandaConnect.cloud.connected",
+          "group": "1_account@1"
+        },
+        {
+          "command": "redpandaConnect.cloud.disconnect",
+          "when": "view == redpandaConnect.cloud && redpandaConnect.cloud.connected",
+          "group": "1_account@2"
         }
       ],
       "view/item/context": [
@@ -431,6 +495,26 @@
           "command": "redpandaConnect.environment.openEnvFile",
           "when": "view == redpandaConnect.environment && viewItem =~ /\\benvFileSet\\b/",
           "group": "1_actions@5"
+        },
+        {
+          "command": "redpandaConnect.cloud.disconnect",
+          "when": "view == redpandaConnect.cloud && viewItem == cloudAccount",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.cloud.refresh",
+          "when": "view == redpandaConnect.cloud && viewItem == cloudCluster",
+          "group": "inline"
+        },
+        {
+          "command": "redpandaConnect.cloud.disconnect",
+          "when": "view == redpandaConnect.cloud && viewItem == cloudAccount",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "redpandaConnect.cloud.refresh",
+          "when": "view == redpandaConnect.cloud && viewItem == cloudCluster",
+          "group": "1_actions@1"
         }
       ]
     },
@@ -467,9 +551,22 @@
           "name": "Environment",
           "contextualTitle": "Redpanda Connect",
           "icon": "media/redpanda-connect.svg"
+        },
+        {
+          "id": "redpandaConnect.cloud",
+          "name": "Cloud",
+          "contextualTitle": "Redpanda Connect",
+          "icon": "media/redpanda-connect.svg"
         }
       ]
-    }
+    },
+    "viewsWelcome": [
+      {
+        "view": "redpandaConnect.cloud",
+        "contents": "No Redpanda Cloud service account is connected. Connect one to see your BYOC and Dedicated clusters and their pipelines, and to deploy a config.\n[Connect service account](command:redpandaConnect.cloud.connect)\nThe client ID and secret are kept in VS Code's secret storage on this machine.",
+        "when": "!redpandaConnect.cloud.connected"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

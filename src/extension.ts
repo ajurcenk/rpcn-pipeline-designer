@@ -25,6 +25,7 @@ import { SecretVariables } from './adapters/vscode/secrets';
 import { EnvHoverProvider } from './adapters/vscode/envHover';
 import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
+import { CloudView, PRODUCTION_ENDPOINTS, UNREACHABLE_ENDPOINTS } from './adapters/vscode/cloudView';
 import type { JsonObject } from './core/schema';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -88,6 +89,13 @@ export interface ExtensionApi {
 	 */
 	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'modelFor' | 'configUri' | 'visible' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'
 		| 'license' | 'licenseState' | 'licenseDefaultPath' | 'openExternal'>;
+	/**
+	 * The Cloud view and deploy (ticket 5.2): its items, its prompts to replace, the three hosts' base
+	 * URLs (production otherwise; unreachable in test mode until a suite sets its fake's), the deploy's
+	 * poll interval and timeout, and the token cache. Only in `ExtensionMode.Test`.
+	 */
+	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
+		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -284,6 +292,16 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		modelFor: (uri) => environment.modelFor(uri),
 	})));
 
+	// The Cloud view and Deploy (ticket 5.2, AD-23): the service account in the secret storage, the token in memory.
+	const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+	const cloud = new CloudView({
+		store: context.secrets,
+		log,
+		endpoints: testMode ? UNREACHABLE_ENDPOINTS : PRODUCTION_ENDPOINTS,
+		isDetected: (uri) => detection.isDetected(uri),
+	});
+	context.subscriptions.push(cloud, ...cloud.register());
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
@@ -297,7 +315,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(context.extensionMode === vscode.ExtensionMode.Test ? { secrets, environment } : {}),
+		...(testMode ? { secrets, environment, cloud } : {}),
 		outputLines: () => [...lines],
 	};
 }
