@@ -107,3 +107,5 @@ context:
 
 **Manual checks:**
 - Dev host on 1.143.1 against the real organization: Connect with the spike's service account; the view lists `rpc-vilnius` (Dedicated, Connect 4.115.0); Deploy a config with no variables (`generate` → `drop`); it reaches Running and shows in the view; then delete it in the Cloud UI (delete is story 4).
+
+**Manual check result (user, 2026-11-02):** passed on the 1.143.1 dev host against the real organization: "tested, no issues". The first two Connect attempts timed out at the TCP connect to `auth.prd.cloud.redpanda.com` (10 s); the credentials were good (a terminal token request answered 200), and an extension-host probe showed the delay was transient on this network (6.4 s, then 0.2–0.3 s). A retry once on a connect timeout, with a clearer message, is offered as a follow-up.
