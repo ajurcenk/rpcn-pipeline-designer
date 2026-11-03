@@ -1,0 +1,47 @@
+{
+  "step": "pipeline-main-update-masked",
+  "request": {
+    "method": "PUT",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-main>?update_mask=description",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "description": "masked update",
+      "display_name": "vscode-spike-<run>-main-renamed-by-mask"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "586",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:11:01 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "pipeline": {
+        "id": "<pipeline-id-main>",
+        "display_name": "vscode-spike-<run>-main",
+        "description": "masked update",
+        "config_yaml": "input:\n  generate:\n    interval: \"${secrets.VSCODE_SPIKE_<RUN>_N}\"\n    mapping: |\n      root.n = \"${secrets.VSCODE_SPIKE_<RUN>_N}\"\n      root.at = now()\noutput:\n  drop: {}\n",
+        "resources": {
+          "memory_shares": "400M",
+          "cpu_shares": "100m"
+        },
+        "state": "STATE_STOPPED",
+        "url": "",
+        "tags": {},
+        "created_by": "<email>",
+        "create_time": "2026-11-02T21:10:49Z",
+        "update_time": "2026-11-02T21:11:01.219817979Z"
+      }
+    }
+  },
+  "ms": 150
+}

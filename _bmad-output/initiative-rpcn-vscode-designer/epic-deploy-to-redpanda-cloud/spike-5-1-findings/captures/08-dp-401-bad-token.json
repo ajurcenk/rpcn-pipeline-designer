@@ -1,0 +1,36 @@
+{
+  "step": "dp-401-bad-token",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "207",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:32 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin",
+      "www-authenticate": "bearer token is invalid"
+    },
+    "body": {
+      "code": "UNAUTHENTICATED",
+      "message": "bearer token is invalid",
+      "details": [
+        {
+          "@type": "google.rpc.ErrorInfo",
+          "reason": "REASON_AUTHENTICATION_TOKEN_INVALID",
+          "domain": "redpanda.com/dataplane",
+          "metadata": {}
+        }
+      ]
+    }
+  },
+  "ms": 155
+}

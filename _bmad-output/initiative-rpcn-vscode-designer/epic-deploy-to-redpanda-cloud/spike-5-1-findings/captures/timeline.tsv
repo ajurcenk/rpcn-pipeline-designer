@@ -1,0 +1,50 @@
+label	ms	state	error
+pipeline-wait-minimum	56	STATE_STARTING	
+pipeline-wait-minimum	5226	STATE_STARTING	
+pipeline-wait-minimum	20758	HTTP 0	
+pipeline-wait-minimum	25962	STATE_STARTING	
+pipeline-wait-minimum	31122	STATE_STARTING	
+pipeline-wait-minimum	36284	STATE_STARTING	
+pipeline-wait-minimum	41436	STATE_STARTING	
+pipeline-wait-minimum	46588	STATE_STARTING	
+pipeline-wait-minimum	51742	STATE_STARTING	
+pipeline-wait-minimum	56899	STATE_STARTING	
+pipeline-wait-minimum	62054	STATE_ERROR	
+pipeline-gone-minimum	58	HTTP 404	
+pipeline-wait-larger	67	STATE_STARTING	
+pipeline-wait-larger	5212	STATE_STARTING	
+pipeline-wait-larger	10360	STATE_STARTING	
+pipeline-wait-larger	15512	STATE_STARTING	
+pipeline-wait-larger	20684	STATE_STARTING	
+pipeline-wait-larger	25829	STATE_STARTING	
+pipeline-wait-larger	30980	STATE_STARTING	
+pipeline-wait-larger	36129	STATE_STARTING	
+pipeline-wait-larger	41278	STATE_STARTING	
+pipeline-wait-larger	46424	STATE_STARTING	
+pipeline-wait-larger	51570	STATE_STARTING	
+pipeline-wait-larger	56726	STATE_STARTING	
+pipeline-wait-larger	61875	STATE_ERROR	
+pipeline-gone-larger	47	HTTP 404	
+pipeline-wait-main-running	59	STATE_STARTING	
+pipeline-wait-main-running	5212	STATE_STARTING	
+pipeline-wait-main-running	10373	STATE_RUNNING	
+pipeline-wait-main-stopped	58	STATE_STOPPED	
+pipeline-wait-main-restarted	80	STATE_STARTING	
+pipeline-wait-main-restarted	5237	STATE_STARTING	
+pipeline-wait-main-restarted	10401	STATE_RUNNING	
+pipeline-watch-main-after-running-update	57	STATE_RUNNING	
+pipeline-watch-main-after-running-update	5214	STATE_STARTING	
+pipeline-watch-main-after-running-update	10360	STATE_STARTING	
+pipeline-watch-main-after-running-update	15516	STATE_STARTING	
+pipeline-watch-main-after-running-update	20667	STATE_RUNNING	
+pipeline-watch-main-after-running-update	25814	STATE_RUNNING	
+pipeline-watch-main-after-running-update	30976	STATE_RUNNING	
+pipeline-gone-main	48	HTTP 404	
+pipeline-wait-quoted	84	STATE_STARTING	
+pipeline-wait-quoted	5240	STATE_STARTING	
+pipeline-wait-quoted	10390	STATE_STARTING	
+pipeline-wait-quoted	15540	STATE_STARTING	
+pipeline-wait-quoted	20690	STATE_STARTING	
+pipeline-wait-quoted	25848	STATE_STARTING	
+pipeline-wait-quoted	30998	STATE_RUNNING	
+pipeline-gone-quoted	48	HTTP 404	

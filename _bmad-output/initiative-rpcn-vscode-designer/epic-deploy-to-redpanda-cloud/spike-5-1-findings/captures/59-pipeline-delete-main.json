@@ -1,0 +1,25 @@
+{
+  "step": "pipeline-delete-main",
+  "request": {
+    "method": "DELETE",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-main>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "2",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:11:43 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {}
+  },
+  "ms": 54
+}

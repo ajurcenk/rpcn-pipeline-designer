@@ -1,0 +1,45 @@
+{
+  "step": "pipeline-main-update-partial",
+  "request": {
+    "method": "PUT",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-main>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "description": "partial update: description only"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "391",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:11:00 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "INVALID_ARGUMENT",
+      "message": "a pipeline needs a configuration before it can run",
+      "details": [
+        {
+          "@type": "redpanda.api.common.v1.ExternalError",
+          "message": "a pipeline needs a configuration before it can run",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION",
+              "domain": "redpanda.com/dataplane",
+              "metadata": {}
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "ms": 56
+}

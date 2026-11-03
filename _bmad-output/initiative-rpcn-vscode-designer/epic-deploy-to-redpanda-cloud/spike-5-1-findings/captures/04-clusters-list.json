@@ -1,0 +1,266 @@
+{
+  "step": "clusters-list",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters?page_size=100",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-security-policy": "frame-ancestors none;",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "permissions-policy": "camera=(), microphone=(), usb=()",
+      "ratelimit": "limit=200, remaining=199, reset=29",
+      "ratelimit-policy": "200;w=60;policy=\"account\", 2000;w=60;policy=\"organization\"",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "deny",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": {
+      "clusters": [
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "name": "string",
+            "resource_group_id": "<redacted-id>",
+            "created_at": "string",
+            "updated_at": "string",
+            "state": "string",
+            "state_description": {
+              "code": "number",
+              "message": "string",
+              "details": []
+            },
+            "current_redpanda_version": "string",
+            "throughput_tier": "string",
+            "type": "string",
+            "connection_type": "string",
+            "network_id": "<redacted-id>",
+            "cloud_provider": "string",
+            "region": "string",
+            "zones": [
+              "length 1",
+              "string"
+            ],
+            "kafka_api": {
+              "seed_brokers": [
+                "length 1",
+                "string"
+              ],
+              "mtls": {
+                "enabled": "boolean",
+                "ca_certificates_pem": [],
+                "principal_mapping_rules": []
+              },
+              "sasl": {
+                "enabled": "boolean"
+              },
+              "all_seed_brokers": {
+                "sasl": "string",
+                "mtls": "string",
+                "private_link_sasl": "string",
+                "private_link_mtls": "string"
+              },
+              "connections": [
+                "length 1",
+                {
+                  "config": {
+                    "type": "string",
+                    "auth": {
+                      "mode": "string"
+                    }
+                  },
+                  "endpoint": "string"
+                }
+              ]
+            },
+            "http_proxy": {
+              "mtls": {
+                "enabled": "boolean",
+                "ca_certificates_pem": [],
+                "principal_mapping_rules": []
+              },
+              "url": "string",
+              "sasl": {
+                "enabled": "boolean"
+              },
+              "all_urls": {
+                "sasl": "string",
+                "mtls": "string",
+                "private_link_sasl": "string",
+                "private_link_mtls": "string"
+              },
+              "connections": [
+                "length 1",
+                {
+                  "config": {
+                    "type": "string",
+                    "auth": {
+                      "mode": "string"
+                    }
+                  },
+                  "endpoint": "string"
+                }
+              ]
+            },
+            "schema_registry": {
+              "mtls": {
+                "enabled": "boolean",
+                "ca_certificates_pem": [],
+                "principal_mapping_rules": []
+              },
+              "url": "string",
+              "sasl": {
+                "enabled": "boolean"
+              },
+              "all_urls": {
+                "sasl": "string",
+                "mtls": "string",
+                "private_link_sasl": "string",
+                "private_link_mtls": "string"
+              },
+              "connections": [
+                "length 1",
+                {
+                  "config": {
+                    "type": "string",
+                    "auth": {
+                      "mode": "string"
+                    }
+                  },
+                  "endpoint": "string"
+                }
+              ]
+            },
+            "cloud_provider_tags": "1 keys",
+            "read_replica_cluster_ids": [],
+            "maintenance_window_config": {
+              "anytime": {}
+            },
+            "kafka_connect": {
+              "enabled": "boolean"
+            },
+            "desired_redpanda_version": "string",
+            "cluster_configuration": {
+              "custom_properties": {
+                "data_transforms_enabled": "string",
+                "enable_consumer_group_metrics": "string"
+              },
+              "computed_properties": {
+                "aggregate_metrics": "boolean",
+                "audit_enabled": "boolean",
+                "cloud_storage_cache_size_percent": "string",
+                "cloud_storage_enable_remote_read": "boolean",
+                "cloud_storage_enable_remote_write": "boolean",
+                "cloud_storage_manifest_cache_size": "string",
+                "cloud_storage_segment_max_upload_interval_sec": "string",
+                "cloud_storage_spillover_manifest_size": "string",
+                "cloud_storage_url_style": "string",
+                "compacted_log_segment_size": "string",
+                "core_balancing_continuous": "boolean",
+                "data_transforms_enabled": "string",
+                "default_redpanda_storage_mode": "string",
+                "default_redpanda_storage_mode_tiered_impl": "string",
+                "default_topic_replications": "string",
+                "disk_reservation_percent": "string",
+                "enable_consumer_group_metrics": "string",
+                "enable_controller_log_rate_limiting": "boolean",
+                "enable_shadow_linking": "boolean",
+                "enable_usage": "boolean",
+                "fetch_reads_debounce_timeout": "string",
+                "group_topic_partitions": "string",
+                "http_authentication": [
+                  "length 2",
+                  "string"
+                ],
+                "initial_retention_local_target_ms_default": "string",
+                "kafka_batch_max_bytes": "string",
+                "kafka_connection_rate_limit": "string",
+                "kafka_connections_max": "string",
+                "kafka_enable_partition_reassignment": "boolean",
+                "kafka_max_message_size_upper_limit_bytes": "string",
+                "kafka_nodelete_topics": [
+                  "length 2",
+                  "string"
+                ],
+                "kafka_rpc_server_tcp_recv_buf": "string",
+                "kafka_rpc_server_tcp_send_buf": "string",
+                "kafka_throughput_limit_node_in_bps": "string",
+                "kafka_throughput_limit_node_out_bps": "string",
+                "kafka_topics_max": "string",
+                "log_segment_ms_min": "string",
+                "log_segment_size": "string",
+                "log_segment_size_max": "string",
+                "log_segment_size_min": "string",
+                "max_compacted_log_segment_size": "string",
+                "max_concurrent_producer_ids": "<redacted-id>",
+                "minimum_topic_replications": "string",
+                "oidc_clock_skew_tolerance": "number",
+                "oidc_discovery_url": "string",
+                "oidc_group_claim_path": "string",
+                "oidc_principal_mapping": "string",
+                "oidc_token_audience": "string",
+                "partition_autobalancing_mode": "string",
+                "raft_learner_recovery_rate": "string",
+                "retention_local_strict": "boolean",
+                "retention_local_strict_override": "boolean",
+                "retention_local_target_capacity_percent": "string",
+                "retention_local_target_ms_default": "string",
+                "rpc_client_connections_per_peer": "string",
+                "rpc_server_listen_backlog": "string",
+                "rps_limit_acls_and_users_operations": "string",
+                "rps_limit_configuration_operations": "string",
+                "rps_limit_move_operations": "string",
+                "rps_limit_node_management_operations": "string",
+                "rps_limit_topic_operations": "string",
+                "sasl_mechanisms_overrides": [
+                  "length 1",
+                  {
+                    "listener": "string",
+                    "sasl_mechanisms": [
+                      "length 2",
+                      "string"
+                    ]
+                  }
+                ],
+                "space_management_enable": "boolean",
+                "topic_label_aggregation_limit": "string",
+                "topic_memory_per_partition": "string",
+                "topic_partitions_per_shard": "string",
+                "transaction_coordinator_partitions": "string",
+                "use_fetch_scheduler_group": "boolean"
+              }
+            },
+            "redpanda_node_count": "number",
+            "nat_gateways": [],
+            "api_gateway_access": "string",
+            "rpsql": {
+              "enabled": "boolean",
+              "replicas": "number",
+              "url": "string",
+              "zones": [],
+              "version": "string"
+            },
+            "redpanda_connect": {
+              "version": "string",
+              "allowed_destination_cidr_ports": []
+            },
+            "redpanda_cloud_provider_tags": "1 keys"
+          }
+        }
+      ],
+      "next_page_token": ""
+    }
+  },
+  "ms": 150
+}

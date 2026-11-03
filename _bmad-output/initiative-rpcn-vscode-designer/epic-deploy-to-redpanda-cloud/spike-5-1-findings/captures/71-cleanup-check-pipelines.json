@@ -1,0 +1,165 @@
+{
+  "step": "cleanup-check-pipelines",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines?page_size=100",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:12:24 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Origin"
+    },
+    "body": {
+      "pipelines": [
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "display_name": "string",
+            "description": "string",
+            "config_yaml": "<redacted: a pipeline the probe did not create>",
+            "resources": {
+              "memory_shares": "string",
+              "cpu_shares": "string"
+            },
+            "state": "string",
+            "url": "string",
+            "tags": "1 keys",
+            "created_by": "string",
+            "create_time": "string"
+          }
+        }
+      ],
+      "next_page_token": ""
+    }
+  },
+  "ms": 42
+}

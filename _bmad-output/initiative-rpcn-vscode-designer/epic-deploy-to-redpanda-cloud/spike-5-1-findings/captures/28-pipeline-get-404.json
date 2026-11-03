@@ -1,0 +1,28 @@
+{
+  "step": "pipeline-get-404",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/probe-no-such-pipeline",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "115",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:45 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "NOT_FOUND",
+      "message": "pipelines.connect.redpanda.com \"probe-no-such-pipeline\" not found",
+      "details": []
+    }
+  },
+  "ms": 46
+}

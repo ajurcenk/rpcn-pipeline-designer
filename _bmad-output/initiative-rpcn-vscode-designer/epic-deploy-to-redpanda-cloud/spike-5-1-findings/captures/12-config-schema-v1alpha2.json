@@ -1,0 +1,34 @@
+{
+  "step": "config-schema-v1alpha2",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1alpha2/redpanda-connect/config-schema",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:34 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Origin"
+    },
+    "body": {
+      "<summary>": "body of 779564 bytes kept in .cache/cloud-probe/",
+      "top_level_keys": [
+        "config_schema"
+      ],
+      "version_fields": [],
+      "shape": {
+        "config_schema": "string"
+      }
+    }
+  },
+  "ms": 403
+}

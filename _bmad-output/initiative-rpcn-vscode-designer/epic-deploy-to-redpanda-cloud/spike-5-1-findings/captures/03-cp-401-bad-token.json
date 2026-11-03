@@ -1,0 +1,34 @@
+{
+  "step": "cp-401-bad-token",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 500,
+    "headers": {
+      "connection": "keep-alive",
+      "content-security-policy": "frame-ancestors none;",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "permissions-policy": "camera=(), microphone=(), usb=()",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "deny",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": {
+      "code": "UNKNOWN",
+      "message": "failed to parse token: square/go-jose: compact JWS format must have three parts",
+      "details": []
+    }
+  },
+  "ms": 138
+}

@@ -1,0 +1,172 @@
+{
+  "step": "serverless-clusters-list",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/serverless/clusters?page_size=100",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "3811",
+      "content-security-policy": "frame-ancestors none;",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "permissions-policy": "camera=(), microphone=(), usb=()",
+      "ratelimit": "limit=200, remaining=198, reset=29",
+      "ratelimit-policy": "200;w=60;policy=\"account\", 2000;w=60;policy=\"organization\"",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "deny",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": {
+      "serverless_clusters": [
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "name": "string",
+            "resource_group_id": "<redacted-id>",
+            "created_at": "string",
+            "updated_at": "string",
+            "state": "string",
+            "serverless_region": "string",
+            "kafka_api": {
+              "seed_brokers": [
+                "length 1",
+                "string"
+              ],
+              "private_seed_brokers": [
+                "length 1",
+                "string"
+              ]
+            },
+            "schema_registry": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "dataplane_api": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "console_url": "string",
+            "console_private_url": "string",
+            "networking_config": {
+              "private": "string",
+              "public": "string"
+            },
+            "prometheus": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "ai_gateway": {
+              "v2_url": "string"
+            },
+            "quota": {
+              "topics": "string",
+              "partitions": "string",
+              "acls": "string",
+              "users": "string",
+              "consumer_groups": "string",
+              "producer_ids": "<redacted-id>",
+              "passwords_per_user": "string",
+              "bytes_to_client": {
+                "rate": "number",
+                "period": "string",
+                "burst": "number"
+              },
+              "bytes_from_client": {
+                "rate": "number",
+                "period": "string",
+                "burst": "number"
+              },
+              "connect_pipelines": "string",
+              "client_connections": "string",
+              "mcp_servers": "string",
+              "ai_agents": "string",
+              "sr_subjects": "string",
+              "sr_schemas": "string"
+            },
+            "tags": "0 keys"
+          }
+        },
+        {
+          "<not the probe's; shape only>": {
+            "id": "string",
+            "name": "string",
+            "resource_group_id": "<redacted-id>",
+            "created_at": "string",
+            "updated_at": "string",
+            "state": "string",
+            "serverless_region": "string",
+            "kafka_api": {
+              "seed_brokers": [
+                "length 1",
+                "string"
+              ],
+              "private_seed_brokers": [
+                "length 1",
+                "string"
+              ]
+            },
+            "schema_registry": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "dataplane_api": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "console_url": "string",
+            "console_private_url": "string",
+            "networking_config": {
+              "private": "string",
+              "public": "string"
+            },
+            "prometheus": {
+              "url": "string",
+              "private_url": "string"
+            },
+            "ai_gateway": {
+              "v2_url": "string"
+            },
+            "quota": {
+              "topics": "string",
+              "partitions": "string",
+              "acls": "string",
+              "users": "string",
+              "consumer_groups": "string",
+              "producer_ids": "<redacted-id>",
+              "passwords_per_user": "string",
+              "bytes_to_client": {
+                "rate": "number",
+                "period": "string",
+                "burst": "number"
+              },
+              "bytes_from_client": {
+                "rate": "number",
+                "period": "string",
+                "burst": "number"
+              },
+              "connect_pipelines": "string",
+              "client_connections": "string",
+              "mcp_servers": "string",
+              "ai_agents": "string",
+              "sr_subjects": "string",
+              "sr_schemas": "string"
+            },
+            "tags": "0 keys"
+          }
+        }
+      ],
+      "next_page_token": ""
+    }
+  },
+  "ms": 82
+}

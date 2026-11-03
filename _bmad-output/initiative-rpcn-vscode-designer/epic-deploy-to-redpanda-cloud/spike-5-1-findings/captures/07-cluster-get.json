@@ -1,0 +1,74 @@
+{
+  "step": "cluster-get",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters/<cluster-id>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-security-policy": "frame-ancestors none;",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "permissions-policy": "camera=(), microphone=(), usb=()",
+      "ratelimit": "limit=200, remaining=197, reset=29",
+      "ratelimit-policy": "200;w=60;policy=\"account\", 2000;w=60;policy=\"organization\"",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "deny",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": {
+      "cluster": {
+        "name": "rpc-vilnius",
+        "type": "TYPE_DEDICATED",
+        "state": "STATE_READY",
+        "cloud_provider": "CLOUD_PROVIDER_AWS",
+        "region": "us-east-2",
+        "dataplane_api": {
+          "url": "https://<dataplane-host>"
+        },
+        "redpanda_connect": {
+          "version": "4.115.0"
+        },
+        "<other fields>": [
+          "api_gateway_access",
+          "cloud_provider_tags",
+          "cluster_configuration",
+          "connection_type",
+          "created_at",
+          "current_redpanda_version",
+          "desired_redpanda_version",
+          "http_proxy",
+          "id",
+          "kafka_api",
+          "kafka_connect",
+          "maintenance_window_config",
+          "nat_gateways",
+          "network_id",
+          "prometheus",
+          "read_replica_cluster_ids",
+          "redpanda_cloud_provider_tags",
+          "redpanda_console",
+          "redpanda_node_count",
+          "resource_group_id",
+          "rpsql",
+          "schema_registry",
+          "state_description",
+          "throughput_tier",
+          "updated_at",
+          "zones"
+        ]
+      }
+    }
+  },
+  "ms": 86
+}

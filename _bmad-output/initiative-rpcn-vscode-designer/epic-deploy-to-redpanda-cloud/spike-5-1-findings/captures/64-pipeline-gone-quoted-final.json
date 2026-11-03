@@ -1,0 +1,34 @@
+{
+  "step": "pipeline-gone-quoted-final",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-quoted>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "113",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:12:14 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "NOT_FOUND",
+      "message": "pipelines.connect.redpanda.com \"<pipeline-id-quoted>\" not found",
+      "details": []
+    }
+  },
+  "ms": 48,
+  "derived": {
+    "polls": 1,
+    "ms_waited": 48,
+    "timed_out": false,
+    "final_state": "HTTP 404"
+  }
+}

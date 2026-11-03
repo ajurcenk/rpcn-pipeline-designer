@@ -1,0 +1,44 @@
+{
+  "step": "validate-candidate-pipelines-colon-lint",
+  "request": {
+    "method": "POST",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines:lint",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "config_yaml": "input:\n  probe_no_such_input: {}\noutput:\n  drop: {}\n"
+    }
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "442",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:34 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "PERMISSION_DENIED",
+      "message": "you are not authorized to call this endpoint",
+      "details": [
+        {
+          "@type": "google.rpc.ErrorInfo",
+          "reason": "REASON_PERMISSION_DENIED",
+          "domain": "redpanda.com/dataplane",
+          "metadata": {
+            "login_type": "OIDC",
+            "principal": "<email>",
+            "session_subject": "<email>",
+            "sub": "<email>"
+          }
+        }
+      ]
+    }
+  },
+  "ms": 42
+}

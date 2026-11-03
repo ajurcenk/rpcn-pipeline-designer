@@ -1,0 +1,55 @@
+{
+  "step": "cluster-get-404",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters/probe-no-such-cluster",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "703",
+      "content-security-policy": "frame-ancestors none;",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "permissions-policy": "camera=(), microphone=(), usb=()",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "deny",
+      "x-xss-protection": "1; mode=block"
+    },
+    "body": {
+      "code": "INVALID_ARGUMENT",
+      "message": "rpc error: code = InvalidArgument desc = validation errors:\n - id: must be 20 characters\n - id: does not match regex pattern `^[a-v0-9]{20}`",
+      "details": [
+        {
+          "@type": "google.rpc.BadRequest",
+          "field_violations": [
+            {
+              "field": "id",
+              "description": "must be 20 characters",
+              "reason": ""
+            },
+            {
+              "field": "id",
+              "description": "does not match regex pattern `^[a-v0-9]{20}`",
+              "reason": ""
+            }
+          ]
+        },
+        {
+          "@type": "google.rpc.RequestInfo",
+          "request_id": "<redacted-id>",
+          "serving_data": "{\"path\":\"/v1/clusters/{id}\",\"procedure\":\"/redpanda.api.controlplane.v1.ClusterService/GetCluster\",\"trace_id\":\"8455e018a621c0c6065632952b8774fa\",\"span_id\":\"8d3461fc6a70519f\"}"
+        }
+      ]
+    }
+  },
+  "ms": 42
+}

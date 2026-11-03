@@ -1,0 +1,48 @@
+{
+  "step": "pipelines-list-with-main",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines?page_size=100&filter.name_contains=vscode-spike-<run>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "664",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:11:43 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "pipelines": [
+        {
+          "id": "<pipeline-id-main>",
+          "display_name": "vscode-spike-<run>-main",
+          "description": "update while running",
+          "config_yaml": "input:\n  generate:\n    interval: 7s\n    mapping: |\n      root.n = \"${secrets.VSCODE_SPIKE_<RUN>_N}\"\n      root.at = now()\noutput:\n  drop: {}\n",
+          "resources": {
+            "memory_shares": "400M",
+            "cpu_shares": "100m"
+          },
+          "state": "STATE_RUNNING",
+          "url": "",
+          "tags": {
+            "rpcn-vscode/config": "pipelines/demo.yaml",
+            "vscode-spike": "vscode-spike-<run>"
+          },
+          "created_by": "<email>",
+          "create_time": "2026-11-02T21:10:49Z",
+          "update_time": "2026-11-02T21:11:12.257448116Z"
+        }
+      ],
+      "next_page_token": ""
+    }
+  },
+  "ms": 116
+}

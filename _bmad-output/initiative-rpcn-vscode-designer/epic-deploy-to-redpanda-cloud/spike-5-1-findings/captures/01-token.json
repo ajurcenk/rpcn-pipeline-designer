@@ -1,0 +1,95 @@
+{
+  "step": "token",
+  "request": {
+    "method": "POST",
+    "url": "https://auth.prd.cloud.redpanda.com/oauth/token",
+    "headers": {
+      "accept": "application/json",
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    "body": {
+      "grant_type": "client_credentials",
+      "client_id": "<redacted>",
+      "client_secret": "<redacted>",
+      "audience": "cloudv2-production.redpanda.cloud"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "alt-svc": "h3=\":443\"; ma=86400",
+      "auth0-organization-quota-limit": "b=per_day;q=100;r=97;t=10289",
+      "cache-control": "no-store",
+      "cf-cache-status": "DYNAMIC",
+      "cf-ray": "a5461d6dcfb4b05e-ATL",
+      "connection": "keep-alive",
+      "content-encoding": "br",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:31 GMT",
+      "pragma": "no-cache",
+      "server": "cloudflare",
+      "set-cookie": "<redacted>",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "transfer-encoding": "chunked",
+      "vary": "Accept-Encoding,Origin",
+      "x-auth0-l": "123",
+      "x-auth0-requestid": "08765a43df604df817ce",
+      "x-content-type-options": "nosniff",
+      "x-ratelimit-limit": "300",
+      "x-ratelimit-remaining": "299",
+      "x-ratelimit-reset": "1793653713"
+    },
+    "body": {
+      "access_token": "<redacted>",
+      "scope": "manage:organization-info read:organization-info write:organization-info",
+      "expires_in": 86400,
+      "token_type": "Bearer"
+    }
+  },
+  "ms": 412,
+  "derived": {
+    "claim_keys": [
+      "https://cloud.redpanda.com/client_organization_id",
+      "https://cloud.redpanda.com/client_email",
+      "https://cloud.redpanda.com/client_name",
+      "https://cloud.redpanda.com/user_type",
+      "https://cloud.redpanda.com/organization_id",
+      "https://cloud.redpanda.com/account_id",
+      "account_info",
+      "iss",
+      "sub",
+      "aud",
+      "iat",
+      "exp",
+      "scope",
+      "org_id",
+      "gty",
+      "azp",
+      "permissions"
+    ],
+    "claims": {
+      "https://cloud.redpanda.com/client_organization_id": "<org-id>",
+      "https://cloud.redpanda.com/client_email": "<redacted>",
+      "https://cloud.redpanda.com/client_name": "<redacted>",
+      "https://cloud.redpanda.com/user_type": "<redacted>",
+      "https://cloud.redpanda.com/organization_id": "<org-id>",
+      "https://cloud.redpanda.com/account_id": "<redacted-id>",
+      "account_info": "<redacted>",
+      "iss": "https://auth.prd.cloud.redpanda.com/",
+      "sub": "<redacted>",
+      "aud": "cloudv2-production.redpanda.cloud",
+      "iat": "<redacted>",
+      "exp": "<redacted>",
+      "scope": "manage:organization-info read:organization-info write:organization-info",
+      "org_id": "<org-id>",
+      "gty": "client-credentials",
+      "azp": "<redacted>",
+      "permissions": [
+        "manage:organization-info",
+        "read:organization-info",
+        "write:organization-info"
+      ]
+    },
+    "lifetime_s": 86400
+  }
+}

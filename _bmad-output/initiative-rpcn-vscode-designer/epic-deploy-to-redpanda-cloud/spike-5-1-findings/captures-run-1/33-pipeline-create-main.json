@@ -1,0 +1,61 @@
+{
+  "step": "pipeline-create-main",
+  "request": {
+    "method": "POST",
+    "url": "https://api-<dataplane-prefix>.<cluster-id>.fmc.prd.cloud.redpanda.com/v1/redpanda-connect/pipelines",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "display_name": "vscode-spike-<run>-main",
+      "description": "vscode spike probe, safe to delete",
+      "config_yaml": "input:\n  generate:\n    interval: 5s\n    mapping: |\n      root.n = ${secrets.VSCODE_SPIKE_<RUN>_N}\n      root.at = now()\noutput:\n  drop: {}\n",
+      "resources": {
+        "cpu_shares": "100m",
+        "memory_shares": "400M"
+      },
+      "tags": {
+        "vscode-spike": "vscode-spike-<run>"
+      }
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "493",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 16:09:09 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "INVALID_ARGUMENT",
+      "message": "invalid pipeline configuration",
+      "details": [
+        {
+          "@type": "redpanda.api.common.v1.ExternalError",
+          "message": "invalid pipeline configuration",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION",
+              "domain": "redpanda.com/dataplane",
+              "metadata": {}
+            },
+            {
+              "@type": "type.googleapis.com/redpanda.api.common.v1.LintHint",
+              "line": 5,
+              "column": 24,
+              "hint": "expected query, got: \nroot",
+              "lint_type": ""
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "ms": 138
+}

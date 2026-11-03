@@ -1,0 +1,40 @@
+{
+  "step": "pipeline-create-tags-array",
+  "request": {
+    "method": "POST",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "display_name": "vscode-spike-<run>-tags-array",
+      "config_yaml": "input:\n  generate:\n    interval: 5s\n    mapping: |\n      root.n = 1\n      root.at = now()\noutput:\n  drop: {}\n",
+      "resources": {
+        "cpu_shares": "100m",
+        "memory_shares": "400M"
+      },
+      "tags": [
+        "vscode-spike"
+      ]
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "108",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:45 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "INVALID_ARGUMENT",
+      "message": "proto: syntax error (line 1:250): unexpected token [",
+      "details": []
+    }
+  },
+  "ms": 41
+}

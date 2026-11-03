@@ -1,0 +1,42 @@
+{
+  "step": "pipeline-get-larger",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-larger>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "498",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:10:49 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "pipeline": {
+        "id": "<pipeline-id-larger>",
+        "display_name": "vscode-spike-<run>-larger",
+        "description": "",
+        "config_yaml": "input:\n  generate:\n    interval: 5s\n    mapping: |\n      root.n = 1\n      root.at = now()\noutput:\n  drop: {}\n",
+        "resources": {
+          "memory_shares": "2G",
+          "cpu_shares": "500m"
+        },
+        "state": "STATE_ERROR",
+        "url": "",
+        "tags": {},
+        "created_by": "<email>",
+        "create_time": "2026-11-02T21:09:47Z",
+        "update_time": "2026-11-02T21:09:47.510733720Z"
+      }
+    }
+  },
+  "ms": 127
+}

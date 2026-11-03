@@ -1,0 +1,50 @@
+{
+  "step": "pipeline-create-invalid-yaml",
+  "request": {
+    "method": "POST",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "display_name": "vscode-spike-<run>-invalid-yaml",
+      "config_yaml": "input: [unclosed\n  generate: {",
+      "resources": {
+        "cpu_shares": "100m",
+        "memory_shares": "400M"
+      }
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "397",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:08:44 GMT",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "code": "INVALID_ARGUMENT",
+      "message": "yaml: line 1: did not find expected ',' or ']'",
+      "details": [
+        {
+          "@type": "redpanda.api.common.v1.ExternalError",
+          "message": "invalid YAML: yaml: line 1: did not find expected ',' or ']'",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION",
+              "domain": "redpanda.com/dataplane",
+              "metadata": {}
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "ms": 49
+}

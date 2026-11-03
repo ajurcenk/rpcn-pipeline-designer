@@ -1,0 +1,48 @@
+{
+  "step": "pipeline-wait-quoted-final",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id-quoted>",
+    "headers": {
+      "accept": "application/json",
+      "authorization": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "connection": "keep-alive",
+      "content-length": "539",
+      "content-type": "application/json",
+      "date": "Mon, 02 Nov 2026 21:12:14 GMT",
+      "grpc-metadata-content-type": "application/grpc",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "vary": "Origin"
+    },
+    "body": {
+      "pipeline": {
+        "id": "<pipeline-id-quoted>",
+        "display_name": "vscode-spike-<run>-quoted",
+        "description": "",
+        "config_yaml": "input:\n  generate:\n    interval: 5s\n    mapping: |\n      root.n = \"${secrets.VSCODE_SPIKE_<RUN>_Q}\"\n      root.at = now()\noutput:\n  drop: {}\n",
+        "resources": {
+          "memory_shares": "400M",
+          "cpu_shares": "100m"
+        },
+        "state": "STATE_RUNNING",
+        "url": "",
+        "tags": {},
+        "created_by": "<email>",
+        "create_time": "2026-11-02T21:11:43Z",
+        "update_time": "2026-11-02T21:11:43.594645962Z"
+      }
+    }
+  },
+  "ms": 149,
+  "derived": {
+    "polls": 7,
+    "ms_waited": 30998,
+    "timed_out": false,
+    "final_state": "STATE_RUNNING"
+  }
+}

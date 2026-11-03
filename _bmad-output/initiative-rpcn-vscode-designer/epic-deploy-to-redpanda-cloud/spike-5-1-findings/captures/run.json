@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-02T21:08:30.865Z",
+  "cluster_name": "rpc-vilnius",
+  "dry_run": false,
+  "clusters": [
+    {
+      "name": "rpc-vilnius",
+      "type": "TYPE_DEDICATED",
+      "cloud_provider": "CLOUD_PROVIDER_AWS",
+      "region": "us-east-2",
+      "state": "STATE_READY",
+      "has_dataplane_api": false
+    }
+  ],
+  "cluster_type": "TYPE_DEDICATED",
+  "pipeline_api": "available",
+  "main_first_state": "STATE_RUNNING",
+  "secret_delivered": "yes: the pipeline started with its interval from the secret",
+  "quoted_secret_state": "STATE_RUNNING",
+  "leftovers_this_run": [],
+  "leftovers_earlier_runs": [],
+  "errors": []
+}
