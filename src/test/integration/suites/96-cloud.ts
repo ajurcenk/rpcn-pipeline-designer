@@ -4,7 +4,8 @@
 // hosts' base URLs pointed at the fake, and the deploy's poll interval shortened. Every request the
 // fake received, every message, output line and view item is checked for the client secret and the
 // tokens at the end (NO_LEAK). Ticket 5.3's update flow (the mapping beside the config, `PUT`, the
-// diff and confirmation, the compute-unit setting) is the second half.
+// diff and confirmation, the compute-unit setting) is the second half; ticket 5.4's Start, Stop and
+// Delete pipeline… (rows, palette, the mapping deleted with its pipeline) the third.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -13,11 +14,12 @@ import {
 	CloudView, CLIENT_ID_KEY, CLIENT_SECRET_KEY, NOT_READ_TEXT, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, DEPLOY_UNTITLED_MESSAGE, DISCONNECT_COMMAND, type CloudItem, type CloudUi,
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
 	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION, unitsTarget,
+	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 } from '../../../adapters/vscode/cloudView';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
 import { CONFIG_TAG, resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { type ExtensionApi } from '../../../extension';
-import { FAKE_LINT_MARKER, FakeCloud } from '../../helpers/fakeCloud';
+import { FAKE_LINT_MARKER, FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
 import { makeTempDir } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
 
@@ -65,6 +67,16 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	let confirmed: { message: string; actions: string[] }[] = [];
 	let units: (number | undefined)[] = [];
 	let unitsAsked = 0;
+	/** The palette's pipeline picks (by name), and what each offered. */
+	let pipelinePicks: (string | undefined)[] = [];
+	let pipelinesOffered: PipelineChoice[][] = [];
+
+	/**
+	 * VS Code's secret storage resolves a delete before its application storage has settled it, and
+	 * a store of the same key within some tens of milliseconds can be undone by it (the account then
+	 * reads as gone mid-test). A user cannot disconnect and connect again that fast; the tests wait.
+	 */
+	const settleSecrets = () => new Promise<void>((r) => setTimeout(r, 300));
 
 	const items = () => {
 		const now = cloud().items();
@@ -77,7 +89,10 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 
 	function script(next: {
 		inputs?: Input[]; picks?: (string | undefined)[]; actions?: (string | undefined)[]; confirms?: (string | undefined)[]; units?: (number | undefined)[];
+		pipelinePicks?: (string | undefined)[];
 	}): void {
+		pipelinePicks = next.pipelinePicks ?? [];
+		pipelinesOffered = [];
 		inputs = next.inputs ?? [];
 		picks = next.picks ?? [];
 		actions = next.actions ?? [];
@@ -192,12 +207,22 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 				unitsAsked++;
 				return units.shift();
 			},
+			pickPipeline: async (choices) => {
+				pipelinesOffered.push([...choices]);
+				allMessages.push(...choices.flatMap((c) => [c.label, c.description]));
+				const name = pipelinePicks.shift();
+				return choices.find((c) => c.pipeline.displayName === name);
+			},
 		};
 		await setUnits(1);
 	});
 
 	setup(async () => {
+		const wasConnected = cloud().connected;
 		await cloud().disconnect();
+		if (wasConnected) {
+			await settleSecrets();
+		}
 		errors.length = 0;
 		infos.length = 0;
 		progressTitles.length = 0;
@@ -207,6 +232,9 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		errorActions.length = 0;
 		fake.pageSize = 100;
 		fake.createSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+		fake.stopSequence = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
+		fake.failures = [];
 		for (const c of fake.options.clusters) {
 			c.pipelines = [];
 			c.pipelinesError = undefined;
@@ -473,6 +501,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(cloud().tokens.values(), []);
 		assert.strictEqual(cloud().connected, false);
 		assert.deepStrictEqual(items(), []);
+		await settleSecrets();
 		const before = tokenRequests();
 		await connect();
 		assert.strictEqual(tokenRequests(), before + 1, 'a new token after a disconnect');
@@ -549,6 +578,16 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(cloud().connected, false);
 		assert.deepStrictEqual(await cloud().stored(), { clientId: false, clientSecret: false });
 		assert.deepStrictEqual(items(), []);
+	});
+
+	test('Disconnect while not connected, then Connect: the account stays stored (no late delete of an absent key wipes it)', async () => {
+		await cloud().disconnect();
+		await cloud().disconnect();
+		await connect();
+		await new Promise((r) => setTimeout(r, 300));
+		await cloud().ready;
+		assert.strictEqual(cloud().connected, true);
+		assert.deepStrictEqual(await cloud().stored(), { clientId: true, clientSecret: true });
 	});
 
 	test('CONNECT again with the same client ID and a wrong secret keeps the valid token', async () => {
@@ -873,6 +912,296 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.deepStrictEqual(infos, [NOT_CONNECTED_MESSAGE]);
 		assert.strictEqual(fake.requests.length, before);
+	});
+
+	// --- ticket 5.4: start, stop and delete a pipeline ---
+
+	const VILNIUS = 'cvilnius0000000000aa';
+	const pipelineRow = (name: string) => items().find((i) => i.node.kind === 'pipeline' && i.label === name);
+	/** The starts, stops and deletes since this test began. */
+	const lifecycle = () => fake.requests.slice(firstRequest)
+		.filter((r) => r.method === 'DELETE' || (r.method === 'PUT' && /\/(start|stop)$/.test(r.url)))
+		.map((r) => `${r.method} ${r.url}`);
+	const pipelineUrl = (id: string) => `/dp/${VILNIUS}/v1/redpanda-connect/pipelines/${id}`;
+	type ActionResult = { kind: string; state?: string; error?: string; alreadyGone?: boolean; mappings?: string[]; pipelineId?: string };
+	const run = (command: string, node?: CloudItem['node']) => vscode.commands.executeCommand<ActionResult>(command, node);
+
+	function seed(id: string, name: string, state: string, extra: Partial<FakePipeline> = {}): FakePipeline {
+		const p: FakePipeline = {
+			id, display_name: name, description: '', config_yaml: CONFIG, resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: {}, state, sequence: [], ...extra,
+		};
+		fake.cluster(VILNIUS).pipelines.push(p);
+		return p;
+	}
+
+	async function showPipelines(): Promise<void> {
+		await connect();
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+	}
+
+	/** The commands a pipeline row with `contextValue` offers, per package.json's `view/item/context` regexes. */
+	function offers(contextValue: string): string[] {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as { contributes: { menus: Record<string, { command: string; when?: string }[]> } };
+		const out = new Set<string>();
+		for (const m of pkg.contributes.menus['view/item/context']) {
+			const regex = /viewItem =~ \/(.+)\/$/.exec(m.when ?? '');
+			if ([START_COMMAND, STOP_COMMAND, DELETE_COMMAND].includes(m.command) && regex && new RegExp(regex[1]).test(contextValue)) {
+				out.add(m.command);
+			}
+		}
+		return [START_COMMAND, STOP_COMMAND, DELETE_COMMAND].filter((c) => out.has(c));
+	}
+
+	test('package.json: Start, Stop and Delete pipeline… in the palette when connected, inline and in the row\'s menu by state (Delete last)', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: { commands: { command: string; title: string }[]; menus: Record<string, { command: string; when?: string; group?: string }[]> };
+		};
+		assert.deepStrictEqual([START_COMMAND, STOP_COMMAND, DELETE_COMMAND].map((c) => pkg.contributes.commands.find((x) => x.command === c)?.title),
+			['Start pipeline', 'Stop pipeline', 'Delete pipeline…']);
+		for (const c of [START_COMMAND, STOP_COMMAND, DELETE_COMMAND]) {
+			assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === c)?.when, 'redpandaConnect.cloud.connected');
+			const groups = pkg.contributes.menus['view/item/context'].filter((m) => m.command === c).map((m) => m.group?.split('@')[0]);
+			assert.deepStrictEqual(groups, ['inline', c === DELETE_COMMAND ? '9_delete' : '1_actions']);
+		}
+		assert.deepStrictEqual(offers('cloudPipeline state-stopping'), [DELETE_COMMAND], 'not "stopped"');
+		assert.deepStrictEqual(offers('cloudCluster'), []);
+	});
+
+	test('STATES and ERROR_ROW: each state its own label, icon and actions; an unknown state by its raw name, Delete only; Error with its reason or none', async () => {
+		seed('p00000000000000start', 'starting', 'STATE_STARTING');
+		seed('p0000000000000000run', 'running', 'STATE_RUNNING');
+		seed('p0000000000000stopng', 'stopping', 'STATE_STOPPING');
+		seed('p000000000000stopped', 'stopped', 'STATE_STOPPED');
+		seed('p00000000000complete', 'completed', 'STATE_COMPLETED');
+		seed('p000000000000errwhy', 'error-why', 'STATE_ERROR', { status: { error: 'out of memory' } });
+		seed('p00000000000errnowhy', 'error-none', 'STATE_ERROR');
+		seed('p000000000000paused', 'paused', 'STATE_PAUSED');
+		await showPipelines();
+		const rows = items().filter((i) => i.node.kind === 'pipeline').map((i) => [i.label, i.description, i.icon, i.contextValue, offers(i.contextValue)]);
+		assert.deepStrictEqual(rows, [
+			['starting', 'Starting', 'sync~spin', 'cloudPipeline state-starting', [STOP_COMMAND, DELETE_COMMAND]],
+			['running', 'Running', 'pass', 'cloudPipeline state-running', [STOP_COMMAND, DELETE_COMMAND]],
+			['stopping', 'Stopping', 'loading~spin', 'cloudPipeline state-stopping', [DELETE_COMMAND]],
+			['stopped', 'Stopped', 'circle-slash', 'cloudPipeline state-stopped', [START_COMMAND, DELETE_COMMAND]],
+			['completed', 'Completed', 'check', 'cloudPipeline state-completed', [START_COMMAND, DELETE_COMMAND]],
+			['error-why', 'Error (out of memory)', 'error', 'cloudPipeline state-error', [START_COMMAND, DELETE_COMMAND]],
+			['error-none', `Error (${NO_REASON})`, 'error', 'cloudPipeline state-error', [START_COMMAND, DELETE_COMMAND]],
+			['paused', 'STATE_PAUSED', 'circle-large-outline', 'cloudPipeline state-unknown', [DELETE_COMMAND]],
+		]);
+		const icons = ['starting', 'stopping', 'completed', 'paused'].map((n) => pipelineRow(n)!.icon);
+		assert.strictEqual(new Set(icons).size, icons.length, `each its own icon: ${icons.join(', ')}`);
+		assert.ok(pipelineRow('error-why')!.tooltip.includes('Error (out of memory)'), pipelineRow('error-why')!.tooltip);
+		assert.ok(pipelineRow('error-none')!.tooltip.includes(`Error (${NO_REASON})`));
+	});
+
+	test('ACCEPTANCE: a running pipeline stopped, started and deleted from its row: PUT …/stop, PUT …/start and one DELETE for that id, in that order; the row ends gone', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		const stopped = await run(STOP_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(stopped?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(stopped?.state, 'STATE_STOPPED');
+		assert.deepStrictEqual(progressTitles.slice(-1), ['Stopping orders on rpc-vilnius']);
+		assert.ok(progressReports.includes('Stopping…'), progressReports.join(', '));
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders on rpc-vilnius is stopped.']);
+		assert.strictEqual(pipelineRow('orders')!.description, 'Stopped');
+		assert.deepStrictEqual(offers(pipelineRow('orders')!.contextValue), [START_COMMAND, DELETE_COMMAND], 'the row offers Start');
+
+		const started = await run(START_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(started?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(started?.state, 'STATE_RUNNING');
+		assert.ok(progressReports.includes('Starting…'));
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders on rpc-vilnius is running.']);
+		assert.strictEqual(pipelineRow('orders')!.description, 'Running');
+
+		script({ confirms: [DELETE_ACTION] });
+		const deleted = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
+		assert.strictEqual(deleted?.alreadyGone, false);
+		assert.deepStrictEqual(confirmed, [{ message: 'Delete orders on rpc-vilnius? This cannot be undone.', actions: [DELETE_ACTION] }]);
+		assert.deepStrictEqual(lifecycle(), [`PUT ${pipelineUrl(id)}/stop`, `PUT ${pipelineUrl(id)}/start`, `DELETE ${pipelineUrl(id)}`]);
+		const afterDelete = fake.requests.slice(fake.requests.findIndex((r) => r.method === 'DELETE' && r.url === pipelineUrl(id)));
+		assert.ok(afterDelete.some((r) => r.method === 'GET' && r.url === pipelineUrl(id)), 'followed until a GET answers 404');
+		assert.strictEqual(pipelineRow('orders'), undefined, 'the row is gone');
+		assert.deepStrictEqual(infos.slice(-1), ['Deleted pipeline orders on rpc-vilnius.']);
+		assert.strictEqual(fake.cluster(VILNIUS).pipelines.length, 0);
+		assert.strictEqual(errors.length, 0, errors.join('\n'));
+	});
+
+	test('STOP failing: the API\'s message; the cluster\'s pipelines read again', async () => {
+		seed('p0000000000000orders', 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		fake.failures = [{ when: (r) => r.method === 'PUT' && r.url.endsWith('/stop'), status: 503, body: { code: 'UNAVAILABLE', message: 'stop is down', details: [] } }];
+		const at = fake.requests.length;
+		const result = await run(STOP_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'failed');
+		assert.deepStrictEqual(errors, ['Could not stop pipeline orders on rpc-vilnius: stop is down']);
+		assert.deepStrictEqual(fake.requests.slice(at).map((r) => `${r.method} ${r.url.replace(/\?.*$/, '')}`),
+			[`GET ${pipelineUrl('p0000000000000orders')}`, `PUT ${pipelineUrl('p0000000000000orders')}/stop`, `GET /dp/${VILNIUS}/v1/redpanda-connect/pipelines`],
+			'read first, then the row re-read');
+		assert.strictEqual(pipelineRow('orders')!.description, 'Running');
+	});
+
+	test('STOP accepted, its state unreadable: "Stopped …, but its state could not be read"; a 401 while following offers Connect', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		const stopSent = () => fake.requests.slice(firstRequest).some((r) => r.method === 'PUT' && r.url === `${pipelineUrl(id)}/stop`);
+		fake.failures = [{
+			when: (r) => r.method === 'GET' && r.url === pipelineUrl(id) && stopSent(),
+			status: 401, body: { code: 'UNAUTHENTICATED', message: 'token is expired or revoked', details: [] }, times: 100,
+		}];
+		script({ actions: [undefined] });
+		const result = await run(STOP_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'failed');
+		assert.strictEqual(errors.length, 1, errors.join('\n'));
+		assert.match(errors[0], /^Stopped pipeline orders on rpc-vilnius, but its state could not be read: /);
+		assert.ok(!errors[0].includes('Could not stop'), errors[0]);
+		assert.deepStrictEqual(errorActions[0], [CONNECT_ACTION]);
+	});
+
+	test('STALE state: a row cached as Stopped while the cluster has it in Error: the state is read first and followed from Error', async () => {
+		const p = seed('p0000000000000orders', 'orders', 'STATE_STOPPED');
+		await showPipelines();
+		p.state = 'STATE_ERROR';
+		// The start's answer still in Error: from the fresh state it is not final until it changes.
+		fake.startSequence = [{ state: 'STATE_ERROR' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+		assert.strictEqual(pipelineRow('orders')!.description, 'Stopped');
+		const result = await run(START_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(result?.state, 'STATE_RUNNING');
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('START: progress until Running or Error; Error with the cluster\'s reason or "the cluster gave no reason"', async () => {
+		seed('p0000000000000orders', 'orders', 'STATE_STOPPED');
+		await showPipelines();
+		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad input' }];
+		const first = await run(START_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(first?.state, 'STATE_ERROR');
+		assert.strictEqual(first?.error, 'bad input');
+		assert.deepStrictEqual(errors, ['Pipeline orders on rpc-vilnius is in Error: bad input.']);
+		assert.strictEqual(pipelineRow('orders')!.description, 'Error (bad input)');
+		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR' }];
+		const second = await run(START_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(second?.state, 'STATE_ERROR');
+		assert.strictEqual(errors[1], `Pipeline orders on rpc-vilnius is in Error: ${NO_REASON}.`);
+		assert.strictEqual(pipelineRow('orders')!.description, `Error (${NO_REASON})`);
+		assert.strictEqual(lifecycle().length, 2);
+	});
+
+	test('DELETE: Cancel sends nothing; already gone (404): the row removed, said so', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_STOPPED');
+		await showPipelines();
+		script({ confirms: [undefined] });
+		assert.strictEqual((await run(DELETE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notStarted');
+		assert.deepStrictEqual(lifecycle(), [], 'nothing sent');
+		assert.ok(pipelineRow('orders'));
+		fake.cluster(VILNIUS).pipelines = [];
+		script({ confirms: [DELETE_ACTION] });
+		const gone = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(gone?.kind, 'deleted');
+		assert.strictEqual(gone?.alreadyGone, true);
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders was already gone from rpc-vilnius; it is removed from the view.']);
+		assert.strictEqual(pipelineRow('orders'), undefined);
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('STALE: a pipeline deleted in the Cloud meanwhile: Stop shows the API\'s error and the cluster\'s pipelines are read again', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		fake.cluster(VILNIUS).pipelines = [];
+		const result = await run(STOP_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'failed');
+		assert.deepStrictEqual(errors, ['Could not stop pipeline orders on rpc-vilnius: pipeline not found']);
+		assert.deepStrictEqual(lifecycle(), [], 'the read found it gone: nothing sent');
+		assert.strictEqual(pipelineRow('orders'), undefined, 're-read: the row is gone');
+		assert.ok(items().some((i) => i.label === 'No pipelines.'));
+	});
+
+	test('DELETE_MAPPED: the confirmation names the .cloud.json mapping a config to the pipeline; it is deleted after the DELETE, the config untouched; another pipeline\'s mapping is left', async () => {
+		const { doc, id } = await deployOnce();
+		const rel = vscode.workspace.asRelativePath(doc.uri, false);
+		// A second pipeline tagged with the same file, which the mapping does not name.
+		seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: rel } });
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		const mapping = fs.readFileSync(sidecarFile(), 'utf8');
+		script({ confirms: [DELETE_ACTION] });
+		assert.strictEqual((await run(DELETE_COMMAND, pipelineRow('copy')!.node))?.kind, 'deleted', errors.join('\n'));
+		assert.strictEqual(confirmed[0].message, 'Delete copy on rpc-vilnius? This cannot be undone.', 'the mapping names another pipeline');
+		assert.strictEqual(fs.readFileSync(sidecarFile(), 'utf8'), mapping, 'left');
+
+		// No active config: the tag names a file outside every workspace folder (none is open), so it is not looked at.
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		script({ confirms: [undefined] });
+		assert.strictEqual((await run(DELETE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notStarted');
+		assert.strictEqual(confirmed[0].message, 'Delete orders on rpc-vilnius? This cannot be undone.', 'a tag outside the workspace is ignored');
+
+		await vscode.window.showTextDocument(doc.uri);
+		script({ confirms: [DELETE_ACTION] });
+		const deleted = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
+		const shown = vscode.workspace.asRelativePath(sidecarFile());
+		assert.strictEqual(confirmed[0].message,
+			`Delete orders on rpc-vilnius? This cannot be undone. ${shown}, which maps a config to it, is deleted too; the config is not changed.`);
+		assert.deepStrictEqual(deleted?.mappings, [sidecarFile()]);
+		assert.ok(!fs.existsSync(sidecarFile()), 'the mapping is deleted');
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG, 'the config is untouched');
+		assert.deepStrictEqual(infos.slice(-1), [`Deleted pipeline orders on rpc-vilnius. Deleted ${shown}.`]);
+		assert.ok(lifecycle().includes(`DELETE ${pipelineUrl(id)}`));
+	});
+
+	test('PALETTE: the active config\'s mapped pipeline (its state checked), else a pick of every pipeline; none chosen: nothing sent; the mapped pipeline gone: said so', async () => {
+		const { doc, id } = await deployOnce();
+		// Start on the mapped running pipeline: not offered, nothing sent.
+		const notOffered = await run(START_COMMAND);
+		assert.strictEqual(notOffered?.kind, 'notOffered');
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders on rpc-vilnius is running: only a stopped, failed or completed pipeline can be started.']);
+		const stopped = await run(STOP_COMMAND);
+		assert.strictEqual(stopped?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(stopped?.pipelineId, id);
+		assert.strictEqual(pipelinesOffered.length, 0, 'no pick: the mapping names it');
+		assert.deepStrictEqual(lifecycle(), [`PUT ${pipelineUrl(id)}/stop`]);
+
+		// No active config: a pick of every pipeline on the clusters.
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		fake.cluster('cbyoc000000000000bbb').pipelines.push({
+			id: 'pbyoc00000000000other', display_name: 'other', description: '', config_yaml: CONFIG,
+			resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: {}, state: 'STATE_STOPPED', sequence: [],
+		});
+		script({ pipelinePicks: [undefined] });
+		assert.strictEqual((await run(START_COMMAND))?.kind, 'notStarted');
+		assert.deepStrictEqual(pipelinesOffered[0].map((c) => `${c.pipeline.displayName}@${c.cluster.name}`), ['orders@rpc-vilnius', 'other@byoc-eu']);
+		assert.strictEqual(lifecycle().length, 1, 'none chosen: nothing sent');
+		script({ pipelinePicks: ['other'] });
+		const started = await run(START_COMMAND);
+		assert.strictEqual(started?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(started?.state, 'STATE_RUNNING');
+		assert.deepStrictEqual(lifecycle().slice(-1), ['PUT /dp/cbyoc000000000000bbb/v1/redpanda-connect/pipelines/pbyoc00000000000other/start']);
+
+		// The mapped pipeline deleted in the Cloud: said so, nothing sent, no pick.
+		await vscode.window.showTextDocument(doc.uri);
+		fake.cluster(VILNIUS).pipelines = [];
+		script({ confirms: [DELETE_ACTION] });
+		assert.strictEqual((await run(DELETE_COMMAND))?.kind, 'notStarted');
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.cloud.json maps orders.yaml to, is no longer on rpc-vilnius.']);
+		assert.strictEqual(confirmed.length, 0);
+		assert.strictEqual(pipelinesOffered.length, 0);
+		assert.ok(!lifecycle().some((l) => l.startsWith('DELETE')));
+		assert.ok(fs.existsSync(sidecarFile()), 'the mapping stays');
+	});
+
+	test('PALETTE delete of the mapped pipeline: the active config\'s .cloud.json named and deleted', async () => {
+		const { id } = await deployOnce();
+		script({ confirms: [DELETE_ACTION] });
+		const deleted = await run(DELETE_COMMAND);
+		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
+		assert.strictEqual(deleted?.pipelineId, id);
+		assert.ok(confirmed[0].message.includes('orders.cloud.json'), confirmed[0].message);
+		assert.ok(!fs.existsSync(sidecarFile()));
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG);
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {

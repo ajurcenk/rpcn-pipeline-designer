@@ -26,6 +26,16 @@
 // Completed (at most 3 minutes), through the restart of a running one. A config the cluster rejects
 // shows each `LintHint`'s line and text. The config file is never changed.
 //
+// **Start**, **Stop** and **Delete pipeline…** (ticket 5.4) are a pipeline row's actions, offered by its
+// state (Start: stopped, failed or completed; Stop: running or starting; Delete: any state, also one the
+// extension does not know), and palette commands that act on the pipeline the active config's
+// `.cloud.json` maps to, else on one picked from every cluster's pipelines. Delete needs a modal
+// confirmation naming the pipeline, the cluster and the `.cloud.json` that maps a config to it, which
+// is deleted with it (only when it parses and names this cluster and pipeline; the config never
+// changes). After an action the state is followed as Deploy does (until a final state, or the 404
+// after a delete, or the timeout); a failed action shows the API's message and reads the cluster's
+// pipelines again. Nothing is polled in the background.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -33,12 +43,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
 import {
-	CONFIG_TAG, type CloudPipeline, type PipelineResources, type CreatePipeline, createPipeline, FINAL_STATES, getPipeline, isRunning, listPipelines, MAX_UNITS, MIN_UNITS,
-	pipelineStateText, resourcesOf, resourcesText, sameResources, type UpdatePipeline, updatePipeline,
+	canStart, canStop, CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, deletePipeline, FINAL_STATES,
+	getPipeline, isKnownState, isRunning, listPipelines, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, startPipeline, stateKey,
+	stopPipeline, type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, CloudError, describeCloudError, hintLines, maskCredentials } from '../cloud/errors';
 import { defaultFetch, type FetchLike } from '../cloud/http';
-import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath } from '../cloud/sidecar';
+import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
 import type { SecretStore } from './secrets';
 
@@ -47,6 +58,12 @@ export const CONNECT_COMMAND = 'redpandaConnect.cloud.connect';
 export const DISCONNECT_COMMAND = 'redpandaConnect.cloud.disconnect';
 export const DEPLOY_COMMAND = 'redpandaConnect.cloud.deploy';
 export const CLOUD_REFRESH_COMMAND = 'redpandaConnect.cloud.refresh';
+/** Ticket 5.4: a pipeline's lifecycle, from its row or the palette. */
+export const START_COMMAND = 'redpandaConnect.cloud.start';
+export const STOP_COMMAND = 'redpandaConnect.cloud.stop';
+export const DELETE_COMMAND = 'redpandaConnect.cloud.delete';
+/** The delete confirmation's action. */
+export const DELETE_ACTION = 'Delete';
 /** Whether a service account is connected (menus and the view's empty state). */
 export const CONNECTED_KEY = 'redpandaConnect.cloud.connected';
 export const CLIENT_ID_KEY = 'redpandaConnect.cloud.clientId';
@@ -114,6 +131,8 @@ export const UNREACHABLE_ENDPOINTS: CloudEndpoints = {
 export interface CloudUi {
 	input(options: vscode.InputBoxOptions): Thenable<string | undefined>;
 	pickCluster(clusters: readonly CloudCluster[], title: string): Thenable<CloudCluster | undefined>;
+	/** A palette action's pipeline, from every cluster's; `undefined`: cancelled. */
+	pickPipeline(pipelines: readonly PipelineChoice[], title: string): Thenable<PipelineChoice | undefined>;
 	/** The compute units of the first deploy (1–15, default 1); `undefined`: cancelled. */
 	pickUnits(title: string): Thenable<number | undefined>;
 	error(message: string, ...actions: string[]): Thenable<string | undefined>;
@@ -121,6 +140,23 @@ export interface CloudUi {
 	/** A modal question; `undefined`: cancelled. */
 	confirm(message: string, ...actions: string[]): Thenable<string | undefined>;
 	progress<T>(title: string, task: (report: (message: string) => void) => Promise<T>): Thenable<T>;
+}
+
+/** A pipeline on its cluster, offered in the palette's pick. */
+export interface PipelineChoice {
+	readonly cluster: CloudCluster;
+	readonly pipeline: CloudPipeline;
+	/** The pick's texts, masked by the view. */
+	readonly label: string;
+	readonly description: string;
+}
+
+/** `Running`, or `Error (<reason>)` with the cluster's reason or "the cluster gave no reason". */
+export function pipelineStateDescription(p: CloudPipeline | undefined): string {
+	if (!p) {
+		return 'Unknown';
+	}
+	return `${pipelineStateText(p.state)}${p.state === 'STATE_ERROR' ? ` (${p.error ?? NO_REASON})` : ''}`;
 }
 
 export function clusterDescription(c: CloudCluster): string {
@@ -138,6 +174,17 @@ export const defaultCloudUi: CloudUi = {
 			{ title, placeHolder: 'The cluster to create the pipeline on' },
 		);
 		return picked?.cluster;
+	},
+	pickPipeline: async (pipelines, title) => {
+		const picked = await vscode.window.showQuickPick(
+			pipelines.map((choice) => ({
+				label: choice.label,
+				description: choice.description,
+				choice,
+			})),
+			{ title, placeHolder: 'The pipeline', matchOnDescription: true },
+		);
+		return picked?.choice;
 	},
 	pickUnits: async (title) => {
 		const items = Array.from({ length: MAX_UNITS - MIN_UNITS + 1 }, (_, i) => {
@@ -176,6 +223,8 @@ export interface CloudItem {
 	readonly accessibility: string;
 	/** Whether it can be expanded. */
 	readonly expandable: boolean;
+	/** The theme icon's id. */
+	readonly icon: string;
 }
 
 /** How a deploy ended (the command's result, for tests). */
@@ -189,6 +238,24 @@ export type DeployResult =
 	| { readonly kind: 'unchanged'; readonly pipelineId: string };
 
 const NOT_STARTED: DeployResult = { kind: 'notStarted' };
+
+/** How a Start, Stop or Delete ended (the command's result, for tests). */
+export type PipelineActionResult =
+	| DeployResult
+	/** The pipeline's state does not offer the action (from the palette): nothing was sent. */
+	| { readonly kind: 'notOffered'; readonly state: string; readonly pipelineId: string }
+	/** Deleted (`alreadyGone`: the `DELETE` answered 404); `mappings`: the `.cloud.json` files deleted with it. */
+	| { readonly kind: 'deleted'; readonly pipelineId: string; readonly alreadyGone: boolean; readonly mappings: readonly string[] };
+
+type PipelineAction = 'start' | 'stop' | 'delete';
+
+/** The pipeline an action is for. `config`: the active config, from the palette. */
+interface ActionTarget {
+	readonly cluster: CloudCluster;
+	readonly dp: string;
+	readonly pipeline: CloudPipeline;
+	readonly config?: vscode.Uri;
+}
 
 /** Where a deploy goes: a new pipeline on a cluster, or an existing one replaced. */
 type Target =
@@ -282,6 +349,9 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(DISCONNECT_COMMAND, () => this.disconnect()),
 			vscode.commands.registerCommand(DEPLOY_COMMAND, (uri?: vscode.Uri) => this.deploy(uri instanceof vscode.Uri ? uri : undefined)),
 			vscode.commands.registerCommand(CLOUD_REFRESH_COMMAND, (node?: CloudNode) => this.refresh(node)),
+			vscode.commands.registerCommand(START_COMMAND, (node?: CloudNode) => this.pipelineAction('start', node)),
+			vscode.commands.registerCommand(STOP_COMMAND, (node?: CloudNode) => this.pipelineAction('stop', node)),
+			vscode.commands.registerCommand(DELETE_COMMAND, (node?: CloudNode) => this.pipelineAction('delete', node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -477,7 +547,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			await this.options.store.store(CLIENT_SECRET_KEY, clientSecret);
 			await this.options.store.store(CLIENT_ID_KEY, clientId);
 		} catch (err) {
-			await Promise.allSettled([this.options.store.delete(CLIENT_ID_KEY), this.options.store.delete(CLIENT_SECRET_KEY)]);
+			await Promise.allSettled([this.removeStored(CLIENT_ID_KEY), this.removeStored(CLIENT_SECRET_KEY)]);
 			this.accountGeneration++;
 			this.tokens.clear();
 			this.account = undefined;
@@ -499,6 +569,18 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		return true;
 	}
 
+	/**
+	 * Deletes `key` only when it is stored. A secret-storage delete resolves before VS Code's
+	 * application storage has settled it, and a store of the same key within some tens of
+	 * milliseconds can then be undone by it (seen in the tests: a disconnect, then a connect,
+	 * lost the new account). A delete of a key that is not stored is never sent.
+	 */
+	private async removeStored(key: string): Promise<void> {
+		if ((await this.options.store.get(key)) !== undefined) {
+			await this.options.store.delete(key);
+		}
+	}
+
 	/** Disconnect: the stored client ID and secret and the cached token are removed. */
 	async disconnect(): Promise<boolean> {
 		const name = this.accountName;
@@ -511,8 +593,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.fire();
 		this.writing++;
 		try {
-			await this.options.store.delete(CLIENT_ID_KEY);
-			await this.options.store.delete(CLIENT_SECRET_KEY);
+			await this.removeStored(CLIENT_ID_KEY);
+			await this.removeStored(CLIENT_SECRET_KEY);
 		} catch (err) {
 			void this.showError(`Could not remove the service account from the secret storage: ${reasonOf(err)}`);
 			this.ready = this.readAccount();
@@ -767,16 +849,16 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			}
 			case 'pipeline': {
 				const p = this.pipelineById(node.clusterId, node.id);
-				const state = p ? pipelineStateText(p.state) : 'Unknown';
-				const reason = p?.state === 'STATE_ERROR' ? ` (${p.error ?? NO_REASON})` : '';
+				const state = pipelineStateDescription(p);
 				const item = new vscode.TreeItem(p?.displayName ?? node.id, vscode.TreeItemCollapsibleState.None);
 				item.id = `pipeline:${node.clusterId}:${node.id}`;
-				item.description = `${state}${reason}`;
+				item.description = state;
 				item.iconPath = new vscode.ThemeIcon(stateIcon(p?.state));
-				item.contextValue = `cloudPipeline state-${(p?.state ?? 'unknown').replace(/^STATE_/, '').toLowerCase()}`;
+				// A state the extension does not know is `state-unknown`: Delete only.
+				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}`;
 				const config = p?.tags[CONFIG_TAG];
-				item.tooltip = `${p?.displayName ?? node.id} (${node.id}): ${state}${reason}${config ? `. Deployed from ${config}.` : '.'}`;
-				item.accessibilityInformation = { label: `Pipeline ${p?.displayName ?? node.id}, ${state}${reason}` };
+				item.tooltip = `${p?.displayName ?? node.id} (${node.id}): ${state}${config ? `. Deployed from ${config}.` : '.'}`;
+				item.accessibilityInformation = { label: `Pipeline ${p?.displayName ?? node.id}, ${state}` };
 				return item;
 			}
 			case 'note': {
@@ -814,6 +896,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 					tooltip: typeof item.tooltip === 'string' ? item.tooltip : item.tooltip?.value ?? '',
 					accessibility: item.accessibilityInformation?.label ?? label,
 					expandable: item.collapsibleState !== vscode.TreeItemCollapsibleState.None,
+					icon: item.iconPath instanceof vscode.ThemeIcon ? item.iconPath.id : '',
 				});
 				walk(this.cachedChildren(node));
 			}
@@ -959,7 +1042,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		const sameSize = sameResources(deployed.resources, resources);
 		if (sameConfig && sameSize) {
 			await mapTo(deployed);
-			this.log(`Redpanda Cloud: pipeline ${name} (${deployed.id}) on ${cluster.name} already has ${file} as saved (${pipelineStateText(deployed.state).toLowerCase()}), with ${resourcesText(resources)}; nothing was sent.`);
+			this.log(`Redpanda Cloud: pipeline ${name} (${deployed.id}) on ${cluster.name} already has ${file} as saved (${stateWord(deployed.state)}), with ${resourcesText(resources)}; nothing was sent.`);
 			void this.showInfo(`Pipeline ${name} on ${cluster.name} is already deployed from ${file}, nothing changed.`);
 			return { kind: 'unchanged', pipelineId: deployed.id };
 		}
@@ -972,7 +1055,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			const what = sameConfig
 				? `Changing its size restarts it. ${size}`
 				: `Replacing its config with ${file} (the diff shows the changes) restarts it.${size ? ` ${size}` : ''}`;
-			const choice = await this.ui.confirm(this.mask(`Pipeline ${name} on ${cluster.name} is ${pipelineStateText(deployed.state).toLowerCase()}. ${what}`), REPLACE_ACTION);
+			const choice = await this.ui.confirm(this.mask(`Pipeline ${name} on ${cluster.name} is ${stateWord(deployed.state)}. ${what}`), REPLACE_ACTION);
 			if (choice !== REPLACE_ACTION) {
 				return NOT_STARTED;
 			}
@@ -1175,7 +1258,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 		this.upsertPipeline(cluster.id, current);
 		this.fire();
-		return this.follow(cluster, dp, current, create.displayName, report, false);
+		return this.follow(cluster, dp, current, create.displayName, report);
 	}
 
 	private async updateAndFollow(
@@ -1191,7 +1274,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 		await updated(current);
 		this.upsertPipeline(cluster.id, current);
-		return this.follow(cluster, dp, current, update.displayName, report, restart);
+		return this.follow(cluster, dp, current, update.displayName, report, restart ? { from: 'STATE_RUNNING', waiting: 'waiting for the restart…' } : undefined);
 	}
 
 	/** A failed create or update: a config the cluster rejected, or another failure. */
@@ -1204,29 +1287,33 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/**
-	 * Follows the pipeline's state until a final one. After an update of a running pipeline
-	 * (`restart`) it is still `RUNNING` at first: then a state other than running must be seen before
-	 * a final one counts, unless `restartGraceMs` pass with no change (it is then reported running).
+	 * Follows the pipeline's state until a final one. With `change` the answer may still be in the
+	 * state it was in (`from`: `RUNNING` after an update of a running pipeline, the old state after a
+	 * start or stop): then another state must be seen before a final one counts, unless
+	 * `restartGraceMs` pass with no change (it is then reported in that state).
 	 */
 	private async follow(
-		cluster: CloudCluster, dp: string, first: CloudPipeline, name: string, report: (message: string) => void, restart: boolean,
+		cluster: CloudCluster, dp: string, first: CloudPipeline, name: string, report: (message: string) => void,
+		change?: { readonly from: PipelineState; readonly waiting: string },
+		/** The error that ended the follow, when reading the state failed. */
+		onFailure?: (err: unknown) => void,
 	): Promise<DeployResult> {
 		let current = first;
 		const deadline = Date.now() + this.timeoutMs;
 		let lastChange = Date.now();
-		let restarted = !restart || current.state !== 'STATE_RUNNING';
+		let changed = !change || current.state !== change.from;
 		let failures = 0;
 		for (;;) {
-			if (restarted && FINAL_STATES.includes(current.state)) {
+			if (changed && FINAL_STATES.includes(current.state)) {
 				break;
 			}
-			if (!restarted && Date.now() - lastChange >= this.restartGraceMs) {
+			if (!changed && Date.now() - lastChange >= this.restartGraceMs) {
 				break;
 			}
 			if (Date.now() >= deadline) {
 				return { kind: 'timedOut', pipelineId: current.id };
 			}
-			report(restarted ? `${pipelineStateText(current.state)}…` : 'waiting for the restart…');
+			report(changed || !change ? `${pipelineStateText(current.state)}…` : change.waiting);
 			await sleep(this.pollMs);
 			try {
 				const next = await getPipeline(this.call(), dp, current.id);
@@ -1235,14 +1322,15 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 					lastChange = Date.now();
 				}
 				current = next;
-				if (current.state !== 'STATE_RUNNING') {
-					restarted = true;
+				if (current.state !== change?.from) {
+					changed = true;
 				}
 				this.upsertPipeline(cluster.id, current);
 			} catch (err) {
 				const error = asCloudError(err);
 				this.log(`Redpanda Cloud: could not read the state of ${name}: ${error.message}`);
 				if (error.status === 404 || ++failures >= MAX_POLL_FAILURES) {
+					onFailure?.(err);
 					return { kind: 'failed', message: `could not read its state: ${error.message}`, pipelineId: current.id };
 				}
 			}
@@ -1281,13 +1369,332 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 					return;
 				}
 				this.log(`Redpanda Cloud: pipeline ${name} (${result.pipelineId}) ${on} is ${state}${updated ? ', updated from ' + file : ''}.`);
-				void this.showInfo(updated ? `Updated pipeline ${name} ${on}; it is ${state.toLowerCase()}.` : `Pipeline ${name} is ${state.toLowerCase()} ${on}.`);
+				void this.showInfo(updated ? `Updated pipeline ${name} ${on}; it is ${stateWord(result.state)}.` : `Pipeline ${name} is ${stateWord(result.state)} ${on}.`);
 				return;
 			}
 			case 'notStarted':
 			case 'unchanged':
 				return;
 		}
+	}
+
+	// --- start, stop and delete (ticket 5.4) ---
+
+	/** Start, Stop or Delete pipeline…: `node` (a view row), else the palette's target. Never throws. */
+	async pipelineAction(action: PipelineAction, node?: CloudNode): Promise<PipelineActionResult> {
+		try {
+			const target = await this.actionTarget(action, node?.kind === 'pipeline' ? node : undefined);
+			if (!('pipeline' in target)) {
+				return target;
+			}
+			if (action === 'delete') {
+				return await this.deleteTarget(target);
+			}
+			return await this.startOrStop(action, target);
+		} catch (err) {
+			const message = this.mask(reasonOf(err));
+			this.log(`Redpanda Cloud: ${action} failed: ${message}`);
+			void this.showError(`${ACTION_TEXT[action].failed} failed: ${message}`);
+			return { kind: 'failed', message };
+		}
+	}
+
+	/**
+	 * The action's pipeline: a row's (as the view shows it), or, from the palette, the one the active
+	 * config's `.cloud.json` maps to (read now), else one picked from every cluster's pipelines.
+	 */
+	private async actionTarget(action: PipelineAction, node: Extract<CloudNode, { kind: 'pipeline' }> | undefined): Promise<ActionTarget | PipelineActionResult> {
+		await this.ready;
+		if (!this.account) {
+			const choice = await this.showInfo('No Redpanda Cloud service account is connected.', CONNECT_ACTION);
+			if (choice !== CONNECT_ACTION || !(await this.connect())) {
+				return NOT_STARTED;
+			}
+		}
+		const doc = vscode.window.activeTextEditor?.document;
+		const config = doc && !doc.isUntitled && doc.uri.scheme === 'file' && this.options.isDetected(doc.uri) ? doc.uri : undefined;
+		if (node) {
+			const cluster = this.clusterById(node.clusterId);
+			const dp = cluster && this.dataplaneUrlOf(cluster);
+			const pipeline = this.pipelineById(node.clusterId, node.id);
+			if (!cluster || !dp || !pipeline) {
+				void this.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
+				return NOT_STARTED;
+			}
+			return { cluster, dp, pipeline, ...(config ? { config } : {}) };
+		}
+		this.requested = true;
+		await this.loadClusters(false);
+		if (this.clusters?.kind !== 'ok') {
+			if (this.clusters?.kind === 'error') {
+				void this.showError(`Could not list the Redpanda Cloud clusters: ${this.clusters.message}`);
+			}
+			return NOT_STARTED;
+		}
+		if (config) {
+			const file = path.basename(config.fsPath);
+			const mappingName = path.basename(sidecarPath(config.fsPath));
+			const read = await readMapping(sidecarPath(config.fsPath));
+			if (read.kind === 'ok') {
+				const m = read.mapping;
+				const cluster = this.clusterById(m.clusterId);
+				const dp = cluster && this.dataplaneUrlOf(cluster);
+				if (!cluster || !dp) {
+					const named = cluster?.name ?? m.clusterName ?? m.clusterId;
+					void this.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`);
+					return NOT_STARTED;
+				}
+				const got = await this.readPipeline(cluster, dp, m.pipelineId, m.pipelineName ?? m.pipelineId);
+				if (got.kind === 'ok') {
+					return { cluster, dp, pipeline: got.value, config };
+				}
+				if (got.status === 404) {
+					this.removePipeline(cluster.id, m.pipelineId);
+					void this.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}.`);
+					return NOT_STARTED;
+				}
+				return { kind: 'failed', message: got.message };
+			}
+		}
+		const clusters = this.clusters.value.filter((c) => this.dataplaneUrlOf(c));
+		await Promise.all(clusters.map((c) => this.loadPipelines(c.id, true)));
+		this.fire();
+		const choices: PipelineChoice[] = [];
+		const unread: string[] = [];
+		for (const c of clusters) {
+			const listed = this.pipelines.get(c.id);
+			if (listed?.kind === 'ok') {
+				choices.push(...listed.value.map((pipeline) => ({
+					cluster: c, pipeline, label: this.mask(pipeline.displayName), description: this.mask(`${c.name} · ${pipelineStateDescription(pipeline)}`),
+				})));
+			} else {
+				unread.push(`${c.name} (${listed?.kind === 'error' ? listed.message : 'not read'})`);
+			}
+		}
+		if (choices.length === 0) {
+			void this.showInfo(`No pipeline on the clusters to ${action}.${unread.length > 0 ? ` Could not list the pipelines of ${unread.join(', ')}.` : ''}`);
+			return NOT_STARTED;
+		}
+		const picked = await this.ui.pickPipeline(choices, `${ACTION_TEXT[action].title}: the pipeline`);
+		if (!picked) {
+			return NOT_STARTED;
+		}
+		const dp = this.dataplaneUrlOf(picked.cluster);
+		return dp ? { cluster: picked.cluster, dp, pipeline: picked.pipeline, ...(config ? { config } : {}) } : NOT_STARTED;
+	}
+
+	/** The target, when its state offers the action; else said so and nothing is sent. */
+	private offered(action: 'start' | 'stop', target: ActionTarget): ActionTarget | PipelineActionResult {
+		const { cluster, pipeline } = target;
+		const state = pipeline.state;
+		const refused = action === 'start' && !canStart(state) ? 'only a stopped, failed or completed pipeline can be started'
+			: action === 'stop' && !canStop(state) ? 'only a running or starting pipeline can be stopped' : undefined;
+		if (!refused) {
+			return target;
+		}
+		void this.showInfo(`Pipeline ${pipeline.displayName} on ${cluster.name} is ${stateWord(state)}: ${refused}.`);
+		return { kind: 'notOffered', state, pipelineId: pipeline.id };
+	}
+
+	/**
+	 * Reads the pipeline now (the view's state can be stale), checks its state offers the action, then
+	 * `PUT …/start` or `…/stop` and its state followed from the state read; a failure is shown and the
+	 * cluster's pipelines read again.
+	 */
+	private async startOrStop(action: 'start' | 'stop', target: ActionTarget): Promise<PipelineActionResult> {
+		const { cluster, dp } = target;
+		const on = `on ${cluster.name}`;
+		let pipeline: CloudPipeline;
+		try {
+			pipeline = await getPipeline(this.call(), dp, target.pipeline.id);
+		} catch (err) {
+			const message = describeCloudError(asCloudError(err));
+			this.log(`Redpanda Cloud: could not ${action} pipeline ${target.pipeline.displayName} ${on}: ${message}`);
+			this.showErrorOfferingConnect(`Could not ${action} pipeline ${target.pipeline.displayName} ${on}: ${message}`, err);
+			await this.loadPipelines(cluster.id, true);
+			this.fire();
+			return { kind: 'failed', message, pipelineId: target.pipeline.id };
+		}
+		this.upsertPipeline(cluster.id, pipeline);
+		const allowed = this.offered(action, { ...target, pipeline });
+		if (!('pipeline' in allowed)) {
+			return allowed;
+		}
+		const name = pipeline.displayName;
+		const text = ACTION_TEXT[action];
+		let cause: unknown;
+		let accepted = false;
+		const result = await this.ui.progress(`${text.progress} ${name} on ${cluster.name}`, async (report): Promise<DeployResult> => {
+			report(`${text.progress.toLowerCase()} the pipeline…`);
+			let current: CloudPipeline;
+			try {
+				current = await (action === 'start' ? startPipeline : stopPipeline)(this.call(), dp, pipeline.id);
+			} catch (err) {
+				cause = err;
+				return { kind: 'failed', message: describeCloudError(asCloudError(err)), pipelineId: pipeline.id };
+			}
+			accepted = true;
+			this.log(`Redpanda Cloud: ${text.done.toLowerCase()} pipeline ${name} (${pipeline.id}) on ${cluster.name}; it is ${stateWord(current.state)}.`);
+			this.upsertPipeline(cluster.id, current);
+			return this.follow(cluster, dp, current, name, report, { from: pipeline.state, waiting: `${text.progress.toLowerCase()}…` }, (err) => {
+				cause = err;
+			});
+		});
+		switch (result.kind) {
+			case 'failed': {
+				const shown = accepted
+					? `${text.done} pipeline ${name} ${on}, but its state could not be read: ${asCloudError(cause).message}`
+					: `Could not ${action} pipeline ${name} ${on}: ${result.message}`;
+				this.log(`Redpanda Cloud: ${shown}`);
+				this.showErrorOfferingConnect(shown, cause);
+				await this.loadPipelines(cluster.id, true);
+				this.fire();
+				break;
+			}
+			case 'timedOut':
+				this.log(`Redpanda Cloud: pipeline ${name} ${on} is still ${text.ongoing} after ${Math.round(this.timeoutMs / 1000)} s.`);
+				void this.showInfo(`Pipeline ${name} is still ${text.ongoing} ${on}; the Cloud view shows its state.`);
+				break;
+			case 'final':
+				if (result.state === 'STATE_ERROR') {
+					const reason = result.error ?? NO_REASON;
+					this.log(`Redpanda Cloud: pipeline ${name} ${on} is in Error: ${reason}`);
+					void this.showError(`Pipeline ${name} ${on} is in Error: ${reason}.`);
+				} else {
+					this.log(`Redpanda Cloud: pipeline ${name} (${result.pipelineId}) ${on} is ${pipelineStateText(result.state)}.`);
+					void this.showInfo(`Pipeline ${name} ${on} is ${stateWord(result.state)}.`);
+				}
+				break;
+			default:
+				break;
+		}
+		return result;
+	}
+
+	/**
+	 * The `.cloud.json` files that map a config to `pipeline`: beside the config its
+	 * `rpcn-vscode/config` tag names (only inside a workspace folder) and beside the active config,
+	 * each kept only when it parses and names this cluster and pipeline.
+	 */
+	private async mappingsOf(cluster: CloudCluster, pipeline: CloudPipeline, config: vscode.Uri | undefined): Promise<string[]> {
+		const candidates = new Set<string>();
+		if (config) {
+			candidates.add(sidecarPath(config.fsPath));
+		}
+		const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath);
+		for (const file of taggedSidecars(pipeline.tags[CONFIG_TAG], folders)) {
+			candidates.add(file);
+		}
+		const out: string[] = [];
+		for (const file of candidates) {
+			if (await mapsTo(file, cluster.id, pipeline.id)) {
+				out.push(file);
+			}
+		}
+		return out;
+	}
+
+	/** Delete pipeline…: a modal confirmation; `DELETE`, then followed until a GET answers 404; its `.cloud.json` deleted too. */
+	private async deleteTarget(target: ActionTarget): Promise<PipelineActionResult> {
+		const { cluster, dp, pipeline } = target;
+		const name = pipeline.displayName;
+		const on = `on ${cluster.name}`;
+		const mappings = await this.mappingsOf(cluster, pipeline, target.config);
+		const shown = mappings.map((f) => vscode.workspace.asRelativePath(f));
+		const mapped = shown.length === 0 ? ''
+			: ` ${shown.join(' and ')}, which ${shown.length === 1 ? 'maps a config' : 'map configs'} to it, ${shown.length === 1 ? 'is' : 'are'} deleted too; the config${shown.length === 1 ? ' is' : 's are'} not changed.`;
+		const choice = await this.ui.confirm(this.mask(`Delete ${name} ${on}? This cannot be undone.${mapped}`), DELETE_ACTION);
+		if (choice !== DELETE_ACTION) {
+			return NOT_STARTED;
+		}
+		let cause: unknown;
+		const outcome = await this.ui.progress(`Deleting ${name} ${on}`, async (report): Promise<'deleted' | 'alreadyGone' | 'timedOut' | { failed: string; sent: boolean }> => {
+			report('deleting the pipeline…');
+			try {
+				await deletePipeline(this.call(), dp, pipeline.id);
+			} catch (err) {
+				const error = asCloudError(err);
+				if (error.status === 404) {
+					return 'alreadyGone';
+				}
+				cause = err;
+				return { failed: describeCloudError(error), sent: false };
+			}
+			this.log(`Redpanda Cloud: deleted pipeline ${name} (${pipeline.id}) ${on}.`);
+			// Followed until a GET answers 404.
+			const deadline = Date.now() + this.timeoutMs;
+			let failures = 0;
+			for (;;) {
+				try {
+					const still = await getPipeline(this.call(), dp, pipeline.id);
+					failures = 0;
+					this.upsertPipeline(cluster.id, still);
+				} catch (err) {
+					const error = asCloudError(err);
+					if (error.status === 404) {
+						return 'deleted';
+					}
+					this.log(`Redpanda Cloud: could not read the state of ${name}: ${error.message}`);
+					if (++failures >= MAX_POLL_FAILURES) {
+						return { failed: `it was deleted, but its state could not be read: ${error.message}`, sent: true };
+					}
+				}
+				if (Date.now() >= deadline) {
+					return 'timedOut';
+				}
+				report('waiting for it to go…');
+				await sleep(this.pollMs);
+			}
+		});
+		if (typeof outcome === 'object' && !outcome.sent) {
+			this.log(`Redpanda Cloud: could not delete pipeline ${name} ${on}: ${outcome.failed}`);
+			this.showErrorOfferingConnect(`Could not delete pipeline ${name} ${on}: ${outcome.failed}`, cause);
+			await this.loadPipelines(cluster.id, true);
+			this.fire();
+			return { kind: 'failed', message: outcome.failed, pipelineId: pipeline.id };
+		}
+		// The DELETE was accepted (or the pipeline was gone already): its mapping goes with it.
+		const removed = await this.deleteMappings(mappings, cluster, pipeline);
+		const also = removed.length > 0 ? ` Deleted ${removed.map((f) => vscode.workspace.asRelativePath(f)).join(' and ')}.` : '';
+		if (outcome === 'deleted' || outcome === 'alreadyGone') {
+			this.removePipeline(cluster.id, pipeline.id);
+			if (outcome === 'alreadyGone') {
+				this.log(`Redpanda Cloud: pipeline ${name} (${pipeline.id}) was already gone from ${cluster.name}.`);
+				void this.showInfo(`Pipeline ${name} was already gone from ${cluster.name}; it is removed from the view.${also}`);
+			} else {
+				void this.showInfo(`Deleted pipeline ${name} ${on}.${also}`);
+			}
+			return { kind: 'deleted', pipelineId: pipeline.id, alreadyGone: outcome === 'alreadyGone', mappings: removed };
+		}
+		await this.loadPipelines(cluster.id, true);
+		this.fire();
+		if (outcome === 'timedOut') {
+			this.log(`Redpanda Cloud: pipeline ${name} ${on} is still listed ${Math.round(this.timeoutMs / 1000)} s after its delete.`);
+			void this.showInfo(`Pipeline ${name} is being deleted ${on}; the Cloud view shows it until it is gone.${also}`);
+			return { kind: 'timedOut', pipelineId: pipeline.id };
+		}
+		this.log(`Redpanda Cloud: pipeline ${name} ${on}: ${outcome.failed}`);
+		void this.showError(`Pipeline ${name} ${on}: ${outcome.failed}.${also}`);
+		return { kind: 'failed', message: outcome.failed, pipelineId: pipeline.id };
+	}
+
+	/** Deletes each mapping that still names this cluster and pipeline; the ones deleted. */
+	private async deleteMappings(files: readonly string[], cluster: CloudCluster, pipeline: CloudPipeline): Promise<string[]> {
+		const removed: string[] = [];
+		for (const file of files) {
+			if (!(await mapsTo(file, cluster.id, pipeline.id))) {
+				continue;
+			}
+			try {
+				await fs.promises.rm(file);
+				removed.push(file);
+				this.log(`Redpanda Cloud: deleted ${file}, the mapping to the deleted pipeline ${pipeline.displayName} (${pipeline.id}).`);
+			} catch (err) {
+				this.log(`Redpanda Cloud: could not delete ${file}: ${reasonOf(err)}`);
+				void this.showError(`Could not delete ${path.basename(file)}: ${reasonOf(err)}. It maps a config to the deleted pipeline ${pipeline.displayName}.`);
+			}
+		}
+		return removed;
 	}
 }
 
@@ -1322,13 +1729,34 @@ async function readMapping(file: string): Promise<{ readonly kind: 'none' } | Pa
 	return parseMapping(text);
 }
 
+/** `running`, `in error`; a state the extension does not know, as the API names it. */
+function stateWord(state: PipelineState): string {
+	if (state === 'STATE_ERROR') {
+		return 'in error';
+	}
+	return isKnownState(state) ? pipelineStateText(state).toLowerCase() : pipelineStateText(state);
+}
+
+/** Whether `file` is a deploy mapping naming this cluster and pipeline. */
+async function mapsTo(file: string, clusterId: string, pipelineId: string): Promise<boolean> {
+	const read = await readMapping(file);
+	return read.kind === 'ok' && read.mapping.clusterId === clusterId && read.mapping.pipelineId === pipelineId;
+}
+
+const ACTION_TEXT: Record<PipelineAction, { readonly title: string; readonly progress: string; readonly ongoing: string; readonly failed: string; readonly done: string }> = {
+	start: { title: 'Start pipeline', progress: 'Starting', ongoing: 'starting', failed: 'Start', done: 'Started' },
+	stop: { title: 'Stop pipeline', progress: 'Stopping', ongoing: 'stopping', failed: 'Stop', done: 'Stopped' },
+	delete: { title: 'Delete pipeline', progress: 'Deleting', ongoing: 'being deleted', failed: 'Delete', done: 'Deleted' },
+};
+
 function stateIcon(state: string | undefined): string {
 	switch (state) {
 		case 'STATE_RUNNING':
 			return 'pass';
 		case 'STATE_STARTING':
-		case 'STATE_STOPPING':
 			return 'sync~spin';
+		case 'STATE_STOPPING':
+			return 'loading~spin';
 		case 'STATE_ERROR':
 			return 'error';
 		case 'STATE_STOPPED':

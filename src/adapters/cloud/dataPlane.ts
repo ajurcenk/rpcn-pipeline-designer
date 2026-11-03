@@ -1,8 +1,9 @@
 // A cluster's Data Plane pipelines (AD-23, tickets 5.2, 5.3): list (`{dp}/v1/redpanda-connect/pipelines`,
 // following `next_page_token`), create (`POST`, 200 `{pipeline}` in `STATE_STARTING`; a config the
 // cluster's lint rejects is a 400 with `LintHint`s), get (`GET /{id}`) and update (`PUT /{id}`, which
-// replaces the pipeline, so every field is sent; an update of a running pipeline restarts it). Start,
-// stop and delete are a later story. No `vscode` import.
+// replaces the pipeline, so every field is sent; an update of a running pipeline restarts it), and
+// (ticket 5.4) start and stop (`PUT /{id}/start`, `PUT /{id}/stop`, each answering `{pipeline}`) and
+// delete (`DELETE /{id}`, answering `{}`; a GET then answers 404). No `vscode` import.
 
 import { authorizedJson, type CloudCall } from './controlPlane';
 import { joinUrl } from './http';
@@ -89,10 +90,35 @@ export function isRunning(state: PipelineState): boolean {
 const MAX_PAGES = 20;
 const PIPELINES = '/v1/redpanda-connect/pipelines';
 
-/** `STATE_RUNNING` → `Running`. */
+/** The states the extension knows; another state the API names is shown by its raw name. */
+export const KNOWN_STATES: readonly PipelineState[] = ['STATE_STARTING', 'STATE_RUNNING', 'STATE_STOPPING', 'STATE_STOPPED', 'STATE_ERROR', 'STATE_COMPLETED'];
+
+export function isKnownState(state: PipelineState): boolean {
+	return KNOWN_STATES.includes(state);
+}
+
+/** `STATE_RUNNING` → `running`; a state the extension does not know → `unknown` (the view's context value). */
+export function stateKey(state: PipelineState | undefined): string {
+	return state && isKnownState(state) ? state.replace(/^STATE_/, '').toLowerCase() : 'unknown';
+}
+
+/** Start is offered for a stopped, failed or completed pipeline. */
+export function canStart(state: PipelineState): boolean {
+	return state === 'STATE_STOPPED' || state === 'STATE_ERROR' || state === 'STATE_COMPLETED';
+}
+
+/** Stop is offered for a running or starting pipeline. */
+export function canStop(state: PipelineState): boolean {
+	return state === 'STATE_RUNNING' || state === 'STATE_STARTING';
+}
+
+/** `STATE_RUNNING` → `Running`; a state the extension does not know, as the API names it. */
 export function pipelineStateText(state: PipelineState): string {
+	if (!isKnownState(state)) {
+		return state || 'Unknown';
+	}
 	const short = state.replace(/^STATE_/, '').toLowerCase();
-	return short ? short[0].toUpperCase() + short.slice(1) : 'Unknown';
+	return short[0].toUpperCase() + short.slice(1);
 }
 
 /** The pipeline object of an answer as the extension keeps it. */
@@ -188,4 +214,30 @@ export async function getPipeline(call: CloudCall, dataplaneUrl: string, id: str
 		throw new Error('the cluster answered without the pipeline');
 	}
 	return pipeline;
+}
+
+/** `PUT /{id}/{action}` → `{pipeline}`. */
+async function lifecycle(call: CloudCall, dataplaneUrl: string, id: string, action: 'start' | 'stop'): Promise<CloudPipeline> {
+	const body = await authorizedJson<{ pipeline?: unknown }>(
+		call, 'PUT', joinUrl(dataplaneUrl, `${PIPELINES}/${encodeURIComponent(id)}/${action}`));
+	const pipeline = pipelineFrom(body.pipeline);
+	if (!pipeline) {
+		throw new Error(`the cluster answered the ${action} without the pipeline`);
+	}
+	return pipeline;
+}
+
+/** Starts pipeline `id` (`PUT /{id}/start`); the answer is the pipeline, usually in `STATE_STARTING`. */
+export function startPipeline(call: CloudCall, dataplaneUrl: string, id: string): Promise<CloudPipeline> {
+	return lifecycle(call, dataplaneUrl, id, 'start');
+}
+
+/** Stops pipeline `id` (`PUT /{id}/stop`); the answer is the pipeline, usually in `STATE_STOPPING`. */
+export function stopPipeline(call: CloudCall, dataplaneUrl: string, id: string): Promise<CloudPipeline> {
+	return lifecycle(call, dataplaneUrl, id, 'stop');
+}
+
+/** Deletes pipeline `id` (`DELETE /{id}`, answering `{}`); a GET then answers 404. */
+export async function deletePipeline(call: CloudCall, dataplaneUrl: string, id: string): Promise<void> {
+	await authorizedJson<unknown>(call, 'DELETE', joinUrl(dataplaneUrl, `${PIPELINES}/${encodeURIComponent(id)}`));
 }

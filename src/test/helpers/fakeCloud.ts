@@ -8,7 +8,10 @@
 //     sequence one step per call (30, 31: `STATE_ERROR` with or without a `status`), and
 //     `PUT …/pipelines/{id}` (ticket 5.3), which replaces it (45–48: a missing description or tags is
 //     cleared, a missing config 400; the new config linted as on create) and restarts a running or
-//     starting one (55–57: `RUNNING` right after the `PUT`, then `STARTING`, then `RUNNING`).
+//     starting one (55–57: `RUNNING` right after the `PUT`, then `STARTING`, then `RUNNING`), and
+//     (ticket 5.4) `PUT …/pipelines/{id}/stop` (41, 42: `STOPPING`, then `STOPPED`), `PUT …/{id}/start`
+//     (53, 54: `STARTING`, then `RUNNING`) and `DELETE …/pipelines/{id}` (59, 60: 200 `{}`, then 404).
+// `failWith` answers a chosen request with an error instead (one call, or every matching call).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
 
@@ -20,6 +23,14 @@ export interface FakeRequest {
 	readonly url: string;
 	readonly headers: http.IncomingHttpHeaders;
 	readonly body: string;
+}
+
+/** An error answer for the requests `when` matches (`times`: how many; default 1). */
+export interface FakeFailure {
+	readonly when: (req: FakeRequest) => boolean;
+	readonly status: number;
+	readonly body: unknown;
+	times?: number;
 }
 
 export interface FakeState {
@@ -86,6 +97,12 @@ export class FakeCloud {
 	createSequence: FakeState[] = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 	/** The states a running or starting pipeline walks through after an update (its GETs); the `PUT` answers the first. */
 	restartSequence: FakeState[] = [{ state: 'STATE_RUNNING' }, { state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+	/** The states a pipeline walks through after `PUT …/stop`; the `PUT` answers the first. */
+	stopSequence: FakeState[] = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
+	/** The states a pipeline walks through after `PUT …/start`; the `PUT` answers the first. */
+	startSequence: FakeState[] = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+	/** Error answers for chosen requests, checked before every other route (after the token check). */
+	failures: FakeFailure[] = [];
 	private server: http.Server | undefined;
 	private nextPipeline = 1;
 
@@ -180,6 +197,11 @@ export class FakeCloud {
 			// An expired or revoked JWT (well-formed): 401 on both APIs.
 			return [401, { code: 'UNAUTHENTICATED', message: 'token is expired or revoked', details: [] }];
 		}
+		const failure = this.failures.find((f) => (f.times ?? 1) > 0 && f.when(req));
+		if (failure) {
+			failure.times = (failure.times ?? 1) - 1;
+			return [failure.status, failure.body];
+		}
 		if (req.method === 'GET' && url.pathname === '/v1/clusters') {
 			if (this.clustersError) {
 				return [this.clustersError.status, this.clustersError.body];
@@ -210,11 +232,14 @@ export class FakeCloud {
 				},
 			}];
 		}
-		const dp = /^\/dp\/([^/]+)\/v1\/redpanda-connect\/pipelines(?:\/([^/]+))?$/.exec(url.pathname);
+		const dp = /^\/dp\/([^/]+)\/v1\/redpanda-connect\/pipelines(?:\/([^/]+)(?:\/(start|stop))?)?$/.exec(url.pathname);
 		if (dp) {
 			const c = this.options.clusters.find((x) => x.id === dp[1] && x.dataplane !== false);
 			if (!c) {
 				return [404, { code: 'NOT_FOUND', message: 'not found', details: [] }];
+			}
+			if (dp[3]) {
+				return this.lifecycle(c, req, decodeURIComponent(dp[2]), dp[3] as 'start' | 'stop');
 			}
 			return this.pipelines(c, req, dp[2] ? decodeURIComponent(dp[2]) : undefined);
 		}
@@ -337,6 +362,36 @@ export class FakeCloud {
 			}
 			return [200, { pipeline: this.shown(p) }];
 		}
+		if (req.method === 'DELETE' && id) {
+			const at = c.pipelines.findIndex((x) => x.id === id);
+			if (at < 0) {
+				return [404, { code: 'NOT_FOUND', message: `pipelines.connect.redpanda.com "${id}" not found`, details: [] }];
+			}
+			c.pipelines.splice(at, 1);
+			return [200, {}];
+		}
 		return [405, { code: 'UNIMPLEMENTED', message: 'not in the fake', details: [] }];
+	}
+
+	/** `PUT …/{id}/start` and `…/stop`: the pipeline in the first state of the sequence, walking the rest on its GETs. */
+	private lifecycle(c: FakeCluster, req: FakeRequest, id: string, action: 'start' | 'stop'): [number, unknown] {
+		if (req.method !== 'PUT') {
+			return [405, { code: 'UNIMPLEMENTED', message: 'not in the fake', details: [] }];
+		}
+		const p = c.pipelines.find((x) => x.id === id);
+		if (!p) {
+			return [404, { code: 'NOT_FOUND', message: `pipelines.connect.redpanda.com "${id}" not found`, details: [] }];
+		}
+		const [first, ...rest] = action === 'start' ? this.startSequence : this.stopSequence;
+		if (first) {
+			p.state = first.state;
+			if (first.error) {
+				p.status = { error: first.error };
+			} else {
+				delete p.status;
+			}
+		}
+		p.sequence = rest.length > 0 ? rest : [{ state: p.state, ...(p.status ? { error: p.status.error } : {}) }];
+		return [200, { pipeline: this.shown(p) }];
 	}
 }

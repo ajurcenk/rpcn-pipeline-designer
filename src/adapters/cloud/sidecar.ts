@@ -63,3 +63,23 @@ export function serializeMapping(m: DeployMapping): string {
 		...(m.pipelineName ? { pipelineName: m.pipelineName } : {}),
 	}, null, 2)}\n`;
 }
+
+/**
+ * The mapping files beside the config a pipeline's `rpcn-vscode/config` tag names (a path relative
+ * to a workspace folder, or absolute), only those inside one of `folders`: a tag pointing elsewhere
+ * (absolute outside them, or climbing out with `..`) gives none.
+ */
+export function taggedSidecars(tag: string | undefined, folders: readonly string[]): string[] {
+	if (!tag) {
+		return [];
+	}
+	const out = new Set<string>();
+	for (const folder of folders) {
+		const config = path.resolve(folder, tag);
+		const rel = path.relative(folder, config);
+		if (rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) {
+			out.add(sidecarPath(config));
+		}
+	}
+	return [...out];
+}
