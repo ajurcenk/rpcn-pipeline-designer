@@ -13,7 +13,7 @@ export interface PipelineResources {
 	readonly memory_shares: string;
 }
 
-/** One compute unit is 0.1 CPU and 400 MB (the `redpandaConnect.cloud.computeUnits` setting, 1–15). */
+/** One compute unit is 0.1 CPU and 400 MB; Deploy offers 1–15. */
 export const MIN_UNITS = 1;
 export const MAX_UNITS = 15;
 
@@ -240,4 +240,30 @@ export function stopPipeline(call: CloudCall, dataplaneUrl: string, id: string):
 /** Deletes pipeline `id` (`DELETE /{id}`, answering `{}`); a GET then answers 404. */
 export async function deletePipeline(call: CloudCall, dataplaneUrl: string, id: string): Promise<void> {
 	await authorizedJson<unknown>(call, 'DELETE', joinUrl(dataplaneUrl, `${PIPELINES}/${encodeURIComponent(id)}`));
+}
+
+/** One entry of Deploy's size pick. */
+export interface SizeChoice {
+	readonly label: string;
+	readonly description: string;
+	readonly resources: PipelineResources;
+}
+
+/**
+ * Deploy's size pick: 1–15 compute units with their CPU and memory, and the one pre-set (`preset`,
+ * an index): `current`, the deployed pipeline's size, marked " · current" (a size that is no whole
+ * number of units from 1 to 15 comes first as "Current size"), or 1 unit for a new pipeline.
+ */
+export function sizeChoices(current: PipelineResources | undefined): { readonly items: SizeChoice[]; readonly preset: number } {
+	const currentUnits = unitsOf(current);
+	const items: SizeChoice[] = Array.from({ length: MAX_UNITS - MIN_UNITS + 1 }, (_, i) => {
+		const units = MIN_UNITS + i;
+		const resources = resourcesOf(units);
+		return { label: `${units}`, description: `${resourcesText(resources)}${units === currentUnits ? ' · current' : ''}`, resources };
+	});
+	if (current && (currentUnits === undefined || currentUnits > MAX_UNITS)) {
+		items.unshift({ label: 'Current size', description: resourcesText(current), resources: current });
+	}
+	const preset = items.findIndex((i) => sameResources(i.resources, current ?? resourcesOf(MIN_UNITS)));
+	return { items, preset: Math.max(0, preset) };
 }

@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import type { CloudCall } from '../../../adapters/cloud/controlPlane';
 import {
-	isRunning, pipelineFrom, resourcesOf, resourcesText, sameResources, unitsOf, updatePipeline,
+	isRunning, pipelineFrom, resourcesOf, resourcesText, sameResources, sizeChoices, unitsOf, updatePipeline,
 } from '../../../adapters/cloud/dataPlane';
 import { CloudError } from '../../../adapters/cloud/errors';
 import type { FetchLike } from '../../../adapters/cloud/http';
@@ -86,5 +86,29 @@ suite('Cloud update, resources and the deploy mapping (ticket 5.3, AD-23)', () =
 			}),
 			(err: unknown) => err instanceof CloudError && err.status === 400 && err.hints.length === 1,
 		);
+	});
+
+	test('sizeChoices: 1–15 units with CPU and memory; pre-set to 1 for a new pipeline, else the current size, marked current; another size first', () => {
+		const fresh = sizeChoices(undefined);
+		assert.strictEqual(fresh.items.length, 15);
+		assert.deepStrictEqual(fresh.items.map((i) => i.label), Array.from({ length: 15 }, (_, i) => String(i + 1)));
+		assert.strictEqual(fresh.items[1].description, '2 compute units (0.2 CPU, 800 MB)');
+		assert.strictEqual(fresh.preset, 0);
+		assert.deepStrictEqual(fresh.items[fresh.preset].resources, resourcesOf(1));
+		assert.ok(fresh.items.every((i) => !i.description.includes('current')));
+
+		const three = sizeChoices({ cpu_shares: '300m', memory_shares: '1200M' });
+		assert.strictEqual(three.items.length, 15);
+		assert.strictEqual(three.preset, 2);
+		assert.strictEqual(three.items[2].description, '3 compute units (0.3 CPU, 1200 MB) · current');
+		assert.strictEqual(three.items.filter((i) => i.description.endsWith('· current')).length, 1);
+
+		for (const odd of [{ cpu_shares: '150m', memory_shares: '400M' }, resourcesOf(20)]) {
+			const other = sizeChoices(odd);
+			assert.strictEqual(other.items.length, 16, JSON.stringify(odd));
+			assert.strictEqual(other.items[0].label, 'Current size');
+			assert.deepStrictEqual(other.items[0].resources, odd);
+			assert.strictEqual(other.preset, 0, 'the current size is pre-set');
+		}
 	});
 });

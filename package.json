@@ -85,13 +85,6 @@
           "default": [],
           "scope": "resource",
           "markdownDescription": "Names of secret environment variables for lint, run and the Bloblang checks (live errors and the test panel). Only the names are here, so this is safe to commit; the values are kept in VS Code's secret storage on this machine, per workspace folder, and set with **Redpanda Connect: Set secret variable** (which also adds the name here). They reach the binary in its process environment only, so `#redpandaConnect.env#` and `#redpandaConnect.envFile#` win for the same name. A name must match `[A-Za-z_][A-Za-z0-9_]*`. User, workspace and folder lists do not merge: the most specific list is used."
-        },
-        "redpandaConnect.cloud.computeUnits": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 15,
-          "scope": "resource",
-          "markdownDescription": "The size of the pipelines **Deploy to Redpanda Cloud** creates and updates, in compute units: one unit is 0.1 CPU and 400 MB of memory (1–15). When unset, the first deploy asks and saves the choice to the workspace settings (the folder's settings in a multi-root workspace). Changing it changes a deployed pipeline's size on its next deploy."
         }
       }
     },

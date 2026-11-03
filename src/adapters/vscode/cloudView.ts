@@ -14,12 +14,13 @@
 //
 // **Deploy to Redpanda Cloud** (command and editor-title button on a detected, saved config) saves
 // a dirty config first (as Run does; an untitled one is refused) and sends the saved file's text
-// unchanged, with `redpandaConnect.cloud.computeUnits` compute units (asked for on the first deploy
-// when unset, and saved to the workspace settings). The first deploy asks for a cluster (offering an
-// update of a pipeline there already tagged with this file) and a name (the file's name without its
-// extension), creates the pipeline with a tag naming the file, and writes the mapping beside the file
-// (`orders.yaml` → `orders.cloud.json`, ids only, ticket 5.3). A deploy with a mapping reads the
-// mapped pipeline and replaces it (`PUT`, every field: the deployed name, description and other tags
+// unchanged, at the size the user picks on every deploy (compute units: 1 = 0.1 CPU + 400 MB; pre-set
+// to the deployed pipeline's size on an update, to 1 on a create; nothing is saved). The first
+// deploy asks for a cluster (offering an update of a pipeline there already tagged with this file)
+// and a name (the file's name without its extension), creates the pipeline with a tag naming the
+// file, and writes the mapping beside the file (`orders.yaml` → `orders.cloud.json`, ids only,
+// ticket 5.3). A deploy with a mapping reads the mapped pipeline and replaces it (`PUT`, every
+// field: the deployed name, description and other tags
 // kept); a running or starting one is restarted by that, so a diff of the deployed and the local
 // config opens first and a modal confirmation is needed. Config and size as deployed: nothing is
 // sent. The state is followed in a progress notification until it is Running, Error, Stopped or
@@ -44,7 +45,7 @@ import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
 import {
 	canStart, canStop, CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, deletePipeline, FINAL_STATES,
-	getPipeline, isKnownState, isRunning, listPipelines, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, startPipeline, stateKey,
+	getPipeline, isKnownState, isRunning, listPipelines, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, type SizeChoice, sizeChoices, startPipeline, stateKey,
 	stopPipeline, type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, CloudError, describeCloudError, hintLines, maskCredentials } from '../cloud/errors';
@@ -82,9 +83,6 @@ export const DETAILS_UNREAD = 'could not read its details';
 /** A stored account's row until the user asks for the clusters (nothing is requested on its own). */
 export const NOT_READ_TEXT = 'Refresh to read the clusters.';
 
-/** The compute-unit setting (ticket 5.3): 1 unit = 0.1 CPU + 400 MB. */
-export const UNITS_SETTING = 'redpandaConnect.cloud.computeUnits';
-const UNITS_KEY = 'cloud.computeUnits';
 /** The scheme of a pipeline's deployed config, shown read-only. */
 export const DEPLOYED_SCHEME = 'redpanda-cloud';
 export const DEPLOYED_NOT_LOADED_TEXT = '# The deployed config of this pipeline is not loaded in this window. Deploy the config again to compare.\n';
@@ -133,8 +131,11 @@ export interface CloudUi {
 	pickCluster(clusters: readonly CloudCluster[], title: string): Thenable<CloudCluster | undefined>;
 	/** A palette action's pipeline, from every cluster's; `undefined`: cancelled. */
 	pickPipeline(pipelines: readonly PipelineChoice[], title: string): Thenable<PipelineChoice | undefined>;
-	/** The compute units of the first deploy (1–15, default 1); `undefined`: cancelled. */
-	pickUnits(title: string): Thenable<number | undefined>;
+	/**
+	 * The pipeline's size, shown on every deploy: pre-set to `current` (the deployed pipeline's, on an
+	 * update) or 1 compute unit (a new pipeline). `undefined`: cancelled.
+	 */
+	pickUnits(title: string, current: PipelineResources | undefined): Thenable<PipelineResources | undefined>;
 	error(message: string, ...actions: string[]): Thenable<string | undefined>;
 	info(message: string, ...actions: string[]): Thenable<string | undefined>;
 	/** A modal question; `undefined`: cancelled. */
@@ -186,18 +187,28 @@ export const defaultCloudUi: CloudUi = {
 		);
 		return picked?.choice;
 	},
-	pickUnits: async (title) => {
-		const items = Array.from({ length: MAX_UNITS - MIN_UNITS + 1 }, (_, i) => {
-			const units = MIN_UNITS + i;
-			return { label: String(units), description: resourcesText(resourcesOf(units)), units };
+	pickUnits: (title, current) => new Promise<PipelineResources | undefined>((resolve) => {
+		type Item = vscode.QuickPickItem & SizeChoice;
+		const { items, preset } = sizeChoices(current);
+		const pick = vscode.window.createQuickPick<Item>();
+		pick.title = title;
+		pick.placeholder = current
+			? 'The pipeline\'s size (its current size is selected): 1 compute unit is 0.1 CPU and 400 MB'
+			: 'The pipeline\'s size: 1 compute unit is 0.1 CPU and 400 MB';
+		pick.items = items;
+		pick.activeItems = [items[preset]];
+		pick.ignoreFocusOut = true;
+		let chosen: PipelineResources | undefined;
+		pick.onDidAccept(() => {
+			chosen = pick.selectedItems[0]?.resources ?? pick.activeItems[0]?.resources;
+			pick.hide();
 		});
-		const picked = await vscode.window.showQuickPick(items, {
-			title,
-			placeHolder: `Compute units for the pipelines deployed from this workspace (1 unit = 0.1 CPU, 400 MB), saved as ${UNITS_SETTING}`,
-			ignoreFocusOut: true,
+		pick.onDidHide(() => {
+			pick.dispose();
+			resolve(chosen);
 		});
-		return picked?.units;
-	},
+		pick.show();
+	}),
 	error: (message, ...actions) => vscode.window.showErrorMessage(message, ...actions),
 	info: (message, ...actions) => vscode.window.showInformationMessage(message, ...actions),
 	confirm: (message, ...actions) => vscode.window.showWarningMessage(message, { modal: true }, ...actions),
@@ -968,10 +979,6 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				return NOT_STARTED;
 			}
 		}
-		const configured = this.configuredUnits(doc.uri);
-		if (configured === 'invalid') {
-			return NOT_STARTED;
-		}
 		this.requested = true;
 		await this.loadClusters(false);
 		if (this.clusters?.kind !== 'ok') {
@@ -1001,18 +1008,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 		const { cluster, dp } = target;
 		const existing = read.kind === 'ok' ? read.mapping : undefined;
-		// The size: the setting; unset, an update keeps the deployed size (nothing saved), a create asks.
-		let resources: PipelineResources;
-		if (configured !== undefined) {
-			resources = resourcesOf(configured);
-		} else if (target.kind === 'update' && target.pipeline.resources) {
-			resources = target.pipeline.resources;
-		} else {
-			const units = await this.askUnits(doc.uri, file);
-			if (units === undefined) {
-				return NOT_STARTED;
-			}
-			resources = resourcesOf(units);
+		// The size, shown every time: an update pre-set to the deployed pipeline's, a create to 1 unit.
+		const resources = await this.ui.pickUnits(
+			`Deploy ${file} to ${cluster.name}: the size of ${target.kind === 'update' ? target.pipeline.displayName : target.name}`,
+			target.kind === 'update' ? target.pipeline.resources : undefined);
+		if (!resources) {
+			return NOT_STARTED;
 		}
 		// As Run: a dirty config is saved first; the saved file's text is sent unchanged.
 		if (doc.isDirty && !(await doc.save())) {
@@ -1071,42 +1072,6 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.updateAndFollow(cluster, dp, deployed.id, update, wasRunning, report, mapTo));
 		this.report(file, name, cluster, result, 'update');
 		return result;
-	}
-
-	/** The compute-unit setting; `undefined`: unset; `'invalid'`: said so. */
-	private configuredUnits(uri: vscode.Uri): number | undefined | 'invalid' {
-		// Read the levels themselves: VS Code gives a setting without a default the type's (0) from `get`.
-		const levels = vscode.workspace.getConfiguration('redpandaConnect', uri).inspect<unknown>(UNITS_KEY);
-		const value = levels?.workspaceFolderValue ?? levels?.workspaceValue ?? levels?.globalValue;
-		if (value === undefined || value === null) {
-			return undefined;
-		}
-		if (typeof value === 'number' && Number.isInteger(value) && value >= MIN_UNITS && value <= MAX_UNITS) {
-			return value;
-		}
-		void this.showError(`${UNITS_SETTING} must be a whole number from ${MIN_UNITS} to ${MAX_UNITS}; it is ${JSON.stringify(value)}. Nothing was deployed.`);
-		return 'invalid';
-	}
-
-	/**
-	 * A create with the setting unset: the user's choice in a prompt, saved to the workspace settings
-	 * (the folder's in a multi-root workspace; the user settings with no folder open). `undefined`: cancelled.
-	 */
-	private async askUnits(uri: vscode.Uri, file: string): Promise<number | undefined> {
-		const config = vscode.workspace.getConfiguration('redpandaConnect', uri);
-		const units = await this.ui.pickUnits(`Deploy ${file}: the pipeline's size`);
-		if (units === undefined || !Number.isInteger(units) || units < MIN_UNITS || units > MAX_UNITS) {
-			return undefined;
-		}
-		const { target, where } = unitsTarget(uri);
-		try {
-			await config.update(UNITS_KEY, units, target);
-			this.log(`Redpanda Cloud: ${UNITS_SETTING} set to ${units} in ${where}.`);
-		} catch (err) {
-			this.log(`Redpanda Cloud: could not save ${UNITS_SETTING}: ${reasonOf(err)}`);
-			void this.showError(`Could not save ${UNITS_SETTING} in ${where}: ${reasonOf(err)}. This deploy uses ${units}.`);
-		}
-		return units;
 	}
 
 	/** The clusters that offer the pipeline API, one picked; `undefined` (said so when there is none): no deploy. */
@@ -1702,18 +1667,6 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 export function deployedConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
 	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
 	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.yaml` });
-}
-
-/** Where the first deploy's compute-unit choice is saved. */
-export function unitsTarget(uri: vscode.Uri): { readonly target: vscode.ConfigurationTarget; readonly where: string } {
-	const folder = vscode.workspace.getWorkspaceFolder(uri);
-	if (vscode.workspace.workspaceFile && folder) {
-		return { target: vscode.ConfigurationTarget.WorkspaceFolder, where: `the settings of the folder ${folder.name}` };
-	}
-	if ((vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
-		return { target: vscode.ConfigurationTarget.Workspace, where: 'the workspace settings' };
-	}
-	return { target: vscode.ConfigurationTarget.Global, where: 'the user settings (no folder is open)' };
 }
 
 async function readMapping(file: string): Promise<{ readonly kind: 'none' } | ParsedMapping> {

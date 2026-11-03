@@ -13,11 +13,11 @@ import * as vscode from 'vscode';
 import {
 	CloudView, CLIENT_ID_KEY, CLIENT_SECRET_KEY, NOT_READ_TEXT, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, DEPLOY_UNTITLED_MESSAGE, DISCONNECT_COMMAND, type CloudItem, type CloudUi,
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
-	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION, unitsTarget,
+	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 } from '../../../adapters/vscode/cloudView';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
-import { CONFIG_TAG, resourcesOf } from '../../../adapters/cloud/dataPlane';
+import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { type ExtensionApi } from '../../../extension';
 import { FAKE_LINT_MARKER, FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
 import { makeTempDir } from '../../helpers/fakeBinary';
@@ -65,8 +65,11 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	let confirms: (string | undefined)[] = [];
 	/** Each modal question with its actions. */
 	let confirmed: { message: string; actions: string[] }[] = [];
+	/** The size picks, in order: a number of units, or `undefined` (Escape); none left: the pre-set size is accepted. */
 	let units: (number | undefined)[] = [];
 	let unitsAsked = 0;
+	/** The size each pick was pre-set to (`undefined`: a new pipeline, pre-set to 1 unit). */
+	let unitsPresets: (PipelineResources | undefined)[] = [];
 	/** The palette's pipeline picks (by name), and what each offered. */
 	let pipelinePicks: (string | undefined)[] = [];
 	let pipelinesOffered: PipelineChoice[][] = [];
@@ -100,6 +103,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		confirmed = [];
 		units = next.units ?? [];
 		unitsAsked = 0;
+		unitsPresets = [];
 		asked = [];
 		pickedFrom = [];
 	}
@@ -124,10 +128,6 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	const posts = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'POST' && r.url.endsWith('/v1/redpanda-connect/pipelines'));
 	const diffTabs = () => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
 		.filter((t) => t.input instanceof vscode.TabInputTextDiff && t.input.original.scheme === DEPLOYED_SCHEME);
-
-	async function setUnits(value: number | undefined): Promise<void> {
-		await vscode.workspace.getConfiguration('redpandaConnect').update('cloud.computeUnits', value, vscode.ConfigurationTarget.Global);
-	}
 
 	/** Replaces the document's text in the editor (unsaved: the deploy saves it). */
 	async function editConfig(doc: vscode.TextDocument, text: string): Promise<void> {
@@ -203,9 +203,14 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 				allMessages.push(m);
 				return confirms.shift();
 			},
-			pickUnits: async () => {
+			pickUnits: async (_title, current) => {
 				unitsAsked++;
-				return units.shift();
+				unitsPresets.push(current);
+				if (units.length === 0) {
+					return current ?? resourcesOf(1);
+				}
+				const next = units.shift();
+				return next === undefined ? undefined : resourcesOf(next);
 			},
 			pickPipeline: async (choices) => {
 				pipelinesOffered.push([...choices]);
@@ -214,7 +219,6 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 				return choices.find((c) => c.pipeline.displayName === name);
 			},
 		};
-		await setUnits(1);
 	});
 
 	setup(async () => {
@@ -248,9 +252,6 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 				fs.rmSync(path.join(dir, f));
 			}
 		}
-		if (vscode.workspace.getConfiguration('redpandaConnect').inspect('cloud.computeUnits')?.globalValue !== 1) {
-			await setUnits(1);
-		}
 		firstRequest = fake.requests.length;
 		script({});
 	});
@@ -260,7 +261,6 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	});
 
 	suiteTeardown(async () => {
-		await setUnits(undefined);
 		await cloud().disconnect();
 		cloud().ui = originalUi;
 		await fake?.stop();
@@ -648,33 +648,33 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 
 	// --- ticket 5.3: deploy again updates the mapped pipeline ---
 
-	test('FIRST_DEPLOY: the compute-unit prompt (Escape creates nothing), saved to the setting; created with those resources; the mapping written', async () => {
+	test('FIRST_DEPLOY: the size pick, pre-set to 1 unit (Escape creates nothing); created with the picked size; the mapping written; nothing saved', async () => {
 		await connect();
-		await setUnits(undefined);
 		const doc = await openConfig(configFile);
 		const before = fake.requests.length;
 		script({ units: [undefined], picks: ['rpc-vilnius'], inputs: ['orders'] });
 		const cancelled = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(cancelled?.kind, 'notStarted');
 		assert.strictEqual(unitsAsked, 1);
+		assert.deepStrictEqual(unitsPresets, [undefined], 'a new pipeline: pre-set to 1 unit');
 		assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET'), 'nothing created');
 		assert.ok(!fs.existsSync(sidecarFile()));
-		assert.strictEqual(unitsTarget(doc.uri).target, vscode.ConfigurationTarget.Global, 'no folder open: the user settings');
-		assert.strictEqual(vscode.workspace.getConfiguration('redpandaConnect').inspect('cloud.computeUnits')?.globalValue, undefined);
 
 		script({ units: [2], picks: ['rpc-vilnius'], inputs: ['orders'] });
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
 		assert.deepStrictEqual(lastCreate()!.resources, { cpu_shares: '200m', memory_shares: '800M' });
-		// No folder is open in the stable run, so the choice goes to the user settings.
-		assert.strictEqual(vscode.workspace.getConfiguration('redpandaConnect').inspect('cloud.computeUnits')?.globalValue, 2);
+		assert.ok(!('redpandaConnect.cloud.computeUnits' in vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON.contributes.configuration.properties), 'no size setting');
 		const mapping = fs.readFileSync(sidecarFile(), 'utf8');
 		assert.ok(mapping.endsWith('}\n'));
 		assert.deepStrictEqual(JSON.parse(mapping), { clusterId: 'cvilnius0000000000aa', pipelineId: result?.pipelineId, clusterName: 'rpc-vilnius', pipelineName: 'orders' });
 		assert.ok(!mapping.includes('input:'), 'no config text in the mapping');
+
+		// Deploying the same pipeline again: the pick is shown again, pre-set to its deployed size.
 		script({});
-		await vscode.commands.executeCommand(DEPLOY_COMMAND, doc.uri);
-		assert.strictEqual(unitsAsked, 0, 'asked once: the setting is set now');
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'unchanged');
+		assert.strictEqual(unitsAsked, 1, 'asked on every deploy');
+		assert.deepStrictEqual(unitsPresets, [{ cpu_shares: '200m', memory_shares: '800M' }]);
 	});
 
 	test('UPDATE_RUNNING: a diff of the deployed and local config and "Replace and restart"; one create and one PUT to the same id with the kept name, description and tags; followed through the restart', async () => {
@@ -746,10 +746,9 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders on rpc-vilnius is already deployed from orders.yaml, nothing changed.']);
 	});
 
-	test('RESOURCES_ONLY: the setting changed, the config not: a confirmation naming the old and new size, no diff; PUT with the new resources', async () => {
+	test('RESOURCES_ONLY: another size picked, the config unchanged: a confirmation naming the old and new size, no diff; PUT with the new resources', async () => {
 		const { doc } = await deployOnce();
-		await setUnits(3);
-		script({ confirms: [REPLACE_ACTION] });
+		script({ units: [3], confirms: [REPLACE_ACTION] });
 		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
 		assert.strictEqual(diffTabs().length, 0, 'no diff');
@@ -878,19 +877,18 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(fs.readFileSync(sidecarFile(), 'utf8'), handWritten);
 	});
 
-	test('the setting unset and a mapping: no prompt; the deployed size is kept, nothing saved', async () => {
+	test('a mapped pipeline of another size: the pick is pre-set to its deployed size, so deploying again keeps it', async () => {
 		const { doc } = await deployOnce();
 		const p = fake.cluster('cvilnius0000000000aa').pipelines[0];
 		p.resources = { cpu_shares: '300m', memory_shares: '1200M' };
-		await setUnits(undefined);
 		script({});
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'unchanged');
 		await editConfig(doc, `${CONFIG}# changed\n`);
 		script({ confirms: [REPLACE_ACTION] });
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
-		assert.strictEqual(unitsAsked, 0, 'no compute-unit prompt');
+		assert.strictEqual(unitsAsked, 1);
+		assert.deepStrictEqual(unitsPresets, [{ cpu_shares: '300m', memory_shares: '1200M' }], 'pre-set to the deployed size');
 		assert.deepStrictEqual(JSON.parse(puts()[0].body).resources, { cpu_shares: '300m', memory_shares: '1200M' });
-		assert.strictEqual(vscode.workspace.getConfiguration('redpandaConnect').inspect('cloud.computeUnits')?.globalValue, undefined, 'nothing saved');
 	});
 
 	test('no mapping, the cluster\'s pipeline list fails: the tagged check cannot run, so nothing is created', async () => {
