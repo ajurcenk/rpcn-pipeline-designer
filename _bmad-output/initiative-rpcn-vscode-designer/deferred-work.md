@@ -111,3 +111,12 @@
 - source_plan: `_bmad-output/backlog/bug-the-graph-navigation-tests-are-flaky-on-ci-plan.md`
   summary: Suite 84's `LATE_USER_EDITOR` ("another text editor made active past the wait: the late sequence moves no focus to the YAML") fails about 1 in 4 to 5 runs when both CPUs are kept busy locally ("the YAML group is not locked: 2 !== 1").
   evidence: bug 37's loaded runs (2026-10-29, `taskset -c 0,1` with two busy loops): 3 failures in 13 runs of every graph suite, logs in `.vscode-test/bug37/fix-*.log` on that machine. It uses neither `withGraph` nor bug 37's wait; it has not failed on CI. Not checked on the commit before bug 37 (the user chose to commit first); the same lock-sequence family as bug 19 and the floor's RETAKE_STEAL.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
+  summary: Deploy includes the `redpandaConnect.resourceFiles` resources in the config sent to the Cloud, or refuses with the reason (epic 5 R7, ticket 5.6's second part).
+  evidence: The user split ticket 5.6 on 2026-11-03 ("Split: variables first"); 5.6 now translates variables only, so a config that relies on resource files deploys without them.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
+  summary: Deploy reports a config's local-only parts (stdin, stdout, local files and programs, `http_server`) as warnings in the Problems panel (epic 5 R7, ticket 5.6's third part).
+  evidence: The user split ticket 5.6 on 2026-11-03 ("Split: variables first"); until this is built, such a config deploys with no warning.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
+  summary: Undo steps in the full stable run fail intermittently: Lint on save FIX_ALL ("one undo step reverts all three") and the Bloblang test panel's DELETED + UNDO, UNDO_RELINK (each with and without WITH_GRAPH) and DIRTY_RECORD.
+  evidence: 2026-11-03, VS Code 1.144.1: 6 failures in one full run and 7 (undo / `applyEdit`) in another, on ticket 5.6's code; the next full run passed (1189), and the Bloblang panel suite alone passed twice. The suites run before 96-cloud, and 5.6 touches none of their code. Not reproduced on the commit before 5.6 (not tried); a full run's earlier suites, or machine load, are the likely cause.

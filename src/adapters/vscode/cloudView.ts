@@ -14,7 +14,9 @@
 //
 // **Deploy to Redpanda Cloud** (command and editor-title button on a detected, saved config) saves
 // a dirty config first (as Run does; an untitled one is refused) and sends the saved file's text
-// unchanged, at the size the user picks on every deploy (compute units: 1 = 0.1 CPU + 400 MB; pre-set
+// translated for the Cloud (ticket 5.6, `src/core/cloudTranslate.ts`: each `${VAR}` becomes
+// `${secrets.VAR}`, a default kept; a name that is not a secret id, or a Bloblang `env(` call, is
+// refused with its line before anything is asked or sent), at the size the user picks on every deploy (compute units: 1 = 0.1 CPU + 400 MB; pre-set
 // to the deployed pipeline's size on an update, to 1 on a create; nothing is saved). The first
 // deploy asks for a cluster (offering an update of a pipeline there already tagged with this file)
 // and a name (the file's name without its extension), creates the pipeline with a tag naming the
@@ -23,7 +25,7 @@
 // field: the deployed name, description and other tags
 // kept); a running or starting one is restarted by that, so a diff of the deployed and the local
 // config opens first and a modal confirmation is needed. Config and size as deployed: nothing is
-// sent. The state is followed in a progress notification until it is Running, Error, Stopped or
+// sent (compared with the translated text; the diff's right side is that text). The state is followed in a progress notification until it is Running, Error, Stopped or
 // Completed (at most 3 minutes), through the restart of a running one. A config the cluster rejects
 // shows each `LintHint`'s line and text. The config file is never changed.
 //
@@ -52,6 +54,7 @@ import { asCloudError, CloudError, describeCloudError, hintLines, maskCredential
 import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
+import { translateForCloud } from '../../core/cloudTranslate';
 import type { SecretStore } from './secrets';
 
 export const CLOUD_VIEW_ID = 'redpandaConnect.cloud';
@@ -927,13 +930,16 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		return this.deployedConfigs.get(uri.toString()) ?? DEPLOYED_NOT_LOADED_TEXT;
 	}
 
-	/** Shows `pipeline`'s deployed config beside the local file (deployed ↔ local). */
-	private async showDiff(cluster: CloudCluster, pipeline: CloudPipeline, local: vscode.Uri, file: string): Promise<void> {
+	/** Shows `pipeline`'s deployed config beside the text that would be sent (deployed ↔ as sent, both read-only). */
+	private async showDiff(cluster: CloudCluster, pipeline: CloudPipeline, sent: string, file: string): Promise<void> {
 		const left = deployedConfigUri(cluster.id, pipeline.id, pipeline.displayName);
+		const right = sentConfigUri(cluster.id, pipeline.id, pipeline.displayName);
 		this.deployedConfigs.set(left.toString(), pipeline.configYaml);
+		this.deployedConfigs.set(right.toString(), sent);
 		this.deployedChanged.fire(left);
+		this.deployedChanged.fire(right);
 		try {
-			await vscode.commands.executeCommand('vscode.diff', left, local, `${pipeline.displayName} on ${cluster.name} ↔ ${file}`, { preview: true });
+			await vscode.commands.executeCommand('vscode.diff', left, right, `${pipeline.displayName} (deployed) ↔ ${file} (as sent)`, { preview: true });
 		} catch (err) {
 			this.log(`Redpanda Cloud: could not open the diff of ${file}: ${reasonOf(err)}`);
 		}
@@ -972,6 +978,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			return NOT_STARTED;
 		}
 		const file = path.basename(doc.uri.fsPath);
+		// Translated before anything is asked or sent, so a refusal costs no prompt and no request; done
+		// again just before sending, so edits made during the prompts are sent.
+		if ((await this.savedAndTranslated(doc, file)) === undefined) {
+			return NOT_STARTED;
+		}
 		await this.ready;
 		if (!this.account) {
 			const choice = await this.showInfo(NOT_CONNECTED_MESSAGE, CONNECT_ACTION);
@@ -1015,13 +1026,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		if (!resources) {
 			return NOT_STARTED;
 		}
-		// As Run: a dirty config is saved first; the saved file's text is sent unchanged.
-		if (doc.isDirty && !(await doc.save())) {
-			this.log(`Redpanda Cloud: ${file} could not be saved; not deployed.`);
-			void this.showError(`${file} could not be saved, so it was not deployed.`);
+		const configYaml = await this.savedAndTranslated(doc, file);
+		if (configYaml === undefined) {
 			return NOT_STARTED;
 		}
-		const configYaml = await fs.promises.readFile(doc.uri.fsPath, 'utf8');
 		// A valid mapping naming these ids is never rewritten.
 		const mapTo = async (p: CloudPipeline) => {
 			if (existing?.clusterId !== cluster.id || existing.pipelineId !== p.id) {
@@ -1043,14 +1051,14 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		const sameSize = sameResources(deployed.resources, resources);
 		if (sameConfig && sameSize) {
 			await mapTo(deployed);
-			this.log(`Redpanda Cloud: pipeline ${name} (${deployed.id}) on ${cluster.name} already has ${file} as saved (${stateWord(deployed.state)}), with ${resourcesText(resources)}; nothing was sent.`);
+			this.log(`Redpanda Cloud: pipeline ${name} (${deployed.id}) on ${cluster.name} already has ${file} as saved and translated (${stateWord(deployed.state)}), with ${resourcesText(resources)}; nothing was sent.`);
 			void this.showInfo(`Pipeline ${name} on ${cluster.name} is already deployed from ${file}, nothing changed.`);
 			return { kind: 'unchanged', pipelineId: deployed.id };
 		}
 		const wasRunning = isRunning(deployed.state);
 		if (wasRunning) {
 			if (!sameConfig) {
-				await this.showDiff(cluster, deployed, doc.uri, file);
+				await this.showDiff(cluster, deployed, configYaml, file);
 			}
 			const size = sameSize ? '' : `Its size changes from ${resourcesText(deployed.resources)} to ${resourcesText(resources)}.`;
 			const what = sameConfig
@@ -1072,6 +1080,27 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.updateAndFollow(cluster, dp, deployed.id, update, wasRunning, report, mapTo));
 		this.report(file, name, cluster, result, 'update');
 		return result;
+	}
+
+	/**
+	 * As Run: a dirty config is saved first; the saved file's text, translated for the Cloud (the file
+	 * itself is never changed). `undefined`: not saved, or refused (each problem shown and logged).
+	 */
+	private async savedAndTranslated(doc: vscode.TextDocument, file: string): Promise<string | undefined> {
+		if (doc.isDirty && !(await doc.save())) {
+			this.log(`Redpanda Cloud: ${file} could not be saved; not deployed.`);
+			void this.showError(`${file} could not be saved, so it was not deployed.`);
+			return undefined;
+		}
+		const translation = translateForCloud(await fs.promises.readFile(doc.uri.fsPath, 'utf8'));
+		if (translation.kind === 'ok') {
+			return translation.text;
+		}
+		const { problems } = translation;
+		this.log(`Redpanda Cloud: ${file} was not deployed: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
+		problems.forEach((p) => this.log(`  ${file}: ${p.message}`));
+		void this.showError(`${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}. Nothing was sent.`);
+		return undefined;
 	}
 
 	/** The clusters that offer the pipeline API, one picked; `undefined` (said so when there is none): no deploy. */
@@ -1667,6 +1696,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 export function deployedConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
 	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
 	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.yaml` });
+}
+
+/** The right side of the deploy's diff: the local config as it would be sent. */
+export function sentConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
+	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
+	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.local.yaml` });
 }
 
 async function readMapping(file: string): Promise<{ readonly kind: 'none' } | ParsedMapping> {

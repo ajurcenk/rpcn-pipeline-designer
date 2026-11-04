@@ -8,10 +8,13 @@
 //     backslash-escaped, as in a double-quoted YAML scalar). A computed name is not read.
 // Only names a variable can have (`[A-Za-z_][A-Za-z0-9_]*`) are returned: no source can set another.
 
-/** The binary's own pattern for an env reference (`${NAME}` or `${NAME:default}`). */
-const REFERENCE = /\$\{([0-9A-Za-z_.]+)(:(?:\$\{[^}]+\}|[^}])*)?\}/g;
-/** `env("NAME")`, `env('NAME')`, optionally with `\"` quotes. */
-const ENV_CALL = /\benv\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1\s*\)/g;
+/**
+ * The binary's own pattern for an env reference (`${NAME}` or `${NAME:default}`); shared with the
+ * Cloud translation (`cloudTranslate.ts`). Global: use with `matchAll` or `replace` only.
+ */
+export const REFERENCE = /\$\{([0-9A-Za-z_.]+)(:(?:\$\{[^}]+\}|[^}])*)?\}/g;
+/** `env("NAME")`, `env('NAME')`, optionally with `\"` quotes. Global, as `REFERENCE`. */
+export const ENV_CALL = /\benv\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1\s*\)/g;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface EnvUse {

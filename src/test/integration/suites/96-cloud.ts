@@ -5,7 +5,8 @@
 // fake received, every message, output line and view item is checked for the client secret and the
 // tokens at the end (NO_LEAK). Ticket 5.3's update flow (the mapping beside the config, `PUT`, the
 // diff and confirmation, the compute-unit setting) is the second half; ticket 5.4's Start, Stop and
-// Delete pipeline… (rows, palette, the mapping deleted with its pipeline) the third.
+// Delete pipeline… (rows, palette, the mapping deleted with its pipeline) the third; ticket 5.6's translation
+// of variables into secrets (what the fake receives, the refusals, UNCHANGED and the diff) the fourth.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -68,6 +69,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	/** The size picks, in order: a number of units, or `undefined` (Escape); none left: the pre-set size is accepted. */
 	let units: (number | undefined)[] = [];
 	let unitsAsked = 0;
+	/** Run while the size pick is open (ticket 5.6: an edit made during the prompts). */
+	let duringUnits: (() => Promise<void>) | undefined;
 	/** The size each pick was pre-set to (`undefined`: a new pipeline, pre-set to 1 unit). */
 	let unitsPresets: (PipelineResources | undefined)[] = [];
 	/** The palette's pipeline picks (by name), and what each offered. */
@@ -103,6 +106,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		confirmed = [];
 		units = next.units ?? [];
 		unitsAsked = 0;
+		duringUnits = undefined;
 		unitsPresets = [];
 		asked = [];
 		pickedFrom = [];
@@ -206,6 +210,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 			pickUnits: async (_title, current) => {
 				unitsAsked++;
 				unitsPresets.push(current);
+				await duringUnits?.();
 				if (units.length === 0) {
 					return current ?? resourcesOf(1);
 				}
@@ -698,9 +703,12 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const tabs = diffTabs();
 		assert.strictEqual(tabs.length, 1, 'the diff opened');
 		const input = tabs[0].input as vscode.TabInputTextDiff;
-		assert.strictEqual(input.modified.toString(), doc.uri.toString(), 'deployed ↔ local');
+		assert.strictEqual(input.modified.scheme, DEPLOYED_SCHEME, 'deployed ↔ as sent (ticket 5.6), both read-only');
+		assert.ok(input.modified.path.endsWith('/orders.local.yaml'), input.modified.path);
+		assert.strictEqual(tabs[0].label, 'orders (deployed) ↔ orders.yaml (as sent)');
 		const left = await vscode.workspace.openTextDocument(input.original);
 		assert.strictEqual(left.getText(), CONFIG, 'the deployed config, read-only');
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), changed, 'no variable: the text as saved');
 		assert.strictEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.yaml')).length, 1, 'the deployed config is not written to disk');
 
 		script({ confirms: [REPLACE_ACTION] });
@@ -910,6 +918,144 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.deepStrictEqual(infos, [NOT_CONNECTED_MESSAGE]);
 		assert.strictEqual(fake.requests.length, before);
+	});
+
+	// --- ticket 5.6: variables become secrets ---
+
+	/** A config with variables (PLAIN, DEFAULT, MANY, UNTOUCHED) and the text the Cloud is sent. */
+	const VARS = [
+		'# brokers: ${BROKER}',
+		'input:',
+		'  generate:',
+		'    interval: ${INTERVAL:5s}',
+		'    mapping: |',
+		'      root.broker = "${BROKER}"',
+		'      root.topic = "${TOPIC:orders}"',
+		'      root.opt = "${OPT:}"',
+		'      root.kept = "${secrets.X}"',
+		'      root.meta = "${!meta("k")}"',
+		'output:',
+		'  drop: {}',
+		'',
+	].join('\n');
+	const VARS_SENT = [
+		'# brokers: ${secrets.BROKER}',
+		'input:',
+		'  generate:',
+		'    interval: ${secrets.INTERVAL:5s}',
+		'    mapping: |',
+		'      root.broker = "${secrets.BROKER}"',
+		'      root.topic = "${secrets.TOPIC:orders}"',
+		'      root.opt = "${secrets.OPT:}"',
+		'      root.kept = "${secrets.X}"',
+		'      root.meta = "${!meta("k")}"',
+		'output:',
+		'  drop: {}',
+		'',
+	].join('\n');
+
+	test('ACCEPTANCE 5.6: ${BROKER} and ${TOPIC:orders} reach the fake as ${secrets.BROKER} and ${secrets.TOPIC:orders}; ${!…} and ${secrets.X} as written; the local file byte for byte unchanged', async () => {
+		await connect();
+		const doc = await openConfig(configFile, VARS);
+		const mtime = fs.statSync(configFile).mtimeMs;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(lastCreate()!.config_yaml, VARS_SENT);
+		assert.strictEqual(fake.cluster('cvilnius0000000000aa').pipelines[0].config_yaml, VARS_SENT);
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), VARS, 'the local file is not changed');
+		assert.strictEqual(fs.statSync(configFile).mtimeMs, mtime);
+		assert.strictEqual(doc.getText(), VARS);
+	});
+
+	test('BAD_NAME and ENV_CALL: refused before any prompt or request, one error naming each with its line, one output line each; a dirty config is still saved', async () => {
+		await connect();
+		const text = [
+			'input:',
+			'  generate:',
+			'    interval: 5s',
+			'    mapping: |',
+			'      root.t = "${my_token}"',
+			'      root.u = "${_X} ${1X}"',
+			'      root.k = env("KEY")',
+			'output:',
+			'  drop: {}',
+			'',
+		].join('\n');
+		const doc = await openConfig(configFile, text);
+		// The document may still hold the previous test's text until VS Code reads the file again.
+		assert.ok(await waitFor(() => doc.getText() === text, 10_000));
+		const dirty = `${text}# unsaved\n`;
+		await editConfig(doc, dirty);
+		const before = fake.requests.length;
+		const outputBefore = api().outputLines().length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'notStarted');
+		assert.strictEqual(fake.requests.length, before, 'nothing sent');
+		assert.strictEqual(pickedFrom.length + asked.length + unitsAsked, 0, 'nothing asked');
+		const problems = [
+			'my_token (line 5): a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$',
+			'_X (line 6): a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$',
+			'1X (line 6): a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$',
+			'line 7: env("KEY") reads an environment variable, which Redpanda Cloud pipelines do not have; use "${KEY}"',
+		];
+		assert.deepStrictEqual(errors, [`orders.yaml can't be deployed to Redpanda Cloud: ${problems.join('; ')}. Nothing was sent.`]);
+		const lines = api().outputLines().slice(outputBefore);
+		for (const p of problems) {
+			assert.strictEqual(lines.filter((l) => l === `  orders.yaml: ${p}`).length, 1, `one output line for ${p}`);
+		}
+		assert.strictEqual(doc.isDirty, false, 'saved, as Run');
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), dirty, 'the file as saved, not translated');
+	});
+
+	test('EDIT_DURING_PROMPTS 5.6: an edit made while the size pick is open is saved, translated and sent; one refused then sends nothing', async () => {
+		await connect();
+		const doc = await openConfig(configFile, VARS);
+		assert.ok(await waitFor(() => doc.getText() === VARS, 10_000));
+		const edited = VARS.replace('drop: {}', 'drop: {} # ${LATE}');
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		duringUnits = () => editConfig(doc, edited);
+		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(lastCreate()!.config_yaml, VARS_SENT.replace('drop: {}', 'drop: {} # ${secrets.LATE}'));
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), edited, 'saved, not translated');
+
+		const refusedText = edited.replace('${LATE}', '${late}');
+		script({});
+		duringUnits = () => editConfig(doc, refusedText);
+		const before = fake.requests.length;
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
+		assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET'), 'nothing sent');
+		assert.ok(errors.some((e) => e.includes('late (line 12): a Redpanda Cloud secret name must match')), errors.join('\n'));
+	});
+
+	test('UNCHANGED 5.6: the deployed config is the translation of the saved file: "nothing changed", no PUT', async () => {
+		const { doc } = await deployOnce(VARS);
+		assert.strictEqual(fake.cluster('cvilnius0000000000aa').pipelines[0].config_yaml, VARS_SENT);
+		script({});
+		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'unchanged', errors.join('\n'));
+		assert.strictEqual(puts().length, 0);
+		assert.strictEqual(diffTabs().length, 0);
+	});
+
+	test('DIFF 5.6: an update of a running pipeline: the diff\'s right side is the translated text (read-only), and that text is sent', async () => {
+		const { doc } = await deployOnce(VARS);
+		const changed = VARS.replace('${TOPIC:orders}', '${TOPIC:payments}');
+		await editConfig(doc, changed);
+		script({ confirms: [undefined] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
+		const tabs = diffTabs();
+		assert.strictEqual(tabs.length, 1);
+		const input = tabs[0].input as vscode.TabInputTextDiff;
+		assert.strictEqual(input.modified.scheme, DEPLOYED_SCHEME, 'not the file');
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.original)).getText(), VARS_SENT);
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), VARS_SENT.replace('${secrets.TOPIC:orders}', '${secrets.TOPIC:payments}'));
+		script({ confirms: [REPLACE_ACTION] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(JSON.parse(puts()[0].body).config_yaml, VARS_SENT.replace('${secrets.TOPIC:orders}', '${secrets.TOPIC:payments}'));
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), changed, 'the file as saved');
 	});
 
 	// --- ticket 5.4: start, stop and delete a pipeline ---
