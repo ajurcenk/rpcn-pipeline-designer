@@ -3,7 +3,7 @@ title: 'The Cloud view: the deployed config, Compare, Deploy again and Copy ID'
 type: 'feature'
 ticket: '5'
 created: '2026-11-04'
-status: 'in-review'
+status: 'done'
 baseline_revision: '7669f0069b7efd0fbc50d886a948238c55ae632f'
 route: 'full'
 route_source: 'auto'
@@ -100,4 +100,6 @@ context:
 | 3 | A row's file and `hasFile` go stale when a folder or the tagged file is added or removed | low | computed on render only; no folder or file listener; Compare and Deploy again re-check when run; the fix adds watchers | reject |
 | 4 | Deploy again can create a different pipeline: `deploy()`'s `mappedTarget` offers "Create a new pipeline" when the pipeline (or cluster) is gone by then | medium | `deployAgain` hands off to the full `deploy(uri)`; breaks "acts on this pipeline only … otherwise explains and sends nothing" | patch |
 | 5 | A row command with no account says "no longer in the Cloud view" instead of offering Connect | low | `rowAction` guard returns one message for four causes; `deploy` offers Connect | patch |
+
+**Done (user, 2026-11-04):** "push and mark 5 done", given after the dev host was opened with this build (`9623f83`); no manual check result was reported. Automated: stable 1198, multi-root 10, corpus 156, webview 331, all passing.
 
