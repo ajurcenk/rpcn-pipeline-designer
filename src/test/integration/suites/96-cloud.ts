@@ -6,7 +6,10 @@
 // tokens at the end (NO_LEAK). Ticket 5.3's update flow (the mapping beside the config, `PUT`, the
 // diff and confirmation, the compute-unit setting) is the second half; ticket 5.4's Start, Stop and
 // Delete pipeline… (rows, palette, the mapping deleted with its pipeline) the third; ticket 5.6's translation
-// of variables into secrets (what the fake receives, the refusals, UNCHANGED and the diff) the fourth.
+// of variables into secrets (what the fake receives, the refusals, UNCHANGED and the diff) the fourth;
+// ticket 5.5's row file, Open deployed config (the row's click), Compare, Deploy again and Copy pipeline
+// ID the fifth (the stable run opens no folder, so those tests point the view's workspace folders at
+// the temporary directory).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -16,6 +19,7 @@ import {
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
 	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
+	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
 } from '../../../adapters/vscode/cloudView';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
 import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
@@ -48,6 +52,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	let dir: string;
 	let configFile: string;
 	let originalUi: CloudUi;
+	let originalFolders: () => readonly string[];
 	const errors: string[] = [];
 	/** The actions each error offered. */
 	const errorActions: string[][] = [];
@@ -173,6 +178,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		dir = makeTempDir('rpcn-cloud-');
 		configFile = path.join(dir, 'orders.yaml');
 		originalUi = cloud().ui;
+		originalFolders = cloud().workspaceFolders;
 		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
 		cloud().pollMs = 20;
 		cloud().timeoutMs = 10_000;
@@ -251,6 +257,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		}
 		cloud().timeoutMs = 10_000;
 		cloud().restartGraceMs = 2_000;
+		cloud().workspaceFolders = originalFolders;
 		fake.restartSequence = [{ state: 'STATE_RUNNING' }, { state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 		for (const f of fs.readdirSync(dir)) {
 			if (f.endsWith('.cloud.json')) {
@@ -268,6 +275,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	suiteTeardown(async () => {
 		await cloud().disconnect();
 		cloud().ui = originalUi;
+		cloud().workspaceFolders = originalFolders;
 		await fake?.stop();
 		if (dir) {
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -391,7 +399,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.ok(infos.includes('Pipeline orders is running on rpc-vilnius.'), infos.join('\n'));
 		const pipeline = items().find((i) => i.node.kind === 'pipeline');
 		assert.strictEqual(pipeline?.label, 'orders');
-		assert.strictEqual(pipeline?.description, 'Running');
+		// Ticket 5.5: the tag names a file outside every workspace folder (the stable run opens none).
+		assert.strictEqual(pipeline?.description, `Running · ${NOT_IN_WORKSPACE}`);
 		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG, 'the file is not changed');
 		assert.strictEqual(fs.statSync(configFile).mtimeMs, mtime);
 		assert.deepStrictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')), {
@@ -436,7 +445,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		await vscode.commands.executeCommand(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(errors[1], `Pipeline no-reason on rpc-vilnius is in Error: ${NO_REASON}.`);
 		const shown = items().filter((i) => i.node.kind === 'pipeline').map((i) => [i.label, i.description]);
-		assert.deepStrictEqual(shown, [['with-reason', 'Error (out of memory)'], ['no-reason', `Error (${NO_REASON})`]]);
+		assert.deepStrictEqual(shown, [['with-reason', `Error (out of memory) · ${NOT_IN_WORKSPACE}`], ['no-reason', `Error (${NO_REASON}) · ${NOT_IN_WORKSPACE}`]]);
 	});
 
 	test('DEPLOY: still starting after the timeout: it says so and leaves the view to show it', async () => {
@@ -448,7 +457,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'timedOut');
 		assert.deepStrictEqual(infos.slice(-1), ['Pipeline slow is still starting on rpc-vilnius; the Cloud view shows its state.']);
-		assert.strictEqual(items().find((i) => i.node.kind === 'pipeline')?.description, 'Starting');
+		assert.strictEqual(items().find((i) => i.node.kind === 'pipeline')?.description, `Starting · ${NOT_IN_WORKSPACE}`);
 	});
 
 	test('DEPLOY_UNSAVED: a dirty config is saved first and its saved text sent; an untitled one is refused', async () => {
@@ -543,7 +552,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
 		assert.deepStrictEqual(items().filter((i) => i.node.kind === 'pipeline').map((i) => [i.label, i.description]),
-			[['existing', 'Running'], ['orders', 'Running']]);
+			[['existing', 'Running'], ['orders', `Running · ${NOT_IN_WORKSPACE}`]]);
 	});
 
 	test('DETAILS_UNREAD: a cluster whose details fail is not "no pipeline API"; Deploy says the details could not be read', async () => {
@@ -1346,6 +1355,250 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.ok(confirmed[0].message.includes('orders.cloud.json'), confirmed[0].message);
 		assert.ok(!fs.existsSync(sidecarFile()));
 		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG);
+	});
+
+	// --- ticket 5.5: the row's file, the deployed config, Compare, Deploy again and Copy pipeline ID ---
+
+	const ROW_COMMANDS = [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, DEPLOY_AGAIN_COMMAND, START_COMMAND, STOP_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND];
+	/** Every row command a `contextValue` offers in the row's menu, per package.json. */
+	function rowOffers(contextValue: string): string[] {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as { contributes: { menus: Record<string, { command: string; when?: string; group?: string }[]> } };
+		const out = new Set<string>();
+		for (const m of pkg.contributes.menus['view/item/context']) {
+			const regex = /viewItem =~ \/(.+)\/$/.exec(m.when ?? '');
+			if (m.group?.startsWith('inline') !== true && regex && new RegExp(regex[1]).test(contextValue)) {
+				out.add(m.command);
+			}
+		}
+		return ROW_COMMANDS.filter((c) => out.has(c));
+	}
+	const inWorkspace = () => {
+		cloud().workspaceFolders = () => [dir];
+	};
+	const activeTabLabel = () => vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+	const gets = (id: string) => fake.requests.slice(firstRequest).filter((r) => r.method === 'GET' && r.url === pipelineUrl(id)).length;
+
+	test('package.json 5.5: the four row commands hidden from the palette; Open inline; menus by state and file, Delete last', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: { commands: { command: string; title: string }[]; menus: Record<string, { command: string; when?: string; group?: string }[]> };
+		};
+		const added = [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, DEPLOY_AGAIN_COMMAND, COPY_ID_COMMAND];
+		assert.deepStrictEqual(added.map((c) => pkg.contributes.commands.find((x) => x.command === c)?.title),
+			['Open deployed config', 'Compare with local file', 'Deploy local file again', 'Copy pipeline ID']);
+		for (const c of added) {
+			assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === c)?.when, 'false', `${c}: needs a row`);
+		}
+		const groups = pkg.contributes.menus['view/item/context'].filter((m) => ROW_COMMANDS.includes(m.command) && !m.group?.startsWith('inline'))
+			.map((m) => `${m.group}:${m.command}`).sort();
+		assert.deepStrictEqual(groups, [
+			`0_open@1:${OPEN_DEPLOYED_COMMAND}`, `0_open@2:${COMPARE_COMMAND}`, `0_open@3:${DEPLOY_AGAIN_COMMAND}`,
+			`1_actions@1:${START_COMMAND}`, `1_actions@2:${STOP_COMMAND}`, `8_copy@1:${COPY_ID_COMMAND}`, `9_delete@1:${DELETE_COMMAND}`,
+		]);
+		assert.ok(pkg.contributes.menus['view/item/context'].some((m) => m.command === OPEN_DEPLOYED_COMMAND && m.group === 'inline@0'), 'an inline icon for Open');
+		const always = [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND];
+		const lifecycle = { running: [STOP_COMMAND], starting: [STOP_COMMAND], stopping: [], stopped: [START_COMMAND], error: [START_COMMAND], completed: [START_COMMAND], unknown: [] };
+		for (const [state, actions] of Object.entries(lifecycle)) {
+			for (const hasFile of [false, true]) {
+				const value = `cloudPipeline state-${state}${hasFile ? ' hasFile' : ''}`;
+				const expected = ROW_COMMANDS.filter((c) => always.includes(c) || (actions as string[]).includes(c) || (hasFile && c === DEPLOY_AGAIN_COMMAND));
+				assert.deepStrictEqual(rowOffers(value), expected, value);
+			}
+		}
+		assert.deepStrictEqual(rowOffers('cloudCluster'), []);
+	});
+
+	test('ROW_FILE: "Running · orders.yaml" for a workspace file (the tooltip its path); "· not in this workspace" outside or missing; no tag: the state only', async () => {
+		inWorkspace();
+		fs.writeFileSync(configFile, CONFIG);
+		seed('p0000000000000orders', 'orders', 'STATE_RUNNING', { tags: { [CONFIG_TAG]: 'orders.yaml' } });
+		seed('p00000000000absolute', 'absolute', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: configFile } });
+		seed('p00000000000000error', 'failing', 'STATE_ERROR', { tags: { [CONFIG_TAG]: 'orders.yaml' }, status: { error: 'boom' } });
+		seed('p0000000000outside', 'outside', 'STATE_RUNNING', { tags: { [CONFIG_TAG]: path.resolve('/elsewhere/orders.yaml') } });
+		seed('p00000000000climbs', 'climbs', 'STATE_RUNNING', { tags: { [CONFIG_TAG]: '../orders.yaml' } });
+		seed('p0000000000missing', 'missing', 'STATE_RUNNING', { tags: { [CONFIG_TAG]: 'gone.yaml' } });
+		seed('p000000000000untagged', 'untagged', 'STATE_RUNNING');
+		await showPipelines();
+		const rows = items().filter((i) => i.node.kind === 'pipeline').map((i) => [i.label, i.description, i.contextValue]);
+		assert.deepStrictEqual(rows, [
+			['orders', 'Running · orders.yaml', 'cloudPipeline state-running hasFile'],
+			['absolute', 'Stopped · orders.yaml', 'cloudPipeline state-stopped hasFile'],
+			['failing', 'Error (boom) · orders.yaml', 'cloudPipeline state-error hasFile'],
+			['outside', `Running · ${NOT_IN_WORKSPACE}`, 'cloudPipeline state-running'],
+			['climbs', `Running · ${NOT_IN_WORKSPACE}`, 'cloudPipeline state-running'],
+			['missing', `Running · ${NOT_IN_WORKSPACE}`, 'cloudPipeline state-running'],
+			['untagged', 'Running', 'cloudPipeline state-running'],
+		]);
+		assert.ok(pipelineRow('orders')!.tooltip.includes(`Deployed from ${configFile}.`), pipelineRow('orders')!.tooltip);
+		assert.ok(pipelineRow('missing')!.tooltip.includes(`Deployed from gone.yaml, which is ${NOT_IN_WORKSPACE}.`), pipelineRow('missing')!.tooltip);
+		assert.ok(pipelineRow('orders')!.accessibility.includes('orders.yaml'));
+		// Outside every workspace folder (the stable run's default: none), the same tag is not looked at.
+		cloud().workspaceFolders = () => [];
+		assert.strictEqual(pipelineRow('orders')!.description, `Running · ${NOT_IN_WORKSPACE}`);
+		assert.deepStrictEqual(rowOffers(pipelineRow('orders')!.contextValue), [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, STOP_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND]);
+	});
+
+	test('ACCEPTANCE 5.5 and OPEN: a click on the row reads the pipeline now and shows its config read-only, titled "<name> (deployed)"', async () => {
+		inWorkspace();
+		fs.writeFileSync(configFile, CONFIG);
+		const id = 'p0000000000000orders';
+		const p = seed(id, 'orders', 'STATE_RUNNING', { tags: { [CONFIG_TAG]: 'orders.yaml' } });
+		await showPipelines();
+		const click = async () => {
+			const item = cloud().getTreeItem(pipelineRow('orders')!.node);
+			assert.strictEqual(item.command?.command, OPEN_DEPLOYED_COMMAND);
+			return vscode.commands.executeCommand<{ kind: string; uri?: string }>(item.command!.command, ...(item.command!.arguments ?? []));
+		};
+		const first = await click();
+		assert.strictEqual(first?.kind, 'opened', errors.join('\n'));
+		assert.strictEqual(gets(id), 1, 'read now');
+		let editor = vscode.window.activeTextEditor!;
+		assert.strictEqual(editor.document.uri.scheme, DEPLOYED_SCHEME);
+		assert.strictEqual(editor.document.uri.toString(), first!.uri);
+		assert.strictEqual(editor.document.getText(), CONFIG);
+		assert.strictEqual(editor.document.languageId, 'yaml');
+		assert.strictEqual(activeTabLabel(), 'orders (deployed)');
+
+		// Changed in the Cloud: the next click shows the config the fake holds now.
+		p.config_yaml = CONFIG.replace('root.n = 1', 'root.n = 2');
+		const second = await click();
+		assert.strictEqual(second?.kind, 'opened');
+		assert.strictEqual(gets(id), 2);
+		editor = vscode.window.activeTextEditor!;
+		assert.strictEqual(editor.document.getText(), p.config_yaml);
+		assert.ok(!fs.readdirSync(dir).some((f) => f.includes('deployed')), 'nothing written to disk');
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG);
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('OPEN: 404 "the pipeline is gone" and the cluster\'s pipelines read again; another error: the API\'s message', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		fake.failures = [{ when: (r) => r.method === 'GET' && r.url === pipelineUrl(id), status: 503, body: { code: 'UNAVAILABLE', message: 'the data plane is down', details: [] } }];
+		assert.strictEqual((await run(OPEN_DEPLOYED_COMMAND, pipelineRow('orders')!.node))?.kind, 'failed');
+		assert.deepStrictEqual(errors, ['Could not read pipeline orders on rpc-vilnius: the data plane is down']);
+		assert.ok(pipelineRow('orders'));
+		fake.cluster(VILNIUS).pipelines = [];
+		const at = fake.requests.length;
+		assert.strictEqual((await run(OPEN_DEPLOYED_COMMAND, pipelineRow('orders')!.node))?.kind, 'gone');
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders is gone from rpc-vilnius; the Cloud view reads its pipelines again.']);
+		assert.ok(fake.requests.slice(at).some((r) => r.method === 'GET' && r.url.replace(/\?.*$/, '') === `/dp/${VILNIUS}/v1/redpanda-connect/pipelines`), 're-read');
+		assert.strictEqual(pipelineRow('orders'), undefined);
+		assert.ok(items().some((i) => i.label === 'No pipelines.'));
+		assert.strictEqual(errors.length, 1);
+	});
+
+	test('COMPARE: deployed (read now, read-only) ↔ the local file (editable), "<name> (deployed) ↔ orders.yaml"; ${VAR} against ${secrets.VAR} differs; not in the workspace: said so, nothing opened', async () => {
+		inWorkspace();
+		const { doc, id } = await deployOnce(VARS);
+		const at = gets(id);
+		const result = await run(COMPARE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'opened', errors.join('\n'));
+		assert.strictEqual(gets(id), at + 1, 'read now');
+		const tabs = diffTabs();
+		assert.strictEqual(tabs.length, 1);
+		assert.strictEqual(tabs[0].label, 'orders (deployed) ↔ orders.yaml');
+		const input = tabs[0].input as vscode.TabInputTextDiff;
+		assert.strictEqual(input.modified.scheme, 'file', 'the local file itself');
+		assert.strictEqual(input.modified.fsPath, doc.uri.fsPath);
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.original)).getText(), VARS_SENT, 'the deployed config');
+		assert.notStrictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), VARS_SENT, '${VAR} against ${secrets.VAR}');
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(input.modified, new vscode.Position(0, 0), '# edited\n');
+		assert.ok(await vscode.workspace.applyEdit(edit), 'editable');
+		assert.ok(await doc.save());
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		fs.writeFileSync(configFile, VARS);
+
+		cloud().workspaceFolders = () => [];
+		const before = fake.requests.length;
+		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
+		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from ${configFile}, which is ${NOT_IN_WORKSPACE}, so there is no local file to compare with.`]);
+		assert.strictEqual(diffTabs().length, 0);
+		assert.strictEqual(fake.requests.length, before, 'nothing requested');
+	});
+
+	test('DEPLOY_AGAIN: the file\'s .cloud.json maps to this pipeline: the normal Deploy (diff, confirmation, PUT); another pipeline or none: explained, nothing sent; not in the workspace: said so', async () => {
+		inWorkspace();
+		const { doc, id } = await deployOnce();
+		await editConfig(doc, CONFIG.replace('root.n = 1', 'root.n = 3'));
+		await doc.save();
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		assert.ok(rowOffers(pipelineRow('orders')!.contextValue).includes(DEPLOY_AGAIN_COMMAND));
+		script({ confirms: [REPLACE_ACTION] });
+		const again = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(again?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(again?.pipelineId, id);
+		assert.strictEqual(confirmed.length, 1, 'running: the update flow\'s confirmation');
+		assert.strictEqual(unitsAsked, 1, 'the size pick');
+		assert.deepStrictEqual(puts().map((r) => r.url), [pipelineUrl(id)]);
+		assert.strictEqual(JSON.parse(puts()[0].body).config_yaml, CONFIG.replace('root.n = 1', 'root.n = 3'));
+		assert.strictEqual(posts().length, 1, 'only deployOnce\'s create');
+
+		// Gone by the time the deploy reads it (after the row's mapping check): explained, no create offered, nothing sent.
+		fake.failures = [{ when: (r) => r.method === 'GET' && r.url === pipelineUrl(id), status: 404, body: { code: 'NOT_FOUND', message: 'pipeline not found', details: [] } }];
+		// Were Create a new pipeline offered, this script would take it.
+		script({ actions: [CREATE_NEW_PIPELINE_ACTION], inputs: ['new-one'], picks: ['rpc-vilnius'] });
+		const putsBefore = puts().length;
+		const gone = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(gone?.kind, 'notStarted');
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.cloud.json maps orders.yaml to, is no longer on rpc-vilnius. Nothing was sent.']);
+		assert.ok(!infos.some((m) => m.includes('Create a new pipeline')), 'no create offer');
+		assert.strictEqual(asked.length, 0, 'no name asked');
+		assert.strictEqual(posts().length, 1, 'no POST');
+		assert.strictEqual(puts().length, putsBefore, 'no PUT');
+		assert.strictEqual(unitsAsked, 0);
+		fake.failures = [];
+
+		// A second pipeline tagged with the same file: the mapping names the first.
+		seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false) } });
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		const sent = fake.requests.length;
+		script({});
+		const other = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('copy')!.node);
+		assert.strictEqual(other?.kind, 'notMapped');
+		assert.deepStrictEqual(infos.slice(-1), ['orders.cloud.json maps orders.yaml to pipeline orders, not to copy on rpc-vilnius. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
+		fs.rmSync(sidecarFile());
+		const none = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(none?.kind, 'notMapped');
+		assert.deepStrictEqual(infos.slice(-1), ['orders.yaml has no orders.cloud.json, so a Deploy of it would not update orders. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
+		fs.writeFileSync(sidecarFile(), 'not json');
+		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notMapped');
+		assert.match(infos[infos.length - 1], /^orders\.cloud\.json is not a deploy mapping \(it is not JSON/);
+		cloud().workspaceFolders = () => [];
+		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
+		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from ${configFile}, which is ${NOT_IN_WORKSPACE}, so there is no local file to deploy.`]);
+		assert.strictEqual(fake.requests.length, sent, 'nothing sent');
+		assert.strictEqual(unitsAsked, 0);
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('NOT_CONNECTED row action: Connect is offered as Deploy does; declined, nothing is sent', async () => {
+		seed('p0000000000000orders', 'orders', 'STATE_RUNNING');
+		await showPipelines();
+		const node = pipelineRow('orders')!.node;
+		await cloud().disconnect();
+		await settleSecrets();
+		const before = fake.requests.length;
+		script({ actions: [undefined] });
+		for (const command of [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, DEPLOY_AGAIN_COMMAND, COPY_ID_COMMAND]) {
+			assert.strictEqual((await run(command, node))?.kind, 'notStarted', command);
+		}
+		assert.deepStrictEqual(infos.slice(-4), Array(4).fill(NOT_CONNECTED_MESSAGE));
+		assert.strictEqual(fake.requests.length, before, 'nothing sent');
+	});
+
+	test('COPY_ID: the id on the clipboard, "Copied the ID of <name>", in any state, nothing requested', async () => {
+		seed('p000000000000paused', 'paused', 'STATE_PAUSED');
+		await showPipelines();
+		await vscode.env.clipboard.writeText('');
+		const before = fake.requests.length;
+		const result = await run(COPY_ID_COMMAND, pipelineRow('paused')!.node);
+		assert.strictEqual(result?.kind, 'copied');
+		assert.strictEqual(await vscode.env.clipboard.readText(), 'p000000000000paused');
+		assert.deepStrictEqual(infos.slice(-1), ['Copied the ID of paused.']);
+		assert.strictEqual(fake.requests.length, before);
+		assert.deepStrictEqual(rowOffers(pipelineRow('paused')!.contextValue), [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND]);
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {

@@ -39,6 +39,13 @@
 // after a delete, or the timeout); a failed action shows the API's message and reads the cluster's
 // pipelines again. Nothing is polled in the background.
 //
+// Each pipeline row (ticket 5.5) shows the file it was deployed from (its `rpcn-vscode/config` tag),
+// found inside the workspace folders only ("not in this workspace" otherwise). Clicking a row, or
+// **Open deployed config**, reads the pipeline now and shows its config read-only; **Compare with local
+// file** diffs that (read-only) with the local file (editable); **Deploy local file again** runs the
+// normal Deploy of the file when its `.cloud.json` maps to this pipeline, else explains and sends
+// nothing; **Copy pipeline ID** puts the id on the clipboard.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -52,7 +59,7 @@ import {
 } from '../cloud/dataPlane';
 import { asCloudError, CloudError, describeCloudError, hintLines, maskCredentials } from '../cloud/errors';
 import { defaultFetch, type FetchLike } from '../cloud/http';
-import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedSidecars } from '../cloud/sidecar';
+import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedConfigs, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
 import { translateForCloud } from '../../core/cloudTranslate';
 import type { SecretStore } from './secrets';
@@ -66,6 +73,13 @@ export const CLOUD_REFRESH_COMMAND = 'redpandaConnect.cloud.refresh';
 export const START_COMMAND = 'redpandaConnect.cloud.start';
 export const STOP_COMMAND = 'redpandaConnect.cloud.stop';
 export const DELETE_COMMAND = 'redpandaConnect.cloud.delete';
+/** Ticket 5.5: a pipeline row's deployed config, its compare with the local file, a deploy of that file, its id. */
+export const OPEN_DEPLOYED_COMMAND = 'redpandaConnect.cloud.openDeployed';
+export const COMPARE_COMMAND = 'redpandaConnect.cloud.compare';
+export const DEPLOY_AGAIN_COMMAND = 'redpandaConnect.cloud.deployAgain';
+export const COPY_ID_COMMAND = 'redpandaConnect.cloud.copyId';
+/** A row whose tag names no file in the workspace folders (outside them, or missing). */
+export const NOT_IN_WORKSPACE = 'not in this workspace';
 /** The delete confirmation's action. */
 export const DELETE_ACTION = 'Delete';
 /** Whether a service account is connected (menus and the view's empty state). */
@@ -88,7 +102,7 @@ export const NOT_READ_TEXT = 'Refresh to read the clusters.';
 
 /** The scheme of a pipeline's deployed config, shown read-only. */
 export const DEPLOYED_SCHEME = 'redpanda-cloud';
-export const DEPLOYED_NOT_LOADED_TEXT = '# The deployed config of this pipeline is not loaded in this window. Deploy the config again to compare.\n';
+export const DEPLOYED_NOT_LOADED_TEXT = '# This read-only copy is not loaded in this window (it was restored after a reload). Close it, then use Open deployed config, Compare or Deploy in the Cloud view.\n';
 /** The confirmation of an update that restarts a running pipeline. */
 export const REPLACE_ACTION = 'Replace and restart';
 /** No mapping, a pipeline on the cluster tagged with this file: create another instead of updating it. */
@@ -263,6 +277,32 @@ export type PipelineActionResult =
 
 type PipelineAction = 'start' | 'stop' | 'delete';
 
+/** How Open deployed config, Compare, Deploy again or Copy pipeline ID ended (the command's result, for tests). */
+export type RowActionResult =
+	| DeployResult
+	/** The deployed config shown (`uri`: the read-only side), read now. */
+	| { readonly kind: 'opened'; readonly pipelineId: string; readonly uri: string }
+	/** The `GET` answered 404: said so, the cluster's pipelines read again. */
+	| { readonly kind: 'gone'; readonly pipelineId: string }
+	/** The tag names no file in the workspace folders (or there is no tag): said so, nothing opened or sent. */
+	| { readonly kind: 'notInWorkspace'; readonly pipelineId: string }
+	/** Deploy again: the file's `.cloud.json` maps to another pipeline, is missing or is not one; nothing sent. */
+	| { readonly kind: 'notMapped'; readonly pipelineId: string; readonly mapping?: DeployMapping }
+	| { readonly kind: 'copied'; readonly pipelineId: string };
+
+/** Deploy again: the deploy may only update this pipeline (anything else is explained, nothing sent). */
+interface OnlyPipeline {
+	readonly clusterId: string;
+	readonly pipelineId: string;
+	readonly name: string;
+}
+
+/** The local file a pipeline was deployed from, by its tag. */
+type LocalFile =
+	| { readonly kind: 'none' }
+	| { readonly kind: 'outside'; readonly tag: string }
+	| { readonly kind: 'ok'; readonly tag: string; readonly path: string };
+
 /** The pipeline an action is for. `config`: the active config, from the palette. */
 interface ActionTarget {
 	readonly cluster: CloudCluster;
@@ -300,6 +340,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	pollMs = POLL_MS;
 	timeoutMs = DEPLOY_TIMEOUT_MS;
 	restartGraceMs = RESTART_GRACE_MS;
+	/**
+	 * The workspace folders a pipeline's tag is resolved in (the local file of a row, the mapping a
+	 * delete removes): VS Code's `file:` folders; the test seam replaces it (the stable run opens none).
+	 */
+	workspaceFolders: () => readonly string[] = () =>
+		(vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath);
 	readonly tokens: TokenCache;
 	/** `redpanda-cloud:` URI → the deployed config it shows. */
 	private readonly deployedConfigs = new Map<string, string>();
@@ -366,6 +412,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(START_COMMAND, (node?: CloudNode) => this.pipelineAction('start', node)),
 			vscode.commands.registerCommand(STOP_COMMAND, (node?: CloudNode) => this.pipelineAction('stop', node)),
 			vscode.commands.registerCommand(DELETE_COMMAND, (node?: CloudNode) => this.pipelineAction('delete', node)),
+			vscode.commands.registerCommand(OPEN_DEPLOYED_COMMAND, (node?: CloudNode) => this.rowAction('open', node)),
+			vscode.commands.registerCommand(COMPARE_COMMAND, (node?: CloudNode) => this.rowAction('compare', node)),
+			vscode.commands.registerCommand(DEPLOY_AGAIN_COMMAND, (node?: CloudNode) => this.rowAction('deployAgain', node)),
+			vscode.commands.registerCommand(COPY_ID_COMMAND, (node?: CloudNode) => this.rowAction('copyId', node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -864,15 +914,20 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			case 'pipeline': {
 				const p = this.pipelineById(node.clusterId, node.id);
 				const state = pipelineStateDescription(p);
+				const local = this.localFileOf(p);
 				const item = new vscode.TreeItem(p?.displayName ?? node.id, vscode.TreeItemCollapsibleState.None);
 				item.id = `pipeline:${node.clusterId}:${node.id}`;
-				item.description = state;
+				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE : undefined;
+				item.description = from ? `${state} · ${from}` : state;
 				item.iconPath = new vscode.ThemeIcon(stateIcon(p?.state));
-				// A state the extension does not know is `state-unknown`: Delete only.
-				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}`;
-				const config = p?.tags[CONFIG_TAG];
-				item.tooltip = `${p?.displayName ?? node.id} (${node.id}): ${state}${config ? `. Deployed from ${config}.` : '.'}`;
-				item.accessibilityInformation = { label: `Pipeline ${p?.displayName ?? node.id}, ${state}` };
+				// A state the extension does not know is `state-unknown`: Delete only. ` hasFile`: Deploy again.
+				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}${local.kind === 'ok' ? ' hasFile' : ''}`;
+				// A click opens the deployed config, read now.
+				item.command = { command: OPEN_DEPLOYED_COMMAND, title: 'Open deployed config', arguments: [node] };
+				const deployedFrom = local.kind === 'ok' ? `. Deployed from ${local.path}.`
+					: local.kind === 'outside' ? `. Deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}.` : '.';
+				item.tooltip = `${p?.displayName ?? node.id} (${node.id}): ${state}${deployedFrom}`;
+				item.accessibilityInformation = { label: `Pipeline ${p?.displayName ?? node.id}, ${state}${from ? `, ${local.kind === 'ok' ? `deployed from ${from}` : `its file ${from}`}` : ''}` };
 				return item;
 			}
 			case 'note': {
@@ -888,6 +943,25 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				return item;
 			}
 		}
+	}
+
+	/**
+	 * The file a pipeline was deployed from: its tag resolved inside the workspace folders only, the
+	 * first that is a file there; a tag outside them, or naming no file, is `outside`.
+	 */
+	private localFileOf(p: CloudPipeline | undefined): LocalFile {
+		const tag = p?.tags[CONFIG_TAG];
+		if (!tag) {
+			return { kind: 'none' };
+		}
+		const found = taggedConfigs(tag, this.workspaceFolders()).find((file) => {
+			try {
+				return fs.statSync(file).isFile();
+			} catch {
+				return false;
+			}
+		});
+		return found ? { kind: 'ok', tag, path: found } : { kind: 'outside', tag };
 	}
 
 	private pipelineById(clusterId: string, id: string): CloudPipeline | undefined {
@@ -946,9 +1020,9 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/** Deploy to Redpanda Cloud: `uri` (default: the active editor's file), created or updated. Never throws. */
-	async deploy(uri?: vscode.Uri): Promise<DeployResult> {
+	async deploy(uri?: vscode.Uri, only?: OnlyPipeline): Promise<DeployResult> {
 		try {
-			return await this.deployFile(uri);
+			return await this.deployFile(uri, only);
 		} catch (err) {
 			const message = this.mask(reasonOf(err));
 			this.log(`Redpanda Cloud: deploy failed: ${message}`);
@@ -957,7 +1031,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 	}
 
-	private async deployFile(uri: vscode.Uri | undefined): Promise<DeployResult> {
+	private async deployFile(uri: vscode.Uri | undefined, only?: OnlyPipeline): Promise<DeployResult> {
 		const doc = uri
 			? vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString()) ?? (uri.scheme === 'file' ? await vscode.workspace.openTextDocument(uri) : undefined)
 			: vscode.window.activeTextEditor?.document;
@@ -1004,6 +1078,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		const mappingName = path.basename(mappingFile);
 		const read = await readMapping(mappingFile);
 		let target: Target | DeployResult;
+		if (only && (read.kind !== 'ok' || read.mapping.clusterId !== only.clusterId || read.mapping.pipelineId !== only.pipelineId)) {
+			// Deploy again: the mapping changed since the row's check; nothing else is offered.
+			this.log(`Redpanda Cloud: did not deploy ${file} again to ${only.name}: ${mappingName} no longer maps it to that pipeline.`);
+			void this.showInfo(`${mappingName} no longer maps ${file} to ${only.name}. Nothing was sent.`);
+			return NOT_STARTED;
+		}
 		if (read.kind === 'none') {
 			target = await this.newTarget(file, rel, true);
 		} else if (read.kind === 'bad') {
@@ -1012,7 +1092,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				`${mappingName} is not a deploy mapping: ${read.reason}. Deploy ${file} as a new pipeline? ${mappingName} is then replaced.`, DEPLOY_AS_NEW_ACTION);
 			target = choice === DEPLOY_AS_NEW_ACTION ? await this.newTarget(file, rel, false) : NOT_STARTED;
 		} else {
-			target = await this.mappedTarget(file, rel, mappingName, read.mapping);
+			target = await this.mappedTarget(file, rel, mappingName, read.mapping, only !== undefined);
 		}
 		if (target.kind !== 'create' && target.kind !== 'update') {
 			return target;
@@ -1170,8 +1250,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		return name ? { kind: 'create', cluster, dp, name } : NOT_STARTED;
 	}
 
-	/** A mapping: its pipeline, read now; a pipeline or cluster gone is offered to be created anew. */
-	private async mappedTarget(file: string, rel: string, mappingName: string, m: DeployMapping): Promise<Target | DeployResult> {
+	/**
+	 * A mapping: its pipeline, read now; a pipeline or cluster gone is offered to be created anew, or,
+	 * with `strict` (Deploy again: this pipeline only), explained with nothing offered or sent.
+	 */
+	private async mappedTarget(file: string, rel: string, mappingName: string, m: DeployMapping, strict = false): Promise<Target | DeployResult> {
 		const cluster = this.clusterById(m.clusterId);
 		if (cluster?.detailsUnread) {
 			void this.showError(`Could not read the details of ${cluster.name} (${cluster.detailsUnread}), the cluster ${mappingName} maps ${file} to. Refresh the Cloud view to try again.`);
@@ -1181,6 +1264,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		if (!cluster || !dp) {
 			const named = cluster?.name ?? m.clusterName ?? m.clusterId;
 			this.log(`Redpanda Cloud: the cluster ${named} (${m.clusterId}) of ${mappingName} is gone or offers no pipeline API.`);
+			if (strict) {
+				void this.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Nothing was sent.`);
+				return NOT_STARTED;
+			}
 			const choice = await this.showInfo(
 				`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Create a new pipeline on another cluster?`, CREATE_NEW_PIPELINE_ACTION);
 			return choice === CREATE_NEW_PIPELINE_ACTION ? this.newTarget(file, rel, false) : NOT_STARTED;
@@ -1193,6 +1280,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			return { kind: 'failed', message: read.message };
 		}
 		this.removePipeline(cluster.id, m.pipelineId);
+		if (strict) {
+			this.log(`Redpanda Cloud: pipeline ${m.pipelineName ?? m.pipelineId} (${m.pipelineId}) is gone from ${cluster.name}; ${file} was not deployed again.`);
+			void this.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Nothing was sent.`);
+			return NOT_STARTED;
+		}
 		const choice = await this.showInfo(
 			`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Create a new pipeline?`, CREATE_NEW_PIPELINE_ACTION);
 		if (choice !== CREATE_NEW_PIPELINE_ACTION) {
@@ -1575,8 +1667,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		if (config) {
 			candidates.add(sidecarPath(config.fsPath));
 		}
-		const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath);
-		for (const file of taggedSidecars(pipeline.tags[CONFIG_TAG], folders)) {
+		for (const file of taggedSidecars(pipeline.tags[CONFIG_TAG], this.workspaceFolders())) {
 			candidates.add(file);
 		}
 		const out: string[] = [];
@@ -1690,12 +1781,178 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 		return removed;
 	}
+
+	// --- the deployed config, compare, deploy again and copy ID (ticket 5.5) ---
+
+	/** Open deployed config, Compare, Deploy again or Copy pipeline ID on a pipeline row. Never throws. */
+	async rowAction(action: 'open' | 'compare' | 'deployAgain' | 'copyId', node?: CloudNode): Promise<RowActionResult> {
+		try {
+			if (node?.kind !== 'pipeline') {
+				void this.showInfo('Choose a pipeline in the Cloud view.');
+				return NOT_STARTED;
+			}
+			await this.ready;
+			if (!this.account) {
+				// Offered as Deploy does; a new connection reads the view afresh, so nothing is sent for this row.
+				const choice = await this.showInfo(NOT_CONNECTED_MESSAGE, CONNECT_ACTION);
+				if (choice === CONNECT_ACTION) {
+					await this.connect();
+				}
+				return NOT_STARTED;
+			}
+			const cluster = this.clusterById(node.clusterId);
+			const dp = cluster && this.dataplaneUrlOf(cluster);
+			const pipeline = this.pipelineById(node.clusterId, node.id);
+			if (!cluster || !dp || !pipeline) {
+				void this.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
+				return NOT_STARTED;
+			}
+			const target: ActionTarget = { cluster, dp, pipeline };
+			switch (action) {
+				case 'open':
+					return await this.openDeployed(target);
+				case 'compare':
+					return await this.compare(target);
+				case 'deployAgain':
+					return await this.deployAgain(target);
+				case 'copyId':
+					await vscode.env.clipboard.writeText(pipeline.id);
+					this.log(`Redpanda Cloud: copied the ID of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}.`);
+					void this.showInfo(`Copied the ID of ${pipeline.displayName}.`);
+					return { kind: 'copied', pipelineId: pipeline.id };
+			}
+		} catch (err) {
+			const message = this.mask(reasonOf(err));
+			this.log(`Redpanda Cloud: ${ROW_ACTION_TEXT[action]} failed: ${message}`);
+			void this.showError(`${ROW_ACTION_TEXT[action]} failed: ${message}`);
+			return { kind: 'failed', message };
+		}
+	}
+
+	/** `GET` the pipeline now; a 404 is said ("gone") and the cluster's pipelines read again; other errors are shown by `readPipeline`. */
+	private async readNow(target: ActionTarget): Promise<CloudPipeline | RowActionResult> {
+		const { cluster, dp, pipeline } = target;
+		const read = await this.readPipeline(cluster, dp, pipeline.id, pipeline.displayName);
+		if (read.kind === 'ok') {
+			return read.value;
+		}
+		if (read.status !== 404) {
+			return { kind: 'failed', message: read.message, pipelineId: pipeline.id };
+		}
+		this.log(`Redpanda Cloud: pipeline ${pipeline.displayName} (${pipeline.id}) is gone from ${cluster.name}.`);
+		void this.showInfo(`Pipeline ${pipeline.displayName} is gone from ${cluster.name}; the Cloud view reads its pipelines again.`);
+		this.removePipeline(cluster.id, pipeline.id);
+		await this.loadPipelines(cluster.id, true);
+		this.fire();
+		return { kind: 'gone', pipelineId: pipeline.id };
+	}
+
+	/** Puts `text` behind a `redpanda-cloud:` URI and waits (briefly) until an open document of it shows it. */
+	private async setDeployed(uri: vscode.Uri, text: string): Promise<void> {
+		this.deployedConfigs.set(uri.toString(), text);
+		const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+		if (!open || open.getText() === text) {
+			this.deployedChanged.fire(uri);
+			return;
+		}
+		const updated = new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				sub.dispose();
+				resolve();
+			}, 2_000);
+			const sub = vscode.workspace.onDidChangeTextDocument((e) => {
+				if (e.document.uri.toString() === uri.toString() && e.document.getText() === text) {
+					clearTimeout(timer);
+					sub.dispose();
+					resolve();
+				}
+			});
+		});
+		this.deployedChanged.fire(uri);
+		await updated;
+	}
+
+	/** Open deployed config: read now, shown read-only as "<name> (deployed)". */
+	private async openDeployed(target: ActionTarget): Promise<RowActionResult> {
+		const read = await this.readNow(target);
+		if (!('configYaml' in read)) {
+			return read;
+		}
+		const uri = deployedViewUri(target.cluster.id, read.id, read.displayName);
+		await this.setDeployed(uri, read.configYaml);
+		let doc = await vscode.workspace.openTextDocument(uri);
+		if (doc.languageId !== 'yaml') {
+			doc = await vscode.languages.setTextDocumentLanguage(doc, 'yaml');
+		}
+		await vscode.window.showTextDocument(doc, { preview: true });
+		this.log(`Redpanda Cloud: opened the deployed config of pipeline ${read.displayName} (${read.id}) on ${target.cluster.name}.`);
+		return { kind: 'opened', pipelineId: read.id, uri: uri.toString() };
+	}
+
+	/** The row's local file, or said why there is none (`what`: what needs it). */
+	private localFileFor(pipeline: CloudPipeline, what: string): string | RowActionResult {
+		const local = this.localFileOf(pipeline);
+		if (local.kind === 'ok') {
+			return local.path;
+		}
+		void this.showInfo(local.kind === 'outside'
+			? `Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}, so there is no local file to ${what}.`
+			: `Pipeline ${pipeline.displayName} names no file it was deployed from, so there is no local file to ${what}.`);
+		return { kind: 'notInWorkspace', pipelineId: pipeline.id };
+	}
+
+	/** Compare with the local file: the deployed config (read now, read-only) ↔ the local file (editable). */
+	private async compare(target: ActionTarget): Promise<RowActionResult> {
+		const file = this.localFileFor(target.pipeline, 'compare with');
+		if (typeof file !== 'string') {
+			return file;
+		}
+		const read = await this.readNow(target);
+		if (!('configYaml' in read)) {
+			return read;
+		}
+		const left = deployedConfigUri(target.cluster.id, read.id, read.displayName);
+		await this.setDeployed(left, read.configYaml);
+		const name = path.basename(file);
+		await vscode.commands.executeCommand('vscode.diff', left, vscode.Uri.file(file), `${read.displayName} (deployed) ↔ ${name}`, { preview: true });
+		this.log(`Redpanda Cloud: compared the deployed config of pipeline ${read.displayName} (${read.id}) on ${target.cluster.name} with ${file}.`);
+		return { kind: 'opened', pipelineId: read.id, uri: left.toString() };
+	}
+
+	/** Deploy again: the normal Deploy of the row's file, only when its `.cloud.json` maps to this pipeline. */
+	private async deployAgain(target: ActionTarget): Promise<RowActionResult> {
+		const { cluster, pipeline } = target;
+		const file = this.localFileFor(pipeline, 'deploy');
+		if (typeof file !== 'string') {
+			return file;
+		}
+		const name = path.basename(file);
+		const mappingFile = sidecarPath(file);
+		const mappingName = path.basename(mappingFile);
+		const read = await readMapping(mappingFile);
+		if (read.kind === 'ok' && read.mapping.clusterId === cluster.id && read.mapping.pipelineId === pipeline.id) {
+			return this.deploy(vscode.Uri.file(file), { clusterId: cluster.id, pipelineId: pipeline.id, name: pipeline.displayName });
+		}
+		const why = read.kind === 'none' ? `${name} has no ${mappingName}, so a Deploy of it would not update ${pipeline.displayName}`
+			: read.kind === 'bad' ? `${mappingName} is not a deploy mapping (${read.reason})`
+				: `${mappingName} maps ${name} to pipeline ${read.mapping.pipelineName ?? read.mapping.pipelineId}`
+					+ `${read.mapping.clusterId === cluster.id ? '' : ` on ${this.clusterById(read.mapping.clusterId)?.name ?? read.mapping.clusterName ?? read.mapping.clusterId}`}, not to ${pipeline.displayName} on ${cluster.name}`;
+		this.log(`Redpanda Cloud: did not deploy ${file} again to ${pipeline.displayName} (${pipeline.id}): ${why}.`);
+		void this.showInfo(`${why}. Deploy ${name} from its editor to choose where it goes. Nothing was sent.`);
+		return { kind: 'notMapped', pipelineId: pipeline.id, ...(read.kind === 'ok' ? { mapping: read.mapping } : {}) };
+	}
 }
 
-/** The left side of the deploy's diff (and story 5's "Open deployed config"). */
+/** The left side of the deploy's diff and of Compare with local file (ticket 5.5). */
 export function deployedConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
 	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
 	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.yaml` });
+}
+
+/** Open deployed config's read-only document, titled "<name> (deployed)" (its language set to YAML). */
+export function deployedViewUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
+	const safe = name.replace(/[/\\]+/g, '_').trim() || pipelineId;
+	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe} (deployed)` });
 }
 
 /** The right side of the deploy's diff: the local config as it would be sent. */
@@ -1735,6 +1992,13 @@ const ACTION_TEXT: Record<PipelineAction, { readonly title: string; readonly pro
 	start: { title: 'Start pipeline', progress: 'Starting', ongoing: 'starting', failed: 'Start', done: 'Started' },
 	stop: { title: 'Stop pipeline', progress: 'Stopping', ongoing: 'stopping', failed: 'Stop', done: 'Stopped' },
 	delete: { title: 'Delete pipeline', progress: 'Deleting', ongoing: 'being deleted', failed: 'Delete', done: 'Deleted' },
+};
+
+const ROW_ACTION_TEXT: Record<'open' | 'compare' | 'deployAgain' | 'copyId', string> = {
+	open: 'Open deployed config',
+	compare: 'Compare with local file',
+	deployAgain: 'Deploy local file again',
+	copyId: 'Copy pipeline ID',
 };
 
 function stateIcon(state: string | undefined): string {

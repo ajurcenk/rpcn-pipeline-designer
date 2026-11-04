@@ -65,11 +65,11 @@ export function serializeMapping(m: DeployMapping): string {
 }
 
 /**
- * The mapping files beside the config a pipeline's `rpcn-vscode/config` tag names (a path relative
- * to a workspace folder, or absolute), only those inside one of `folders`: a tag pointing elsewhere
- * (absolute outside them, or climbing out with `..`) gives none.
+ * The configs a pipeline's `rpcn-vscode/config` tag names (a path relative to a workspace folder, or
+ * absolute), only those inside one of `folders`, in their order: a tag pointing elsewhere (absolute
+ * outside them, or climbing out with `..`) gives none. Whether a file is there is the caller's to check.
  */
-export function taggedSidecars(tag: string | undefined, folders: readonly string[]): string[] {
+export function taggedConfigs(tag: string | undefined, folders: readonly string[]): string[] {
 	if (!tag) {
 		return [];
 	}
@@ -78,8 +78,13 @@ export function taggedSidecars(tag: string | undefined, folders: readonly string
 		const config = path.resolve(folder, tag);
 		const rel = path.relative(folder, config);
 		if (rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) {
-			out.add(sidecarPath(config));
+			out.add(config);
 		}
 	}
 	return [...out];
+}
+
+/** The mapping files beside the configs `taggedConfigs` finds for the tag. */
+export function taggedSidecars(tag: string | undefined, folders: readonly string[]): string[] {
+	return [...new Set(taggedConfigs(tag, folders).map(sidecarPath))];
 }

@@ -5,7 +5,7 @@ import {
 } from '../../../adapters/cloud/dataPlane';
 import { CloudError } from '../../../adapters/cloud/errors';
 import type { FetchLike } from '../../../adapters/cloud/http';
-import { taggedSidecars } from '../../../adapters/cloud/sidecar';
+import { taggedConfigs, taggedSidecars } from '../../../adapters/cloud/sidecar';
 import * as path from 'path';
 
 interface Sent { method: string; url: string; body?: string }
@@ -73,5 +73,18 @@ suite('Cloud start, stop and delete (ticket 5.4, AD-23)', () => {
 		assert.deepStrictEqual(taggedSidecars('..orders.yaml', [w]), [path.join(w, '..orders.cloud.json')]);
 		assert.deepStrictEqual(taggedSidecars('orders.yaml', []), []);
 		assert.deepStrictEqual(taggedSidecars(undefined, [w]), []);
+	});
+
+	test('taggedConfigs (ticket 5.5): the config path a tag names inside each workspace folder, in their order; outside them none', () => {
+		const w = path.resolve('/w');
+		const v = path.resolve('/v');
+		assert.deepStrictEqual(taggedConfigs('pipes/orders.yaml', [w, v]), [path.join(w, 'pipes', 'orders.yaml'), path.join(v, 'pipes', 'orders.yaml')]);
+		assert.deepStrictEqual(taggedConfigs(path.join(v, 'orders.yaml'), [w, v]), [path.join(v, 'orders.yaml')]);
+		assert.deepStrictEqual(taggedConfigs(path.resolve('/etc/orders.yaml'), [w]), []);
+		assert.deepStrictEqual(taggedConfigs('../outside/orders.yaml', [w]), []);
+		assert.deepStrictEqual(taggedConfigs('pipes/../../orders.yaml', [w]), []);
+		assert.deepStrictEqual(taggedConfigs('.', [w]), [], 'the folder itself is no config');
+		assert.deepStrictEqual(taggedConfigs('', [w]), []);
+		assert.deepStrictEqual(taggedConfigs(undefined, [w]), []);
 	});
 });
