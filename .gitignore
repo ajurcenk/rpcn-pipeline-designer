@@ -19,8 +19,9 @@ _bmad/custom/*.user.toml
 # BMad rendered skill cache (regenerated on each run)
 _bmad/render/
 
-# Spike binary cache (never committed)
+# Spike binary cache (never committed); includes .cache/logs-probe/ (spike 6.1's Kafka clients)
 .cache/
+.cache/logs-probe/
 
 # Manual-check VS Code profile and workspace (scripts/dev-host.sh)
 .dev-host/

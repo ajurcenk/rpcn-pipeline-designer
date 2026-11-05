@@ -1,0 +1,14 @@
+{
+  "step": "cleanup-check-pipelines",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines?page_size=100&filter.name_contains=vscode-spike-logs-"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "pipelines_named_vscode_spike_logs": 0
+    }
+  },
+  "ms": 43
+}

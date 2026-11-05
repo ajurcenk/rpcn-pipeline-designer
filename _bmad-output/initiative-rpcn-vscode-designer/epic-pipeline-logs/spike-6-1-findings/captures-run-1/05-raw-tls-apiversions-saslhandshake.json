@@ -1,0 +1,389 @@
+{
+  "step": "raw-tls-apiversions-saslhandshake",
+  "request": {
+    "broker": "<broker-host-1>:9092",
+    "tls": true,
+    "requests": [
+      "ApiVersions v0",
+      "SaslHandshake v1 PROBE-NO-SUCH-MECHANISM",
+      "ApiVersions v0 without TLS"
+    ]
+  },
+  "result": {
+    "tls": {
+      "authorized_by_system_cas": true,
+      "authorization_error": null,
+      "protocol": "TLSv1.3",
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "chain": [
+        {
+          "subject": {
+            "CN": "<cluster-host>"
+          },
+          "issuer": {
+            "CN": "YR1",
+            "O": "Let's Encrypt",
+            "C": "US"
+          },
+          "valid_from": "Sep  7 07:30:11 2026 GMT",
+          "valid_to": "Dec  6 07:30:10 2026 GMT",
+          "self_signed": false,
+          "subjectaltname_count": 2,
+          "subjectaltname_wildcard": true,
+          "bits": 2048
+        },
+        {
+          "subject": {
+            "CN": "YR1",
+            "O": "Let's Encrypt"
+          },
+          "issuer": {
+            "CN": "Root YR",
+            "O": "ISRG",
+            "C": "US"
+          },
+          "valid_from": "Sep  3 00:00:00 2025 GMT",
+          "valid_to": "Sep  2 23:59:59 2028 GMT",
+          "self_signed": false,
+          "subjectaltname_count": 0,
+          "subjectaltname_wildcard": false,
+          "bits": 2048
+        },
+        {
+          "subject": {
+            "CN": "Root YR",
+            "O": "ISRG"
+          },
+          "issuer": {
+            "CN": "ISRG Root X1",
+            "O": "Internet Security Research Group",
+            "C": "US"
+          },
+          "valid_from": "May 13 00:00:00 2026 GMT",
+          "valid_to": "Sep  2 23:59:59 2032 GMT",
+          "self_signed": false,
+          "subjectaltname_count": 0,
+          "subjectaltname_wildcard": false,
+          "bits": 4096
+        },
+        {
+          "subject": {
+            "CN": "ISRG Root X1",
+            "O": "Internet Security Research Group"
+          },
+          "issuer": {
+            "CN": "ISRG Root X1",
+            "O": "Internet Security Research Group",
+            "C": "US"
+          },
+          "valid_from": "Jun  4 11:04:38 2015 GMT",
+          "valid_to": "Jun  4 11:04:38 2035 GMT",
+          "self_signed": true,
+          "subjectaltname_count": 0,
+          "subjectaltname_wildcard": false,
+          "bits": 4096
+        }
+      ]
+    },
+    "api_versions": {
+      "error_code": 0,
+      "error": "NONE",
+      "apis": [
+        {
+          "key": 0,
+          "name": "Produce",
+          "min": 0,
+          "max": 7
+        },
+        {
+          "key": 1,
+          "name": "Fetch",
+          "min": 4,
+          "max": 13
+        },
+        {
+          "key": 2,
+          "name": "ListOffsets",
+          "min": 0,
+          "max": 6
+        },
+        {
+          "key": 3,
+          "name": "Metadata",
+          "min": 0,
+          "max": 12
+        },
+        {
+          "key": 9,
+          "name": "OffsetFetch",
+          "min": 1,
+          "max": 8
+        },
+        {
+          "key": 47,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 10,
+          "name": "FindCoordinator",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 16,
+          "name": "ListGroups",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 18,
+          "name": "ApiVersions",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 11,
+          "name": "JoinGroup",
+          "min": 0,
+          "max": 6
+        },
+        {
+          "key": 12,
+          "name": "Heartbeat",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 21,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 13,
+          "name": "LeaveGroup",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 14,
+          "name": "SyncGroup",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 19,
+          "name": "CreateTopics",
+          "min": 0,
+          "max": 7
+        },
+        {
+          "key": 8,
+          "name": "OffsetCommit",
+          "min": 1,
+          "max": 8
+        },
+        {
+          "key": 32,
+          "name": "DescribeConfigs",
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 33,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 20,
+          "name": "DeleteTopics",
+          "min": 0,
+          "max": 6
+        },
+        {
+          "key": 15,
+          "name": "DescribeGroups",
+          "min": 0,
+          "max": 5
+        },
+        {
+          "key": 17,
+          "name": "SaslHandshake",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": 36,
+          "name": "SaslAuthenticate",
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 44,
+          "name": null,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": 42,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 29,
+          "name": "DescribeAcls",
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 35,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 30,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 31,
+          "name": null,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "key": 22,
+          "name": null,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": 24,
+          "name": null,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": 28,
+          "name": null,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": 25,
+          "name": null,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": 26,
+          "name": null,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": 37,
+          "name": null,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": 23,
+          "name": null,
+          "min": 0,
+          "max": 4
+        },
+        {
+          "key": 45,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 46,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 61,
+          "name": "DescribeProducers",
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 65,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 66,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 49,
+          "name": null,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": 48,
+          "name": null,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": 60,
+          "name": "DescribeCluster",
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 50,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 51,
+          "name": null,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "key": 15000,
+          "name": null,
+          "min": 0,
+          "max": 0
+        }
+      ]
+    },
+    "sasl_handshake": {
+      "request": {
+        "mechanism": "PROBE-NO-SUCH-MECHANISM"
+      },
+      "response": {
+        "error_code": 33,
+        "error": "UNSUPPORTED_SASL_MECHANISM",
+        "enabled_mechanisms": [
+          "SCRAM-SHA-256",
+          "SCRAM-SHA-512"
+        ]
+      }
+    },
+    "plaintext": {
+      "outcome": "closed by the broker",
+      "ms": 72
+    }
+  },
+  "ms": 249
+}

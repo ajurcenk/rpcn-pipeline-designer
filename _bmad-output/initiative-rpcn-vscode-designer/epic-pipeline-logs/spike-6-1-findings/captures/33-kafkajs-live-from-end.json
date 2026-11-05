@@ -1,0 +1,120 @@
+{
+  "step": "kafkajs-live-from-end",
+  "request": {
+    "partition": 0,
+    "from": "latest",
+    "max_wait_ms": 2000,
+    "for_ms": 60000
+  },
+  "result": {
+    "key_partition_murmur2": 0,
+    "partitions": 1,
+    "start_offset": 4703,
+    "fetches": 16,
+    "own_records": 38,
+    "first_own_record_after_ms": 69,
+    "receive_minus_record_timestamp_ms": {
+      "n": 38,
+      "min": 18,
+      "median": 38,
+      "p95": 133,
+      "max": 133
+    },
+    "examples": [
+      {
+        "partition": 0,
+        "offset": 4703,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "benthos_version": "4.116.0",
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Running main config from specified file",
+          "path": "/config/connect.yaml",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.510619696Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4704,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "expires_at": "<string, 20 chars>",
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "license_org": "<string, 36 chars>",
+          "license_type": "<string, 10 chars>",
+          "message": "Successfully loaded Redpanda license",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.512273218Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4705,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Listening for HTTP requests at: http://<ip>:4195\n",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.604721794Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4706,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Launching a Redpanda Connect instance, use CTRL+C to close",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.610569488Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4707,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "INFO",
+          "message": "Input type generate is now active",
+          "path": "root.input",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.611268025Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4708,
+        "timestamp": "2026-11-05T16:49:16.511Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "INFO",
+          "message": "Output type drop is now active",
+          "path": "root.output",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:49:15.611494167Z"
+        }
+      }
+    ]
+  },
+  "ms": 15056
+}

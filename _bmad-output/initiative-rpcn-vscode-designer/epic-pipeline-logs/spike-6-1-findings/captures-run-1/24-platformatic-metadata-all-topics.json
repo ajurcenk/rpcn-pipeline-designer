@@ -1,0 +1,11 @@
+{
+  "step": "platformatic-metadata-all-topics",
+  "request": {
+    "topics": "all (a count only)"
+  },
+  "result": {
+    "topics": null,
+    "note": "not asked: Consumer.metadata takes a topic list"
+  },
+  "ms": 0
+}

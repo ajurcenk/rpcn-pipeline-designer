@@ -1,0 +1,281 @@
+{
+  "step": "kafkajs-read-last-15-min",
+  "request": {
+    "partitions": [
+      0
+    ],
+    "from": "ListOffsets(now - 15 min)",
+    "max_records_per_partition": 3000
+  },
+  "result": {
+    "per_partition": {
+      "0": {
+        "from_offset": 4692,
+        "latest": 4700,
+        "read": 8,
+        "fetches": 1
+      }
+    },
+    "aggregate": {
+      "records": 8,
+      "json_objects": 8,
+      "null_keys": 0,
+      "key_length": {
+        "n": 8,
+        "min": 20,
+        "median": 20,
+        "p95": 20,
+        "max": 20
+      },
+      "keys_like_a_20_char_xid": 8,
+      "key_equals_value_pipeline_id": 8,
+      "value_bytes": {
+        "n": 8,
+        "min": 196,
+        "median": 237,
+        "p95": 296,
+        "max": 296
+      },
+      "fields": {
+        "instance_id": {
+          "present": 8,
+          "types": {
+            "string": 8
+          }
+        },
+        "level": {
+          "present": 8,
+          "types": {
+            "string": 8
+          }
+        },
+        "message": {
+          "present": 8,
+          "types": {
+            "string": 8
+          }
+        },
+        "pipeline_id": {
+          "present": 8,
+          "types": {
+            "string": 8
+          }
+        },
+        "time": {
+          "present": 8,
+          "types": {
+            "string": 8
+          }
+        },
+        "path": {
+          "present": 5,
+          "types": {
+            "string": 5
+          }
+        },
+        "label": {
+          "present": 4,
+          "types": {
+            "string": 4
+          }
+        },
+        "custom_source": {
+          "present": 2,
+          "types": {
+            "string": 2
+          }
+        },
+        "benthos_version": {
+          "present": 1,
+          "types": {
+            "string": 1
+          }
+        },
+        "expires_at": {
+          "present": 1,
+          "types": {
+            "string": 1
+          }
+        },
+        "license_org": {
+          "present": 1,
+          "types": {
+            "string": 1
+          }
+        },
+        "license_type": {
+          "present": 1,
+          "types": {
+            "string": 1
+          }
+        },
+        "probe_n": {
+          "present": 1,
+          "types": {
+            "string": 1
+          }
+        }
+      },
+      "levels": {
+        "INFO": 7,
+        "WARN": 1
+      },
+      "header_names": {},
+      "batch_compression": "not reported by this client",
+      "record_timestamp_minus_value_time_ms": {
+        "n": 8,
+        "min": 609,
+        "median": 609,
+        "p95": 710,
+        "max": 710
+      },
+      "placement": {
+        "distinct_keys": 1,
+        "keys_in_one_partition": 1,
+        "keys_on_their_murmur2_partition": 1,
+        "own_pipeline": {
+          "records": 8,
+          "partitions": [
+            0
+          ],
+          "murmur2_partition": 0
+        }
+      }
+    },
+    "own_records_found": 8,
+    "own_records_by_partition": {
+      "0": 8
+    },
+    "own_examples": [
+      {
+        "partition": 0,
+        "offset": 4692,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "benthos_version": "4.116.0",
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Running main config from specified file",
+          "path": "/config/connect.yaml",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.701616149Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4693,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Listening for HTTP requests at: http://<ip>:4195\n",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.704071725Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4694,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "expires_at": "<string, 20 chars>",
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "license_org": "<string, 36 chars>",
+          "license_type": "<string, 10 chars>",
+          "message": "Successfully loaded Redpanda license",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.704151773Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4695,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "level": "INFO",
+          "message": "Launching a Redpanda Connect instance, use CTRL+C to close",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.802629462Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4696,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "INFO",
+          "message": "Input type generate is now active",
+          "path": "root.input",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.802740312Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4697,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "INFO",
+          "message": "Output type drop is now active",
+          "path": "root.output",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.802848688Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4698,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "custom_source": "<string, 4 chars>",
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "INFO",
+          "message": "vscode-spike-logs info 1",
+          "path": "root.pipeline.processors.0",
+          "pipeline_id": "<pipeline-id>",
+          "time": "2026-11-05T16:46:36.802869057Z"
+        }
+      },
+      {
+        "partition": 0,
+        "offset": 4699,
+        "timestamp": "2026-11-05T16:46:37.411Z",
+        "key": "<pipeline-id>",
+        "headers": [],
+        "value": {
+          "custom_source": "<string, 4 chars>",
+          "instance_id": "<instance-id-1>",
+          "label": "",
+          "level": "WARN",
+          "message": "vscode-spike-logs warn 1",
+          "path": "root.pipeline.processors.1",
+          "pipeline_id": "<pipeline-id>",
+          "probe_n": "1",
+          "time": "2026-11-05T16:46:36.802897712Z"
+        }
+      }
+    ]
+  },
+  "ms": 105
+}

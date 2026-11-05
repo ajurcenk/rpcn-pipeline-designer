@@ -1,0 +1,47 @@
+n	step	outcome	ms
+01	token	200	432
+02	clusters-list	200	635
+03	cluster-get	200	471
+04	pipeline-create	200	449
+05	raw-tls-apiversions-saslhandshake	ok	517
+06	client-kafkajs-bundle	ok	500
+07	client-platformatic-bundle	ok	1315
+08	kafkajs-auth-wrong-password	error: KafkaJSSASLAuthenticationError	232
+09	kafkajs-auth-other-mechanism	error: KafkaJSSASLAuthenticationError	223
+10	kafkajs-connect	ok	220
+11	kafkajs-metadata-topic	ok	269
+12	kafkajs-metadata-all-topics	ok	250
+13	kafkajs-describe-configs	ok	484
+14	kafkajs-list-offsets-earliest	ok	69
+15	kafkajs-list-offsets-latest	ok	33
+16	kafkajs-list-offsets-now-1h	ok	96
+17	kafkajs-list-offsets-now-24h	ok	36
+18	kafkajs-fetch-newest	error: KafkaJSNotImplemented	225
+19	kafkajs-fetch-newest-with-borrowed-codecs	ok	37
+20	kafkajs-public-offsets-by-timestamp	ok	282
+21	platformatic-auth-wrong-password	error: AggregateError	225
+22	platformatic-connect	ok	315
+23	platformatic-metadata-topic	ok	38
+24	platformatic-metadata-all-topics	ok	0
+25	platformatic-describe-configs	ok	293
+26	platformatic-list-offsets-earliest	ok	251
+27	platformatic-list-offsets-latest	ok	35
+28	platformatic-list-offsets-now-1h	ok	36
+29	platformatic-list-offsets-now-24h	ok	36
+30	platformatic-fetch-newest	ok	38
+31	pipeline-wait-running-final	200	145
+32	platformatic-live-from-end	ok	15056
+33	kafkajs-live-from-end	ok	15056
+34	kafkajs-read-last-15-min	ok	183
+35	kafkajs-seek-now-15m	ok	144
+36	kafkajs-seek-now-24h	ok	110
+37	kafkajs-seek-now-7d	ok	73
+38	kafkajs-seek-before-oldest	ok	75
+39	platformatic-read-last-15-min	ok	545
+40	platformatic-seek-now-15m	ok	108
+41	platformatic-seek-now-24h	ok	111
+42	platformatic-seek-now-7d	ok	72
+43	platformatic-seek-before-oldest	ok	71
+44	cleanup-pipeline-delete	200	168
+45	cleanup-pipeline-gone-final	404	124
+46	cleanup-check-pipelines	200	44

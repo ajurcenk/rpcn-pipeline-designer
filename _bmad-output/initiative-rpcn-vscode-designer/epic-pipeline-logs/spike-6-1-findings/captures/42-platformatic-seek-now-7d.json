@@ -1,0 +1,28 @@
+{
+  "step": "platformatic-seek-now-7d",
+  "request": {
+    "partition": 0,
+    "timestamp": 1793292707098
+  },
+  "result": {
+    "requested_timestamp": "2026-10-29T16:51:47.098Z",
+    "offset_on_key_partition": 4489,
+    "offsets_all_partitions": {
+      "0": 4489
+    },
+    "latest_on_key_partition": 5011,
+    "first_record": {
+      "offset": 4489,
+      "timestamp": "2026-11-02T16:13:28.571Z",
+      "at_or_after_requested": true,
+      "own": false
+    },
+    "read_forward": {
+      "records": 524,
+      "own": 310,
+      "log_start_offset": 4489,
+      "high_watermark": 5013
+    }
+  },
+  "ms": 72
+}

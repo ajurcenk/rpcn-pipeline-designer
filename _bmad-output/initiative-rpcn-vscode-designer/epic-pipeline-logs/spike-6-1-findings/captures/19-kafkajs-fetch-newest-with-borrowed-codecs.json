@@ -1,0 +1,21 @@
+{
+  "step": "kafkajs-fetch-newest-with-borrowed-codecs",
+  "request": {
+    "partition": 0,
+    "from_offset": 4683,
+    "codecs": [
+      "Snappy from @platformatic/kafka",
+      "LZ4 from @platformatic/kafka",
+      "ZSTD from @platformatic/kafka"
+    ]
+  },
+  "result": {
+    "records": 20,
+    "batch_compression": [
+      "not reported"
+    ],
+    "high_watermark": 4703,
+    "log_start_offset": null
+  },
+  "ms": 37
+}

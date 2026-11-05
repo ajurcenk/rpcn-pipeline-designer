@@ -1,0 +1,13 @@
+{
+  "step": "kafkajs-fetch-newest",
+  "request": {
+    "partition": 0,
+    "from_offset": 4683
+  },
+  "error": {
+    "name": "KafkaJSNotImplemented",
+    "message": "Snappy compression not implemented",
+    "retriable": false
+  },
+  "ms": 225
+}

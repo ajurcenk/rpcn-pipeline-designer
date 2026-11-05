@@ -1,0 +1,14 @@
+{
+  "step": "kafkajs-public-offsets-by-timestamp",
+  "request": {
+    "api": "admin.fetchTopicOffsetsByTimestamp",
+    "timestamp": "now - 15 minutes"
+  },
+  "result": [
+    {
+      "partition": 0,
+      "offset": "4692"
+    }
+  ],
+  "ms": 282
+}

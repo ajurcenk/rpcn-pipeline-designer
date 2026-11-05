@@ -1,0 +1,29 @@
+{
+  "step": "kafkajs-seek-now-24h",
+  "request": {
+    "partition": 0,
+    "timestamp": 1793811106478
+  },
+  "result": {
+    "requested_timestamp": "2026-11-04T16:51:46.478Z",
+    "offset_on_key_partition": 4638,
+    "offsets_all_partitions": {
+      "0": 4638
+    },
+    "latest_on_key_partition": 5009,
+    "first_record": {
+      "offset": 4638,
+      "timestamp": "2026-11-04T21:07:27.978Z",
+      "at_or_after_requested": true,
+      "own": false
+    },
+    "read_forward": {
+      "records": 373,
+      "own": 308,
+      "log_start_offset": null,
+      "high_watermark": 5011
+    },
+    "previous_record_before_requested": true
+  },
+  "ms": 110
+}

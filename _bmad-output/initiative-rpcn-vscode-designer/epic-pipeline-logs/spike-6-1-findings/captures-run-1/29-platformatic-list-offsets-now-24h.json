@@ -1,0 +1,13 @@
+{
+  "step": "platformatic-list-offsets-now-24h",
+  "request": {
+    "partitions": [
+      0
+    ],
+    "timestamp": 1793810643827
+  },
+  "result": {
+    "0": 4638
+  },
+  "ms": 34
+}

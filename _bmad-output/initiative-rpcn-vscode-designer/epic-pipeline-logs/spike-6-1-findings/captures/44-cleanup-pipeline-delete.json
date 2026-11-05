@@ -1,0 +1,12 @@
+{
+  "step": "cleanup-pipeline-delete",
+  "request": {
+    "method": "DELETE",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id>"
+  },
+  "response": {
+    "status": 200,
+    "body": {}
+  },
+  "ms": 168
+}

@@ -1,0 +1,28 @@
+{
+  "step": "kafkajs-seek-before-oldest",
+  "request": {
+    "partition": 0,
+    "timestamp": 0
+  },
+  "result": {
+    "requested_timestamp": "1970-01-01T00:00:00.000Z",
+    "offset_on_key_partition": 4489,
+    "offsets_all_partitions": {
+      "0": 4489
+    },
+    "latest_on_key_partition": 5009,
+    "first_record": {
+      "offset": 4489,
+      "timestamp": "2026-11-02T16:13:28.571Z",
+      "at_or_after_requested": true,
+      "own": false
+    },
+    "read_forward": {
+      "records": 522,
+      "own": 308,
+      "log_start_offset": null,
+      "high_watermark": 5011
+    }
+  },
+  "ms": 75
+}

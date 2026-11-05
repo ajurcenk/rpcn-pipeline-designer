@@ -1,0 +1,274 @@
+{
+  "date": "2026-11-05T16:49:08.281Z",
+  "cluster_name": "rpc-vilnius",
+  "topic": "__redpanda.connect.logs",
+  "dry_run": false,
+  "clients": [
+    "kafkajs",
+    "platformatic"
+  ],
+  "user_mechanism": "SCRAM-SHA-256",
+  "seed_brokers": 1,
+  "seed_ports": [
+    9092
+  ],
+  "tls": {
+    "authorized_by_system_cas": true,
+    "protocol": "TLSv1.3",
+    "issuer": {
+      "CN": "YR1",
+      "O": "Let's Encrypt",
+      "C": "US"
+    }
+  },
+  "sasl_mechanisms_offered": [
+    "SCRAM-SHA-256",
+    "SCRAM-SHA-512"
+  ],
+  "user_mechanism_offered": true,
+  "plaintext_port": "closed by the broker",
+  "pipeline_state": "STATE_RUNNING",
+  "leftovers_this_run": [],
+  "leftovers_earlier_runs": [],
+  "answers": {
+    "kafkajs": {
+      "wrong_password": {
+        "name": "KafkaJSSASLAuthenticationError",
+        "message": "SASL SCRAM SHA256 authentication failed: SASL authentication failed: security: Invalid credentials",
+        "retriable": false
+      },
+      "other_mechanism": {
+        "mechanism": "SCRAM-SHA-512",
+        "signed_in": false
+      },
+      "signed_in": true,
+      "partitions": 1,
+      "brokers": 3,
+      "all_topics": {
+        "topics": 24,
+        "includes_logs_topic": true
+      },
+      "describe_configs": {
+        "cleanup.policy": "delete",
+        "segment.bytes": "134217728",
+        "retention.ms": "604800000",
+        "retention.bytes": "-1",
+        "message.timestamp.type": "CreateTime",
+        "redpanda.remote.read": "true",
+        "redpanda.remote.write": "true",
+        "retention.local.target.bytes": "-1",
+        "retention.local.target.ms": "21600000",
+        "redpanda.remote.delete": "true",
+        "segment.ms": "1209600000",
+        "redpanda.remote.allowgaps": "false",
+        "message.timestamp.before.max.ms": "9223372036854",
+        "message.timestamp.after.max.ms": "3600000"
+      },
+      "records_in_topic": 214,
+      "records_last_hour": 11,
+      "records_last_24h": 65,
+      "fetch": {
+        "name": "KafkaJSNotImplemented",
+        "message": "Snappy compression not implemented",
+        "retriable": false
+      },
+      "codecs_borrowed": [
+        "Snappy",
+        "LZ4",
+        "ZSTD"
+      ],
+      "fetch_with_borrowed_codecs": "decoded",
+      "live": {
+        "own_records": 38,
+        "first_after_ms": 69,
+        "latency": {
+          "n": 38,
+          "min": 18,
+          "median": 38,
+          "p95": 133,
+          "max": 133
+        }
+      },
+      "sample": {
+        "records": 317,
+        "placement": {
+          "distinct_keys": 2,
+          "keys_in_one_partition": 2,
+          "keys_on_their_murmur2_partition": 2,
+          "own_pipeline": {
+            "records": 306,
+            "partitions": [
+              0
+            ],
+            "murmur2_partition": 0
+          }
+        },
+        "fields": [
+          "instance_id",
+          "level",
+          "message",
+          "pipeline_id",
+          "time",
+          "path",
+          "label",
+          "custom_source",
+          "probe_n",
+          "benthos_version",
+          "expires_at",
+          "license_org",
+          "license_type"
+        ]
+      },
+      "seeks": {
+        "now-15m": {
+          "offset": 4692,
+          "first_at_or_after": true,
+          "previous_before": true
+        },
+        "now-24h": {
+          "offset": 4638,
+          "first_at_or_after": true,
+          "previous_before": true
+        },
+        "now-7d": {
+          "offset": 4489,
+          "first_at_or_after": true,
+          "previous_before": null
+        },
+        "before-oldest": {
+          "offset": 4489,
+          "first_at_or_after": true,
+          "previous_before": null
+        }
+      }
+    },
+    "platformatic": {
+      "wrong_password": {
+        "name": "AggregateError",
+        "message": "Cannot connect to any broker.",
+        "code": "PLT_KFK_MULTIPLE",
+        "errors": [
+          {
+            "name": "Error",
+            "message": "Connection to <broker-host-1>:9092 failed.",
+            "code": "PLT_KFK_NETWORK",
+            "cause": {
+              "name": "Error",
+              "message": "SASL authentication failed.",
+              "code": "PLT_KFK_AUTHENTICATION",
+              "cause": {
+                "name": "AggregateError",
+                "message": "Received response with error while executing API SaslAuthenticate(v2)",
+                "code": "PLT_KFK_RESPONSE",
+                "errors": [
+                  {
+                    "name": "Error",
+                    "message": "SASL authentication failed.",
+                    "code": "PLT_KFK_PROTOCOL",
+                    "apiCode": 58,
+                    "apiId": "SASL_AUTHENTICATION_FAILED",
+                    "kafka_error": "SASL_AUTHENTICATION_FAILED"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "signed_in": true,
+      "partitions": 1,
+      "brokers": 3,
+      "all_topics": {
+        "topics": null,
+        "note": "not asked: Consumer.metadata takes a topic list"
+      },
+      "describe_configs": {
+        "cleanup.policy": "delete",
+        "segment.bytes": "134217728",
+        "retention.ms": "604800000",
+        "retention.bytes": "-1",
+        "message.timestamp.type": "CreateTime",
+        "redpanda.remote.read": "true",
+        "redpanda.remote.write": "true",
+        "retention.local.target.bytes": "-1",
+        "retention.local.target.ms": "21600000",
+        "redpanda.remote.delete": "true",
+        "segment.ms": "1209600000",
+        "redpanda.remote.allowgaps": "false",
+        "message.timestamp.before.max.ms": "9223372036854",
+        "message.timestamp.after.max.ms": "3600000"
+      },
+      "records_in_topic": 214,
+      "records_last_hour": 11,
+      "records_last_24h": 65,
+      "fetch": "decoded",
+      "live": {
+        "own_records": 38,
+        "first_after_ms": 70,
+        "latency": {
+          "n": 38,
+          "min": 17,
+          "median": 38,
+          "p95": 133,
+          "max": 133
+        }
+      },
+      "sample": {
+        "records": 319,
+        "placement": {
+          "distinct_keys": 2,
+          "keys_in_one_partition": 2,
+          "keys_on_their_murmur2_partition": 2,
+          "own_pipeline": {
+            "records": 308,
+            "partitions": [
+              0
+            ],
+            "murmur2_partition": 0
+          }
+        },
+        "fields": [
+          "instance_id",
+          "level",
+          "message",
+          "pipeline_id",
+          "time",
+          "path",
+          "label",
+          "custom_source",
+          "probe_n",
+          "benthos_version",
+          "expires_at",
+          "license_org",
+          "license_type"
+        ]
+      },
+      "seeks": {
+        "now-15m": {
+          "offset": 4692,
+          "first_at_or_after": true,
+          "previous_before": true
+        },
+        "now-24h": {
+          "offset": 4638,
+          "first_at_or_after": true,
+          "previous_before": true
+        },
+        "now-7d": {
+          "offset": 4489,
+          "first_at_or_after": true,
+          "previous_before": null
+        },
+        "before-oldest": {
+          "offset": 4489,
+          "first_at_or_after": true,
+          "previous_before": null
+        }
+      }
+    }
+  },
+  "native_modules_loaded": [
+    ".cache/logs-probe/node_modules/@node-rs/crc32-linux-x64-gnu/crc32.linux-x64-gnu.node"
+  ],
+  "errors": []
+}

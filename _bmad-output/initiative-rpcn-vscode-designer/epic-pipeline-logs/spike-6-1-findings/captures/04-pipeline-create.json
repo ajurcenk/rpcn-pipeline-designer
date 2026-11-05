@@ -1,0 +1,43 @@
+{
+  "step": "pipeline-create",
+  "request": {
+    "method": "POST",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines",
+    "body": {
+      "display_name": "vscode-spike-logs-<run>",
+      "description": "vscode spike 6.1 logs probe, safe to delete",
+      "config_yaml": "input:\n  generate:\n    interval: 1s\n    mapping: 'root = {\"n\": counter()}'\npipeline:\n  processors:\n    - log:\n        level: INFO\n        message: 'vscode-spike-logs info ${! this.n }'\n    - log:\n        level: WARN\n        message: 'vscode-spike-logs warn ${! this.n }'\n        fields_mapping: 'root.probe_n = this.n'\noutput:\n  drop: {}\n",
+      "resources": {
+        "cpu_shares": "100m",
+        "memory_shares": "400M"
+      },
+      "tags": {
+        "vscode-spike": "logs"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "pipeline": {
+        "id": "<pipeline-id>",
+        "display_name": "vscode-spike-logs-<run>",
+        "description": "vscode spike 6.1 logs probe, safe to delete",
+        "config_yaml": "input:\n  generate:\n    interval: 1s\n    mapping: 'root = {\"n\": counter()}'\npipeline:\n  processors:\n    - log:\n        level: INFO\n        message: 'vscode-spike-logs info ${! this.n }'\n    - log:\n        level: WARN\n        message: 'vscode-spike-logs warn ${! this.n }'\n        fields_mapping: 'root.probe_n = this.n'\noutput:\n  drop: {}\n",
+        "resources": {
+          "memory_shares": "400M",
+          "cpu_shares": "100m"
+        },
+        "state": "STATE_STARTING",
+        "url": "",
+        "tags": {
+          "vscode-spike": "logs"
+        },
+        "created_by": "csb6mv8e6fbj5b0b8f2g@<cluster-host>",
+        "create_time": "2026-11-05T16:49:10Z",
+        "update_time": "2026-11-05T16:49:10.192334413Z"
+      }
+    }
+  },
+  "ms": 449
+}

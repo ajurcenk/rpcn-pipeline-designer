@@ -1,0 +1,20 @@
+{
+  "step": "kafkajs-live-from-end",
+  "request": {
+    "partition": 0,
+    "from": "latest",
+    "max_wait_ms": 2000,
+    "for_ms": 60000
+  },
+  "result": {
+    "key_partition_murmur2": 0,
+    "partitions": 1,
+    "start_offset": 4692,
+    "fetches": 30,
+    "own_records": 0,
+    "first_own_record_after_ms": null,
+    "receive_minus_record_timestamp_ms": null,
+    "examples": []
+  },
+  "ms": 61365
+}

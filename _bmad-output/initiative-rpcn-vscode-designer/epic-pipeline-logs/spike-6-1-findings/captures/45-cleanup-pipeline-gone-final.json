@@ -1,0 +1,22 @@
+{
+  "step": "cleanup-pipeline-gone-final",
+  "request": {
+    "method": "GET",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines/<pipeline-id>"
+  },
+  "response": {
+    "status": 404,
+    "body": {
+      "code": "NOT_FOUND",
+      "message": "<cluster-host> \"<pipeline-id>\" not found",
+      "details": []
+    }
+  },
+  "ms": 124,
+  "derived": {
+    "polls": 1,
+    "ms_waited": 124,
+    "timed_out": false,
+    "final_state": "HTTP 404"
+  }
+}

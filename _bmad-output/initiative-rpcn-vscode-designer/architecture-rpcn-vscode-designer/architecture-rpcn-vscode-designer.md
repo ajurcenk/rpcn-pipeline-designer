@@ -237,6 +237,20 @@ graph LR
   - **Secrets** (`{dp}/v1/secrets`): list (`secrets`, `filter.name_contains`; 1–3 s per call); create `POST` `{id, scopes: ["SCOPE_REDPANDA_CONNECT"], secret_data: base64}` → 201, an existing id → 409; `DELETE /{id}` → 204. Ids follow the documentation's `^[A-Z][A-Z0-9_]*$`. Values are never read back.
   - **Errors:** API bodies are `{code, message, details}` (`INVALID_ARGUMENT`, `PERMISSION_DENIED`, `UNKNOWN`, …); 400 validation, 401 a bad token on the Data Plane (the Control Plane answers a malformed token with 500), 403 permission, 404, 409. Messages are shown with secret values masked.
 
+### AD-24 — Reading pipeline logs from the logs topic [ADOPTED]
+
+- **Binds:** the new `src/adapters/logs` (the Kafka client and the record reader), the log access, live log, history, filters, states, strip and export of epic 6 (E6 R1–R7), and the integration tests' in-memory fake of the reader.
+- **Prevents:** stories each guessing the address, the auth and the read pattern; a consumer group that needs another ACL and leaves committed offsets behind; a client that cannot decode the topic's Snappy records or that ships a native module; history that seeks below the log's start.
+- **Rule:** (adopted by the user 2026-11-05, when they marked spike 6.1 done, from spike 6.1 run 2, `epic-pipeline-logs/spike-6-1-findings/findings.md`; one Dedicated cluster, a one-partition topic)
+  - **Address:** the Control Plane cluster's `kafka_api.seed_brokers` (AD-23's `GET /v1/clusters/{id}`); TLS always, the system CAs; never asked of the user.
+  - **Auth:** SASL SCRAM-SHA-256 or SCRAM-SHA-512, the user's choice per cluster; username and password in VS Code's secret storage per cluster (`context.secrets`), passed to the client in memory only; never in a setting, a file, argv, a message or a log line.
+  - **Reading:** `__redpanda.connect.logs`, no consumer group and no commit: partitions from metadata; a pipeline's records are those whose key is its pipeline id, on its murmur2 partition when the topic has several partitions (unproven: read every partition until a story proves the placement); the value is JSON (`time`, `level`, `message`, `instance_id`, `path`, `pipeline_id`, further fields).
+  - **Time:** ListOffsets by timestamp gives the first offset at or after a time; reads go forward from it; never below the log's first offset (ListOffsets earliest); records older than the brokers' local retention come from tiered storage, through the same fetch.
+  - **Live:** fetch from the end with a 2 s maximum wait, repeated while the panel follows.
+  - **Client:** `@platformatic/kafka` (decodes Snappy, groupless reads through its public API), bundled by esbuild with `import.meta.url` defined from `__filename` and its `native.wasm` beside the bundle; its optional native `@node-rs/crc32` is not shipped. The reader is an interface (`LogReader`) so tests use an in-memory fake and the client can be replaced.
+  - **Shown:** `license_org` is never shown (ticket 38's rule for the license); messages are masked like every Cloud message.
+  - **Errors:** a refused sign-in is `SASL_AUTHENTICATION_FAILED` (Kafka 58), nested in the client's aggregate error; a refused read is an authorization error; anything else is a connection error, retried.
+
 ## Consistency Conventions
 
 | Concern | Convention |

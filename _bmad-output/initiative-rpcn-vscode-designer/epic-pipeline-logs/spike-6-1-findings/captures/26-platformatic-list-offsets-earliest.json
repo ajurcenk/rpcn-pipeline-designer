@@ -1,0 +1,13 @@
+{
+  "step": "platformatic-list-offsets-earliest",
+  "request": {
+    "partitions": [
+      0
+    ],
+    "timestamp": -2
+  },
+  "result": {
+    "0": 4489
+  },
+  "ms": 251
+}

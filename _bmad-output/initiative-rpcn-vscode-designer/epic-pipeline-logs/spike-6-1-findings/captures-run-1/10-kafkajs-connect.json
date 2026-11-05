@@ -1,0 +1,8 @@
+{
+  "step": "kafkajs-connect",
+  "request": {
+    "mechanism": "SCRAM-SHA-256"
+  },
+  "result": "connected and signed in",
+  "ms": 259
+}

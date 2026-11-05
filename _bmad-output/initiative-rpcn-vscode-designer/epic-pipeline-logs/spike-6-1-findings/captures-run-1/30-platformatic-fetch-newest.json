@@ -1,0 +1,17 @@
+{
+  "step": "platformatic-fetch-newest",
+  "request": {
+    "partition": 0,
+    "from_offset": 4672
+  },
+  "result": {
+    "records": 20,
+    "batch_compression": [
+      "snappy",
+      "none"
+    ],
+    "high_watermark": 4692,
+    "log_start_offset": 4489
+  },
+  "ms": 36
+}

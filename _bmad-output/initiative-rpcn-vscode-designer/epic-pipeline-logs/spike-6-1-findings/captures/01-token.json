@@ -1,0 +1,22 @@
+{
+  "step": "token",
+  "request": {
+    "method": "POST",
+    "url": "https://auth.prd.cloud.redpanda.com/oauth/token",
+    "body": {
+      "grant_type": "<redacted>",
+      "client_id": "<redacted>",
+      "client_secret": "<redacted>",
+      "audience": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "access_token": "<redacted>",
+      "expires_in": 86400,
+      "token_type": "Bearer"
+    }
+  },
+  "ms": 432
+}

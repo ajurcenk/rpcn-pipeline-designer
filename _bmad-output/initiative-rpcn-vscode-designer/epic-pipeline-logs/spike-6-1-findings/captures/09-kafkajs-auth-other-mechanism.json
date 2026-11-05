@@ -1,0 +1,12 @@
+{
+  "step": "kafkajs-auth-other-mechanism",
+  "request": {
+    "mechanism": "SCRAM-SHA-512"
+  },
+  "error": {
+    "name": "KafkaJSSASLAuthenticationError",
+    "message": "SASL SCRAM SHA512 authentication failed: SASL authentication failed: security: Invalid credentials",
+    "retriable": false
+  },
+  "ms": 223
+}

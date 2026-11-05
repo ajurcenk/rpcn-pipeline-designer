@@ -120,3 +120,6 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
   summary: Undo steps in the full stable run fail intermittently: Lint on save FIX_ALL ("one undo step reverts all three") and the Bloblang test panel's DELETED + UNDO, UNDO_RELINK (each with and without WITH_GRAPH) and DIRTY_RECORD.
   evidence: 2026-11-03, VS Code 1.144.1: 6 failures in one full run and 7 (undo / `applyEdit`) in another, on ticket 5.6's code; the next full run passed (1189), and the Bloblang panel suite alone passed twice. The suites run before 96-cloud, and 5.6 touches none of their code. Not reproduced on the commit before 5.6 (not tried); a full run's earlier suites, or machine load, are the likely cause.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-check-the-config-against-the-cluster-before-deploying-plan.md`
+  summary: The graph-markers test "HELD (story 13): a Red Hat marker stays on its node when a node is inserted above it before Red Hat republishes" fails intermittently.
+  evidence: It failed in the 5.5 implementer's full run (passed when its suite was rerun alone) and on CI run 42058471336 for 0357b6d (VS Code 1.145.0, 1230 passing, 1 failing); the re-run of that job passed. Neither change touches the graph markers code.

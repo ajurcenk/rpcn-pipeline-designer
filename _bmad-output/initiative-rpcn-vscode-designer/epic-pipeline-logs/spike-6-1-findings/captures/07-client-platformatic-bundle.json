@@ -1,0 +1,133 @@
+{
+  "step": "client-platformatic-bundle",
+  "result": {
+    "package": "@platformatic/kafka",
+    "version": "2.15.0",
+    "license": "Apache-2.0",
+    "dependencies": [
+      "@platformatic/dynamic-buffer",
+      "@platformatic/wasm-utils",
+      "ajv",
+      "ajv-draft-04",
+      "avsc",
+      "debug",
+      "fastq",
+      "mnemonist",
+      "scule"
+    ],
+    "optional_dependencies": [
+      "@node-rs/crc32",
+      "protobufjs"
+    ],
+    "esbuild": "0.28.2",
+    "attempts": [
+      {
+        "attempt": "plain",
+        "how": "as the extension bundles today",
+        "bytes": 1528527,
+        "minified_bytes": 719235,
+        "minified_gzip_bytes": 170800,
+        "warnings": [],
+        "inputs": 500,
+        "native_inputs": [],
+        "packages": [
+          "@platformatic/dynamic-buffer",
+          "@platformatic/kafka",
+          "@platformatic/wasm-utils",
+          "ajv",
+          "ajv-draft-04",
+          "avsc",
+          "debug",
+          "fast-deep-equal",
+          "fast-uri",
+          "fastq",
+          "json-schema-traverse",
+          "mnemonist",
+          "ms",
+          "obliterator",
+          "reusify",
+          "supports-color"
+        ],
+        "loaded": false,
+        "error": {
+          "name": "TypeError",
+          "message": "Invalid URL",
+          "code": "ERR_INVALID_URL"
+        }
+      },
+      {
+        "attempt": "wasm-inlined",
+        "how": "alias @platformatic/wasm-utils -> @platformatic/wasm-utils/bundled (the wasm inlined)",
+        "bytes": 1604892,
+        "minified_bytes": 795653,
+        "minified_gzip_bytes": 209310,
+        "warnings": [],
+        "inputs": 500,
+        "native_inputs": [],
+        "packages": [
+          "@platformatic/dynamic-buffer",
+          "@platformatic/kafka",
+          "@platformatic/wasm-utils",
+          "ajv",
+          "ajv-draft-04",
+          "avsc",
+          "debug",
+          "fast-deep-equal",
+          "fast-uri",
+          "fastq",
+          "json-schema-traverse",
+          "mnemonist",
+          "ms",
+          "obliterator",
+          "reusify",
+          "supports-color"
+        ],
+        "loaded": false,
+        "error": {
+          "name": "TypeError",
+          "message": "The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received undefined",
+          "code": "ERR_INVALID_ARG_VALUE"
+        }
+      },
+      {
+        "attempt": "import-meta-shim",
+        "how": "define import.meta.url from __filename; native.wasm copied beside the bundle",
+        "bytes": 1528558,
+        "minified_bytes": 719345,
+        "minified_gzip_bytes": 170856,
+        "warnings": [],
+        "inputs": 500,
+        "native_inputs": [],
+        "packages": [
+          "@platformatic/dynamic-buffer",
+          "@platformatic/kafka",
+          "@platformatic/wasm-utils",
+          "ajv",
+          "ajv-draft-04",
+          "avsc",
+          "debug",
+          "fast-deep-equal",
+          "fast-uri",
+          "fastq",
+          "json-schema-traverse",
+          "mnemonist",
+          "ms",
+          "obliterator",
+          "reusify",
+          "supports-color"
+        ],
+        "loaded": true
+      }
+    ],
+    "loaded_from": "import-meta-shim",
+    "native_files_installed": [
+      "node_modules/@node-rs/crc32-linux-x64-gnu/crc32.linux-x64-gnu.node",
+      "node_modules/@platformatic/wasm-utils/dist/native.wasm"
+    ],
+    "npm": {
+      "version": "2.15.0",
+      "time.modified": "2026-11-04T09:59:23.102Z"
+    }
+  },
+  "ms": 1315
+}

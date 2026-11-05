@@ -1,0 +1,189 @@
+{
+  "step": "platformatic-describe-configs",
+  "request": {
+    "resource": "topic __redpanda.connect.logs"
+  },
+  "result": [
+    {
+      "name": "compression.type",
+      "value": "producer",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "cleanup.policy",
+      "value": "delete",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "segment.bytes",
+      "value": "134217728",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "retention.ms",
+      "value": "604800000",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "retention.bytes",
+      "value": "-1",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "message.timestamp.type",
+      "value": "CreateTime",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "max.message.bytes",
+      "value": "20971520",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "write.caching",
+      "value": "false",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "flush.bytes",
+      "value": "262144",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "flush.ms",
+      "value": "100",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.remote.read",
+      "value": "true",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.remote.write",
+      "value": "true",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "<cluster-host>.target.bytes",
+      "value": "-1",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "<cluster-host>.target.ms",
+      "value": "21600000",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.remote.delete",
+      "value": "true",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "segment.ms",
+      "value": "1209600000",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.iceberg.mode",
+      "value": "disabled",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "delete.retention.ms",
+      "value": "-1",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "<cluster-host>.target.bytes",
+      "value": "-1",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "<cluster-host>.target.ms",
+      "value": "600000",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.leaders.preference",
+      "value": "none",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.schema.registry.context",
+      "value": ".",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "min.cleanable.dirty.ratio",
+      "value": "0.5",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "min.compaction.lag.ms",
+      "value": "0",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "max.compaction.lag.ms",
+      "value": "9223372036854",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.remote.allowgaps",
+      "value": "false",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "message.timestamp.before.max.ms",
+      "value": "9223372036854",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "message.timestamp.after.max.ms",
+      "value": "3600000",
+      "is_default": null,
+      "source": 5
+    },
+    {
+      "name": "redpanda.storage.mode",
+      "value": "unset",
+      "is_default": null,
+      "source": 1
+    },
+    {
+      "name": "redpanda.storage.mode.impl",
+      "value": "unset",
+      "is_default": null,
+      "source": 5
+    }
+  ],
+  "ms": 293
+}

@@ -1,0 +1,37 @@
+{
+  "step": "client-kafkajs-bundle",
+  "result": {
+    "package": "kafkajs",
+    "version": "2.2.4",
+    "license": "MIT",
+    "dependencies": [],
+    "optional_dependencies": [],
+    "esbuild": "0.28.2",
+    "attempts": [
+      {
+        "attempt": "plain",
+        "how": "as the extension bundles today",
+        "bytes": 679503,
+        "minified_bytes": 270183,
+        "minified_gzip_bytes": 71046,
+        "warnings": [],
+        "inputs": 385,
+        "native_inputs": [],
+        "packages": [
+          "kafkajs"
+        ],
+        "loaded": true
+      }
+    ],
+    "loaded_from": "plain",
+    "native_files_installed": [
+      "node_modules/@node-rs/crc32-linux-x64-gnu/crc32.linux-x64-gnu.node",
+      "node_modules/@platformatic/wasm-utils/dist/native.wasm"
+    ],
+    "npm": {
+      "version": "2.2.4",
+      "time.modified": "2023-02-27T13:18:01.487Z"
+    }
+  },
+  "ms": 537
+}

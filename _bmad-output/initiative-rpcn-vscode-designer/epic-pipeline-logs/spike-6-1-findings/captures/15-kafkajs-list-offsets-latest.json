@@ -1,0 +1,13 @@
+{
+  "step": "kafkajs-list-offsets-latest",
+  "request": {
+    "partitions": [
+      0
+    ],
+    "timestamp": -1
+  },
+  "result": {
+    "0": 4703
+  },
+  "ms": 33
+}

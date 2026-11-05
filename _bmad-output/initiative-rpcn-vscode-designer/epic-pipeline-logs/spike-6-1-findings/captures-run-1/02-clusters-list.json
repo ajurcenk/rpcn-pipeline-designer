@@ -1,0 +1,16 @@
+{
+  "step": "clusters-list",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters?page_size=100"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "clusters": 1,
+      "found": true,
+      "next_page_token": ""
+    }
+  },
+  "ms": 175
+}

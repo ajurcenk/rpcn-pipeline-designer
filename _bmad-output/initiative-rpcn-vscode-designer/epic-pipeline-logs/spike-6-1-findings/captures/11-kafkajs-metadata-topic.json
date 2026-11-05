@@ -1,0 +1,38 @@
+{
+  "step": "kafkajs-metadata-topic",
+  "request": {
+    "topic": "__redpanda.connect.logs",
+    "auto_create": false
+  },
+  "result": {
+    "topicError": null,
+    "partitions": [
+      {
+        "partition": 0,
+        "leader": 18,
+        "error": null
+      }
+    ],
+    "brokers": [
+      {
+        "nodeId": 17,
+        "host": "<broker-host-2>",
+        "port": 30092,
+        "rack": "use2-az1"
+      },
+      {
+        "nodeId": 16,
+        "host": "<broker-host-3>",
+        "port": 30092,
+        "rack": "use2-az1"
+      },
+      {
+        "nodeId": 18,
+        "host": "<broker-host-4>",
+        "port": 30092,
+        "rack": "use2-az1"
+      }
+    ]
+  },
+  "ms": 269
+}

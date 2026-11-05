@@ -1,0 +1,93 @@
+{
+  "step": "cluster-get",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters/<cluster-id>"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "cluster": {
+        "name": "rpc-vilnius",
+        "type": "TYPE_DEDICATED",
+        "state": "STATE_READY",
+        "cloud_provider": "CLOUD_PROVIDER_AWS",
+        "region": "us-east-2",
+        "kafka_api": {
+          "seed_brokers": [
+            "<broker-host-1>:9092"
+          ],
+          "<fields>": {
+            "mtls": {
+              "enabled": false,
+              "ca_certificates_pem": {
+                "<array>": 0,
+                "first": null
+              },
+              "principal_mapping_rules": {
+                "<array>": 0,
+                "first": null
+              }
+            },
+            "sasl": {
+              "enabled": true
+            },
+            "all_seed_brokers": {
+              "sasl": "string (66 chars)",
+              "mtls": "string (0 chars)",
+              "private_link_sasl": "string (0 chars)",
+              "private_link_mtls": "string (0 chars)"
+            },
+            "connections": {
+              "<array>": 1,
+              "first": {
+                "config": {
+                  "type": "string (22 chars)",
+                  "auth": "object (1 fields)"
+                },
+                "endpoint": "string (66 chars)"
+              }
+            }
+          }
+        },
+        "dataplane_api": {
+          "url": "https://<dataplane-host>"
+        },
+        "<other fields with kafka, sasl, tls or mtls in their name>": {
+          "kafka_connect": {
+            "enabled": true
+          }
+        },
+        "<other fields>": [
+          "api_gateway_access",
+          "cloud_provider_tags",
+          "cluster_configuration",
+          "connection_type",
+          "created_at",
+          "current_redpanda_version",
+          "desired_redpanda_version",
+          "http_proxy",
+          "id",
+          "kafka_connect",
+          "maintenance_window_config",
+          "nat_gateways",
+          "network_id",
+          "prometheus",
+          "read_replica_cluster_ids",
+          "redpanda_cloud_provider_tags",
+          "redpanda_connect",
+          "redpanda_console",
+          "redpanda_node_count",
+          "resource_group_id",
+          "rpsql",
+          "schema_registry",
+          "state_description",
+          "throughput_tier",
+          "updated_at",
+          "zones"
+        ]
+      }
+    }
+  },
+  "ms": 471
+}

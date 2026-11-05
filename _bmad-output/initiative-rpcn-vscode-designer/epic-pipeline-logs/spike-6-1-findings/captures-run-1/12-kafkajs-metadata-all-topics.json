@@ -1,0 +1,11 @@
+{
+  "step": "kafkajs-metadata-all-topics",
+  "request": {
+    "topics": "all (a count only)"
+  },
+  "result": {
+    "topics": 24,
+    "includes_logs_topic": true
+  },
+  "ms": 249
+}

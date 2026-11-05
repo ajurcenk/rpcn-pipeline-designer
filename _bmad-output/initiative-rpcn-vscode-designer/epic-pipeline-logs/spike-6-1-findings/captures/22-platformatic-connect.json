@@ -1,0 +1,8 @@
+{
+  "step": "platformatic-connect",
+  "request": {
+    "mechanism": "SCRAM-SHA-256"
+  },
+  "result": "connected and signed in",
+  "ms": 315
+}
