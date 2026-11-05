@@ -5,8 +5,10 @@
 // (ticket 5.4) start and stop (`PUT /{id}/start`, `PUT /{id}/stop`, each answering `{pipeline}`) and
 // delete (`DELETE /{id}`, answering `{}`; a GET then answers 404). Ticket 5.7: the cluster's secrets,
 // listed (`GET {dp}/v1/secrets`, paged; ids only, values are never read back) and created (`POST`,
-// 201; an existing id answers 409). No `vscode` import.
+// 201; an existing id answers 409). Ticket 8: what the cluster runs (`GET {dp}/v1/redpanda-connect/components`,
+// its version and names per category, read by `src/core/cloudCheck.ts`). No `vscode` import.
 
+import { clusterComponents, type ClusterComponents } from '../../core/cloudCheck';
 import { authorizedJson, type CloudCall } from './controlPlane';
 import { CloudError } from './errors';
 import { joinUrl } from './http';
@@ -93,6 +95,7 @@ export function isRunning(state: PipelineState): boolean {
 const MAX_PAGES = 20;
 const PIPELINES = '/v1/redpanda-connect/pipelines';
 const SECRETS = '/v1/secrets';
+const COMPONENTS = '/v1/redpanda-connect/components';
 /** The scope a pipeline's secret needs. */
 export const CONNECT_SECRET_SCOPE = 'SCOPE_REDPANDA_CONNECT';
 
@@ -296,6 +299,19 @@ export async function createSecret(call: CloudCall, dataplaneUrl: string, id: st
 		}
 		throw err;
 	}
+}
+
+/**
+ * Ticket 8: the components the cluster runs (`GET {dp}/v1/redpanda-connect/components` →
+ * `{components: {version, inputs, …, bloblang_functions, bloblang_methods}}`, AD-23).
+ */
+export async function getComponents(call: CloudCall, dataplaneUrl: string): Promise<ClusterComponents> {
+	const body = await authorizedJson<unknown>(call, 'GET', joinUrl(dataplaneUrl, COMPONENTS));
+	const components = clusterComponents(body);
+	if (!components) {
+		throw new Error('the cluster answered without its components');
+	}
+	return components;
 }
 
 /** One entry of Deploy's size pick. */

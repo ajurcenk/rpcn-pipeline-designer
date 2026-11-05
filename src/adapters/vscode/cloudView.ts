@@ -57,6 +57,16 @@
 // secret is never changed, and nothing local changes. A value goes only into the creation request: it
 // is masked from the moment it is read or typed.
 //
+// Then (ticket 8) Deploy checks the config before sending it: the local lint (its errors; with no binary
+// it is skipped, with a note in the output channel) and the cluster's components list (`GET
+// {dp}/v1/redpanda-connect/components`, once per deploy): every component the local file uses (by
+// category, nested ones and resources included, and buffer, metrics, tracer and scanners) and every
+// Bloblang function and method its mappings call that the cluster does not offer. Findings go to the
+// Problems panel on the local file's lines (their own collection, source "Redpanda Cloud", cleared when
+// the file changes or closes and at its next deploy) and into one error message offering **Deploy
+// anyway** (the cluster's own lint still applies); Escape sends nothing. A list that cannot be read is
+// said so with the same offer (the lint still counts). With no finding the deploy goes on unchanged.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -65,7 +75,7 @@ import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
 import {
 	canStart, canStop, CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, deletePipeline, FINAL_STATES,
-	createSecret, getPipeline, isKnownState, isRunning, listPipelines, listSecretNames, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, type SizeChoice, sizeChoices, startPipeline, stateKey,
+	createSecret, getComponents, getPipeline, isKnownState, isRunning, listPipelines, listSecretNames, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, type SizeChoice, sizeChoices, startPipeline, stateKey,
 	stopPipeline, type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, CloudError, describeCloudError, hintLines, maskCredentials } from '../cloud/errors';
@@ -73,6 +83,12 @@ import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedConfigs, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
+import { documentBloblangCalls } from '../../core/bloblang';
+import type { ComponentCatalog } from '../../core/catalogue';
+import { checkAgainstCluster, type ClusterComponents, findingMessage, lineOf, versionsDiffer } from '../../core/cloudCheck';
+import { componentUses } from '../../core/graph';
+import { parseYaml } from '../../core/yamlPath';
+import type { LintResult } from '../redpandaConnect/lint';
 import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
 
@@ -128,6 +144,13 @@ export const ENTER_ANOTHER_ACTION = 'Enter another value…';
 export const USE_DEFAULT_ACTION = "Don't create it (the Cloud uses the default)";
 export const ADD_NOW_ACTION = 'Add it now: enter its value…';
 export const STOP_DEPLOY_ACTION = "Don't deploy";
+/** Ticket 8: the pre-deploy check's way forward despite its findings. */
+export const DEPLOY_ANYWAY_ACTION = 'Deploy anyway';
+/** Ticket 8: the check's Problems entries (their own collection). */
+export const CHECK_SOURCE = 'Redpanda Cloud';
+export const CHECK_COLLECTION = 'redpanda-cloud-check';
+/** The findings the check's message lists; the rest are counted. */
+const MAX_LISTED_FINDINGS = 5;
 /** "Keep the value from secret storage". */
 export function keepValueAction(local: Pick<LocalValue, 'source' | 'level'>): string {
 	return `Keep the value from ${localSourceText(local)}`;
@@ -303,7 +326,12 @@ export type DeployResult =
 	| { readonly kind: 'final'; readonly state: string; readonly pipelineId: string; readonly error?: string }
 	| { readonly kind: 'timedOut'; readonly pipelineId: string }
 	/** The mapped pipeline already runs this config at this size: nothing was sent. */
-	| { readonly kind: 'unchanged'; readonly pipelineId: string };
+	| { readonly kind: 'unchanged'; readonly pipelineId: string }
+	/**
+	 * Ticket 8: the pre-deploy check found problems (`findings`, as listed) or could not read the
+	 * cluster's components (`listError`), and Deploy anyway was not chosen: nothing was sent.
+	 */
+	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly listError?: string };
 
 const NOT_STARTED: DeployResult = { kind: 'notStarted' };
 
@@ -368,6 +396,12 @@ export interface CloudViewOptions {
 	readonly isDetected: (uri: vscode.Uri) => boolean;
 	/** Ticket 5.7: the value the binary would get for each variable a config uses (the Environment view's). */
 	readonly localValues?: (uri: vscode.Uri) => ReadonlyMap<string, LocalValue>;
+	/** Ticket 8: lint of the saved file, as lint on save runs it (none: skipped, as with no binary). */
+	readonly lint?: (doc: vscode.TextDocument) => Promise<LintResult>;
+	/** Ticket 8: the local binary's Connect version (the status bar's), when one is usable. */
+	readonly localVersion?: () => string | undefined;
+	/** Ticket 8: the local schema's catalogue, when one is loaded (else the cluster's is used). */
+	readonly catalogue?: () => ComponentCatalog | undefined;
 }
 
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -382,6 +416,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	pollMs = POLL_MS;
 	timeoutMs = DEPLOY_TIMEOUT_MS;
 	restartGraceMs = RESTART_GRACE_MS;
+	/** Ticket 8: the pre-deploy lint, the local version and the local catalogue (the test seam replaces them). */
+	lint: ((doc: vscode.TextDocument) => Promise<LintResult>) | undefined;
+	localVersion: () => string | undefined;
+	localCatalogue: () => ComponentCatalog | undefined;
+	/** Ticket 8: the pre-deploy check's Problems entries. */
+	private readonly checkDiagnostics: vscode.DiagnosticCollection;
 	/**
 	 * The workspace folders a pipeline's tag is resolved in (the local file of a row, the mapping a
 	 * delete removes): VS Code's `file:` folders; the test seam replaces it (the stable run opens none).
@@ -422,6 +462,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	constructor(private readonly options: CloudViewOptions) {
 		this.ui = options.ui ?? defaultCloudUi;
 		this.endpoints = options.endpoints ?? PRODUCTION_ENDPOINTS;
+		this.lint = options.lint;
+		this.localVersion = options.localVersion ?? (() => undefined);
+		this.localCatalogue = options.catalogue ?? (() => undefined);
+		this.checkDiagnostics = vscode.languages.createDiagnosticCollection(CHECK_COLLECTION);
 		const fetch = options.fetch ?? defaultFetch;
 		this.tokens = new TokenCache({
 			fetch,
@@ -431,6 +475,14 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.subscriptions.push(
 			this.changeEmitter,
 			this.deployedChanged,
+			this.checkDiagnostics,
+			// The check's entries are for the text it checked: they go when it changes or closes.
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				if (e.contentChanges.length > 0) {
+					this.checkDiagnostics.delete(e.document.uri);
+				}
+			}),
+			vscode.workspace.onDidCloseTextDocument((doc) => this.checkDiagnostics.delete(doc.uri)),
 			options.store.onDidChange((e) => {
 				if ((e.key === CLIENT_ID_KEY || e.key === CLIENT_SECRET_KEY) && this.writing === 0) {
 					this.ready = this.readAccount();
@@ -1094,6 +1146,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			return NOT_STARTED;
 		}
 		const file = path.basename(doc.uri.fsPath);
+		// The last deploy's check entries go: this deploy checks again.
+		this.checkDiagnostics.delete(doc.uri);
 		// Translated before anything is asked or sent, so a refusal costs no prompt and no request; done
 		// again just before sending, so edits made during the prompts are sent.
 		if ((await this.savedAndTranslated(doc, file)) === undefined) {
@@ -1153,6 +1207,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			return NOT_STARTED;
 		}
 		const configYaml = translated.text;
+		// The check first: when it stops the deploy, nothing at all is sent (no secret either).
+		const checked = await this.checkBeforeSending(doc, file, cluster, dp, translated.source);
+		if (checked) {
+			return checked;
+		}
 		const { stopped: secretsStopped, created: createdSecrets } = await this.ensureSecrets(doc.uri, file, cluster, dp, translated.secrets);
 		if (secretsStopped) {
 			return secretsStopped;
@@ -1218,21 +1277,104 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	 * As Run: a dirty config is saved first; the saved file's text, translated for the Cloud (the file
 	 * itself is never changed). `undefined`: not saved, or refused (each problem shown and logged).
 	 */
-	private async savedAndTranslated(doc: vscode.TextDocument, file: string): Promise<{ readonly text: string; readonly secrets: readonly CloudSecretUse[] } | undefined> {
+	private async savedAndTranslated(doc: vscode.TextDocument, file: string)
+		: Promise<{ readonly text: string; readonly secrets: readonly CloudSecretUse[]; readonly source: string } | undefined> {
 		if (doc.isDirty && !(await doc.save())) {
 			this.log(`Redpanda Cloud: ${file} could not be saved; not deployed.`);
 			void this.showError(`${file} could not be saved, so it was not deployed.`);
 			return undefined;
 		}
-		const translation = translateForCloud(await fs.promises.readFile(doc.uri.fsPath, 'utf8'));
+		const source = await fs.promises.readFile(doc.uri.fsPath, 'utf8');
+		const translation = translateForCloud(source);
 		if (translation.kind === 'ok') {
-			return { text: translation.text, secrets: translation.secrets };
+			return { text: translation.text, secrets: translation.secrets, source };
 		}
 		const { problems } = translation;
 		this.log(`Redpanda Cloud: ${file} was not deployed: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
 		problems.forEach((p) => this.log(`  ${file}: ${p.message}`));
 		void this.showError(`${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}. Nothing was sent.`);
 		return undefined;
+	}
+
+	/**
+	 * Ticket 8: the check before sending: the local lint's errors and what `cluster` does not offer of the
+	 * saved file's (`source`) components and Bloblang calls; the components list read once, under one
+	 * progress. Findings go to the Problems panel and one error message offering Deploy anyway. Returns
+	 * how the deploy ended (nothing sent), or `undefined`: it goes on (no finding, or Deploy anyway).
+	 */
+	private async checkBeforeSending(doc: vscode.TextDocument, file: string, cluster: CloudCluster, dp: string, source: string): Promise<DeployResult | undefined> {
+		const { lint, components, listError } = await this.ui.progress(`Checking ${file} against ${cluster.name}`, async (report) => {
+			report('linting the config…');
+			let lintResult: LintResult;
+			try {
+				lintResult = this.lint ? await this.lint(doc) : { kind: 'skipped' };
+			} catch (err) {
+				lintResult = { kind: 'failed', logLine: `Lint ${file}: ${reasonOf(err)}` };
+			}
+			report('reading the cluster\'s components…');
+			try {
+				return { lint: lintResult, components: await getComponents(this.call(), dp) as ClusterComponents | undefined, listError: undefined };
+			} catch (err) {
+				return { lint: lintResult, components: undefined, listError: err };
+			}
+		});
+		const lintErrors: { line: number; message: string }[] = [];
+		if (lint.kind === 'skipped') {
+			this.log(`Redpanda Cloud: no usable local Redpanda Connect binary, so ${file} was not linted before the deploy; the check against ${cluster.name} still runs.`);
+		} else if (lint.kind === 'failed') {
+			this.log(lint.logLine);
+			this.log(`Redpanda Cloud: ${file} could not be linted before the deploy; the check against ${cluster.name} still runs.`);
+		} else {
+			lint.logLines.forEach((l) => this.log(l));
+			for (const f of lint.findings) {
+				if (f.severity !== 'warning') {
+					lintErrors.push({ line: f.line, message: f.message });
+				}
+			}
+		}
+		const cloudFindings = components ? (() => {
+			const parsed = parseYaml(source);
+			const catalogue = this.localCatalogue() ?? components.catalogue;
+			return checkAgainstCluster(source, componentUses(parsed, source, catalogue), documentBloblangCalls(parsed, source), components, cluster.name);
+		})() : [];
+		const findings = [
+			...lintErrors.map((f) => ({ line: f.line, text: f.message, range: undefined as [number, number] | undefined })),
+			...cloudFindings.map((f) => ({ line: f.line, text: f.text, range: [f.start, f.end] as [number, number] | undefined })),
+		].sort((a, b) => a.line - b.line);
+		const listMessage = listError ? asCloudError(listError).message : undefined;
+		if (findings.length === 0 && listMessage === undefined) {
+			return undefined;
+		}
+		this.checkDiagnostics.set(doc.uri, findings.map((f) => {
+			const diagnostic = new vscode.Diagnostic(f.range ? rangeOf(source, f.range[0], f.range[1]) : lineRange(source, f.line), f.text, vscode.DiagnosticSeverity.Error);
+			diagnostic.source = CHECK_SOURCE;
+			return diagnostic;
+		}));
+		const messages = findings.map((f) => findingMessage(f));
+		const clusterVersion = components?.version ?? cluster.connectVersion;
+		const localVersion = this.localVersion();
+		const versions = versionsDiffer(clusterVersion, localVersion)
+			? ` ${cluster.name} runs Redpanda Connect ${clusterVersion}; this machine has ${localVersion}.` : '';
+		const listed = messages.length > MAX_LISTED_FINDINGS
+			? `${messages.slice(0, MAX_LISTED_FINDINGS).join('; ')}; and ${messages.length - MAX_LISTED_FINDINGS} more (see the Problems panel)`
+			: messages.join('; ');
+		let message: string;
+		if (listMessage !== undefined) {
+			this.log(`Redpanda Cloud: could not read the components of ${cluster.name}: ${listMessage}`);
+			message = `Could not read the components of ${cluster.name}, so ${file} was not checked against it: ${listMessage}.`
+				+ `${messages.length > 0 ? ` The local lint found: ${listed}.` : ''}${versions} Nothing was sent.`;
+		} else {
+			message = `${file} may not run on ${cluster.name}: ${listed}.${versions} Nothing was sent.`;
+		}
+		this.log(`Redpanda Cloud: the check of ${file} against ${cluster.name} found ${messages.length === 1 ? 'one problem' : `${messages.length} problems`}.`);
+		messages.forEach((m) => this.log(`  ${file}: ${m}`));
+		const choice = await this.showError(message, DEPLOY_ANYWAY_ACTION);
+		if (choice === DEPLOY_ANYWAY_ACTION) {
+			this.log(`Redpanda Cloud: deploying ${file} to ${cluster.name} anyway.`);
+			return undefined;
+		}
+		this.log(`Redpanda Cloud: ${file} was not deployed to ${cluster.name}; nothing was sent.`);
+		return { kind: 'checkStopped', findings: messages.map((m) => this.mask(m)), ...(listMessage !== undefined ? { listError: this.mask(listMessage) } : {}) };
 	}
 
 	/** Masks `value` (and its base64 form, as sent) from now on. */
@@ -2112,6 +2254,23 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		void this.showInfo(`${why}. Deploy ${name} from its editor to choose where it goes. Nothing was sent.`);
 		return { kind: 'notMapped', pipelineId: pipeline.id, ...(read.kind === 'ok' ? { mapping: read.mapping } : {}) };
 	}
+}
+
+/** The range `[start, end)` of `text` (UTF-16 offsets) as a `Range` of the same text. */
+function rangeOf(text: string, start: number, end: number): vscode.Range {
+	const at = (offset: number) => {
+		const line = lineOf(text, offset) - 1;
+		const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+		return new vscode.Position(line, offset - lineStart);
+	};
+	return new vscode.Range(at(start), at(end));
+}
+
+/** The whole of 1-based `line` of `text` (a line past the end: the last line). */
+function lineRange(text: string, line: number): vscode.Range {
+	const lines = text.split('\n');
+	const index = Math.max(0, Math.min(line, lines.length) - 1);
+	return new vscode.Range(index, 0, index, lines[index].replace(/\r$/, '').length);
 }
 
 /** The left side of the deploy's diff and of Compare with local file (ticket 5.5). */

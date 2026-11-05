@@ -15,12 +15,20 @@
 //     ids only) and `POST /dp/{id}/v1/secrets` (19, 20: 201 `{secret}`, 409 for an id it has; the
 //     decoded value kept in `secrets` for the tests, never answered). The create's lint also rejects a
 //     config whose `${secrets.NAME}` without a default names a secret the cluster lacks (65).
+//   - (ticket 8) each cluster's components, `GET /dp/{id}/v1/redpanda-connect/components` (18): by default
+//     every component, Bloblang function and method of the pinned 4.112.0 recording (`list --format
+//     json-full`, with its config trees), `version` the cluster's Connect version; `missingComponents`
+//     leaves chosen names out, `componentsError` answers an error instead.
 // `failures` answers a chosen request with an error instead (one call, or every matching call).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
 
+import * as fs from 'fs';
 import * as http from 'http';
 import type { AddressInfo } from 'net';
+import * as path from 'path';
+import * as zlib from 'zlib';
+import { SCHEMA_FIXTURES } from './fakeBinary';
 
 export interface FakeRequest {
 	readonly method: string;
@@ -72,6 +80,34 @@ export interface FakeCluster {
 	getError?: { readonly status: number; readonly body: unknown };
 	/** Ticket 5.7: its secrets, id → the decoded value (the API never answers it). */
 	secrets?: Map<string, string>;
+	/** Ticket 8: names its components list leaves out, per list (`inputs: ['stdin']`, `bloblang_methods: ['uppercase']`). */
+	missingComponents?: Readonly<Record<string, readonly string[]>>;
+	/** Ticket 8: when set, the components list answers this error. */
+	componentsError?: { readonly status: number; readonly body: unknown };
+}
+
+/** The `json-full` keys of the components answer's lists. */
+const COMPONENT_LISTS: Readonly<Record<string, string>> = {
+	inputs: 'inputs', outputs: 'outputs', processors: 'processors', caches: 'caches', 'rate-limits': 'rate_limits', buffers: 'buffers',
+	metrics: 'metrics', tracers: 'tracers', scanners: 'scanners', 'bloblang-functions': 'bloblang_functions', 'bloblang-methods': 'bloblang_methods',
+};
+
+let recordedComponents: Record<string, { name: string; type?: string; status?: string; config?: unknown }[]> | undefined;
+
+/** Every list of the 4.112.0 `json-full` recording, as the components answer names them (read once). */
+function defaultComponents(): Record<string, { name: string; type?: string; status?: string; config?: unknown }[]> {
+	if (!recordedComponents) {
+		const full = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(SCHEMA_FIXTURES, 'json-full-4.112.0.json.gz'))).toString('utf8')) as Record<string, unknown>;
+		recordedComponents = {};
+		for (const [from, to] of Object.entries(COMPONENT_LISTS)) {
+			const list = Array.isArray(full[from]) ? full[from] as Record<string, unknown>[] : [];
+			recordedComponents[to] = list.map((e) => ({
+				name: String(e.name), ...(typeof e.type === 'string' ? { type: e.type } : {}),
+				...(typeof e.status === 'string' ? { status: e.status } : {}), ...(e.config !== undefined ? { config: e.config } : {}),
+			}));
+		}
+	}
+	return recordedComponents;
 }
 
 export interface FakeCloudOptions {
@@ -239,6 +275,22 @@ export class FakeCloud {
 					...(c.connectVersion ? { redpanda_connect: { version: c.connectVersion } } : {}),
 				},
 			}];
+		}
+		const components = /^\/dp\/([^/]+)\/v1\/redpanda-connect\/components$/.exec(url.pathname);
+		if (components && req.method === 'GET') {
+			const c = this.options.clusters.find((x) => x.id === components[1] && x.dataplane !== false);
+			if (!c) {
+				return [404, { code: 'NOT_FOUND', message: 'not found', details: [] }];
+			}
+			if (c.componentsError) {
+				return [c.componentsError.status, c.componentsError.body];
+			}
+			const lists: Record<string, unknown> = {};
+			for (const [key, list] of Object.entries(defaultComponents())) {
+				const missing = new Set(c.missingComponents?.[key] ?? []);
+				lists[key] = list.filter((e) => !missing.has(e.name));
+			}
+			return [200, { components: { version: c.connectVersion ?? '', ...lists } }];
 		}
 		const secrets = /^\/dp\/([^/]+)\/v1\/secrets$/.exec(url.pathname);
 		if (secrets) {

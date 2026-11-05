@@ -4,7 +4,7 @@
 // (after a dot, narrowed by a known type), names (`$`, `@`), and hover docs for the name under
 // the cursor. The catalog itself is `./bloblangCatalog` (re-exported here).
 
-import { isMap, isScalar, isSeq } from 'yaml';
+import { isMap, isScalar, isSeq, visit } from 'yaml';
 import { BloblangCatalog, BloblangEntry, LiteralType } from './bloblangCatalog';
 import type { ParsedYaml } from './yamlPath';
 
@@ -315,5 +315,79 @@ export function bloblangHoverAt(
 		return entry ? { entry, start, end } : undefined;
 	} catch {
 		return undefined;
+	}
+}
+
+/** Ticket 8: a Bloblang function (`now(`) or method (`.uppercase(`) call, at the offset of its name. */
+export interface BloblangCall {
+	readonly kind: 'function' | 'method';
+	readonly name: string;
+	readonly offset: number;
+}
+
+/** Words that can stand before `(` without being a call. */
+const NOT_CALLS: ReadonlySet<string> = new Set(['if', 'else', 'match', 'let', 'map', 'import', 'root', 'this']);
+
+/**
+ * Ticket 8: the function and method calls of the Bloblang `source`, in order, with their offsets
+ * in it: `name(` is a function, `.name(` (spaces and line breaks allowed around the dot) a method.
+ * Strings and comments are skipped; so are `if (`, `match (` and the like. Never throws.
+ */
+export function bloblangCalls(source: string): BloblangCall[] {
+	const out: BloblangCall[] = [];
+	const code = codeOf(source).code;
+	const call = /[A-Za-z_]\w*(?=\s*\()/g;
+	for (let m = call.exec(code); m; m = call.exec(code)) {
+		const before = m.index > 0 ? code[m.index - 1] : '';
+		if (/[\w$@]/.test(before) || NOT_CALLS.has(m[0])) {
+			continue;
+		}
+		let i = m.index - 1;
+		while (i >= 0 && /\s/.test(code[i])) {
+			i--;
+		}
+		const isMethod = i >= 0 && code[i] === '.';
+		out.push({ kind: isMethod ? 'method' : 'function', name: m[0], offset: m.index });
+	}
+	return out;
+}
+
+/**
+ * Ticket 8: every function and method call in the Bloblang of the config (its Bloblang fields and
+ * `${! }` interpolations), at document offsets, each once, in document order. Only calls inside a
+ * scalar value of the first YAML document count, as for the components the check reads: a `${! }`
+ * in a YAML comment, or in a later document, is never run as part of the pipeline.
+ */
+export function documentBloblangCalls(parsed: ParsedYaml | undefined, text: string): BloblangCall[] {
+	if (!parsed) {
+		return [];
+	}
+	try {
+		const scalars: [number, number][] = [];
+		const first = parsed.docs[0];
+		if (first) {
+			visit(first, {
+				Scalar(_key, node) {
+					if (node.range) {
+						scalars.push([node.range[0], node.range[1]]);
+					}
+				},
+			});
+		}
+		const inScalar = (offset: number) => scalars.some(([start, end]) => offset >= start && offset < end);
+		const seen = new Map<number, BloblangCall>();
+		for (const region of regions(parsed, text)) {
+			const raw = text.slice(region.start, region.end);
+			const source = region.yamlDoubleQuoted ? raw.replace(/\\(["\\])/g, ' $1') : raw;
+			for (const c of bloblangCalls(source)) {
+				const offset = region.start + c.offset;
+				if (inScalar(offset) && !seen.has(offset)) {
+					seen.set(offset, { ...c, offset });
+				}
+			}
+		}
+		return [...seen.values()].sort((a, b) => a.offset - b.offset);
+	} catch {
+		return [];
 	}
 }

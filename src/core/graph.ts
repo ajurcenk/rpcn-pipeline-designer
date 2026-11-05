@@ -16,6 +16,9 @@
 // input's and an output's own `processors` join the main chain at the top level:
 // input -> its processors -> `pipeline.processors` -> the output's processors -> output.
 // DISPLAY_HINTS says how three components are shown, never which fields hold children.
+// Ticket 8: `componentUses` runs the same builder and lists every component it reaches with its
+// category and the offset of its component key, plus the top-level `buffer`, `metrics` and
+// `tracer` and every scanner (the catalogue's `scannerSlots`), which the model does not show.
 
 import { isMap, isSeq, type Node, type Pair, type YAMLMap } from 'yaml';
 import { EMPTY_MODEL, type PipelineEdge, type PipelineModel, type PipelineNode, type PipelineNodeRole, type TextRange } from '../shared/protocol';
@@ -107,6 +110,36 @@ export function buildPipelineModel(parsed: ParsedYaml | undefined, text: string,
 	}
 }
 
+/** Ticket 8: one component a config uses: its category (`input`, `cache`, `scanner`, …), its name, its key's offset. */
+export interface ComponentUse {
+	readonly category: string;
+	readonly name: string;
+	/** The UTF-16 offset of its component key (`stdin` in `input: {stdin: {}}`). */
+	readonly offset: number;
+}
+
+/** The categories of the top-level single components the model does not show. */
+const TOP_LEVEL_COMPONENTS = ['buffer', 'metrics', 'tracer'] as const;
+
+/**
+ * Ticket 8: every component of the first YAML document of `text`, in the order the builder reaches
+ * them (as `buildPipelineModel` with `catalogue`), plus the top-level `buffer`, `metrics` and
+ * `tracer` and every scanner. None for what gives the empty model. Never throws.
+ */
+export function componentUses(parsed: ParsedYaml | undefined, text: string, catalogue: ComponentCatalog | undefined): ComponentUse[] {
+	try {
+		const doc = parsed?.docs[0];
+		if (!catalogue || !doc || doc.errors.length > 0 || !isMap(doc.contents)) {
+			return [];
+		}
+		const uses: ComponentUse[] = [];
+		new Builder(text, catalogue, uses).build(doc.contents);
+		return uses;
+	} catch {
+		return [];
+	}
+}
+
 type MutableNode = { -readonly [K in keyof PipelineNode]: PipelineNode[K] };
 
 /** Where a component goes: its role, its parent, the processor chain it joins. */
@@ -152,7 +185,7 @@ class Builder {
 	/** Edge lists in the order they were started (pre-order); the main chain is first. */
 	private readonly edgeBlocks: Array<() => PipelineEdge[]> = [];
 
-	constructor(private readonly text: string, private readonly catalogue: ComponentCatalog) {}
+	constructor(private readonly text: string, private readonly catalogue: ComponentCatalog, private readonly uses?: ComponentUse[]) {}
 
 	build(root: YAMLMap): PipelineModel {
 		const input: string[] = [];
@@ -184,6 +217,8 @@ class Builder {
 						}
 					});
 				}
+			} else if (this.uses && TOP_LEVEL_COMPONENTS.some((c) => c === key) && isMap(pair.value)) {
+				this.use(key!, pair.value);
 			} else if (key !== undefined && /^[A-Za-z0-9_]+_resources$/.test(key) && isSeq(pair.value)) {
 				const category = key.slice(0, -'_resources'.length);
 				pair.value.items.forEach((item, i) => {
@@ -219,6 +254,7 @@ class Builder {
 		if (!keyPair || name === undefined) {
 			return undefined;
 		}
+		this.recordUse(category, name, keyPair);
 		const label = labelOf(value);
 		const { id, duplicateLabel } = componentId(label, place.resource, path, this.used);
 		const node: MutableNode = {
@@ -265,6 +301,33 @@ class Builder {
 		}
 		runInOrder(sites);
 		return id;
+	}
+
+	/** Ticket 8: a use of the component whose map is `value`, and of the scanners it holds. */
+	private use(category: string, value: YAMLMap): void {
+		const keyPair = componentPair(value, this.catalogue.categories.get(category));
+		const name = keyPair && keyText(keyPair);
+		if (keyPair && name !== undefined) {
+			this.recordUse(category, name, keyPair);
+		}
+	}
+
+	/** Records `name` of `category` at its key, then the scanners under its value (collecting only). */
+	private recordUse(category: string, name: string, keyPair: Pair): void {
+		if (!this.uses) {
+			return;
+		}
+		const offset = (keyPair.key as Node | null)?.range?.[0];
+		if (offset !== undefined) {
+			this.uses.push({ category, name, offset });
+		}
+		for (const steps of this.catalogue.categories.get(category)?.scannerSlots?.get(name) ?? []) {
+			for (const at of this.walk([{ node: keyPair.value, path: '', range: undefined }], steps)) {
+				if (isMap(at.node)) {
+					this.use('scanner', at.node);
+				}
+			}
+		}
 	}
 
 	/**

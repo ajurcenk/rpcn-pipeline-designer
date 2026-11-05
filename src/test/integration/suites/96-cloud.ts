@@ -10,7 +10,9 @@
 // ticket 5.5's row file, Open deployed config (the row's click), Compare, Deploy again and Copy pipeline
 // ID the fifth (the stable run opens no folder, so those tests point the view's workspace folders at
 // the temporary directory); ticket 5.7's missing secrets (the questions, what the fake's secrets hold,
-// the order of the requests, and every value checked by NO_LEAK) the sixth.
+// the order of the requests, and every value checked by NO_LEAK) the sixth; ticket 8's check before
+// sending (the fake's components list, the lint and the local version through the test seam, the
+// Problems entries through `vscode.languages.getDiagnostics`) the seventh.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -21,8 +23,11 @@ import {
 	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
-	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
+	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION, CHECK_SOURCE, DEPLOY_ANYWAY_ACTION,
 } from '../../../adapters/vscode/cloudView';
+import type { LintResult } from '../../../adapters/redpandaConnect/lint';
+import { componentCatalogue } from '../../../core/catalogue';
+import { servedSchema } from '../../helpers/schemas';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
 import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { type ExtensionApi } from '../../../extension';
@@ -67,6 +72,12 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	let configFile: string;
 	let originalUi: CloudUi;
 	let originalFolders: () => readonly string[];
+	/** Ticket 8: the check's seams, restored at the end. */
+	let originalLint: CloudView['lint'];
+	let originalLocalVersion: CloudView['localVersion'];
+	let originalLocalCatalogue: CloudView['localCatalogue'];
+	/** Ticket 8: a clean lint (the suite does not depend on a binary on PATH). */
+	const CLEAN_LINT = async (): Promise<LintResult> => ({ kind: 'findings', findings: [], logLines: [] });
 	const errors: string[] = [];
 	/** The actions each error offered. */
 	const errorActions: string[][] = [];
@@ -198,6 +209,9 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		configFile = path.join(dir, 'orders.yaml');
 		originalUi = cloud().ui;
 		originalFolders = cloud().workspaceFolders;
+		originalLint = cloud().lint;
+		originalLocalVersion = cloud().localVersion;
+		originalLocalCatalogue = cloud().localCatalogue;
 		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
 		cloud().pollMs = 20;
 		cloud().timeoutMs = 10_000;
@@ -286,6 +300,14 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		cloud().timeoutMs = 10_000;
 		cloud().restartGraceMs = 2_000;
 		cloud().workspaceFolders = originalFolders;
+		// Ticket 8: a clean lint, no local version, no local schema (the cluster's catalogue), the full components list.
+		cloud().lint = CLEAN_LINT;
+		cloud().localVersion = () => undefined;
+		cloud().localCatalogue = () => undefined;
+		for (const c of fake.options.clusters) {
+			c.missingComponents = undefined;
+			c.componentsError = undefined;
+		}
 		fake.restartSequence = [{ state: 'STATE_RUNNING' }, { state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 		for (const f of fs.readdirSync(dir)) {
 			if (f.endsWith('.cloud.json')) {
@@ -304,6 +326,9 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		await cloud().disconnect();
 		cloud().ui = originalUi;
 		cloud().workspaceFolders = originalFolders;
+		cloud().lint = originalLint;
+		cloud().localVersion = originalLocalVersion;
+		cloud().localCatalogue = originalLocalCatalogue;
 		await fake?.stop();
 		if (dir) {
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -733,7 +758,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const cancelled = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(cancelled?.kind, 'notStarted');
 		assert.strictEqual(puts().length, 0);
-		assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.method), ['GET'], 'only the mapped pipeline is read');
+		assert.deepStrictEqual(fake.requests.slice(before).map((r) => `${r.method} ${r.url.replace(/^\/dp\/[^/]+/, '')}`),
+			[`GET /v1/redpanda-connect/pipelines/${id}`, 'GET /v1/redpanda-connect/components'], 'only the mapped pipeline and the components are read (ticket 8)');
 		assert.strictEqual(confirmed.length, 1);
 		assert.deepStrictEqual(confirmed[0].actions, [REPLACE_ACTION]);
 		assert.match(confirmed[0].message, /^Pipeline orders on rpc-vilnius is running\. Replacing its config with orders\.yaml/);
@@ -1862,6 +1888,198 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(infos.slice(-1), ['Copied the ID of paused.']);
 		assert.strictEqual(fake.requests.length, before);
 		assert.deepStrictEqual(rowOffers(pipelineRow('paused')!.contextValue), [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND]);
+	});
+
+	// --- ticket 8: the check against the cluster before deploying ---
+
+	const checkEntries = (doc: vscode.TextDocument) => vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === CHECK_SOURCE)
+		.map((d) => `${d.range.start.line + 1}:${d.range.start.character}-${d.range.end.character}: ${d.message}`);
+	const componentReads = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'GET' && r.url.endsWith('/v1/redpanda-connect/components'));
+	const STDIN = ['input:', '  stdin: {}', 'output:', '  drop: {}', ''].join('\n');
+	const finding = (line: number, text: string) => ({ path: configFile, line, message: text, severity: 'error' as const, syntax: false });
+
+	test('ACCEPTANCE 8 and MISSING_COMPONENT: input stdin the cluster lacks: a Problems entry on its line naming the cluster, the message with Deploy anyway; Escape sends nothing; Deploy anyway sends it; the entry goes when the file changes', async () => {
+		vilnius().missingComponents = { inputs: ['stdin'] };
+		await connect();
+		const doc = await openConfig(configFile, STDIN);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		const stopped = await vscode.commands.executeCommand<{ kind: string; findings?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(stopped?.kind, 'checkStopped', errors.join('\n'));
+		const expected = 'line 2: input `stdin` is not available on rpc-vilnius (Redpanda Connect 4.115.0)';
+		assert.deepStrictEqual(stopped?.findings, [expected]);
+		assert.strictEqual(posts().length, 0, 'Escape: nothing sent');
+		assert.deepStrictEqual(errors, [`orders.yaml may not run on rpc-vilnius: ${expected}. Nothing was sent.`]);
+		assert.deepStrictEqual(errorActions.slice(-1), [[DEPLOY_ANYWAY_ACTION]]);
+		assert.ok(await waitFor(() => checkEntries(doc).length === 1, 5_000));
+		assert.deepStrictEqual(checkEntries(doc), ['2:2-7: input `stdin` is not available on rpc-vilnius (Redpanda Connect 4.115.0)']);
+		assert.strictEqual(componentReads().length, 1, 'the list is read once per deploy');
+		assert.ok(progressTitles.includes('Checking orders.yaml against rpc-vilnius'), progressTitles.join(', '));
+		assert.ok(api().outputLines().some((l) => l.includes(`orders.yaml: ${expected}`)));
+
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [DEPLOY_ANYWAY_ACTION] });
+		const sent = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(sent?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(posts().length, 1, 'Deploy anyway: sent as before');
+		assert.strictEqual(lastCreate()!.config_yaml, STDIN);
+		assert.strictEqual(componentReads().length, 2);
+		assert.deepStrictEqual(checkEntries(doc), ['2:2-7: input `stdin` is not available on rpc-vilnius (Redpanda Connect 4.115.0)'], 'the entries stay');
+		await editConfig(doc, `${STDIN}# changed\n`);
+		assert.ok(await waitFor(() => checkEntries(doc).length === 0, 5_000), 'gone when the file changes');
+	});
+
+	test('MISSING_COMPONENT before the secrets: Escape at the check asks no secret question and creates no secret', async () => {
+		vilnius().missingComponents = { inputs: ['stdin'] };
+		await connect();
+		const text = ['input:', '  stdin: {}', 'pipeline:', '  processors:', '    - mapping: \'root = "${CHECK_58_SECRET}"\'', 'output:', '  drop: {}', ''].join('\n');
+		const doc = await openConfig(configFile, text);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		const stopped = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(stopped?.kind, 'checkStopped', errors.join('\n'));
+		const secretRequests = fake.requests.slice(firstRequest).filter((r) => r.url.includes('/v1/secrets'));
+		assert.deepStrictEqual(secretRequests, [], 'the secrets are not read or created when the check stops the deploy');
+		assert.strictEqual(posts().length, 0);
+		assert.ok(!infos.some((m) => m.includes('they stay')), infos.join('\n'));
+	});
+
+	test('DEPLOY_ANYWAY then the cluster\'s rejection: shown as 5.2 shows it, nothing created', async () => {
+		vilnius().missingComponents = { inputs: ['stdin'] };
+		await connect();
+		const doc = await openConfig(configFile, `${STDIN}# ${FAKE_LINT_MARKER}\n`);
+		const before = vilnius().pipelines.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [DEPLOY_ANYWAY_ACTION] });
+		const result = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'rejected', errors.join('\n'));
+		assert.ok(errors.some((e) => e.includes(`unable to infer component type: ${FAKE_LINT_MARKER}`) && e.endsWith('No pipeline was created.')), errors.join('\n'));
+		assert.strictEqual(vilnius().pipelines.length, before, 'nothing created');
+	});
+
+	test('MISSING_COMPONENT nested: a processor in a switch case and a cache resource, with the local schema\'s catalogue; the entries go when the file closes', async () => {
+		vilnius().missingComponents = { processors: ['sleep'], caches: ['memory'] };
+		cloud().localCatalogue = () => componentCatalogue(servedSchema('4.112.0'));
+		const text = [
+			'input:', '  generate:', '    mapping: root = 1', 'pipeline:', '  processors:', '    - switch:', '        - check: this.a == 1',
+			'          processors:', '            - sleep:', '                duration: 1s', 'output:', '  drop: {}', 'cache_resources:', '  - label: c', '    memory: {}', '',
+		].join('\n');
+		await connect();
+		const doc = await openConfig(configFile, text);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'checkStopped');
+		assert.ok(await waitFor(() => checkEntries(doc).length === 2, 5_000), checkEntries(doc).join('\n'));
+		assert.deepStrictEqual(checkEntries(doc), [
+			'9:14-19: processor `sleep` is not available on rpc-vilnius (Redpanda Connect 4.115.0)',
+			'15:4-10: cache `memory` is not available on rpc-vilnius (Redpanda Connect 4.115.0)',
+		]);
+		assert.strictEqual(posts().length, 0);
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		// Closing the editor does not close the document at once; it goes when VS Code closes it.
+		await waitFor(() => !vscode.workspace.textDocuments.some((d) => d.uri.toString() === doc.uri.toString()), 10_000);
+		if (!vscode.workspace.textDocuments.some((d) => d.uri.toString() === doc.uri.toString())) {
+			assert.ok(await waitFor(() => vscode.languages.getDiagnostics(doc.uri).every((d) => d.source !== CHECK_SOURCE), 5_000), 'gone when the file closes');
+		}
+	});
+
+	test('MISSING_BLOBLANG: a function and a method the cluster lacks, on the call\'s line; Escape sends nothing', async () => {
+		vilnius().missingComponents = { bloblang_functions: ['uuid_v4'], bloblang_methods: ['uppercase'] };
+		const text = ['input:', '  generate:', '    interval: 5s', '    mapping: |', '      root.id = uuid_v4()', '      root.n = "a".uppercase()', 'output:', '  drop: {}', ''].join('\n');
+		await connect();
+		const doc = await openConfig(configFile, text);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		const result = await vscode.commands.executeCommand<{ kind: string; findings?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'checkStopped');
+		assert.deepStrictEqual(result?.findings, [
+			'line 5: Bloblang function `uuid_v4()` is not available on rpc-vilnius',
+			'line 6: Bloblang method `.uppercase()` is not available on rpc-vilnius',
+		]);
+		assert.ok(await waitFor(() => checkEntries(doc).length === 2, 5_000));
+		assert.deepStrictEqual(checkEntries(doc), [
+			'5:16-23: Bloblang function `uuid_v4()` is not available on rpc-vilnius',
+			'6:19-28: Bloblang method `.uppercase()` is not available on rpc-vilnius',
+		]);
+		assert.strictEqual(posts().length, 0);
+	});
+
+	test('LINT_ERROR: a local lint error is a finding with the same message; warnings only: no finding, no prompt', async () => {
+		cloud().lint = async () => ({ kind: 'findings', findings: [finding(3, 'field interval is invalid')], logLines: [] });
+		await connect();
+		const doc = await openConfig(configFile);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		const result = await vscode.commands.executeCommand<{ kind: string; findings?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'checkStopped');
+		assert.deepStrictEqual(errors, ['orders.yaml may not run on rpc-vilnius: line 3: field interval is invalid. Nothing was sent.']);
+		assert.ok(await waitFor(() => checkEntries(doc).length === 1, 5_000));
+		assert.deepStrictEqual(checkEntries(doc), ['3:0-16: field interval is invalid'], 'on its whole line');
+		assert.strictEqual(posts().length, 0);
+
+		errors.length = 0;
+		cloud().lint = async () => ({ kind: 'findings', findings: [{ ...finding(3, 'field interval is deprecated'), severity: 'warning' }], logLines: [] });
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
+		assert.deepStrictEqual(errors, []);
+		assert.deepStrictEqual(checkEntries(doc), [], 'cleared at the next deploy');
+		assert.strictEqual(posts().length, 1);
+	});
+
+	test('NO_BINARY: the lint skipped with one note in the output channel; the cluster check still runs', async () => {
+		cloud().lint = async () => ({ kind: 'skipped' });
+		vilnius().missingComponents = { inputs: ['stdin'] };
+		await connect();
+		const doc = await openConfig(configFile, STDIN);
+		const outputBefore = api().outputLines().length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'checkStopped');
+		const notes = api().outputLines().slice(outputBefore).filter((l) => l.includes('was not linted before the deploy'));
+		assert.deepStrictEqual(notes, ['Redpanda Cloud: no usable local Redpanda Connect binary, so orders.yaml was not linted before the deploy; the check against rpc-vilnius still runs.']);
+		assert.ok(errors[0]?.includes('input `stdin` is not available on rpc-vilnius'), errors.join('\n'));
+		// Clean otherwise: deployed without a prompt.
+		vilnius().missingComponents = undefined;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('LIST_FAILS: the API\'s message with Deploy anyway, the lint still counts; Escape sends nothing; Deploy anyway sends it', async () => {
+		vilnius().componentsError = { status: 403, body: { code: 'PERMISSION_DENIED', message: 'you are not authorized to call this endpoint', details: [] } };
+		cloud().lint = async () => ({ kind: 'findings', findings: [finding(3, 'field interval is invalid')], logLines: [] });
+		await connect();
+		const doc = await openConfig(configFile);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+		const result = await vscode.commands.executeCommand<{ kind: string; listError?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'checkStopped');
+		assert.match(result?.listError ?? '', /you are not authorized to call this endpoint/);
+		assert.strictEqual(errors.length, 1, errors.join('\n'));
+		assert.match(errors[0], /^Could not read the components of rpc-vilnius, so orders\.yaml was not checked against it: .*you are not authorized to call this endpoint.* The local lint found: line 3: field interval is invalid\. Nothing was sent\.$/);
+		assert.deepStrictEqual(errorActions.slice(-1), [[DEPLOY_ANYWAY_ACTION]]);
+		assert.strictEqual(posts().length, 0);
+		cloud().lint = CLEAN_LINT;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [DEPLOY_ANYWAY_ACTION] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
+		assert.match(errors[0] ?? '', /^Could not read the components of rpc-vilnius, so orders\.yaml was not checked against it: .*\. Nothing was sent\.$/, 'no lint part with a clean lint');
+		assert.strictEqual(posts().length, 1);
+	});
+
+	test('VERSIONS: cluster 4.115.0 and local 4.120.0 are named in the message; equal or unknown are not', async () => {
+		vilnius().missingComponents = { inputs: ['stdin'] };
+		await connect();
+		const doc = await openConfig(configFile, STDIN);
+		for (const [local, named] of [['4.120.0', true], ['4.115.0', false], [undefined, false]] as const) {
+			cloud().localVersion = () => local;
+			errors.length = 0;
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+			assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'checkStopped');
+			assert.strictEqual(errors[0]?.includes('rpc-vilnius runs Redpanda Connect 4.115.0; this machine has 4.120.0.'), named, `${local}: ${errors[0]}`);
+		}
+	});
+
+	test('CLEAN: every component and function offered, lint clean: no finding, no prompt, deployed as before', async () => {
+		await connect();
+		const doc = await openConfig(configFile);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'final', errors.join('\n'));
+		assert.deepStrictEqual(errors, []);
+		assert.deepStrictEqual(checkEntries(doc), []);
+		assert.strictEqual(componentReads().length, 1);
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {

@@ -27,6 +27,7 @@ import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } fr
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import { CloudView, PRODUCTION_ENDPOINTS, UNREACHABLE_ENDPOINTS } from './adapters/vscode/cloudView';
 import type { JsonObject } from './core/schema';
+import { catalogueOf } from './adapters/graphPanel/status';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -93,9 +94,10 @@ export interface ExtensionApi {
 	 * The Cloud view and deploy (ticket 5.2): its items, its prompts to replace, the three hosts' base
 	 * URLs (production otherwise; unreachable in test mode until a suite sets its fake's), the deploy's
 	 * poll interval, timeout and restart grace, the token cache, and the workspace folders a pipeline's tag
-	 * is resolved in (ticket 5.5). Only in `ExtensionMode.Test`.
+	 * is resolved in (ticket 5.5), and the pre-deploy check's lint, local version and catalogue (ticket 8).
+	 * Only in `ExtensionMode.Test`.
 	 */
-	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
+	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
@@ -302,6 +304,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		isDetected: (uri) => detection.isDetected(uri),
 		// Ticket 5.7: a missing cloud secret's local value, as the binary would get it.
 		localValues: (uri) => environment.localValues(uri),
+		// Ticket 8: the pre-deploy check's lint (as lint on save), local version (the status bar's) and catalogue (the graph's).
+		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
+		localVersion: () => (redpandaConnect.state.kind === 'ok' ? redpandaConnect.state.version : undefined),
+		catalogue: () => catalogueOf(schemaStore.current?.json),
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 

@@ -8,6 +8,9 @@
 // walk reaches `{"$ref": "#/definitions/<c>"}` with `c` an input, processor or output. The last
 // step sets the kind: a field (or the component's own value) is `single`, `items` is `list`,
 // a pattern or additional property is `map`. Buffers, scanners and the rest are not slots.
+// Ticket 8 (the pre-deploy check): the same walk also records where a component holds a scanner
+// (`{"$ref": "#/definitions/scanner"}`: `file.scanner`, `decompress.into`, a `switch` scanner's
+// `[].scanner`) as `scannerSlots`, which the graph does not read.
 
 import { isJsonObject, type JsonObject, type JsonValue } from './schema';
 
@@ -43,6 +46,8 @@ export interface CategoryCatalog {
 	readonly sharedFields: ReadonlySet<string>;
 	/** Slots among the shared fields (an input's and an output's own `processors`). */
 	readonly sharedSlots: readonly Slot[];
+	/** Ticket 8: the steps to each scanner a component holds, per component that has any (not graph structure). */
+	readonly scannerSlots?: ReadonlyMap<string, readonly (readonly SlotStep[])[]>;
 }
 
 /** The catalogue by category (`definitions` key: `input`, `processor`, `cache`, …). */
@@ -72,6 +77,7 @@ export function componentCatalogue(schema: JsonObject): ComponentCatalog {
 		const [components, shared] = definition.allOf;
 		const names = new Set<string>();
 		const slots = new Map<string, readonly Slot[]>();
+		const scannerSlots = new Map<string, readonly (readonly SlotStep[])[]>();
 		const options = isJsonObject(components) && Array.isArray(components.anyOf) ? components.anyOf : [];
 		for (const option of options) {
 			if (!isJsonObject(option) || !isJsonObject(option.properties)) {
@@ -86,6 +92,10 @@ export function componentCatalogue(schema: JsonObject): ComponentCatalog {
 				if (found.length > 0) {
 					slots.set(name, found);
 				}
+				const scanners = scannersIn(node);
+				if (scanners.length > 0) {
+					scannerSlots.set(name, scanners);
+				}
 			}
 		}
 		const sharedProperties = isJsonObject(shared) && isJsonObject(shared.properties) ? shared.properties : {};
@@ -94,6 +104,7 @@ export function componentCatalogue(schema: JsonObject): ComponentCatalog {
 			slots,
 			sharedFields: new Set(Object.keys(sharedProperties)),
 			sharedSlots: slotsIn({ properties: sharedProperties }),
+			scannerSlots,
 		});
 	}
 	return { categories };
@@ -102,7 +113,7 @@ export function componentCatalogue(schema: JsonObject): ComponentCatalog {
 /** Every slot under `node`, in schema order. */
 function slotsIn(node: JsonValue): Slot[] {
 	const found: Slot[] = [];
-	walk(node, [], found);
+	walk(node, [], found, SLOT_CATEGORIES);
 	// Two pattern properties can lead to the same place; keep one slot per place.
 	const seen = new Set<string>();
 	return found.filter((slot) => {
@@ -115,13 +126,30 @@ function slotsIn(node: JsonValue): Slot[] {
 	});
 }
 
-function walk(node: JsonValue, steps: SlotStep[], found: Slot[]): void {
+/** Ticket 8: the steps to every scanner under `node`, one per place. */
+function scannersIn(node: JsonValue): SlotStep[][] {
+	const found: Slot[] = [];
+	walk(node, [], found, SCANNER_CATEGORY);
+	const seen = new Set<string>();
+	return found.filter((slot) => {
+		const key = formatSlot(slot);
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	}).map((slot) => [...slot.steps]);
+}
+
+const SCANNER_CATEGORY: ReadonlySet<string> = new Set(['scanner']);
+
+function walk(node: JsonValue, steps: SlotStep[], found: Slot[], categories: ReadonlySet<string>): void {
 	if (!isJsonObject(node)) {
 		return;
 	}
 	if (typeof node.$ref === 'string') {
 		const category = /^#\/definitions\/([^/]+)$/.exec(node.$ref)?.[1];
-		if (category !== undefined && SLOT_CATEGORIES.has(category)) {
+		if (category !== undefined && categories.has(category)) {
 			const last = steps.at(-1);
 			const kind: SlotKind = last?.kind === 'items' ? 'list' : last?.kind === 'entries' ? 'map' : 'single';
 			found.push({ steps: [...steps], category: category as SlotCategory, kind });
@@ -130,19 +158,19 @@ function walk(node: JsonValue, steps: SlotStep[], found: Slot[]): void {
 	}
 	if (isJsonObject(node.properties)) {
 		for (const [name, child] of Object.entries(node.properties)) {
-			walk(child, [...steps, { kind: 'field', name }], found);
+			walk(child, [...steps, { kind: 'field', name }], found, categories);
 		}
 	}
 	if (isJsonObject(node.items)) {
-		walk(node.items, [...steps, { kind: 'items' }], found);
+		walk(node.items, [...steps, { kind: 'items' }], found, categories);
 	}
 	if (isJsonObject(node.patternProperties)) {
 		for (const child of Object.values(node.patternProperties)) {
-			walk(child, [...steps, { kind: 'entries' }], found);
+			walk(child, [...steps, { kind: 'entries' }], found, categories);
 		}
 	}
 	if (isJsonObject(node.additionalProperties)) {
-		walk(node.additionalProperties, [...steps, { kind: 'entries' }], found);
+		walk(node.additionalProperties, [...steps, { kind: 'entries' }], found, categories);
 	}
 }
 
