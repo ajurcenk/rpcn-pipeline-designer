@@ -128,3 +128,5 @@ context:
 | 6 | NO_LEAK does not inspect other secret-storage keys' values or files | low | `97-logs.ts` NO_LEAK asserts only a key prefix | patch |
 | 7 | The `.vsix` check (AC 2) is not automated | low | no script or test packages and lists the `.vsix` | patch |
 | 8 | Hiding the tab or switching during the first connect still signs in and sends metadata and ListOffsets | low | `tail` checks `signal` only after `open()`, `partitions()`, `offsetsAt()` | patch |
+
+**Manual check result (user, 2026-11-05):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (Set up log access refused with a wrong password and stored nothing, then stored with the right one; Show logs on vscode-tracer showed its last 15 minutes and then new records live in the Pipeline Logs tab next to Output; switching pipelines; hiding and showing the panel). Automated: stable 1261, multi-root 10, corpus 156, webview 337, check:vsix; the 1.100.0 floor passed NEEDS_NEWER, its one failure the recorded RETAKE_STEAL flake.
