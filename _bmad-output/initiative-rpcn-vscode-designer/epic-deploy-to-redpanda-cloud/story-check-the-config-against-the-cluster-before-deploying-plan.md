@@ -122,3 +122,5 @@ context:
 
 Patches applied directly (the implementer could not be resumed after a session change): 1 (the check moved before `ensureSecrets`; its "they stay" message dropped), 3 (findings masked in the result), 4 and 5 (`documentBloblangCalls` keeps only calls inside a scalar of the first YAML document; unit test), 8 (an integration test of Deploy anyway then the cluster's rejection), plus a test that Escape at the check reads and creates no secret.
 
+**Manual check result (user, 2026-11-05):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (`stdin.yaml`: the check's finding in the message and the Problems panel, Escape sent nothing, Deploy anyway sent it; a clean config deployed with no prompt).
+
