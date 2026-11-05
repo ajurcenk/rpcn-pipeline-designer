@@ -300,6 +300,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		log,
 		endpoints: testMode ? UNREACHABLE_ENDPOINTS : PRODUCTION_ENDPOINTS,
 		isDetected: (uri) => detection.isDetected(uri),
+		// Ticket 5.7: a missing cloud secret's local value, as the binary would get it.
+		localValues: (uri) => environment.localValues(uri),
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 

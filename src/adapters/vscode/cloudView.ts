@@ -46,6 +46,17 @@
 // normal Deploy of the file when its `.cloud.json` maps to this pipeline, else explains and sends
 // nothing; **Copy pipeline ID** puts the id on the clipboard.
 //
+// Before the create or update (ticket 5.7), Deploy reads the chosen cluster's secrets once (only when
+// the translation made at least one secret reference) and, one at a time, for each referenced secret
+// the cluster lacks: with a local value (the one the binary would get: secret storage,
+// `redpandaConnect.env`, the env file, VS Code's environment) offers to keep it or enter another (a
+// password box), plus, for a secret used only with a default, not to create it; with no local value,
+// a secret used without a default is offered to be added now (a password box), and one with a default
+// is not asked about. Declining or Escape stops the deploy (secrets already created stay). Each answer
+// is created (`POST {dp}/v1/secrets`; 409, created meanwhile, counts as existing); an existing cloud
+// secret is never changed, and nothing local changes. A value goes only into the creation request: it
+// is masked from the moment it is read or typed.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -54,14 +65,15 @@ import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
 import {
 	canStart, canStop, CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, deletePipeline, FINAL_STATES,
-	getPipeline, isKnownState, isRunning, listPipelines, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, type SizeChoice, sizeChoices, startPipeline, stateKey,
+	createSecret, getPipeline, isKnownState, isRunning, listPipelines, listSecretNames, MAX_UNITS, MIN_UNITS, pipelineStateText, resourcesOf, resourcesText, sameResources, type SizeChoice, sizeChoices, startPipeline, stateKey,
 	stopPipeline, type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, CloudError, describeCloudError, hintLines, maskCredentials } from '../cloud/errors';
 import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedConfigs, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
-import { translateForCloud } from '../../core/cloudTranslate';
+import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
+import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
 
 export const CLOUD_VIEW_ID = 'redpandaConnect.cloud';
@@ -111,6 +123,31 @@ export const CREATE_NEW_ACTION = 'Create new';
 export const CREATE_NEW_PIPELINE_ACTION = 'Create a new pipeline';
 /** The mapping file is not one. */
 export const DEPLOY_AS_NEW_ACTION = 'Deploy as new';
+/** Ticket 5.7: a missing cloud secret's choices. */
+export const ENTER_ANOTHER_ACTION = 'Enter another value…';
+export const USE_DEFAULT_ACTION = "Don't create it (the Cloud uses the default)";
+export const ADD_NOW_ACTION = 'Add it now: enter its value…';
+export const STOP_DEPLOY_ACTION = "Don't deploy";
+/** "Keep the value from secret storage". */
+export function keepValueAction(local: Pick<LocalValue, 'source' | 'level'>): string {
+	return `Keep the value from ${localSourceText(local)}`;
+}
+/** Where a local value comes from, as the secret question names it. */
+export function localSourceText(local: Pick<LocalValue, 'source' | 'level'>): string {
+	switch (local.source) {
+		case 'secret':
+			return 'secret storage';
+		case 'setting':
+			return `redpandaConnect.env (${local.level ?? 'user'} settings)`;
+		case 'envFile':
+			return 'the env file';
+		case 'process':
+			return "VS Code's environment";
+		case 'extension':
+			return 'the extension';
+	}
+}
+
 /** After an update of a running pipeline: reported running when its state does not change for this long. */
 export const RESTART_GRACE_MS = 20_000;
 
@@ -153,6 +190,8 @@ export interface CloudUi {
 	 * update) or 1 compute unit (a new pipeline). `undefined`: cancelled.
 	 */
 	pickUnits(title: string, current: PipelineResources | undefined): Thenable<PipelineResources | undefined>;
+	/** Ticket 5.7: one of `choices` (a missing secret's question); `undefined`: cancelled. */
+	pickChoice(title: string, question: string, choices: readonly string[]): Thenable<string | undefined>;
 	error(message: string, ...actions: string[]): Thenable<string | undefined>;
 	info(message: string, ...actions: string[]): Thenable<string | undefined>;
 	/** A modal question; `undefined`: cancelled. */
@@ -226,6 +265,7 @@ export const defaultCloudUi: CloudUi = {
 		});
 		pick.show();
 	}),
+	pickChoice: (title, question, choices) => vscode.window.showQuickPick([...choices], { title, placeHolder: question, ignoreFocusOut: true }),
 	error: (message, ...actions) => vscode.window.showErrorMessage(message, ...actions),
 	info: (message, ...actions) => vscode.window.showInformationMessage(message, ...actions),
 	confirm: (message, ...actions) => vscode.window.showWarningMessage(message, { modal: true }, ...actions),
@@ -326,6 +366,8 @@ export interface CloudViewOptions {
 	readonly fetch?: FetchLike;
 	/** Whether a URI is a detected Redpanda Connect config. */
 	readonly isDetected: (uri: vscode.Uri) => boolean;
+	/** Ticket 5.7: the value the binary would get for each variable a config uses (the Environment view's). */
+	readonly localValues?: (uri: vscode.Uri) => ReadonlyMap<string, LocalValue>;
 }
 
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -1106,9 +1148,14 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		if (!resources) {
 			return NOT_STARTED;
 		}
-		const configYaml = await this.savedAndTranslated(doc, file);
-		if (configYaml === undefined) {
+		const translated = await this.savedAndTranslated(doc, file);
+		if (translated === undefined) {
 			return NOT_STARTED;
+		}
+		const configYaml = translated.text;
+		const { stopped: secretsStopped, created: createdSecrets } = await this.ensureSecrets(doc.uri, file, cluster, dp, translated.secrets);
+		if (secretsStopped) {
+			return secretsStopped;
 		}
 		// A valid mapping naming these ids is never rewritten.
 		const mapTo = async (p: CloudPipeline) => {
@@ -1146,6 +1193,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				: `Replacing its config with ${file} (the diff shows the changes) restarts it.${size ? ` ${size}` : ''}`;
 			const choice = await this.ui.confirm(this.mask(`Pipeline ${name} on ${cluster.name} is ${stateWord(deployed.state)}. ${what}`), REPLACE_ACTION);
 			if (choice !== REPLACE_ACTION) {
+				if (createdSecrets.length > 0) {
+					const kept = `Created ${createdSecrets.join(', ')} on ${cluster.name}; they stay. The pipeline was not updated.`;
+					this.log(`Redpanda Cloud: ${kept}`);
+					void this.showInfo(kept);
+				}
 				return NOT_STARTED;
 			}
 		}
@@ -1166,7 +1218,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	 * As Run: a dirty config is saved first; the saved file's text, translated for the Cloud (the file
 	 * itself is never changed). `undefined`: not saved, or refused (each problem shown and logged).
 	 */
-	private async savedAndTranslated(doc: vscode.TextDocument, file: string): Promise<string | undefined> {
+	private async savedAndTranslated(doc: vscode.TextDocument, file: string): Promise<{ readonly text: string; readonly secrets: readonly CloudSecretUse[] } | undefined> {
 		if (doc.isDirty && !(await doc.save())) {
 			this.log(`Redpanda Cloud: ${file} could not be saved; not deployed.`);
 			void this.showError(`${file} could not be saved, so it was not deployed.`);
@@ -1174,13 +1226,132 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		}
 		const translation = translateForCloud(await fs.promises.readFile(doc.uri.fsPath, 'utf8'));
 		if (translation.kind === 'ok') {
-			return translation.text;
+			return { text: translation.text, secrets: translation.secrets };
 		}
 		const { problems } = translation;
 		this.log(`Redpanda Cloud: ${file} was not deployed: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
 		problems.forEach((p) => this.log(`  ${file}: ${p.message}`));
 		void this.showError(`${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}. Nothing was sent.`);
 		return undefined;
+	}
+
+	/** Masks `value` (and its base64 form, as sent) from now on. */
+	private maskValue(value: string): void {
+		if (value) {
+			this.seenSecrets.add(value);
+			this.seenSecrets.add(Buffer.from(value, 'utf8').toString('base64'));
+		}
+	}
+
+	/**
+	 * Ticket 5.7: the secrets the config references that `cluster` lacks, asked about one at a time and
+	 * created from the answers. `stopped`: how the deploy ended (nothing more sent), none: it goes on;
+	 * `created`: the secrets this deploy created.
+	 */
+	private async ensureSecrets(uri: vscode.Uri, file: string, cluster: CloudCluster, dp: string, secrets: readonly CloudSecretUse[])
+		: Promise<{ readonly stopped?: DeployResult; readonly created: string[] }> {
+		const created: string[] = [];
+		if (secrets.length === 0) {
+			return { created };
+		}
+		let existing: Set<string>;
+		try {
+			existing = await this.ui.progress(`Checking the secrets of ${file} on ${cluster.name}`, (report) => {
+				report('reading the cluster\'s secrets…');
+				return listSecretNames(this.call(), dp, cluster.name);
+			});
+		} catch (err) {
+			const message = asCloudError(err).message;
+			this.log(`Redpanda Cloud: could not read the secrets of ${cluster.name}: ${message}`);
+			this.showErrorOfferingConnect(`Could not read the secrets of ${cluster.name}: ${message}. Nothing was sent.`, err);
+			return { stopped: { kind: 'failed', message: this.mask(`could not read the secrets of ${cluster.name}: ${message}`) }, created };
+		}
+		const missing = secrets.filter((s) => !existing.has(s.name));
+		if (missing.length === 0) {
+			return { created };
+		}
+		let local: ReadonlyMap<string, LocalValue>;
+		try {
+			local = this.options.localValues?.(uri) ?? new Map<string, LocalValue>();
+		} catch (err) {
+			this.log(`Redpanda Cloud: could not read the local values of ${file}: ${reasonOf(err)}`);
+			local = new Map<string, LocalValue>();
+		}
+		for (const s of missing) {
+			const v = local.get(s.name);
+			if (v) {
+				this.maskValue(v.value);
+			}
+		}
+		const stopped = (name: string): DeployResult => {
+			this.log(`Redpanda Cloud: the deploy of ${file} stopped at the secret ${name}; nothing more was sent.`);
+			return NOT_STARTED;
+		};
+		const title = (name: string) => `Deploy ${file} to ${cluster.name}: the secret ${name}`;
+		for (const s of missing) {
+			const v = local.get(s.name);
+			let value: string | undefined;
+			if (v) {
+				const keep = keepValueAction(v);
+				const choices = [keep, ENTER_ANOTHER_ACTION, ...(s.required ? [] : [USE_DEFAULT_ACTION])];
+				const choice = await this.ui.pickChoice(title(s.name), this.mask(
+					`${cluster.name} has no secret ${s.name}, which ${file} uses${s.required ? '' : ' (with a default)'}. ${s.name} is set in ${localSourceText(v)}.`), choices);
+				if (choice === USE_DEFAULT_ACTION) {
+					this.log(`Redpanda Cloud: the secret ${s.name} was not created on ${cluster.name}; the pipeline uses its default.`);
+					continue;
+				}
+				if (choice === keep) {
+					value = v.value;
+				} else if (choice === ENTER_ANOTHER_ACTION) {
+					value = await this.askSecretValue(s.name, cluster, file);
+				}
+			} else if (s.required) {
+				const choice = await this.ui.pickChoice(title(s.name), this.mask(
+					`${cluster.name} has no secret ${s.name}, which ${file} uses, and no local value is set. Add ${s.name} now?`), [ADD_NOW_ACTION, STOP_DEPLOY_ACTION]);
+				if (choice === ADD_NOW_ACTION) {
+					value = await this.askSecretValue(s.name, cluster, file);
+				}
+			} else {
+				continue; // a default and no local value: the Cloud uses the default
+			}
+			if (value === undefined) {
+				return { stopped: stopped(s.name), created };
+			}
+			const secret = value;
+			try {
+				const answer = await this.ui.progress(`Creating the secret ${s.name} on ${cluster.name}`, (report) => {
+					report('creating the secret…');
+					return createSecret(this.call(), dp, s.name, secret);
+				});
+				if (answer === 'created') {
+					created.push(s.name);
+				}
+				this.log(answer === 'created'
+					? `Redpanda Cloud: created the secret ${s.name} on ${cluster.name}.`
+					: `Redpanda Cloud: the secret ${s.name} already exists on ${cluster.name} (created meanwhile); it was not changed.`);
+			} catch (err) {
+				const message = asCloudError(err).message;
+				this.log(`Redpanda Cloud: could not create the secret ${s.name} on ${cluster.name}: ${message}`);
+				this.showErrorOfferingConnect(`Could not create the secret ${s.name} on ${cluster.name}: ${message}. The pipeline was not sent.`, err);
+				return { stopped: { kind: 'failed', message: this.mask(`could not create the secret ${s.name}: ${message}`) }, created };
+			}
+		}
+		return { created };
+	}
+
+	/** A missing secret's value, typed in a password box (masked at once); `undefined`: cancelled. */
+	private async askSecretValue(name: string, cluster: CloudCluster, file: string): Promise<string | undefined> {
+		const value = await this.ui.input({
+			title: `Deploy ${file} to ${cluster.name}: the secret ${name}`,
+			prompt: `The value of the secret ${name} on ${cluster.name}. It is sent to that secret only; nothing local changes.`,
+			password: true,
+			ignoreFocusOut: true,
+			validateInput: (text) => (text ? undefined : `Enter the value of ${name}.`),
+		});
+		if (value) {
+			this.maskValue(value);
+		}
+		return value || undefined;
 	}
 
 	/** The clusters that offer the pipeline API, one picked; `undefined` (said so when there is none): no deploy. */

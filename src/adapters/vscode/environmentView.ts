@@ -289,6 +289,14 @@ const fileExists = (file: string): boolean => {
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const keyOf = (v: { readonly source: EnvSource; readonly name: string }) => `${v.source}:${v.name}`;
 
+/** Ticket 5.7: a variable's value as the binary would get it, and where it comes from. */
+export interface LocalValue {
+	readonly value: string;
+	readonly source: EnvSource;
+	/** `setting` only: the level its value comes from. */
+	readonly level?: SettingLevel;
+}
+
 export interface EnvironmentViewOptions {
 	readonly detection: DetectionRegistry;
 	readonly secrets: SecretVariables;
@@ -448,6 +456,24 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	 */
 	modelFor(uri: vscode.Uri): EnvironmentModel {
 		return this.compute(uri);
+	}
+
+	/**
+	 * Ticket 5.7: the value the binary would get for each variable `uri`'s config uses, read now (as
+	 * `modelFor`), with its source (and, for `redpandaConnect.env`, the level its value comes from).
+	 * A name no source gives, or whose value is empty, is absent. Deploy offers these as the values of
+	 * missing cloud secrets.
+	 */
+	localValues(uri: vscode.Uri): Map<string, LocalValue> {
+		const out = new Map<string, LocalValue>();
+		for (const group of this.compute(uri).groups) {
+			for (const v of group.variables) {
+				if (v.state === 'used' && v.referenced && v.value !== undefined && v.value !== '' && !out.has(v.name)) {
+					out.set(v.name, { value: v.value, source: v.source, ...(v.level ? { level: v.level } : {}) });
+				}
+			}
+		}
+		return out;
 	}
 
 	/** Re-reads everything; masks every revealed value again. */

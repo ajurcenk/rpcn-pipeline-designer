@@ -9,7 +9,8 @@
 // of variables into secrets (what the fake receives, the refusals, UNCHANGED and the diff) the fourth;
 // ticket 5.5's row file, Open deployed config (the row's click), Compare, Deploy again and Copy pipeline
 // ID the fifth (the stable run opens no folder, so those tests point the view's workspace folders at
-// the temporary directory).
+// the temporary directory); ticket 5.7's missing secrets (the questions, what the fake's secrets hold,
+// the order of the requests, and every value checked by NO_LEAK) the sixth.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +21,7 @@ import {
 	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
+	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
 } from '../../../adapters/vscode/cloudView';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
 import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
@@ -31,6 +33,18 @@ import { EXTENSION_ID, waitFor } from '../helpers';
 const CLIENT_ID = 'fake-client-id-5-2';
 const CLIENT_SECRET = 'fake-client-secret-5-2-Qx7';
 const WRONG_SECRET = 'wrong-secret-5-2-Zr9';
+/** On rpc-vilnius before each test: what the configs of tickets 5.5 and 5.6 use without a default. */
+const PRESENT_SECRETS = ['BROKER', 'X', 'LATE'];
+/** Ticket 5.7: the local and typed secret values (NO_LEAK checks every one, and its base64 form). */
+const SECRET_VALUES = {
+	brokerLocal: 'tok-57-broker-local-Vb3q',
+	brokerTyped: 'tok-57-broker-typed-Lp2w',
+	tokenTyped: 'tok-57-token-typed-Qm8z',
+	otherTyped: 'tok-57-other-typed-Jd4r',
+	topicLocal: 'tok-57-topic-local-Hs5k',
+	topicTyped: 'tok-57-topic-typed-Wn6c',
+	declineTyped: 'tok-57-decline-typed-Rf9t',
+};
 const CONFIG = [
 	'input:',
 	'  generate:',
@@ -81,6 +95,9 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	/** The palette's pipeline picks (by name), and what each offered. */
 	let pipelinePicks: (string | undefined)[] = [];
 	let pipelinesOffered: PipelineChoice[][] = [];
+	/** Ticket 5.7: the answers to the missing secrets' questions, in order (none left: Escape), and each question asked. */
+	let choices: (string | undefined)[] = [];
+	let questions: { title: string; question: string; choices: string[] }[] = [];
 
 	/**
 	 * VS Code's secret storage resolves a delete before its application storage has settled it, and
@@ -100,9 +117,11 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 
 	function script(next: {
 		inputs?: Input[]; picks?: (string | undefined)[]; actions?: (string | undefined)[]; confirms?: (string | undefined)[]; units?: (number | undefined)[];
-		pipelinePicks?: (string | undefined)[];
+		pipelinePicks?: (string | undefined)[]; choices?: (string | undefined)[];
 	}): void {
 		pipelinePicks = next.pipelinePicks ?? [];
+		choices = next.choices ?? [];
+		questions = [];
 		pipelinesOffered = [];
 		inputs = next.inputs ?? [];
 		picks = next.picks ?? [];
@@ -223,11 +242,16 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 				const next = units.shift();
 				return next === undefined ? undefined : resourcesOf(next);
 			},
-			pickPipeline: async (choices) => {
-				pipelinesOffered.push([...choices]);
-				allMessages.push(...choices.flatMap((c) => [c.label, c.description]));
+			pickPipeline: async (offered) => {
+				pipelinesOffered.push([...offered]);
+				allMessages.push(...offered.flatMap((c) => [c.label, c.description]));
 				const name = pipelinePicks.shift();
-				return choices.find((c) => c.pipeline.displayName === name);
+				return offered.find((c) => c.pipeline.displayName === name);
+			},
+			pickChoice: async (title, question, offered) => {
+				questions.push({ title, question, choices: [...offered] });
+				allMessages.push(title, question, ...offered);
+				return choices.shift();
 			},
 		};
 	});
@@ -250,11 +274,15 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 		fake.stopSequence = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
 		fake.failures = [];
+		fake.secretsPageSize = 100;
 		for (const c of fake.options.clusters) {
 			c.pipelines = [];
 			c.pipelinesError = undefined;
 			c.getError = undefined;
+			c.secrets = new Map();
 		}
+		// The secrets the 5.5 and 5.6 tests' configs use without a default (ticket 5.7 asks for missing ones).
+		fake.cluster('cvilnius0000000000aa').secrets = new Map(PRESENT_SECRETS.map((n) => [n, `tok-57-present-${n}`]));
 		cloud().timeoutMs = 10_000;
 		cloud().restartGraceMs = 2_000;
 		cloud().workspaceFolders = originalFolders;
@@ -1067,6 +1095,241 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), changed, 'the file as saved');
 	});
 
+	// --- ticket 5.7: create the missing cloud secrets ---
+
+	const VILNIUS_ID = 'cvilnius0000000000aa';
+	const vilnius = () => fake.cluster(VILNIUS_ID);
+	const b64 = (v: string) => Buffer.from(v, 'utf8').toString('base64');
+	const secretPosts = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'POST' && /\/v1\/secrets$/.test(r.url));
+	const secretLists = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'GET' && /\/v1\/secrets\?/.test(r.url));
+	const rc = () => vscode.workspace.getConfiguration('redpandaConnect');
+	/** A config using `refs` (each a `${…}` body) in its mapping. */
+	const usingSecrets = (...refs: string[]) => [
+		'input:',
+		'  generate:',
+		'    interval: 5s',
+		'    mapping: |',
+		...refs.map((r, i) => `      root.v${i} = "\${${r}}"`),
+		'output:',
+		'  drop: {}',
+		'',
+	].join('\n');
+	/** Runs `body`, then removes the local values it set (secret storage, `redpandaConnect.env`). */
+	async function withLocal(body: () => Promise<void>): Promise<void> {
+		try {
+			await body();
+		} finally {
+			await api().secrets!.clear(async () => true);
+			await rc().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+			await rc().update('env', undefined, vscode.ConfigurationTarget.Global);
+		}
+	}
+	/** Connects and opens `orders.yaml` with `text` (waiting for VS Code to read it). */
+	async function openForSecrets(text: string): Promise<vscode.TextDocument> {
+		await connect();
+		const doc = await openConfig(configFile, text);
+		assert.ok(await waitFor(() => doc.getText() === text, 10_000));
+		return doc;
+	}
+	const deployNow = async (doc: vscode.TextDocument) => (await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri))?.kind;
+	const nothingSentSince = (at: number) => fake.requests.slice(at).every((r) => r.method === 'GET' || r.url === '/oauth/token');
+
+	test('ACCEPTANCE 5.7 and KEEP_LOCAL / ADD_MANUAL: BROKER kept from secret storage, TOKEN typed; both created, then the pipeline; no value in a message, a log line or the YAML sent', () => withLocal(async () => {
+		assert.ok(await api().secrets!.set(undefined, 'BROKER', SECRET_VALUES.brokerLocal));
+		vilnius().secrets = new Map();
+		const text = usingSecrets('BROKER', 'TOKEN');
+		const doc = await openForSecrets(text);
+		const outputBefore = api().outputLines().length;
+		const messagesBefore = allMessages.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.tokenTyped], choices: ['Keep the value from secret storage', ADD_NOW_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.deepStrictEqual(questions.map((q) => q.choices), [['Keep the value from secret storage', ENTER_ANOTHER_ACTION], [ADD_NOW_ACTION, STOP_DEPLOY_ACTION]]);
+		assert.ok(questions[0].question.includes('BROKER is set in secret storage'), questions[0].question);
+		assert.ok(questions[1].question.includes('Add TOKEN now?'), questions[1].question);
+		assert.strictEqual(asked[1].password, true, 'the typed value in a password box');
+		assert.deepStrictEqual([...vilnius().secrets!], [['BROKER', SECRET_VALUES.brokerLocal], ['TOKEN', SECRET_VALUES.tokenTyped]]);
+		assert.deepStrictEqual(secretPosts().map((r) => JSON.parse(r.body)), [
+			{ id: 'BROKER', scopes: ['SCOPE_REDPANDA_CONNECT'], secret_data: b64(SECRET_VALUES.brokerLocal) },
+			{ id: 'TOKEN', scopes: ['SCOPE_REDPANDA_CONNECT'], secret_data: b64(SECRET_VALUES.tokenTyped) },
+		]);
+		assert.strictEqual(secretLists().length, 1, 'the list is read once');
+		const reqs = fake.requests.slice(firstRequest);
+		const pipelineAt = reqs.findIndex((r) => r.method === 'POST' && r.url.endsWith('/v1/redpanda-connect/pipelines'));
+		assert.ok(pipelineAt > reqs.indexOf(secretPosts()[1]), 'the pipeline is created after the secrets');
+		assert.strictEqual(lastCreate()!.config_yaml, usingSecrets('secrets.BROKER', 'secrets.TOKEN'));
+		const shown = JSON.stringify({ output: api().outputLines().slice(outputBefore), messages: allMessages.slice(messagesBefore), asked, yaml: lastCreate() });
+		for (const v of [SECRET_VALUES.brokerLocal, SECRET_VALUES.tokenTyped]) {
+			assert.ok(!shown.includes(v) && !shown.includes(b64(v)), 'no value in a message, a log line or the YAML sent');
+		}
+		assert.ok(api().outputLines().slice(outputBefore).includes('Redpanda Cloud: created the secret TOKEN on rpc-vilnius.'));
+		assert.strictEqual(api().secrets!.values.get('window', 'TOKEN'), undefined, 'nothing local changes');
+		assert.strictEqual(api().secrets!.values.get('window', 'BROKER'), SECRET_VALUES.brokerLocal);
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), text);
+	}));
+
+	test('ALL_PRESENT: every referenced secret on the cluster (the list followed across pages): no question, deployed as 5.6; no reference: the list is not read; the list fails: the API\'s message, nothing sent', async () => {
+		const { doc } = await deployOnce(CONFIG);
+		assert.strictEqual(secretLists().length, 0, 'no reference: no list');
+		fake.secretsPageSize = 1;
+		await editConfig(doc, VARS);
+		firstRequest = fake.requests.length;
+		script({ confirms: [REPLACE_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(questions.length, 0);
+		assert.strictEqual(secretLists().length, PRESENT_SECRETS.length, 'one page per secret');
+		assert.strictEqual(secretPosts().length, 0);
+		assert.strictEqual(JSON.parse(puts()[0].body).config_yaml, VARS_SENT);
+
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		fs.rmSync(sidecarFile());
+		const freshText = usingSecrets('BROKER', 'NEW_57');
+		const fresh = await openConfig(configFile, freshText);
+		assert.ok(await waitFor(() => fresh.getText() === freshText, 10_000));
+		fake.failures = [{ when: (r) => r.method === 'GET' && r.url.includes('/v1/secrets'), status: 403, body: { code: 'PERMISSION_DENIED', message: 'you are not authorized to call this endpoint', details: [] } }];
+		const before = fake.requests.length;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], confirms: [CREATE_NEW_ACTION] });
+		assert.strictEqual(await deployNow(fresh), 'failed');
+		assert.ok(errors.some((e) => e.startsWith('Could not read the secrets of rpc-vilnius: ') && e.includes('you are not authorized') && e.endsWith('Nothing was sent.')), errors.join('\n'));
+		assert.strictEqual(questions.length, 0);
+		assert.ok(nothingSentSince(before), 'nothing sent');
+	});
+
+	test('CHANGE_LOCAL: "Enter another value…" opens a password box and creates the typed value (the local one unchanged); Escape there or at the question stops; a failed create: the API\'s message, the pipeline not sent', () => withLocal(async () => {
+		assert.ok(await api().secrets!.set(undefined, 'BROKER', SECRET_VALUES.brokerLocal));
+		vilnius().secrets = new Map();
+		const doc = await openForSecrets(usingSecrets('BROKER'));
+
+		let before = fake.requests.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', undefined], choices: [ENTER_ANOTHER_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.strictEqual(asked[1]?.password, true);
+		assert.ok(nothingSentSince(before), 'Escape in the box: nothing sent');
+
+		before = fake.requests.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], choices: [undefined] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.ok(nothingSentSince(before), 'Escape at the question: nothing sent');
+
+		before = fake.requests.length;
+		fake.failures = [{ when: (r) => r.method === 'POST' && /\/v1\/secrets$/.test(r.url), status: 403, body: { code: 'PERMISSION_DENIED', message: 'not allowed to create secrets', details: [] } }];
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], choices: ['Keep the value from secret storage'] });
+		assert.strictEqual(await deployNow(doc), 'failed');
+		assert.ok(errors.some((e) => e.startsWith('Could not create the secret BROKER on rpc-vilnius: ') && e.includes('not allowed to create secrets') && e.endsWith('The pipeline was not sent.')), errors.join('\n'));
+		assert.ok(fake.requests.slice(before).every((r) => !r.url.endsWith('/v1/redpanda-connect/pipelines') || r.method === 'GET'), 'the pipeline not sent');
+		assert.deepStrictEqual([...vilnius().secrets!], []);
+
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.brokerTyped], choices: [ENTER_ANOTHER_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.deepStrictEqual([...vilnius().secrets!], [['BROKER', SECRET_VALUES.brokerTyped]]);
+		assert.strictEqual(api().secrets!.values.get('window', 'BROKER'), SECRET_VALUES.brokerLocal, 'the local value unchanged');
+	}));
+
+	test('ADD_MANUAL: no local value: "Add it now?"; No, Escape at the question or in the box stops with nothing sent; a later No keeps the secrets already created and sends no pipeline', async () => {
+		vilnius().secrets = new Map();
+		const doc = await openForSecrets(usingSecrets('TOKEN', 'OTHER_57'));
+		for (const [answer, typed] of [[STOP_DEPLOY_ACTION, []], [undefined, []], [ADD_NOW_ACTION, [undefined]]] as const) {
+			const before = fake.requests.length;
+			script({ picks: ['rpc-vilnius'], inputs: ['orders', ...typed], choices: [answer] });
+			assert.strictEqual(await deployNow(doc), 'notStarted', String(answer));
+			assert.strictEqual(questions.length, 1);
+			assert.ok(nothingSentSince(before), `${String(answer)}: nothing sent`);
+		}
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.tokenTyped], choices: [ADD_NOW_ACTION, STOP_DEPLOY_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.deepStrictEqual([...vilnius().secrets!], [['TOKEN', SECRET_VALUES.tokenTyped]], 'the first stays');
+		assert.strictEqual(posts().length, 0, 'no pipeline');
+		assert.ok(!fs.existsSync(sidecarFile()));
+
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.otherTyped], choices: [ADD_NOW_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(questions.length, 1, 'only the one still missing');
+		assert.ok(questions[0].question.includes('OTHER_57'));
+		assert.deepStrictEqual([...vilnius().secrets!], [['TOKEN', SECRET_VALUES.tokenTyped], ['OTHER_57', SECRET_VALUES.otherTyped]]);
+	});
+
+	test('DEFAULT_NONE and DEFAULT_LOCAL: ${TOPIC:orders} with no local value: nothing asked or created; with one (redpandaConnect.env): keep, change or "Don\'t create it"; before the UNCHANGED comparison', () => withLocal(async () => {
+		const doc = await openForSecrets(usingSecrets('TOPIC:orders'));
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(questions.length, 0);
+		assert.strictEqual(secretLists().length, 1);
+		assert.strictEqual(secretPosts().length, 0);
+
+		await rc().update('env', { TOPIC: SECRET_VALUES.topicLocal }, vscode.ConfigurationTarget.Global);
+		const keep = 'Keep the value from redpandaConnect.env (user settings)';
+		let before = fake.requests.length;
+		script({ choices: [undefined] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.deepStrictEqual(questions[0].choices, [keep, ENTER_ANOTHER_ACTION, USE_DEFAULT_ACTION]);
+		assert.ok(nothingSentSince(before), 'Escape: nothing sent');
+
+		script({ choices: [USE_DEFAULT_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		assert.strictEqual(secretPosts().length, 0, 'not created');
+
+		script({ choices: [ENTER_ANOTHER_ACTION], inputs: [SECRET_VALUES.topicTyped] });
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		assert.strictEqual(asked[0]?.password, true);
+		assert.strictEqual(vilnius().secrets!.get('TOPIC'), SECRET_VALUES.topicTyped, 'the typed value created');
+		assert.deepStrictEqual(rc().get('env'), { TOPIC: SECRET_VALUES.topicLocal }, 'the local value unchanged');
+		vilnius().secrets!.delete('TOPIC');
+
+		before = fake.requests.length;
+		script({ choices: [keep] });
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		assert.deepStrictEqual([...vilnius().secrets!].filter(([n]) => n === 'TOPIC'), [['TOPIC', SECRET_VALUES.topicLocal]]);
+		assert.ok(fake.requests.slice(before).every((r) => r.method !== 'PUT'), 'the pipeline unchanged');
+	}));
+
+	test('EMPTY_LOCAL: an empty local value is no local value: a required secret gets "Add it now?", a defaulted one is not asked', () => withLocal(async () => {
+		vilnius().secrets = new Map();
+		await rc().update('env', { X: '', Y_57: '' }, vscode.ConfigurationTarget.Global);
+		const doc = await openForSecrets(usingSecrets('X', 'Y_57:d'));
+		const before = fake.requests.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], choices: [STOP_DEPLOY_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.strictEqual(questions.length, 1, 'Y_57 (with a default) is not asked');
+		assert.deepStrictEqual(questions[0].choices, [ADD_NOW_ACTION, STOP_DEPLOY_ACTION]);
+		assert.ok(questions[0].question.includes('Add X now?'), questions[0].question);
+		assert.ok(nothingSentSince(before), 'nothing sent, no empty secret_data');
+	}));
+
+	test('DECLINED_RESTART: secrets created, then "Replace and restart" declined: says they stay and the pipeline was not updated', async () => {
+		const { doc } = await deployOnce(CONFIG);
+		await editConfig(doc, usingSecrets('NEWSEC_57'));
+		script({ confirms: [undefined], choices: [ADD_NOW_ACTION], inputs: [SECRET_VALUES.declineTyped] });
+		const outputBefore = api().outputLines().length;
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		const kept = 'Created NEWSEC_57 on rpc-vilnius; they stay. The pipeline was not updated.';
+		assert.ok(infos.includes(kept), infos.join('\n'));
+		assert.ok(api().outputLines().slice(outputBefore).includes(`Redpanda Cloud: ${kept}`));
+		assert.strictEqual(vilnius().secrets!.get('NEWSEC_57'), SECRET_VALUES.declineTyped);
+		assert.strictEqual(puts().length, 0, 'not updated');
+	});
+
+	test('CONFLICT: a secret created by someone else meanwhile (409) counts as existing and is not changed; the deploy goes on', async () => {
+		vilnius().secrets = new Map();
+		const doc = await openForSecrets(usingSecrets('BROKER'));
+		fake.failures = [{
+			// Never answers: it only creates the secret just before the deploy's POST reaches the route.
+			when: (r) => {
+				if (r.method === 'POST' && /\/v1\/secrets$/.test(r.url)) {
+					vilnius().secrets!.set('BROKER', 'tok-57-theirs');
+				}
+				return false;
+			},
+			status: 500, body: {},
+		}];
+		const outputBefore = api().outputLines().length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.brokerTyped], choices: [ADD_NOW_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(vilnius().secrets!.get('BROKER'), 'tok-57-theirs', 'not changed');
+		assert.ok(api().outputLines().slice(outputBefore).some((l) => l.includes('the secret BROKER already exists on rpc-vilnius')));
+		assert.strictEqual(posts().length, 1);
+	});
+
 	// --- ticket 5.4: start, stop and delete a pipeline ---
 
 	const VILNIUS = 'cvilnius0000000000aa';
@@ -1602,13 +1865,19 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {
-		const secrets = [CLIENT_SECRET, WRONG_SECRET];
+		// Ticket 5.7: every secret value used, and its base64 form, only in the body of its secret's create.
+		const values = Object.values(SECRET_VALUES);
+		const secrets = [CLIENT_SECRET, WRONG_SECRET, ...values, ...values.map((v) => Buffer.from(v, 'utf8').toString('base64'))];
 		assert.ok(fake.tokens.length > 0);
 		for (const r of fake.requests) {
 			const { authorization, ...headers } = r.headers;
-			const outside = JSON.stringify({ url: r.url, headers, body: r.url === '/oauth/token' ? '' : r.body });
+			const secretCreate = r.method === 'POST' && /\/v1\/secrets$/.test(r.url);
+			const outside = JSON.stringify({ url: r.url, headers, body: r.url === '/oauth/token' || secretCreate ? '' : r.body });
 			for (const value of [...secrets, ...fake.tokens]) {
 				assert.ok(!outside.includes(value), `${r.method} ${r.url} holds a credential outside its place`);
+			}
+			if (secretCreate) {
+				assert.ok(!values.some((v) => r.body.includes(v)), 'a secret value is sent base64-encoded only');
 			}
 			if (r.url === '/oauth/token') {
 				assert.strictEqual(authorization, undefined);

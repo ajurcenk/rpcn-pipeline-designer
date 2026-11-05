@@ -3,9 +3,12 @@
 // cluster's lint rejects is a 400 with `LintHint`s), get (`GET /{id}`) and update (`PUT /{id}`, which
 // replaces the pipeline, so every field is sent; an update of a running pipeline restarts it), and
 // (ticket 5.4) start and stop (`PUT /{id}/start`, `PUT /{id}/stop`, each answering `{pipeline}`) and
-// delete (`DELETE /{id}`, answering `{}`; a GET then answers 404). No `vscode` import.
+// delete (`DELETE /{id}`, answering `{}`; a GET then answers 404). Ticket 5.7: the cluster's secrets,
+// listed (`GET {dp}/v1/secrets`, paged; ids only, values are never read back) and created (`POST`,
+// 201; an existing id answers 409). No `vscode` import.
 
 import { authorizedJson, type CloudCall } from './controlPlane';
+import { CloudError } from './errors';
 import { joinUrl } from './http';
 
 export interface PipelineResources {
@@ -89,6 +92,9 @@ export function isRunning(state: PipelineState): boolean {
 
 const MAX_PAGES = 20;
 const PIPELINES = '/v1/redpanda-connect/pipelines';
+const SECRETS = '/v1/secrets';
+/** The scope a pipeline's secret needs. */
+export const CONNECT_SECRET_SCOPE = 'SCOPE_REDPANDA_CONNECT';
 
 /** The states the extension knows; another state the API names is shown by its raw name. */
 export const KNOWN_STATES: readonly PipelineState[] = ['STATE_STARTING', 'STATE_RUNNING', 'STATE_STOPPING', 'STATE_STOPPED', 'STATE_ERROR', 'STATE_COMPLETED'];
@@ -240,6 +246,56 @@ export function stopPipeline(call: CloudCall, dataplaneUrl: string, id: string):
 /** Deletes pipeline `id` (`DELETE /{id}`, answering `{}`); a GET then answers 404. */
 export async function deletePipeline(call: CloudCall, dataplaneUrl: string, id: string): Promise<void> {
 	await authorizedJson<unknown>(call, 'DELETE', joinUrl(dataplaneUrl, `${PIPELINES}/${encodeURIComponent(id)}`));
+}
+
+/**
+ * The ids of the cluster's secrets (`GET {dp}/v1/secrets?page_size=100`, following `next_page_token`,
+ * at most `MAX_PAGES` pages; more left is logged, naming `shown`).
+ */
+export async function listSecretNames(call: CloudCall, dataplaneUrl: string, shown = 'the cluster'): Promise<Set<string>> {
+	const out = new Set<string>();
+	let pageToken = '';
+	for (let page = 0; page < MAX_PAGES; page++) {
+		const query = `page_size=100${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ''}`;
+		const body = await authorizedJson<{ secrets?: unknown; next_page_token?: unknown }>(
+			call, 'GET', joinUrl(dataplaneUrl, `${SECRETS}?${query}`));
+		if (Array.isArray(body.secrets)) {
+			for (const raw of body.secrets) {
+				const id = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>).id : undefined;
+				if (typeof id === 'string' && id) {
+					out.add(id);
+				}
+			}
+		}
+		pageToken = typeof body.next_page_token === 'string' ? body.next_page_token : '';
+		if (!pageToken) {
+			break;
+		}
+	}
+	if (pageToken) {
+		call.http.log?.(`Redpanda Cloud: read the first ${out.size} secrets of ${shown}; more exist.`);
+	}
+	return out;
+}
+
+/**
+ * Creates secret `id` with `value` (sent base64-encoded, scope `SCOPE_REDPANDA_CONNECT`): `'created'`
+ * on 201, `'exists'` when the cluster already has it (409: created meanwhile; it is not changed).
+ */
+export async function createSecret(call: CloudCall, dataplaneUrl: string, id: string, value: string): Promise<'created' | 'exists'> {
+	try {
+		await authorizedJson<unknown>(call, 'POST', joinUrl(dataplaneUrl, SECRETS), {
+			id,
+			scopes: [CONNECT_SECRET_SCOPE],
+			secret_data: Buffer.from(value, 'utf8').toString('base64'),
+		});
+		return 'created';
+	} catch (err) {
+		if (err instanceof CloudError && err.status === 409) {
+			return 'exists';
+		}
+		throw err;
+	}
 }
 
 /** One entry of Deploy's size pick. */

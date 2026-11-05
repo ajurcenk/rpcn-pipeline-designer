@@ -22,9 +22,16 @@ export interface TranslateProblem {
 	readonly message: string;
 }
 
+/** A secret the translated text references (ticket 5.7). */
+export interface CloudSecretUse {
+	readonly name: string;
+	/** Some use has no default (as `envUsage`'s `required`), so the cluster needs the secret. */
+	readonly required: boolean;
+}
+
 export type CloudTranslation =
-	/** `secrets`: the secret names the text uses, by first use, each once. */
-	| { readonly kind: 'ok'; readonly text: string; readonly secrets: string[] }
+	/** `secrets`: the secrets the text uses, by first use, each once. */
+	| { readonly kind: 'ok'; readonly text: string; readonly secrets: CloudSecretUse[] }
 	/** The problems by position in the text. */
 	| { readonly kind: 'refused'; readonly problems: TranslateProblem[] };
 
@@ -50,7 +57,7 @@ function lineCounter(text: string): (offset: number) => number {
 /** `text` as sent to Redpanda Cloud, or why it can't be. Pure. */
 export function translateForCloud(text: string): CloudTranslation {
 	const found: { readonly at: number; readonly problem: (line: number) => string }[] = [];
-	const secrets: string[] = [];
+	const secrets: { name: string; required: boolean }[] = [];
 	for (const match of text.matchAll(REFERENCE)) {
 		const name = match[1];
 		if (name.includes('.')) {
@@ -58,8 +65,14 @@ export function translateForCloud(text: string): CloudTranslation {
 		}
 		if (!SECRET_ID.test(name)) {
 			found.push({ at: match.index ?? 0, problem: (line) => `${name} (line ${line}): a Redpanda Cloud secret name must match ${SECRET_ID.source}` });
-		} else if (!secrets.includes(name)) {
-			secrets.push(name);
+		} else {
+			const required = match[2] === undefined;
+			const known = secrets.find((s) => s.name === name);
+			if (known === undefined) {
+				secrets.push({ name, required });
+			} else if (required) {
+				known.required = true;
+			}
 		}
 	}
 	for (const match of text.matchAll(ANY_ENV_CALL)) {

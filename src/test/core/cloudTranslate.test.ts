@@ -17,25 +17,27 @@ const refused = (t: CloudTranslation) => {
 // Ticket 5.6: the config text a Redpanda Cloud pipeline is sent.
 suite('core/cloudTranslate', () => {
 	test('PLAIN: ${BROKER} becomes ${secrets.BROKER}; the secret listed', () => {
-		assert.deepStrictEqual(translateForCloud('url: ${BROKER}\n'), { kind: 'ok', text: 'url: ${secrets.BROKER}\n', secrets: ['BROKER'] });
+		assert.deepStrictEqual(translateForCloud('url: ${BROKER}\n'), { kind: 'ok', text: 'url: ${secrets.BROKER}\n', secrets: [{ name: 'BROKER', required: true }] });
 	});
 
 	test('DEFAULT: a default is kept, an empty one too; a default\'s own ${…} is not rewritten', () => {
 		const t = ok(translateForCloud('a: ${TOPIC:orders}\nb: ${OPT:}\nc: ${HOST:${HOST}}\n'));
 		assert.strictEqual(t.text, 'a: ${secrets.TOPIC:orders}\nb: ${secrets.OPT:}\nc: ${secrets.HOST:${HOST}}\n');
-		assert.deepStrictEqual(t.secrets, ['TOPIC', 'OPT', 'HOST']);
+		assert.deepStrictEqual(t.secrets, [{ name: 'TOPIC', required: false }, { name: 'OPT', required: false }, { name: 'HOST', required: false }]);
 	});
 
 	test('MANY: every use rewritten, comments included; each name once, by first use', () => {
 		const t = ok(translateForCloud('# uses ${B} and ${A}\na: ${A}\nb: "${B}-${A:x}"\n'));
 		assert.strictEqual(t.text, '# uses ${secrets.B} and ${secrets.A}\na: ${secrets.A}\nb: "${secrets.B}-${secrets.A:x}"\n');
-		assert.deepStrictEqual(t.secrets, ['B', 'A']);
+		assert.deepStrictEqual(t.secrets, [{ name: 'B', required: true }, { name: 'A', required: true }]);
+		// required: some use has no default, whichever comes first.
+		assert.deepStrictEqual(ok(translateForCloud('a: ${A:x}\nb: ${A}\nc: ${C:y}\n')).secrets, [{ name: 'A', required: true }, { name: 'C', required: false }]);
 	});
 
 	test('UNTOUCHED: ${!…} and dotted names as written; $${X} is a reference (no escape); no reference: byte for byte', () => {
 		const t = ok(translateForCloud('k: ${!meta("k")}\ns: ${secrets.X}\nd: ${a.b}\ne: $${X}\n'));
 		assert.strictEqual(t.text, 'k: ${!meta("k")}\ns: ${secrets.X}\nd: ${a.b}\ne: $${secrets.X}\n');
-		assert.deepStrictEqual(t.secrets, ['X']);
+		assert.deepStrictEqual(t.secrets, [{ name: 'X', required: true }]);
 		const plain = 'input:\r\n  generate:\r\n    mapping: root = "$ {X}" # ünïcode\r\n';
 		assert.deepStrictEqual(translateForCloud(plain), { kind: 'ok', text: plain, secrets: [] });
 	});

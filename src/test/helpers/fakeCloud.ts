@@ -11,7 +11,11 @@
 //     starting one (55–57: `RUNNING` right after the `PUT`, then `STARTING`, then `RUNNING`), and
 //     (ticket 5.4) `PUT …/pipelines/{id}/stop` (41, 42: `STOPPING`, then `STOPPED`), `PUT …/{id}/start`
 //     (53, 54: `STARTING`, then `RUNNING`) and `DELETE …/pipelines/{id}` (59, 60: 200 `{}`, then 404).
-// `failWith` answers a chosen request with an error instead (one call, or every matching call).
+//   - (ticket 5.7) each cluster's secrets, `GET /dp/{id}/v1/secrets` (10; paged by `secretsPageSize`,
+//     ids only) and `POST /dp/{id}/v1/secrets` (19, 20: 201 `{secret}`, 409 for an id it has; the
+//     decoded value kept in `secrets` for the tests, never answered). The create's lint also rejects a
+//     config whose `${secrets.NAME}` without a default names a secret the cluster lacks (65).
+// `failures` answers a chosen request with an error instead (one call, or every matching call).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
 
@@ -66,6 +70,8 @@ export interface FakeCluster {
 	pipelinesError?: { readonly status: number; readonly body: unknown };
 	/** When set, `GET /v1/clusters/{id}` answers this error. */
 	getError?: { readonly status: number; readonly body: unknown };
+	/** Ticket 5.7: its secrets, id → the decoded value (the API never answers it). */
+	secrets?: Map<string, string>;
 }
 
 export interface FakeCloudOptions {
@@ -101,6 +107,8 @@ export class FakeCloud {
 	stopSequence: FakeState[] = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
 	/** The states a pipeline walks through after `PUT …/start`; the `PUT` answers the first. */
 	startSequence: FakeState[] = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+	/** The secrets list's page size (ticket 5.7). */
+	secretsPageSize = 100;
 	/** Error answers for chosen requests, checked before every other route (after the token check). */
 	failures: FakeFailure[] = [];
 	private server: http.Server | undefined;
@@ -232,6 +240,14 @@ export class FakeCloud {
 				},
 			}];
 		}
+		const secrets = /^\/dp\/([^/]+)\/v1\/secrets$/.exec(url.pathname);
+		if (secrets) {
+			const c = this.options.clusters.find((x) => x.id === secrets[1] && x.dataplane !== false);
+			if (!c) {
+				return [404, { code: 'NOT_FOUND', message: 'not found', details: [] }];
+			}
+			return this.secretsRoute(c, req, url);
+		}
 		const dp = /^\/dp\/([^/]+)\/v1\/redpanda-connect\/pipelines(?:\/([^/]+)(?:\/(start|stop))?)?$/.exec(url.pathname);
 		if (dp) {
 			const c = this.options.clusters.find((x) => x.id === dp[1] && x.dataplane !== false);
@@ -251,9 +267,62 @@ export class FakeCloud {
 		return rest;
 	}
 
-	/** The create's (and update's) lint: a 400 with `LintHint`s for a config holding the marker (26). */
-	private lint(config: string): [number, unknown] | undefined {
+	/** `GET` (paged, ids only) and `POST` (201; 409 for an id it has) of `{dp}/v1/secrets`. */
+	private secretsRoute(c: FakeCluster, req: FakeRequest, url: URL): [number, unknown] {
+		c.secrets ??= new Map();
+		if (req.method === 'GET') {
+			const ids = [...c.secrets.keys()];
+			const start = Number(url.searchParams.get('page_token') || '0');
+			const next = start + this.secretsPageSize < ids.length ? String(start + this.secretsPageSize) : '';
+			return [200, {
+				secrets: ids.slice(start, start + this.secretsPageSize).map((id) => ({ id, labels: {}, scopes: ['SCOPE_REDPANDA_CONNECT'] })),
+				next_page_token: next,
+			}];
+		}
+		if (req.method === 'POST') {
+			let body: Record<string, unknown>;
+			try {
+				body = JSON.parse(req.body) as Record<string, unknown>;
+			} catch {
+				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error', details: [] }];
+			}
+			const id = typeof body.id === 'string' ? body.id : '';
+			if (!/^[A-Z][A-Z0-9_]*$/.test(id) || typeof body.secret_data !== 'string'
+				|| !Array.isArray(body.scopes) || !body.scopes.includes('SCOPE_REDPANDA_CONNECT')) {
+				return [400, { code: 'INVALID_ARGUMENT', message: 'invalid secret request', details: [] }];
+			}
+			if (c.secrets.has(id)) {
+				return [409, { code: 'ALREADY_EXISTS', message: `secret ${id} already exists`, details: [] }];
+			}
+			c.secrets.set(id, Buffer.from(body.secret_data, 'base64').toString('utf8'));
+			return [201, { secret: { id, labels: {}, scopes: ['SCOPE_REDPANDA_CONNECT'] } }];
+		}
+		return [405, { code: 'UNIMPLEMENTED', message: 'not in the fake', details: [] }];
+	}
+
+	/**
+	 * The create's (and update's) lint: a 400 with `LintHint`s for a config holding the marker (26), or
+	 * naming, without a default, a secret the cluster lacks (65).
+	 */
+	private lint(config: string, c: FakeCluster): [number, unknown] | undefined {
 		const lines = config.split('\n');
+		const missing = [...new Set([...config.matchAll(/\$\{secrets\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]))]
+			.filter((name) => !(c.secrets?.has(name) ?? false));
+		if (missing.length > 0) {
+			return [400, {
+				code: 'INVALID_ARGUMENT',
+				message: 'invalid pipeline configuration',
+				details: [{
+					'@type': 'redpanda.api.common.v1.ExternalError',
+					message: 'invalid pipeline configuration',
+					details: [
+						{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'REASON_CONNECT_INVALID_PIPELINE_CONFIGURATION', domain: 'redpanda.com/dataplane', metadata: {} },
+						{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: 1, column: 1,
+							hint: `required secrets were not set: [${missing.map((n) => `secrets.${n}`).join(' ')}]`, lint_type: '' },
+					],
+				}],
+			}];
+		}
 		const at = lines.findIndex((l) => l.includes(FAKE_LINT_MARKER));
 		if (at < 0) {
 			return undefined;
@@ -291,7 +360,7 @@ export class FakeCloud {
 				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error (line 1:1): unexpected token [', details: [] }];
 			}
 			const config = typeof body.config_yaml === 'string' ? body.config_yaml : '';
-			const rejected = this.lint(config);
+			const rejected = this.lint(config, c);
 			if (rejected) {
 				return rejected;
 			}
@@ -342,7 +411,7 @@ export class FakeCloud {
 			if (body.tags !== undefined && (body.tags === null || typeof body.tags !== 'object' || Array.isArray(body.tags))) {
 				return [400, { code: 'INVALID_ARGUMENT', message: 'proto: syntax error (line 1:1): unexpected token [', details: [] }];
 			}
-			const rejected = this.lint(body.config_yaml);
+			const rejected = this.lint(body.config_yaml, c);
 			if (rejected) {
 				return rejected;
 			}
