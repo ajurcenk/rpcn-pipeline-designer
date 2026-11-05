@@ -2,6 +2,7 @@
 // `next_page_token`, then `GET {cp}/v1/clusters/{id}` for each BYOC and Dedicated cluster, since only
 // the single-cluster answer carries the Data Plane address (`dataplane_api.url`) and the Connect
 // version (`redpanda_connect.version`). Serverless clusters are a separate list and out of scope.
+// Ticket 6.2 (AD-24): the cluster's Kafka address (`kafka_api.seed_brokers`) is kept for its logs.
 // No `vscode` import.
 
 import { CloudError } from './errors';
@@ -57,6 +58,8 @@ export interface CloudCluster {
 	/** The Data Plane address; none: the cluster offers no pipeline API. */
 	readonly dataplaneUrl?: string;
 	readonly connectVersion?: string;
+	/** Ticket 6.2: its Kafka API's seed brokers (`host:port`), where its logs topic is read; none: unknown. */
+	readonly seedBrokers?: readonly string[];
 	/** Why the cluster has no usable Data Plane address although it may have one (not https). */
 	readonly detailError?: string;
 	/** Why the cluster's details could not be read (`GET /v1/clusters/{id}` failed): its pipeline API is unknown. */
@@ -112,6 +115,8 @@ export async function listClusters(call: CloudCall, controlPlaneUrl: string): Pr
 			const detail = got.cluster ?? {};
 			const dataplaneUrl = str(sub(detail.dataplane_api, 'url'));
 			const connectVersion = str(sub(detail.redpanda_connect, 'version'));
+			const seeds = sub(detail.kafka_api, 'seed_brokers');
+			const seedBrokers = Array.isArray(seeds) ? seeds.map(str).filter(Boolean) : [];
 			return {
 				...base,
 				name: str(detail.name) || base.name,
@@ -120,6 +125,7 @@ export async function listClusters(call: CloudCall, controlPlaneUrl: string): Pr
 				region: str(detail.region) || base.region,
 				...(dataplaneUrl ? { dataplaneUrl } : {}),
 				...(connectVersion ? { connectVersion } : {}),
+				...(seedBrokers.length > 0 ? { seedBrokers } : {}),
 			};
 		} catch (err) {
 			if (err instanceof CloudError && err.kind === 'unauthorized') {

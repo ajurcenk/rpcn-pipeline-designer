@@ -1,0 +1,539 @@
+// Pipeline logs, the tracer (ticket 6.2, AD-24), end to end in the stable run: the Cloud view against
+// the Cloud fake (`helpers/fakeCloud.ts`, its clusters now with `kafka_api.seed_brokers`) and the logs
+// topic against the in-memory reader (`helpers/fakeLogs.ts`), handed to the Cloud view's test seam
+// instead of the `@platformatic/kafka` one. Set up log access… and Show logs run through their
+// commands, their prompts replaced by a script of answers; the Pipeline Logs tab really opens in the
+// bottom panel, and is read through its test seam (the pipeline it shows, its kept rows, its status,
+// whether it reads). Every matrix row of the plan has a test; NO_LEAK checks the passwords against
+// every message, output line, view item, posted message, setting and the secret storage's other keys.
+// BUNDLE loads the real client from dist/extension.js: its CRC-32C comes from the wasm, not the
+// native `@node-rs/crc32` (installed in this checkout's node_modules as an optional dependency).
+import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import {
+	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, noLogAccessMessage, SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND,
+	SHOW_LOGS_COMMAND, signInRefusedMessage,
+} from '../../../adapters/vscode/cloudView';
+import { FOLLOWING_STATUS, LOGS_VIEW_ID, LOGS_WINDOW_MS } from '../../../adapters/vscode/logsPanel';
+import { MAX_LOG_ROWS } from '../../../shared/logsProtocol';
+import { type ExtensionApi } from '../../../extension';
+import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
+import { FakeLogs } from '../../helpers/fakeLogs';
+import { makeTempDir } from '../../helpers/fakeBinary';
+import { newerVsCodeMessage, nodeSupported } from '../../../adapters/logs/runtime';
+import { EXTENSION_ID, waitFor } from '../helpers';
+
+const CLIENT_ID = 'fake-client-id-6-2';
+const CLIENT_SECRET = 'fake-client-secret-6-2-Wd3';
+const USERNAME = 'logs-reader';
+const PASSWORD = 'logs-password-6-2-Hx7q';
+const WRONG_PASSWORD = 'wrong-logs-password-6-2-Mv4z';
+const VILNIUS = 'cvilnius0000000000aa';
+const BYOC = 'cbyoc000000000000bbb';
+const SEEDS = ['seed-0.vilnius.example:9092'];
+const ORDERS = 'd3orders000000000001';
+const CLICKS = 'd3clicks000000000002';
+const LICENSE_ORG = '7f0c1d2e-3a4b-5c6d-7e8f-9a0b1c2d3e4f';
+const MINUTE = 60_000;
+
+type Input = string | undefined;
+
+/** Every file under `dir`, recursively (none when it does not exist). */
+function filesUnder(dir: string): string[] {
+	if (!fs.existsSync(dir)) {
+		return [];
+	}
+	return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+		const p = path.join(dir, e.name);
+		return e.isDirectory() ? filesUnder(p) : e.isFile() ? [p] : [];
+	});
+}
+
+suite('Pipeline logs (integration, ticket 6.2)', function () {
+	this.timeout(60_000);
+	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
+	const cloud = () => api().cloud!;
+	const logs = () => api().logs!;
+	let fake: FakeCloud;
+	let topic: FakeLogs;
+	let originalUi: CloudUi;
+	let originalReader: ReturnType<typeof cloud>['logReader'];
+	let originalCap: number;
+	/** The suite's own temporary directory (NO_LEAK reads every file in it). */
+	let dir: string;
+	let inputs: Input[] = [];
+	let asked: vscode.InputBoxOptions[] = [];
+	let choices: (string | undefined)[] = [];
+	let questions: { title: string; question: string; choices: string[] }[] = [];
+	let actions: (string | undefined)[] = [];
+	const errors: string[] = [];
+	const infos: string[] = [];
+	/** The actions each info offered. */
+	const infoActions: string[][] = [];
+	/** Every message, prompt and item of the suite, for NO_LEAK. */
+	const allShown: string[] = [];
+	const seenItems: CloudItem[] = [];
+
+	function script(next: { inputs?: Input[]; choices?: (string | undefined)[]; actions?: (string | undefined)[] }): void {
+		inputs = next.inputs ?? [];
+		choices = next.choices ?? [];
+		actions = next.actions ?? [];
+		asked = [];
+		questions = [];
+	}
+
+	const items = () => {
+		const now = cloud().items();
+		seenItems.push(...now);
+		return now;
+	};
+	const clusterItem = (name: string) => items().find((i) => i.node.kind === 'cluster' && i.label === name)!;
+	const pipelineItem = (name: string) => items().find((i) => i.node.kind === 'pipeline' && i.label === name)!;
+	const clusterNode = (id: string): CloudItem['node'] => ({ kind: 'cluster', id });
+	const pipelineNode = (clusterId: string, id: string): CloudItem['node'] => ({ kind: 'pipeline', clusterId, id });
+	const setUp = (node: CloudItem['node'] = clusterNode(VILNIUS)) =>
+		vscode.commands.executeCommand<{ kind: string; refused?: boolean; message?: string }>(SET_UP_LOG_ACCESS_COMMAND, node);
+	const showLogs = (id = ORDERS, clusterId = VILNIUS) => vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(SHOW_LOGS_COMMAND, pipelineNode(clusterId, id));
+	const messages = (id: string) => logs().rows().map((r) => r.message).filter((m) => m.startsWith(`${id}:`));
+
+	function pipeline(id: string, name: string): FakePipeline {
+		return {
+			id, display_name: name, description: '', config_yaml: 'input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n',
+			resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: {}, state: 'STATE_RUNNING', sequence: [],
+		};
+	}
+
+	/** A record of pipeline `id` with `message` "<id>:<text>", at `ago` ms before now. */
+	const rec = (id: string, text: string, ago = 0, extra: Record<string, unknown> = {}) => ({
+		key: id, timestamp: Date.now() - ago,
+		value: { instance_id: `${id}-inst-1`, level: 'INFO', message: `${id}:${text}`, path: '/config/connect.yaml', pipeline_id: id, time: new Date(Date.now() - ago).toISOString(), ...extra },
+	});
+
+	async function connectAndRead(): Promise<void> {
+		script({ inputs: [CLIENT_ID, CLIENT_SECRET] });
+		assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true, errors.join('\n'));
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		await cloud().refresh({ kind: 'cluster', id: BYOC });
+	}
+
+	async function setUpAccess(): Promise<void> {
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		const result = await setUp();
+		assert.strictEqual(result?.kind, 'stored', errors.join('\n'));
+	}
+
+	suiteSetup(async function () {
+		// The client needs Node 22.22 or later: on an older VS Code (the floor run) the suite below checks the message instead.
+		if (!nodeSupported()) {
+			this.skip();
+		}
+		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
+		dir = makeTempDir('rpcn-logs-');
+		fake = new FakeCloud({
+			clientId: CLIENT_ID,
+			clientSecret: CLIENT_SECRET,
+			clientName: 'logs-bot',
+			clusters: [
+				{ id: VILNIUS, name: 'rpc-vilnius', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-2', connectVersion: '4.115.0', seedBrokers: SEEDS, pipelines: [] },
+				{ id: BYOC, name: 'byoc-eu', type: 'TYPE_BYOC', cloudProvider: 'CLOUD_PROVIDER_GCP', region: 'europe-west1', connectVersion: '4.116.0', seedBrokers: ['seed-0.byoc.example:9092'], pipelines: [] },
+			],
+		});
+		await fake.start();
+		originalUi = cloud().ui;
+		originalReader = cloud().logReader;
+		originalCap = logs().cap;
+		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
+		cloud().ui = {
+			...originalUi,
+			input: async (options) => {
+				asked.push(options);
+				allShown.push(options.title ?? '', options.prompt ?? '', options.value ?? '');
+				return inputs.shift();
+			},
+			pickChoice: async (title, question, offered) => {
+				questions.push({ title, question, choices: [...offered] });
+				allShown.push(title, question, ...offered);
+				return choices.shift();
+			},
+			error: async (m) => {
+				errors.push(m);
+				allShown.push(m);
+				return actions.shift();
+			},
+			info: async (m, ...offered) => {
+				infos.push(m);
+				infoActions.push(offered);
+				allShown.push(m);
+				return actions.shift();
+			},
+			progress: async (title, task) => {
+				allShown.push(title);
+				return task(() => undefined);
+			},
+		};
+	});
+
+	setup(async () => {
+		// The last test's reading stops with the tab; each test reads a topic of its own.
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !logs().reading, 10_000), 'the last test\'s reader stopped');
+		topic = new FakeLogs({ username: USERNAME, password: PASSWORD });
+		cloud().logReader = topic.factory;
+		await cloud().disconnect();
+		await new Promise((r) => setTimeout(r, 300));
+		await cloud().removeLogAccess(VILNIUS);
+		await cloud().removeLogAccess(BYOC);
+		logs().cap = originalCap;
+		fake.cluster(VILNIUS).pipelines = [pipeline(ORDERS, 'orders'), pipeline(CLICKS, 'clicks')];
+		fake.cluster(BYOC).pipelines = [pipeline('d3byoc00000000000003', 'events')];
+		errors.length = 0;
+		infos.length = 0;
+		infoActions.length = 0;
+		script({});
+		await connectAndRead();
+		errors.length = 0;
+		infos.length = 0;
+		infoActions.length = 0;
+	});
+
+	suiteTeardown(async () => {
+		if (!fake) {
+			return; // skipped (an older VS Code)
+		}
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		await cloud().removeLogAccess(VILNIUS);
+		await cloud().removeLogAccess(BYOC);
+		await cloud().disconnect();
+		cloud().ui = originalUi;
+		cloud().logReader = originalReader;
+		logs().cap = originalCap;
+		await fake?.stop();
+		if (dir) {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('package.json: the Pipeline Logs tab in the bottom panel; Set up log access… on a cluster row, Show logs on a pipeline row (inline with access, always in the menu), rows only', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: {
+				viewsContainers: Record<string, { id: string; title: string }[]>;
+				views: Record<string, { id: string; name: string; type?: string }[]>;
+				commands: { command: string; title: string }[];
+				menus: Record<string, { command: string; when?: string; group?: string }[]>;
+			};
+		};
+		const container = pkg.contributes.viewsContainers.panel?.find((c) => c.title === 'Pipeline Logs');
+		assert.ok(container, 'a container in the bottom panel');
+		assert.deepStrictEqual(pkg.contributes.views[container.id], [{ type: 'webview', id: LOGS_VIEW_ID, name: 'Pipeline Logs', contextualTitle: 'Pipeline Logs' }]);
+		assert.deepStrictEqual([SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_COMMAND].map((c) => pkg.contributes.commands.find((x) => x.command === c)?.title), ['Set up log access…', 'Show logs']);
+		for (const c of [SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_COMMAND]) {
+			assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === c)?.when, 'false', `${c}: rows only`);
+		}
+		const offered = (contextValue: string, inline: boolean) => pkg.contributes.menus['view/item/context']
+			.filter((m) => (m.group?.startsWith('inline') ?? false) === inline)
+			.filter((m) => { const r = /viewItem =~ \/(.+)\/$/.exec(m.when ?? ''); return r && new RegExp(r[1]).test(contextValue); })
+			.map((m) => m.command).filter((c) => c === SET_UP_LOG_ACCESS_COMMAND || c === SHOW_LOGS_COMMAND || c === 'redpandaConnect.cloud.refresh');
+		assert.deepStrictEqual(offered('cloudCluster', false), ['redpandaConnect.cloud.refresh', SET_UP_LOG_ACCESS_COMMAND]);
+		assert.deepStrictEqual(offered('cloudCluster logs', false), ['redpandaConnect.cloud.refresh', SET_UP_LOG_ACCESS_COMMAND]);
+		assert.deepStrictEqual(offered('cloudCluster logs', true), ['redpandaConnect.cloud.refresh'], 'Refresh stays inline with access');
+		assert.deepStrictEqual(offered('cloudCluster noPipelineApi', false), []);
+		assert.deepStrictEqual(offered('cloudPipeline state-running', true), [], 'no inline Show logs without access');
+		assert.deepStrictEqual(offered('cloudPipeline state-running hasFile logs', true), [SHOW_LOGS_COMMAND]);
+		assert.deepStrictEqual(offered('cloudPipeline state-running', false), [SHOW_LOGS_COMMAND], 'the menu always has it (NO_ACCESS)');
+	});
+
+	test('SETUP_CANCEL: Escape at the username, the password or the mechanism stores nothing and sends nothing', async () => {
+		for (const answers of [{ inputs: [undefined] }, { inputs: [USERNAME, undefined] }, { inputs: [USERNAME, PASSWORD], choices: [undefined] }]) {
+			script(answers);
+			assert.strictEqual((await setUp())?.kind, 'notStarted');
+		}
+		assert.strictEqual(topic.targets.length, 0, 'no reader made');
+		assert.strictEqual(await cloud().storedLogAccess(VILNIUS), undefined);
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('SETUP refused: a wrong password is "<username> could not sign in to <cluster>", nothing stored; the prompts: a password box, both mechanisms', async () => {
+		script({ inputs: [USERNAME, WRONG_PASSWORD], choices: ['SCRAM-SHA-256'] });
+		const result = await setUp();
+		assert.deepStrictEqual(result, { kind: 'failed', refused: true, message: signInRefusedMessage(USERNAME, 'rpc-vilnius') });
+		assert.deepStrictEqual(errors, ['logs-reader could not sign in to rpc-vilnius.']);
+		assert.strictEqual(asked[0].password, undefined);
+		assert.strictEqual(asked[1].password, true, 'the password is a password box');
+		assert.deepStrictEqual(questions[0].choices, ['SCRAM-SHA-256', 'SCRAM-SHA-512']);
+		assert.strictEqual(topic.tests.length, 1, 'one test read');
+		assert.strictEqual(await cloud().storedLogAccess(VILNIUS), undefined);
+		assert.strictEqual(clusterItem('rpc-vilnius').description, 'Dedicated · AWS us-east-2 · Connect 4.115.0');
+	});
+
+	test('SETUP other failure: its message, nothing stored', async () => {
+		topic.failTest = 'Cannot connect to any broker: connect ETIMEDOUT';
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-512'] });
+		const result = await setUp();
+		assert.strictEqual(result?.kind, 'failed');
+		assert.strictEqual(result?.refused, false);
+		assert.deepStrictEqual(errors, ['Could not read the pipeline logs of rpc-vilnius: Cannot connect to any broker: connect ETIMEDOUT']);
+		assert.strictEqual(await cloud().storedLogAccess(VILNIUS), undefined);
+		topic.failTest = undefined;
+		topic.refuseRead = true;
+		errors.length = 0;
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'failed');
+		assert.match(errors[0] ?? '', /^Could not read the pipeline logs of rpc-vilnius: not allowed to read __redpanda\.connect\.logs/);
+		assert.strictEqual(await cloud().storedLogAccess(VILNIUS), undefined);
+	});
+
+	test('SETUP: the test read passes at the cluster\'s seed brokers with the chosen mechanism; stored; the row says "logs: <username>", its pipelines get Show logs inline', async () => {
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-512'] });
+		const result = await setUp();
+		assert.deepStrictEqual(result, { kind: 'stored', username: USERNAME });
+		assert.deepStrictEqual(topic.tests.map((t) => ({ brokers: [...t.brokers], ...t.access })), [{ brokers: SEEDS, username: USERNAME, password: PASSWORD, mechanism: 'SCRAM-SHA-512' }]);
+		assert.deepStrictEqual(await cloud().storedLogAccess(VILNIUS), { username: USERNAME, mechanism: 'SCRAM-SHA-512' });
+		assert.strictEqual(clusterItem('rpc-vilnius').description, 'Dedicated · AWS us-east-2 · Connect 4.115.0 · logs: logs-reader');
+		assert.strictEqual(clusterItem('rpc-vilnius').contextValue, 'cloudCluster logs');
+		assert.strictEqual(pipelineItem('orders').contextValue, 'cloudPipeline state-running logs');
+		assert.strictEqual(clusterItem('byoc-eu').contextValue, 'cloudCluster', 'per cluster');
+		assert.strictEqual(pipelineItem('events').contextValue, 'cloudPipeline state-running');
+		assert.deepStrictEqual(infos, ['Log access to rpc-vilnius is set up for logs-reader.']);
+		assert.strictEqual(topic.tails.length, 0, 'no reading before Show logs');
+		// A second set-up offers the stored username.
+		script({ inputs: [undefined] });
+		await setUp();
+		assert.strictEqual(asked[0].value, USERNAME);
+	});
+
+	test('NO_ACCESS: Show logs where the cluster has no access says to set it up first, with the action; nothing is read', async () => {
+		script({ actions: [undefined] });
+		assert.deepStrictEqual(await showLogs(), { kind: 'noAccess' });
+		assert.deepStrictEqual(infos, [noLogAccessMessage('rpc-vilnius')]);
+		assert.deepStrictEqual(infoActions, [[SET_UP_LOG_ACCESS_ACTION]]);
+		assert.strictEqual(topic.targets.length, 0);
+		// The action runs Set up log access…, then the log is shown.
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		script({ actions: [SET_UP_LOG_ACCESS_ACTION], inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000), logs().statusText);
+	});
+
+	test('SHOW and ONLY_THIS: the tab opens on "<pipeline> · <cluster>" with that pipeline\'s records of the last 15 minutes, oldest first, then its new ones as they are written', async () => {
+		await setUpAccess();
+		topic.write(
+			rec(ORDERS, 'too old', 20 * MINUTE),
+			rec(CLICKS, 'other old', 12 * MINUTE),
+			rec(ORDERS, 'first', 10 * MINUTE),
+			rec(CLICKS, 'other', 5 * MINUTE),
+			rec(ORDERS, 'second', 2 * MINUTE),
+		);
+		const before = Date.now();
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+		assert.ok(await waitFor(() => logs().visible, 10_000), 'the Pipeline Logs tab is shown');
+		assert.ok(await waitFor(() => messages(ORDERS).length === 2, 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().rows().map((r) => r.message), [`${ORDERS}:first`, `${ORDERS}:second`], 'only orders\', of the last 15 minutes, oldest first');
+		const tail = topic.activeTails()[0];
+		assert.strictEqual(tail.pipelineId, ORDERS);
+		assert.ok(Math.abs(tail.fromTime - (before - LOGS_WINDOW_MS)) < 5_000, `from now − 15 minutes (${before - tail.fromTime} ms back)`);
+		assert.deepStrictEqual([...topic.targets.at(-1)!.brokers], SEEDS);
+		assert.strictEqual(logs().statusText, FOLLOWING_STATUS);
+		topic.write(rec(CLICKS, 'live other'), rec(ORDERS, 'live 1'));
+		topic.write(rec(ORDERS, 'live 2'));
+		assert.ok(await waitFor(() => messages(ORDERS).length === 4, 10_000));
+		assert.deepStrictEqual(logs().rows().map((r) => r.message), [`${ORDERS}:first`, `${ORDERS}:second`, `${ORDERS}:live 1`, `${ORDERS}:live 2`]);
+		assert.strictEqual(topic.activeTails().length, 1, 'one reader');
+	});
+
+	test('SWITCH: Show logs on another pipeline shows it instead; the first is no longer read', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'o1', MINUTE), rec(CLICKS, 'c1', MINUTE));
+		await showLogs(ORDERS);
+		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000));
+		const first = topic.activeTails()[0];
+		await showLogs(CLICKS);
+		assert.strictEqual(logs().title, 'clicks · rpc-vilnius');
+		assert.ok(await waitFor(() => messages(CLICKS).length === 1, 10_000), logs().statusText);
+		assert.strictEqual(first.signal.aborted, true, 'the first reader stopped');
+		assert.deepStrictEqual(topic.activeTails().map((t) => t.pipelineId), [CLICKS]);
+		topic.write(rec(ORDERS, 'o2'), rec(CLICKS, 'c2'));
+		assert.ok(await waitFor(() => messages(CLICKS).length === 2, 10_000));
+		assert.deepStrictEqual(messages(ORDERS), [], 'no orders record');
+	});
+
+	test('RECORD: extra fields after the message, a non-JSON value as text, license_org never shown', async () => {
+		await setUpAccess();
+		topic.write(
+			rec(ORDERS, 'Successfully loaded Redpanda license', MINUTE, { license_org: LICENSE_ORG, license_type: 'enterprise', expires_at: '2027-01-01T00:00:00Z', level: 'warn', probe_n: 7 }),
+			{ key: ORDERS, value: 'plain text, not JSON', timestamp: Date.now() - 30_000 },
+		);
+		await showLogs();
+		assert.ok(await waitFor(() => logs().rows().length === 2, 10_000), logs().statusText);
+		const [license, raw] = logs().rows();
+		assert.strictEqual(license.level, 'WARN');
+		assert.strictEqual(license.instance, `${ORDERS}-inst-1`);
+		assert.deepStrictEqual(license.fields, [['path', '/config/connect.yaml'], ['license_type', 'enterprise'], ['expires_at', '2027-01-01T00:00:00Z'], ['probe_n', '7']]);
+		assert.strictEqual(raw.raw, true);
+		assert.strictEqual(raw.message, 'plain text, not JSON');
+		assert.ok(!JSON.stringify(logs().rows()).includes(LICENSE_ORG));
+		assert.ok(!JSON.stringify(logs().posted).includes(LICENSE_ORG));
+	});
+
+	test('CAP: more records than the cap: the oldest dropped; the footer\'s count (the host\'s `dropped`)', async () => {
+		await setUpAccess();
+		assert.strictEqual(originalCap, MAX_LOG_ROWS);
+		logs().cap = 5;
+		topic.write(...Array.from({ length: 4 }, (_, i) => rec(ORDERS, `h${i}`, MINUTE - i)));
+		await showLogs();
+		assert.ok(await waitFor(() => logs().rows().length === 4, 10_000));
+		assert.strictEqual(logs().droppedCount, 0);
+		topic.write(...Array.from({ length: 4 }, (_, i) => rec(ORDERS, `n${i}`)));
+		assert.ok(await waitFor(() => logs().droppedCount === 3, 10_000), String(logs().droppedCount));
+		assert.deepStrictEqual(logs().rows().map((r) => r.message.slice(ORDERS.length + 1)), ['h3', 'n0', 'n1', 'n2', 'n3']);
+		const show = logs().posted.filter((m) => m.type === 'append').at(-1);
+		assert.deepStrictEqual(show && show.type === 'append' ? show.dropped : undefined, 3, 'the webview is told how many were dropped');
+	});
+
+	test('HIDDEN: the tab hidden stops reading; shown again it resumes from the last record read, nothing twice', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'before', MINUTE));
+		await showLogs();
+		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000));
+		const first = topic.activeTails()[0];
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => first.signal.aborted && !logs().reading, 10_000), 'reading stops when the tab is hidden');
+		topic.write(rec(ORDERS, 'while hidden'));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.strictEqual(topic.activeTails().length, 0, 'nothing reads while hidden');
+		assert.deepStrictEqual(messages(ORDERS), [`${ORDERS}:before`]);
+		await vscode.commands.executeCommand(`${LOGS_VIEW_ID}.focus`);
+		assert.ok(await waitFor(() => messages(ORDERS).length === 2, 10_000), logs().statusText);
+		const second = topic.activeTails()[0];
+		assert.deepStrictEqual(second.resumeAt && [...second.resumeAt], [[0, 1]], 'from where the first stopped');
+		assert.deepStrictEqual(messages(ORDERS), [`${ORDERS}:before`, `${ORDERS}:while hidden`]);
+		assert.strictEqual(topic.tails.length, 2);
+	});
+
+	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {
+		const [major, minor] = process.versions.node.split('.').map(Number);
+		if (major < 22 || (major === 22 && minor < 22)) {
+			// @platformatic/kafka needs Node 22.22 or later (its `engines`); older VS Code runs an older Node.
+			this.skip();
+		}
+		const check = await logs().checkClient();
+		assert.deepStrictEqual(check, { native: false, crc32c: 0xe3069283 });
+		assert.ok(!Object.keys(require.cache).some((k) => k.includes('@node-rs')), 'no native module loaded');
+	});
+
+	test('NO_LEAK: no password in a message, a prompt, the output channel, a view item, a setting, the panel, a file or another secret storage key', async () => {
+		await setUpAccess();
+		// Every key the extension writes to the secret storage: only the log access record holds the password.
+		const keys = [CLIENT_ID_KEY, CLIENT_SECRET_KEY, logAccessKey(VILNIUS), logAccessKey(BYOC), ...(api().secrets?.recordedKeys() ?? [])];
+		for (const key of keys) {
+			const value = await cloud().storedValue(key) ?? '';
+			assert.strictEqual(value.includes(PASSWORD), key === logAccessKey(VILNIUS), `${key}: holds the password only in the log access record`);
+			assert.ok(!value.includes(WRONG_PASSWORD), key);
+		}
+		assert.deepStrictEqual(JSON.parse((await cloud().storedValue(logAccessKey(VILNIUS)))!), { username: USERNAME, password: PASSWORD, mechanism: 'SCRAM-SHA-256' });
+		// Every file under the suite's directory and the workspace's .vscode.
+		const files = [dir, ...(vscode.workspace.workspaceFolders ?? []).map((f) => path.join(f.uri.fsPath, '.vscode'))].flatMap(filesUnder);
+		for (const file of files) {
+			const text = fs.readFileSync(file, 'utf8');
+			assert.ok(!text.includes(PASSWORD) && !text.includes(WRONG_PASSWORD), `${file} holds a password`);
+		}
+		topic.write(rec(ORDERS, `a message quoting ${PASSWORD}`, MINUTE));
+		await showLogs();
+		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000));
+		assert.ok(!logs().rows()[0].message.includes(PASSWORD), 'masked in the panel too');
+		items();
+		const shown = JSON.stringify({
+			shown: allShown, output: api().outputLines(), items: seenItems, settings: vscode.workspace.getConfiguration('redpandaConnect'),
+			posted: logs().posted, rows: logs().rows(), status: logs().statusText,
+		});
+		for (const value of [PASSWORD, WRONG_PASSWORD, CLIENT_SECRET]) {
+			assert.ok(!shown.includes(value), 'a password in a message, the output, the view, a setting or the panel');
+		}
+		// The output channel says what happened, so the check above reads real lines.
+		assert.ok(api().outputLines().some((l) => l.includes('log access to rpc-vilnius set up for logs-reader')));
+		assert.ok(LOG_ACCESS_PREFIX.startsWith('redpandaConnect.cloud.'));
+	});
+});
+
+// Ticket 6.2 (the user's decision of 2026-11-05): on a VS Code whose Node is older than 22.22 (the
+// floor run, VS Code 1.100.0), Set up log access and Show logs say that Pipeline logs need a newer
+// VS Code and send nothing. Skipped where the Node is new enough (the stable run has the suite above).
+suite('Pipeline logs on an older VS Code (integration, ticket 6.2)', function () {
+	this.timeout(60_000);
+	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
+	const cloud = () => api().cloud!;
+	let fake: FakeCloud;
+	let topic: FakeLogs;
+	let originalUi: CloudUi;
+	let originalReader: ReturnType<typeof cloud>['logReader'];
+	const errors: string[] = [];
+	let inputs: Input[] = [];
+	let asked = 0;
+
+	suiteSetup(async function () {
+		if (nodeSupported()) {
+			this.skip();
+		}
+		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
+		fake = new FakeCloud({
+			clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, clientName: 'logs-bot',
+			clusters: [{
+				id: VILNIUS, name: 'rpc-vilnius', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-2', connectVersion: '4.115.0', seedBrokers: SEEDS,
+				pipelines: [{ id: ORDERS, display_name: 'orders', description: '', config_yaml: 'input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n', resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: {}, state: 'STATE_RUNNING', sequence: [] }],
+			}],
+		});
+		await fake.start();
+		topic = new FakeLogs({ username: USERNAME, password: PASSWORD });
+		originalUi = cloud().ui;
+		originalReader = cloud().logReader;
+		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
+		cloud().logReader = topic.factory;
+		cloud().ui = {
+			...originalUi,
+			input: async () => {
+				asked++;
+				return inputs.shift();
+			},
+			pickChoice: async () => {
+				asked++;
+				return 'SCRAM-SHA-256';
+			},
+			error: async (m) => {
+				errors.push(m);
+				return undefined;
+			},
+			info: async () => undefined,
+			progress: async (_title, task) => task(() => undefined),
+		};
+		inputs = [CLIENT_ID, CLIENT_SECRET];
+		assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true);
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		asked = 0;
+		errors.length = 0;
+	});
+
+	suiteTeardown(async () => {
+		if (!fake) {
+			return;
+		}
+		await cloud().disconnect();
+		cloud().ui = originalUi;
+		cloud().logReader = originalReader;
+		await fake.stop();
+	});
+
+	test('NEEDS_NEWER: Set up log access and Show logs say Pipeline logs need a newer VS Code, ask nothing and send nothing', async () => {
+		const message = `${newerVsCodeMessage(process.versions.node)}.`;
+		assert.match(message, /^Pipeline logs need a newer VS Code \(Node 22\.22 or later; this one has \d+\.\d+\.\d+\)\.$/);
+		inputs = [USERNAME, PASSWORD];
+		assert.deepStrictEqual(await vscode.commands.executeCommand(SET_UP_LOG_ACCESS_COMMAND, { kind: 'cluster', id: VILNIUS }), { kind: 'notSupported', message });
+		assert.deepStrictEqual(await vscode.commands.executeCommand(SHOW_LOGS_COMMAND, { kind: 'pipeline', clusterId: VILNIUS, id: ORDERS }), { kind: 'notSupported', message });
+		assert.deepStrictEqual(errors, [message, message]);
+		assert.strictEqual(asked, 0, 'nothing asked');
+		assert.strictEqual(topic.targets.length, 0, 'no reader made, nothing sent');
+		assert.strictEqual(await cloud().storedLogAccess(VILNIUS), undefined);
+		assert.strictEqual(api().logs?.title, undefined, 'the tab shows no pipeline');
+	});
+});

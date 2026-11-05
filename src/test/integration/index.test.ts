@@ -22,6 +22,7 @@ import './suites/90-bloblang-panel';
 import './suites/91-bloblang-diagnostics';
 import './suites/95-environment-view';
 import './suites/96-cloud';
+import './suites/97-logs';
 
 // Root hook (ticket 3.10): auto-open defaults to on, and the suites open detected YAML, so every
 // suite runs with it off; the 3.10 tests turn it on. A setting write does not activate the extension.

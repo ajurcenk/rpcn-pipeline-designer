@@ -26,6 +26,8 @@ import { EnvHoverProvider } from './adapters/vscode/envHover';
 import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import { CloudView, PRODUCTION_ENDPOINTS, UNREACHABLE_ENDPOINTS } from './adapters/vscode/cloudView';
+import { LogsPanel } from './adapters/vscode/logsPanel';
+import { checkClient } from './adapters/logs/platformaticReader';
 import type { JsonObject } from './core/schema';
 import { catalogueOf } from './adapters/graphPanel/status';
 
@@ -98,7 +100,15 @@ export interface ExtensionApi {
 	 * Only in `ExtensionMode.Test`.
 	 */
 	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
-		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'>;
+		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
+		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue'>;
+	/**
+	 * The Pipeline Logs tab (ticket 6.2): the shown pipeline, its kept rows and status, whether it
+	 * reads, the cap and window to change, the posted messages; and the bundled Kafka client's check
+	 * (no native module). Only in `ExtensionMode.Test`.
+	 */
+	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'visible' | 'rows' | 'droppedCount' | 'cap' | 'windowMs' | 'posted' | 'onDidChange'>
+		& { checkClient: typeof checkClient };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -297,6 +307,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 
 	// The Cloud view and Deploy (ticket 5.2, AD-23): the service account in the secret storage, the token in memory.
 	const testMode = context.extensionMode === vscode.ExtensionMode.Test;
+	// The Pipeline Logs tab (ticket 6.2, AD-24): in the bottom panel, next to Output.
+	const logsPanel = new LogsPanel({ extensionUri: context.extensionUri, log });
+	context.subscriptions.push(logsPanel, ...logsPanel.register());
 	const cloud = new CloudView({
 		store: context.secrets,
 		log,
@@ -308,6 +321,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
 		localVersion: () => (redpandaConnect.state.kind === 'ok' ? redpandaConnect.state.version : undefined),
 		catalogue: () => catalogueOf(schemaStore.current?.json),
+		logs: logsPanel,
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 
@@ -324,7 +338,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(testMode ? { secrets, environment, cloud } : {}),
+		...(testMode ? { secrets, environment, cloud, logs: Object.assign(logsPanel, { checkClient }) } : {}),
 		outputLines: () => [...lines],
 	};
 }

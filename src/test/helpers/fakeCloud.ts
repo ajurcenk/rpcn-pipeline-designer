@@ -19,6 +19,7 @@
 //     every component, Bloblang function and method of the pinned 4.112.0 recording (`list --format
 //     json-full`, with its config trees), `version` the cluster's Connect version; `missingComponents`
 //     leaves chosen names out, `componentsError` answers an error instead.
+//   - (ticket 6.2) a cluster's `kafka_api.seed_brokers` in its `GET /v1/clusters/{id}` (spike 6.1, 03).
 // `failures` answers a chosen request with an error instead (one call, or every matching call).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
@@ -73,6 +74,8 @@ export interface FakeCluster {
 	readonly connectVersion?: string;
 	/** Whether the cluster has a Data Plane address. Default true. */
 	readonly dataplane?: boolean;
+	/** Ticket 6.2: its `kafka_api.seed_brokers`; none: no `kafka_api`. */
+	readonly seedBrokers?: readonly string[];
 	pipelines: FakePipeline[];
 	/** When set, the pipelines list answers this error. */
 	pipelinesError?: { readonly status: number; readonly body: unknown };
@@ -273,6 +276,7 @@ export class FakeCloud {
 					id: c.id, name: c.name, type: c.type, state: 'STATE_READY', cloud_provider: c.cloudProvider, region: c.region,
 					...(c.dataplane === false ? {} : { dataplane_api: { url: this.dataplaneUrl(c.id) } }),
 					...(c.connectVersion ? { redpanda_connect: { version: c.connectVersion } } : {}),
+					...(c.seedBrokers ? { kafka_api: { seed_brokers: c.seedBrokers, sasl: { enabled: true }, mtls: { enabled: false } } } : {}),
 				},
 			}];
 		}

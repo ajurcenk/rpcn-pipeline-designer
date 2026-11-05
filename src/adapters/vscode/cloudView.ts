@@ -67,6 +67,17 @@
 // anyway** (the cluster's own lint still applies); Escape sends nothing. A list that cannot be read is
 // said so with the same offer (the lint still counts). With no finding the deploy goes on unchanged.
 //
+// Ticket 6.2 (AD-24): **Set up log access…** on a cluster row asks for a Redpanda user that may read the
+// cluster's `__redpanda.connect.logs` topic (the username, the password in a password box, the SASL
+// mechanism), makes a test read (the topic's metadata and one fetch, at the cluster's
+// `kafka_api.seed_brokers`) and only once it passes keeps the three as one JSON record in the secret
+// storage (`redpandaConnect.cloud.logs.<cluster id>`); a refused sign-in is "<username> could not sign
+// in to <cluster>", any other failure its message, and nothing is stored. The row then says "logs:
+// <username>" and its pipeline rows offer **Show logs** inline (the menu always has it), which opens
+// the Pipeline Logs tab on that pipeline (`logsPanel.ts`); a cluster without access says to set it up
+// first, with the action. The password is read from the secret storage when needed and handed to the
+// reader in memory; it is masked like the client secret.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -82,6 +93,10 @@ import { asCloudError, CloudError, describeCloudError, hintLines, maskCredential
 import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, type ParsedMapping, parseMapping, serializeMapping, sidecarPath, taggedConfigs, taggedSidecars } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
+import { isLogReadError, isSaslMechanism, type LogAccess, type LogReaderFactory, LOGS_TOPIC, SASL_MECHANISMS, type SaslMechanism } from '../logs/logReader';
+import { PlatformaticReader } from '../logs/platformaticReader';
+import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
+import type { LogSource } from './logsPanel';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
 import type { ComponentCatalog } from '../../core/catalogue';
@@ -106,6 +121,19 @@ export const OPEN_DEPLOYED_COMMAND = 'redpandaConnect.cloud.openDeployed';
 export const COMPARE_COMMAND = 'redpandaConnect.cloud.compare';
 export const DEPLOY_AGAIN_COMMAND = 'redpandaConnect.cloud.deployAgain';
 export const COPY_ID_COMMAND = 'redpandaConnect.cloud.copyId';
+/** Ticket 6.2: a cluster row's log access, a pipeline row's log. */
+export const SET_UP_LOG_ACCESS_COMMAND = 'redpandaConnect.cloud.setUpLogAccess';
+export const SHOW_LOGS_COMMAND = 'redpandaConnect.cloud.showLogs';
+/** The secret storage key of a cluster's log access (one JSON record: username, password, mechanism). */
+export const LOG_ACCESS_PREFIX = 'redpandaConnect.cloud.logs.';
+export const logAccessKey = (clusterId: string): string => `${LOG_ACCESS_PREFIX}${clusterId}`;
+export const SET_UP_LOG_ACCESS_ACTION = 'Set up log access…';
+export function noLogAccessMessage(cluster: string): string {
+	return `Set up log access for ${cluster} first.`;
+}
+export function signInRefusedMessage(username: string, cluster: string): string {
+	return `${username} could not sign in to ${cluster}.`;
+}
 /** A row whose tag names no file in the workspace folders (outside them, or missing). */
 export const NOT_IN_WORKSPACE = 'not in this workspace';
 /** The delete confirmation's action. */
@@ -334,6 +362,7 @@ export type DeployResult =
 	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly listError?: string };
 
 const NOT_STARTED: DeployResult = { kind: 'notStarted' };
+const LOGS_NOT_STARTED = { kind: 'notStarted' } as const;
 
 /** How a Start, Stop or Delete ended (the command's result, for tests). */
 export type PipelineActionResult =
@@ -402,7 +431,27 @@ export interface CloudViewOptions {
 	readonly localVersion?: () => string | undefined;
 	/** Ticket 8: the local schema's catalogue, when one is loaded (else the cluster's is used). */
 	readonly catalogue?: () => ComponentCatalog | undefined;
+	/** Ticket 6.2: the Pipeline Logs tab, which Show logs opens on a pipeline. */
+	readonly logs?: { show(source: LogSource): Promise<void> };
+	/** Ticket 6.2: how a cluster's logs are read (default: `@platformatic/kafka`). */
+	readonly logReader?: LogReaderFactory;
 }
+
+/** How Set up log access… ended (the command's result, for tests). */
+export type LogAccessResult =
+	| { readonly kind: 'notStarted' }
+	/** This VS Code's Node is too old for the client: said so, nothing asked or sent. */
+	| { readonly kind: 'notSupported'; readonly message: string }
+	| { readonly kind: 'stored'; readonly username: string }
+	/** The test read failed (`refused`: the sign-in): nothing stored. */
+	| { readonly kind: 'failed'; readonly refused: boolean; readonly message: string };
+
+/** How Show logs ended (the command's result, for tests). */
+export type ShowLogsResult =
+	| { readonly kind: 'notStarted' }
+	| { readonly kind: 'notSupported'; readonly message: string }
+	| { readonly kind: 'noAccess' }
+	| { readonly kind: 'shown'; readonly pipelineId: string };
 
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -422,6 +471,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	localCatalogue: () => ComponentCatalog | undefined;
 	/** Ticket 8: the pre-deploy check's Problems entries. */
 	private readonly checkDiagnostics: vscode.DiagnosticCollection;
+	/** Ticket 6.2: how a cluster's logs are read (the test seam replaces it). */
+	logReader: LogReaderFactory;
+	/** Ticket 6.2: the Node version the logs check (the test seam may change it). */
+	nodeVersion = process.versions.node;
+	/** Ticket 6.2: each cluster's log access as stored (never its password), read with the clusters. */
+	private readonly logUsers = new Map<string, { readonly username: string; readonly mechanism: SaslMechanism }>();
 	/**
 	 * The workspace folders a pipeline's tag is resolved in (the local file of a row, the mapping a
 	 * delete removes): VS Code's `file:` folders; the test seam replaces it (the stable run opens none).
@@ -465,6 +520,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.lint = options.lint;
 		this.localVersion = options.localVersion ?? (() => undefined);
 		this.localCatalogue = options.catalogue ?? (() => undefined);
+		this.logReader = options.logReader ?? ((target) => new PlatformaticReader(target));
 		this.checkDiagnostics = vscode.languages.createDiagnosticCollection(CHECK_COLLECTION);
 		const fetch = options.fetch ?? defaultFetch;
 		this.tokens = new TokenCache({
@@ -486,6 +542,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			options.store.onDidChange((e) => {
 				if ((e.key === CLIENT_ID_KEY || e.key === CLIENT_SECRET_KEY) && this.writing === 0) {
 					this.ready = this.readAccount();
+				}
+				// Another window set up a cluster's log access: its rows follow.
+				if (e.key.startsWith(LOG_ACCESS_PREFIX) && this.writing === 0) {
+					void this.readLogAccess(e.key.slice(LOG_ACCESS_PREFIX.length)).then(() => this.fire());
 				}
 			}),
 		);
@@ -510,6 +570,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(COMPARE_COMMAND, (node?: CloudNode) => this.rowAction('compare', node)),
 			vscode.commands.registerCommand(DEPLOY_AGAIN_COMMAND, (node?: CloudNode) => this.rowAction('deployAgain', node)),
 			vscode.commands.registerCommand(COPY_ID_COMMAND, (node?: CloudNode) => this.rowAction('copyId', node)),
+			vscode.commands.registerCommand(SET_UP_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.setUpLogAccess(node)),
+			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -797,6 +859,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				const clusters = await listClusters(this.call(), this.endpoints.controlPlaneUrl);
 				const checked = clusters.map((c) => (c.dataplaneUrl && !this.dataplaneUrlOf(c)
 					? { ...c, dataplaneUrl: undefined, detailError: 'its Data Plane address is not https' } : c));
+				// Ticket 6.2: which clusters have log access (the secret storage only; nothing is requested).
+				await Promise.all(checked.map((c) => this.readLogAccess(c.id)));
 				if (generation === this.generation) {
 					this.clusters = { kind: 'ok', value: checked };
 				}
@@ -996,12 +1060,17 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				const hasApi = !!c && !!this.dataplaneUrlOf(c);
 				const item = new vscode.TreeItem(c?.name ?? node.id, hasApi ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 				item.id = `cluster:${node.id}`;
-				item.description = c ? clusterDescription(c) : '';
+				const logs = this.logUsers.get(node.id);
+				item.description = c ? `${clusterDescription(c)}${logs ? ` · logs: ${logs.username}` : ''}` : '';
 				item.iconPath = new vscode.ThemeIcon('server');
-				item.contextValue = hasApi ? 'cloudCluster' : c?.detailsUnread ? 'cloudCluster detailsUnread' : 'cloudCluster noPipelineApi';
+				// ` logs`: log access is set (ticket 6.2).
+				item.contextValue = hasApi ? `cloudCluster${logs ? ' logs' : ''}` : c?.detailsUnread ? 'cloudCluster detailsUnread' : 'cloudCluster noPipelineApi';
 				item.tooltip = c
 					? `${c.name} (${c.id}): ${clusterDescription(c)}${c.detailError ? `. ${c.detailError}` : ''}${hasApi ? '' : c.detailsUnread ? '. Refresh to read them again.' : '. Pipelines cannot be deployed to it.'}`
 					: node.id;
+				if (c && logs) {
+					item.tooltip += ` Its pipeline logs are read as ${logs.username} (${logs.mechanism}).`;
+				}
 				item.accessibilityInformation = { label: `Cluster ${c?.name ?? node.id}, ${item.description}` };
 				return item;
 			}
@@ -1015,7 +1084,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				item.description = from ? `${state} · ${from}` : state;
 				item.iconPath = new vscode.ThemeIcon(stateIcon(p?.state));
 				// A state the extension does not know is `state-unknown`: Delete only. ` hasFile`: Deploy again.
-				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}${local.kind === 'ok' ? ' hasFile' : ''}`;
+				// ` logs` (ticket 6.2): its cluster has log access, so Show logs is inline.
+				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}${local.kind === 'ok' ? ' hasFile' : ''}${this.logUsers.has(node.clusterId) ? ' logs' : ''}`;
 				// A click opens the deployed config, read now.
 				item.command = { command: OPEN_DEPLOYED_COMMAND, title: 'Open deployed config', arguments: [node] };
 				const deployedFrom = local.kind === 'ok' ? `. Deployed from ${local.path}.`
@@ -2253,6 +2323,216 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.log(`Redpanda Cloud: did not deploy ${file} again to ${pipeline.displayName} (${pipeline.id}): ${why}.`);
 		void this.showInfo(`${why}. Deploy ${name} from its editor to choose where it goes. Nothing was sent.`);
 		return { kind: 'notMapped', pipelineId: pipeline.id, ...(read.kind === 'ok' ? { mapping: read.mapping } : {}) };
+	}
+
+	// --- log access and Show logs (ticket 6.2, AD-24) ---
+
+	/**
+	 * Reads `clusterId`'s log access from the secret storage (its password then masked); keeps its
+	 * username and mechanism for the rows. `undefined`: none, or not a valid record.
+	 */
+	private async readLogAccess(clusterId: string): Promise<LogAccess | undefined> {
+		let text: string | undefined;
+		try {
+			text = await this.options.store.get(logAccessKey(clusterId));
+		} catch (err) {
+			this.log(`Redpanda Cloud: could not read the secret storage: ${reasonOf(err)}`);
+		}
+		const access = parseLogAccess(text);
+		if (access) {
+			this.seenSecrets.add(access.password);
+			this.logUsers.set(clusterId, { username: access.username, mechanism: access.mechanism });
+		} else {
+			this.logUsers.delete(clusterId);
+		}
+		return access;
+	}
+
+	/** Removes a cluster's stored log access (the test seam; no command removes it yet). */
+	async removeLogAccess(clusterId: string): Promise<void> {
+		this.writing++;
+		try {
+			await this.removeStored(logAccessKey(clusterId));
+		} finally {
+			this.writing--;
+		}
+		this.logUsers.delete(clusterId);
+		this.fire();
+	}
+
+	/** The secret storage's value of `key` (the test seam's NO_LEAK check; only in `ExtensionMode.Test`). */
+	async storedValue(key: string): Promise<string | undefined> {
+		return this.options.store.get(key);
+	}
+
+	/** Ticket 6.2: on a Node too old for the client, the message (shown and logged); else `undefined`. */
+	private logsNotSupported(): { readonly kind: 'notSupported'; readonly message: string } | undefined {
+		if (nodeSupported(this.nodeVersion)) {
+			return undefined;
+		}
+		const message = `${newerVsCodeMessage(this.nodeVersion)}.`;
+		this.log(`Redpanda Cloud: ${message}`);
+		void this.showError(message);
+		return { kind: 'notSupported', message };
+	}
+
+	/** A cluster's stored log access without its password (the test seam). */
+	async storedLogAccess(clusterId: string): Promise<{ readonly username: string; readonly mechanism: SaslMechanism } | undefined> {
+		const access = parseLogAccess(await this.options.store.get(logAccessKey(clusterId)));
+		return access ? { username: access.username, mechanism: access.mechanism } : undefined;
+	}
+
+	/**
+	 * Set up log access… on a cluster row: the username, the password (a password box) and the
+	 * mechanism; a test read; stored only once it passes. Escape at any step: nothing stored or sent.
+	 * Never throws.
+	 */
+	async setUpLogAccess(node?: CloudNode): Promise<LogAccessResult> {
+		try {
+			const unsupported = this.logsNotSupported();
+			if (unsupported) {
+				return unsupported;
+			}
+			if (node?.kind !== 'cluster') {
+				void this.showInfo('Choose a cluster in the Cloud view.');
+				return LOGS_NOT_STARTED;
+			}
+			const cluster = this.clusterById(node.id);
+			if (!cluster) {
+				void this.showInfo('That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.');
+				return LOGS_NOT_STARTED;
+			}
+			if (!cluster.seedBrokers?.length) {
+				void this.showError(`${cluster.name} gives no Kafka address, so its pipeline logs can't be read.`);
+				return LOGS_NOT_STARTED;
+			}
+			const title = (step: number) => `Set up log access for ${cluster.name} (${step}/3)`;
+			const nonEmpty = (what: string) => (text: string) => (text.trim() ? undefined : `Enter the ${what}.`);
+			const username = (await this.ui.input({
+				title: title(1),
+				prompt: `A Redpanda user of ${cluster.name} that may read the ${LOGS_TOPIC} topic (Redpanda Cloud: the cluster's Security, Users).`,
+				value: this.logUsers.get(cluster.id)?.username,
+				ignoreFocusOut: true,
+				validateInput: nonEmpty('username'),
+			}))?.trim();
+			if (!username) {
+				return LOGS_NOT_STARTED;
+			}
+			const password = await this.ui.input({
+				title: title(2),
+				prompt: `The password of ${username}. It is kept in VS Code's secret storage on this machine only.`,
+				password: true,
+				ignoreFocusOut: true,
+				validateInput: (text) => (text ? undefined : 'Enter the password.'),
+			});
+			if (!password) {
+				return LOGS_NOT_STARTED;
+			}
+			// Masked from here on, also when the test read fails.
+			this.seenSecrets.add(password);
+			const mechanism = await this.ui.pickChoice(title(3), `The SASL mechanism ${username} was created with`, SASL_MECHANISMS);
+			if (!isSaslMechanism(mechanism)) {
+				return LOGS_NOT_STARTED;
+			}
+			const access: LogAccess = { username, password, mechanism };
+			try {
+				await this.ui.progress(`Testing log access to ${cluster.name}`, () => this.logReader({ brokers: cluster.seedBrokers!, access }).test());
+			} catch (err) {
+				const refused = isLogReadError(err) && err.kind === 'signIn';
+				const reason = this.mask(isLogReadError(err) || err instanceof Error ? err.message : String(err));
+				const message = refused ? signInRefusedMessage(username, cluster.name) : `Could not read the pipeline logs of ${cluster.name}: ${reason}`;
+				this.log(`Redpanda Cloud: the log access test of ${username} on ${cluster.name} failed: ${reason}; nothing was stored.`);
+				void this.showError(message);
+				return { kind: 'failed', refused, message: this.mask(message) };
+			}
+			this.writing++;
+			try {
+				await this.options.store.store(logAccessKey(cluster.id), JSON.stringify(access));
+			} catch (err) {
+				void this.showError(`Could not store the log access in the secret storage: ${reasonOf(err)}`);
+				return { kind: 'failed', refused: false, message: this.mask(reasonOf(err)) };
+			} finally {
+				this.writing--;
+			}
+			this.logUsers.set(cluster.id, { username, mechanism });
+			this.fire();
+			this.log(`Redpanda Cloud: log access to ${cluster.name} set up for ${username} (${mechanism}).`);
+			void this.showInfo(`Log access to ${cluster.name} is set up for ${username}.`);
+			return { kind: 'stored', username };
+		} catch (err) {
+			const message = this.mask(reasonOf(err));
+			this.log(`Redpanda Cloud: Set up log access failed: ${message}`);
+			void this.showError(`Set up log access failed: ${message}`);
+			return LOGS_NOT_STARTED;
+		}
+	}
+
+	/**
+	 * Show logs on a pipeline row: the Pipeline Logs tab on that pipeline, read with its cluster's
+	 * log access (none: offered first). Never throws.
+	 */
+	async showLogs(node?: CloudNode): Promise<ShowLogsResult> {
+		try {
+			const unsupported = this.logsNotSupported();
+			if (unsupported) {
+				return unsupported;
+			}
+			if (node?.kind !== 'pipeline') {
+				void this.showInfo('Choose a pipeline in the Cloud view.');
+				return LOGS_NOT_STARTED;
+			}
+			const cluster = this.clusterById(node.clusterId);
+			const pipeline = this.pipelineById(node.clusterId, node.id);
+			if (!cluster || !pipeline || !this.options.logs) {
+				void this.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
+				return LOGS_NOT_STARTED;
+			}
+			let access = await this.readLogAccess(cluster.id);
+			if (!access) {
+				this.fire();
+				const choice = await this.showInfo(noLogAccessMessage(cluster.name), SET_UP_LOG_ACCESS_ACTION);
+				if (choice !== SET_UP_LOG_ACCESS_ACTION || (await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
+					return { kind: 'noAccess' };
+				}
+				access = await this.readLogAccess(cluster.id);
+				if (!access) {
+					return { kind: 'noAccess' };
+				}
+			}
+			const brokers = cluster.seedBrokers;
+			if (!brokers?.length) {
+				void this.showError(`${cluster.name} gives no Kafka address, so its pipeline logs can't be read.`);
+				return LOGS_NOT_STARTED;
+			}
+			const target = { brokers, access };
+			this.log(`Redpanda Cloud: showing the logs of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}, read as ${access.username}.`);
+			await this.options.logs.show({
+				title: `${pipeline.displayName} · ${cluster.name}`,
+				pipelineId: pipeline.id,
+				reader: () => this.logReader(target),
+				mask: (text) => this.mask(text),
+			});
+			return { kind: 'shown', pipelineId: pipeline.id };
+		} catch (err) {
+			const message = this.mask(reasonOf(err));
+			this.log(`Redpanda Cloud: Show logs failed: ${message}`);
+			void this.showError(`Show logs failed: ${message}`);
+			return LOGS_NOT_STARTED;
+		}
+	}
+}
+
+/** A stored log access record, or `undefined` when there is none or it is not one. */
+function parseLogAccess(text: string | undefined): LogAccess | undefined {
+	if (!text) {
+		return undefined;
+	}
+	try {
+		const v = JSON.parse(text) as Record<string, unknown>;
+		return v && typeof v.username === 'string' && v.username && typeof v.password === 'string' && v.password && isSaslMechanism(v.mechanism)
+			? { username: v.username, password: v.password, mechanism: v.mechanism } : undefined;
+	} catch {
+		return undefined;
 	}
 }
 

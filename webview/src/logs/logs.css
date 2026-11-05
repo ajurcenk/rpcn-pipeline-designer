@@ -1,0 +1,94 @@
+/* The Pipeline Logs tab inherits the VS Code theme (DESIGN.md): every colour is a theme variable, no
+   branding. It sits in the bottom panel, so it uses the panel's background and the editor's font
+   for the records. */
+html, body, #root {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+}
+body {
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+}
+.rpcn-logs {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+}
+.rpcn-logs-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 16px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-title {
+	margin: 0;
+	font-size: 1em;
+	font-weight: 600;
+}
+.rpcn-logs-status {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-scroll {
+	flex: 1;
+	overflow: auto;
+}
+.rpcn-logs-scroll:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-logs-empty {
+	margin: 8px;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+}
+.rpcn-logs-table th {
+	position: sticky;
+	top: 0;
+	text-align: left;
+	font-weight: 600;
+	padding: 2px 8px;
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-table td {
+	padding: 1px 8px;
+	vertical-align: top;
+}
+.rpcn-logs-table tbody tr:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.rpcn-logs-time, .rpcn-logs-level, .rpcn-logs-instance {
+	white-space: nowrap;
+}
+.rpcn-logs-time, .rpcn-logs-instance, .rpcn-logs-key {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-error {
+	color: var(--vscode-errorForeground);
+}
+.rpcn-logs-warn {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-logs-message {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+.rpcn-logs-raw {
+	font-style: italic;
+}
+.rpcn-logs-footer {
+	padding: 2px 8px;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+	color: var(--vscode-descriptionForeground);
+}

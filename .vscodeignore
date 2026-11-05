@@ -24,3 +24,5 @@ skills-lock.json
 **/vitest.config.*
 webview/**
 docs/**
+# Ticket 6.2: @platformatic/kafka's CRC-32C wasm, read beside dist/extension.js (kept; no native module ships).
+!dist/native.wasm

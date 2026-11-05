@@ -282,6 +282,18 @@
         "title": "Copy pipeline ID",
         "category": "Redpanda Connect",
         "icon": "$(copy)"
+      },
+      {
+        "command": "redpandaConnect.cloud.setUpLogAccess",
+        "title": "Set up log access…",
+        "category": "Redpanda Connect",
+        "icon": "$(key)"
+      },
+      {
+        "command": "redpandaConnect.cloud.showLogs",
+        "title": "Show logs",
+        "category": "Redpanda Connect",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -408,6 +420,14 @@
         },
         {
           "command": "redpandaConnect.cloud.copyId",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.cloud.setUpLogAccess",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.cloud.showLogs",
           "when": "false"
         }
       ],
@@ -573,7 +593,7 @@
         },
         {
           "command": "redpandaConnect.cloud.refresh",
-          "when": "view == redpandaConnect.cloud && viewItem == cloudCluster",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
           "group": "inline"
         },
         {
@@ -583,7 +603,7 @@
         },
         {
           "command": "redpandaConnect.cloud.refresh",
-          "when": "view == redpandaConnect.cloud && viewItem == cloudCluster",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
           "group": "1_actions@1"
         },
         {
@@ -640,6 +660,21 @@
           "command": "redpandaConnect.cloud.delete",
           "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/",
           "group": "9_delete@1"
+        },
+        {
+          "command": "redpandaConnect.cloud.setUpLogAccess",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "redpandaConnect.cloud.showLogs",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b.*\\blogs\\b/",
+          "group": "inline@3"
+        },
+        {
+          "command": "redpandaConnect.cloud.showLogs",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/",
+          "group": "0_open@4"
         }
       ]
     },
@@ -667,6 +702,13 @@
           "title": "Redpanda Connect",
           "icon": "media/redpanda-connect.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "redpandaConnectLogs",
+          "title": "Pipeline Logs",
+          "icon": "$(list-flat)"
+        }
       ]
     },
     "views": {
@@ -682,6 +724,14 @@
           "name": "Cloud",
           "contextualTitle": "Redpanda Connect",
           "icon": "media/redpanda-connect.svg"
+        }
+      ],
+      "redpandaConnectLogs": [
+        {
+          "type": "webview",
+          "id": "redpandaConnect.pipelineLogs",
+          "name": "Pipeline Logs",
+          "contextualTitle": "Pipeline Logs"
         }
       ]
     },
@@ -708,9 +758,11 @@
     "test": "vscode-test",
     "test:corpus": "vitest run --config vitest.config.mts",
     "test:corpus:record": "vitest run --config vitest.config.mts --mode record",
-    "test:webview": "vitest run --config webview/vitest.config.mts"
+    "test:webview": "vitest run --config webview/vitest.config.mts",
+    "check:vsix": "node scripts/check-vsix.mjs"
   },
   "devDependencies": {
+    "@types/debug": "4.1.13",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.19.43",
     "@types/react": "19.3.0",
@@ -737,6 +789,7 @@
     }
   },
   "dependencies": {
+    "@platformatic/kafka": "2.15.0",
     "@vscode/codicons": "0.0.46-24",
     "@xyflow/react": "12.12.0",
     "elkjs": "0.12.0",
