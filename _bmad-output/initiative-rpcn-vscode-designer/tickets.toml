@@ -33,3 +33,10 @@ slug = "epic-deploy-to-redpanda-cloud"
 title = "Deploy to Redpanda Cloud"
 covers = []   # no spec capability yet: the spec lists Cloud deployment as a non-goal (Source conflict, settled by the user 2026-11-02)
 after = [{ epic = 1, needs = "the lint/run argument builder (1.5) for the pre-deploy check" }, { epic = 2, needs = "lint on save (2.4) for the pre-deploy check" }]
+
+[[epic]]
+id = 6
+slug = "epic-pipeline-logs"
+title = "Pipeline logs"
+covers = []   # no spec capability: the spec lists debugging and Cloud work as non-goals (Source conflict, settled by the user 2026-11-05)
+after = [{ epic = 5, needs = "the cloud adapter (token, Control Plane cluster details), the Cloud view's cluster and pipeline rows, the .cloud.json mapping and the deploy's Error notifications (5.2-5.5)" }]

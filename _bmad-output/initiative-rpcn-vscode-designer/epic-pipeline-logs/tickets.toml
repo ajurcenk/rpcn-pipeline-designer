@@ -1,0 +1,104 @@
+# tickets.toml — epic-pipeline-logs' agreed children. The order of the tables is the build order; `id` names a child for good.
+# Lanes after the tracer (2): the panel (3 → 4 → 6 → 7, 8 after 4) and the extension-side entry points (5); both meet src/adapters/vscode and src/extension.ts, so a story in one lane names the other's done work it builds on.
+
+[[entry]]
+id = 1
+type = "spike"
+title = "Probe reading the logs topic on a real cluster"
+description = "With a Redpanda user the user creates on rpc-vilnius that may read __redpanda.connect.logs, finds the cluster's Kafka address from the Control Plane, the TLS and SASL it needs, the ACL a reader needs without a consumer group, the topic's partitions and retention, whether one pipeline's records share one partition, how to seek by time, and a pure-JavaScript Kafka client the extension can bundle, recorded as findings and a proposed architecture decision for reading the log."
+verify = "A probe reads one pipeline's records by key, live and from a time, on rpc-vilnius, and the user approves the findings and the proposed decision."
+covers = ["R1", "R2", "R5"]
+after = []
+hitl = true
+risk = "high"
+unknown = "The Kafka address field, the reader's ACL, key-to-partition placement, and the client library."
+references = ["https://claude.ai/artifact/XCmLson6MPFe2y9SzrfjVH"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Tracer: set up log access and show a pipeline's live log"
+description = "The thinnest path through every layer: Set up log access on a Cloud view cluster row (user, password in the secret storage, mechanism, a test read), Show logs on a pipeline row, a Pipeline Logs tab in the bottom panel showing that pipeline's last 15 minutes and then its new records live (time, level, message, instance, extra fields), masked as every Cloud message is, behind a log-reader interface with an in-memory fake for the integration tests."
+verify = "Integration tests against the fake show only the chosen pipeline's records and append new ones live; the user sees their pipeline's live log from the dev host."
+covers = ["R1", "R2"]
+after = [1, "5.5"]
+hitl = false
+risk = "high"
+references = ["https://claude.ai/artifact/XCmLson6MPFe2y9SzrfjVH"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Read back the log's history"
+description = "The time-range menu (last 15 minutes to 7 days, since the last deploy, a custom range), records read from the range's start by time, Load older records, and a note where a range has no records, within the topic's retention."
+verify = "Integration tests read a range and older pages from the fake by time; the user reads back a day of their pipeline's log."
+covers = ["R5"]
+after = [2]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "Filter and search the log"
+description = "Level chips with counts, a text or regular-expression search over the message and every field with matches highlighted, filter chips from a field's value, and a record's whole JSON with Copy and Show records around this one."
+verify = "Integration tests narrow the fake's records by each filter and the search, together and alone."
+covers = ["R4"]
+after = [3]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Open the log from the command, the row menu and an Error"
+description = "Show pipeline logs from the Command Palette (the active config's mapped pipeline, else a pick), Show logs on the notification of a deploy or start that ends in Error, and Show logs around the error from the row menu, which opens the log at the time of the error."
+verify = "Integration tests open the panel from each entry point on the right pipeline and at the right time."
+covers = ["R3"]
+after = [2, "5.4"]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 6
+type = "story"
+title = "The log panel's empty and error states"
+description = "No log access set, sign-in refused, reading not allowed, no records in the range, reading in progress with Stop, and connection lost with a retry, each with its text and actions from the design board."
+verify = "Integration tests drive the fake into each state and check its text and actions; the user sees the wrong-password state on their cluster."
+covers = ["R6"]
+after = [3]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Records-per-hour strip"
+description = "Above the history list, a bar per hour with error and warning marks for the shown range; clicking a bar shows that hour's records."
+verify = "Integration tests check the bars' counts and the jump against the fake's records."
+covers = ["R5"]
+after = [3]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 8
+type = "story"
+title = "Export the shown records"
+description = "Export… saves the records the panel shows, after its filters and search, as a JSON lines file the user chooses, masked as the panel is."
+verify = "Integration tests compare the file with the shown records and find no secret value in it."
+covers = ["R7"]
+after = [4]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 9
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup only, its scope set when it starts from the epic's build records and the review findings deferred during it."
+verify = "Every suite passes unchanged after the cleanup."
+covers = []
+after = [2, 3, 4, 5, 6, 7, 8]
+hitl = false
+risk = "low"
