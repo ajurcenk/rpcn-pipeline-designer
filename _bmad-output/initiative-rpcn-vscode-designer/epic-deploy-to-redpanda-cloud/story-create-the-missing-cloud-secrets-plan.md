@@ -113,3 +113,5 @@ context:
 | 5 | DEFAULT_LOCAL's "Enter another value…" path is untested, and its value not in NO_LEAK | low | the test covers Escape, use-default and keep only | patch |
 | 6 | NO_LEAK's settings check for `topicLocal` depends on the test's own cleanup | low | the test writes the setting itself; a test-design point, not a leak | reject |
 | 7 | Secrets created in a deploy stay when the user then declines "Replace and restart", and nothing says so | low | `ensureSecrets` runs before the confirmation (the plan's order); declining returns `notStarted` silently about them | patch (say which secrets were created and stay) |
+
+**Manual check result (user, 2026-11-04):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (`secrets.yaml`: keep the local `redpandaConnect.env` value; "Add it now?" declined, the deploy stopped; added with a typed value, both secrets created, the pipeline ran; no value in a message, the output channel or the deployed config; an unchanged deploy asked nothing).
