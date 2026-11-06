@@ -2511,6 +2511,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				pipelineId: pipeline.id,
 				reader: () => this.logReader(target),
 				mask: (text) => this.mask(text),
+				...(pipeline.updateTime !== undefined ? { deployedAt: pipeline.updateTime } : {}),
+				lastDeploy: () => this.lastDeployOf(cluster.id, pipeline.id),
 			});
 			return { kind: 'shown', pipelineId: pipeline.id };
 		} catch (err) {
@@ -2518,6 +2520,43 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.log(`Redpanda Cloud: Show logs failed: ${message}`);
 			void this.showError(`Show logs failed: ${message}`);
 			return LOGS_NOT_STARTED;
+		}
+	}
+
+	/**
+	 * Since the last deploy (ticket 6.3): the pipeline's `update_time`, read now from the Data Plane.
+	 * `undefined` when it cannot be: the pipeline gone (said so), a failed read (shown by
+	 * `readPipeline`), or an answer without the time (said so). Never throws.
+	 */
+	private async lastDeployOf(clusterId: string, pipelineId: string): Promise<number | undefined> {
+		try {
+			const cluster = this.clusterById(clusterId);
+			const known = this.pipelineById(clusterId, pipelineId);
+			const shown = known?.displayName ?? pipelineId;
+			const dp = cluster ? this.dataplaneUrlOf(cluster) : undefined;
+			if (!cluster || !dp) {
+				void this.showInfo(`Pipeline ${shown} is no longer in the Cloud view, so its last deploy can't be read. Nothing was read.`);
+				return undefined;
+			}
+			const read = await this.readPipeline(cluster, dp, pipelineId, shown);
+			if (read.kind !== 'ok') {
+				if (read.status === 404) {
+					this.log(`Redpanda Cloud: pipeline ${shown} (${pipelineId}) is gone from ${cluster.name}.`);
+					void this.showInfo(`Pipeline ${shown} is no longer on ${cluster.name}, so it has no last deploy. Nothing was read.`);
+				}
+				return undefined;
+			}
+			if (read.value.updateTime === undefined) {
+				void this.showInfo(`Redpanda Cloud gives no deploy time for pipeline ${shown}. Nothing was read.`);
+				return undefined;
+			}
+			this.log(`Redpanda Cloud: pipeline ${shown} was last deployed at ${new Date(read.value.updateTime).toISOString()}.`);
+			return read.value.updateTime;
+		} catch (err) {
+			const message = this.mask(reasonOf(err));
+			this.log(`Redpanda Cloud: reading the last deploy failed: ${message}`);
+			void this.showError(`Could not read the last deploy: ${message}`);
+			return undefined;
 		}
 	}
 }

@@ -69,6 +69,18 @@ export interface CloudPipeline {
 	/** The deployed config (`''` when the answer carried none). */
 	readonly configYaml: string;
 	readonly resources?: PipelineResources;
+	/** When it was last changed (`update_time`: a deploy, an update, a start or stop), milliseconds since the epoch (ticket 6.3). */
+	readonly updateTime?: number;
+}
+
+/** An RFC 3339 time of the API (nanoseconds allowed) in milliseconds, or `undefined`. */
+export function apiTime(v: unknown): number | undefined {
+	if (typeof v !== 'string' || !v) {
+		return undefined;
+	}
+	// `Date.parse` takes at most milliseconds: cut the fraction to three digits.
+	const ms = Date.parse(v.replace(/(\.\d{3})\d+/, '$1'));
+	return Number.isFinite(ms) ? ms : undefined;
 }
 
 export interface CreatePipeline {
@@ -154,6 +166,7 @@ export function pipelineFrom(raw: unknown): CloudPipeline | undefined {
 	const resources = r && (typeof r.cpu_shares === 'string' || typeof r.memory_shares === 'string')
 		? { cpu_shares: typeof r.cpu_shares === 'string' ? r.cpu_shares : '', memory_shares: typeof r.memory_shares === 'string' ? r.memory_shares : '' }
 		: undefined;
+	const updateTime = apiTime(p.update_time);
 	return {
 		id: p.id,
 		displayName: typeof p.display_name === 'string' && p.display_name ? p.display_name : p.id,
@@ -163,6 +176,7 @@ export function pipelineFrom(raw: unknown): CloudPipeline | undefined {
 		description: typeof p.description === 'string' ? p.description : '',
 		configYaml: typeof p.config_yaml === 'string' ? p.config_yaml : '',
 		...(resources ? { resources } : {}),
+		...(updateTime !== undefined ? { updateTime } : {}),
 	};
 }
 

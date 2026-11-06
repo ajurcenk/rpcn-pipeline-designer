@@ -1,4 +1,4 @@
-// The `LogReader` on `@platformatic/kafka` (AD-24, ticket 6.2; spike 6.1's `platformaticClient`):
+// The `LogReader` on `@platformatic/kafka` (AD-24, tickets 6.2, 6.3; spike 6.1's `platformaticClient`):
 // a `Consumer` that never joins its group (only `consume()` and `joinGroup()` use the group id, and
 // neither is called), so nothing is committed: metadata of the topic, ListOffsets by time, and Fetch
 // on each partition's leader. TLS with the system CAs, SASL SCRAM with the user's mechanism; the
@@ -12,8 +12,15 @@
 // connection is reset, reads the topic's metadata (its leaders) again and is retried a few times, with
 // a short backoff, before the tail fails. Once the signal aborts (the tab hidden, another pipeline),
 // nothing more is sent: the signal is checked after every step of the start, and the client closed.
+//
+// History (ticket 6.3): `range` reads forward from ListOffsets(from) to the first record after `to`
+// (ListOffsets(to + 1)) or the end offsets taken at its start, with fetches that do not wait; records
+// older than the brokers' local retention come from tiered storage through the same fetch. `range` and
+// `logStart` share one client per reader until their signal aborts, so a walk back through empty windows
+// signs in once. `retentionMs` asks DescribeConfigs through a short-lived `Admin`; a refusal is
+// `undefined`.
 
-import { type LogPositions, type LogReader, LogReadError, type LogReadErrorKind, type LogRecord, type LogTarget, LOGS_TOPIC } from './logReader';
+import { type LogPositions, type LogRangeEnd, type LogReader, LogReadError, type LogReadErrorKind, type LogRecord, type LogTarget, LOGS_TOPIC } from './logReader';
 import { newerVsCodeMessage, nodeSupported } from './runtime';
 
 type Kafka = typeof import('@platformatic/kafka', { with: { 'resolution-mode': 'import' } });
@@ -40,6 +47,8 @@ const KAFKA_NOT_ALLOWED = new Set([29, 31]);
 const KAFKA_OFFSET_OUT_OF_RANGE = 1;
 /** A partition's leader moved or is being elected: read the leaders again and retry. */
 const KAFKA_LEADER_MOVED = new Set([5, 6]);
+/** DescribeConfigs' resource type of a topic. */
+const TOPIC_RESOURCE = 2 as const;
 
 /** A fetch failure worth reading the leaders again for and retrying. */
 class RetriableFetchError extends LogReadError {
@@ -53,6 +62,10 @@ export interface PlatformaticReaderOptions {
 	readonly fetchRetries?: number;
 	/** The backoff before retry n (1-based) is n times this. */
 	readonly retryDelayMs?: number;
+	/** A bounded read's fetch wait once a partition answered no records below its stop (default 500 ms). */
+	readonly emptyWaitMs?: number;
+	/** How long a partition of a bounded read may answer no records before it is given up (default 30 s). */
+	readonly stallMs?: number;
 }
 
 /** Thrown inside the start once the signal aborted: nothing more is sent. */
@@ -113,22 +126,28 @@ interface Partitions {
 
 export class PlatformaticReader implements LogReader {
 	private consumer: Consumer | undefined;
+	/** The client `range` and `logStart` share, while it opens. */
+	private opening: Promise<Consumer> | undefined;
+	/** The signals that close the shared client when they abort. */
+	private readonly watched = new WeakSet<AbortSignal>();
 
 	private readonly fetchRetries: number;
 	private readonly retryDelayMs: number;
+	private readonly emptyWaitMs: number;
+	private readonly stallMs: number;
 
 	constructor(private readonly target: LogTarget, private readonly kafka: () => Promise<Kafka> = loadKafka, options: PlatformaticReaderOptions = {}) {
 		this.fetchRetries = options.fetchRetries ?? 3;
 		this.retryDelayMs = options.retryDelayMs ?? 500;
+		this.emptyWaitMs = options.emptyWaitMs ?? 500;
+		this.stallMs = options.stallMs ?? 30_000;
 	}
 
-	private async open(): Promise<Consumer> {
-		const { Consumer } = await this.kafka();
+	/** The client options both the Consumer and the Admin get: the address, TLS, SCRAM. */
+	private baseOptions() {
 		const { access, brokers } = this.target;
-		this.consumer = new Consumer({
+		return {
 			clientId: CLIENT_ID,
-			// Never joined: no group, no commit (AD-24).
-			groupId: `${CLIENT_ID}-never-joined`,
 			bootstrapBrokers: [...brokers],
 			tls: {},
 			sasl: { mechanism: access.mechanism, username: access.username, password: access.password },
@@ -137,13 +156,35 @@ export class PlatformaticReader implements LogReader {
 			retryDelay: 300,
 			connectTimeout: 10_000,
 			requestTimeout: 30_000,
-		});
+		};
+	}
+
+	private async open(): Promise<Consumer> {
+		const { Consumer } = await this.kafka();
+		// Never joined: no group, no commit (AD-24).
+		this.consumer = new Consumer({ ...this.baseOptions(), groupId: `${CLIENT_ID}-never-joined` });
 		return this.consumer;
+	}
+
+	/** The client `range` and `logStart` share; it is closed once `signal` aborts. */
+	private shared(signal: AbortSignal): Promise<Consumer> {
+		if (!this.watched.has(signal)) {
+			this.watched.add(signal);
+			signal.addEventListener('abort', () => void this.close(), { once: true });
+		}
+		if (this.consumer) {
+			return Promise.resolve(this.consumer);
+		}
+		this.opening ??= this.open().finally(() => {
+			this.opening = undefined;
+		});
+		return this.opening;
 	}
 
 	private async close(): Promise<void> {
 		const consumer = this.consumer;
 		this.consumer = undefined;
+		this.opening = undefined;
 		await consumer?.close(true).catch(() => undefined);
 	}
 
@@ -224,6 +265,40 @@ export class PlatformaticReader implements LogReader {
 		return { records, outOfRange };
 	}
 
+	/**
+	 * One fetch of `at`'s partitions from each of their leaders. A moved leader or a connection error
+	 * reads the leaders again (into `state`) and retries, a few times with a growing backoff; a
+	 * position below the log's start (retention passed) goes on from its first offset.
+	 */
+	private async fetchRound(consumer: Consumer, state: { parts: Partitions }, at: Map<number, number>, maxWaitMs: number, signal: AbortSignal, step: <T>(v: T) => T): Promise<LogRecord[]> {
+		let failures = 0;
+		for (;;) {
+			let fetched: { records: LogRecord[]; outOfRange: number[] }[];
+			try {
+				const current = state.parts;
+				const leaders = [...new Set([...at.keys()].map((p) => current.leaders.get(p)!))];
+				fetched = await Promise.all(leaders.map((leader) => this.fetchFrom(consumer, current, leader, at, maxWaitMs)));
+			} catch (err) {
+				const retriable = err instanceof RetriableFetchError || (!(err instanceof LogReadError) && classifyKafkaError(err) === 'connection');
+				if (signal.aborted || !retriable || ++failures > this.fetchRetries) {
+					throw err;
+				}
+				// The leaders may have moved: read them again after a short backoff, then fetch again.
+				await new Promise((r) => setTimeout(r, failures * this.retryDelayMs));
+				state.parts = step(await this.partitions(consumer));
+				continue;
+			}
+			// A position below the log's start (retention passed): from its first offset (ListOffsets earliest).
+			const outOfRange = fetched.flatMap((f) => f.outOfRange);
+			if (outOfRange.length > 0 && !signal.aborted) {
+				for (const [p, o] of step(await this.offsetsAt(consumer, outOfRange, -2n))) {
+					at.set(p, o);
+				}
+			}
+			return fetched.flatMap((f) => f.records);
+		}
+	}
+
 	async test(): Promise<void> {
 		try {
 			const consumer = await this.open();
@@ -254,15 +329,10 @@ export class PlatformaticReader implements LogReader {
 		}
 		const onAbort = () => void this.close();
 		signal.addEventListener('abort', onAbort);
-		const step = <T>(value: T): T => {
-			if (signal.aborted) {
-				throw new Aborted();
-			}
-			return value;
-		};
+		const step = abortStep(signal);
 		try {
 			const consumer = step(await this.open());
-			let parts = step(await this.partitions(consumer));
+			const parts = step(await this.partitions(consumer));
 			// Every partition (AD-24: until a story proves the placement by key).
 			const all = [...parts.leaders.keys()];
 			const unknown = all.filter((p) => resumeAt?.get(p) === undefined);
@@ -270,35 +340,13 @@ export class PlatformaticReader implements LogReader {
 			for (const [p, o] of unknown.length > 0 ? step(await this.offsetsAt(consumer, unknown, BigInt(Math.floor(fromTime)))) : []) {
 				at.set(p, o);
 			}
-			let failures = 0;
+			const state = { parts };
 			while (!signal.aborted) {
-				let fetched: { records: LogRecord[]; outOfRange: number[] }[];
-				try {
-					const current = parts;
-					const leaders = [...new Set(all.map((p) => current.leaders.get(p)!))];
-					fetched = await Promise.all(leaders.map((leader) => this.fetchFrom(consumer, current, leader, at, FETCH_WAIT_MS)));
-					failures = 0;
-				} catch (err) {
-					const retriable = err instanceof RetriableFetchError || (!(err instanceof LogReadError) && classifyKafkaError(err) === 'connection');
-					if (signal.aborted || !retriable || ++failures > this.fetchRetries) {
-						throw err;
-					}
-					// The leaders may have moved: read them again after a short backoff, then fetch again.
-					await new Promise((r) => setTimeout(r, failures * this.retryDelayMs));
-					parts = step(await this.partitions(consumer));
-					continue;
-				}
+				const records = await this.fetchRound(consumer, state, at, FETCH_WAIT_MS, signal, step);
 				if (signal.aborted) {
 					break;
 				}
-				// A position below the log's start (retention passed): from its first offset (ListOffsets earliest).
-				const outOfRange = fetched.flatMap((f) => f.outOfRange);
-				if (outOfRange.length > 0) {
-					for (const [p, o] of step(await this.offsetsAt(consumer, outOfRange, -2n))) {
-						at.set(p, o);
-					}
-				}
-				onRecords(fetched.flatMap((f) => f.records), new Map(at));
+				onRecords(records, new Map(at));
 			}
 		} catch (err) {
 			if (!signal.aborted) {
@@ -309,6 +357,151 @@ export class PlatformaticReader implements LogReader {
 			await this.close();
 		}
 	}
+
+	async range(
+		_pipelineId: string,
+		fromTime: number,
+		toTime: number,
+		onRecords: (records: readonly LogRecord[]) => void,
+		signal: AbortSignal,
+	): Promise<LogRangeEnd> {
+		const start = new Map<number, number>();
+		const at = new Map<number, number>();
+		if (signal.aborted) {
+			return { start, next: at };
+		}
+		const step = abortStep(signal);
+		try {
+			const consumer = step(await this.shared(signal));
+			const state = { parts: step(await this.partitions(consumer)) };
+			// Every partition (AD-24: until a story proves the placement by key).
+			const all = [...state.parts.leaders.keys()];
+			for (const [p, o] of step(await this.offsetsAt(consumer, all, BigInt(Math.floor(fromTime))))) {
+				start.set(p, o);
+				at.set(p, o);
+			}
+			const end = step(await this.offsetsAt(consumer, all, -1n));
+			const after = step(await this.offsetsAt(consumer, all, BigInt(Math.floor(toTime) + 1)));
+			const stop = new Map(all.map((p) => [p, Math.min(end.get(p) ?? 0, after.get(p) ?? end.get(p) ?? 0)]));
+			// Since when each partition has answered no records below its stop (a tiered-storage read can
+			// answer empty for a while): fetched again with a wait, and given up after `stallMs`.
+			const emptySince = new Map<number, number>();
+			const stalled: number[] = [];
+			for (;;) {
+				const pending = new Map([...at].filter(([p, o]) => o < stop.get(p)! && !stalled.includes(p)));
+				if (pending.size === 0 || signal.aborted) {
+					break;
+				}
+				const wait = [...pending.keys()].some((p) => emptySince.has(p)) ? this.emptyWaitMs : 0;
+				const records = await this.fetchRound(consumer, state, pending, wait, signal, step);
+				if (signal.aborted) {
+					break;
+				}
+				const now = Date.now();
+				for (const [p, o] of pending) {
+					const moved = o > at.get(p)!;
+					at.set(p, Math.min(o, stop.get(p)!));
+					if (moved) {
+						emptySince.delete(p);
+					} else if (!emptySince.has(p)) {
+						emptySince.set(p, now);
+					} else if (now - emptySince.get(p)! >= this.stallMs) {
+						stalled.push(p);
+					}
+				}
+				onRecords(records.filter((r) => r.offset < stop.get(r.partition)!));
+			}
+			return { start, next: new Map(at), ...(stalled.length > 0 ? { stalled } : {}) };
+		} catch (err) {
+			if (signal.aborted) {
+				return { start, next: new Map(at) };
+			}
+			await this.close();
+			throw asLogReadError(err);
+		}
+	}
+
+	async logStart(signal: AbortSignal): Promise<LogPositions> {
+		if (signal.aborted) {
+			return new Map();
+		}
+		const step = abortStep(signal);
+		try {
+			const consumer = step(await this.shared(signal));
+			const parts = step(await this.partitions(consumer));
+			return step(await this.offsetsAt(consumer, [...parts.leaders.keys()], -2n));
+		} catch (err) {
+			if (signal.aborted) {
+				return new Map();
+			}
+			await this.close();
+			throw asLogReadError(err);
+		}
+	}
+
+	async timeBefore(start: LogPositions, signal: AbortSignal): Promise<number | undefined> {
+		if (signal.aborted) {
+			return undefined;
+		}
+		const step = abortStep(signal);
+		try {
+			const consumer = step(await this.shared(signal));
+			const state = { parts: step(await this.partitions(consumer)) };
+			const first = step(await this.offsetsAt(consumer, [...start.keys()].filter((p) => state.parts.leaders.has(p)), -2n));
+			const at = new Map([...start].map(([p, o]) => [p, o - 1] as const).filter(([p, o]) => o >= 0 && o >= (first.get(p) ?? Infinity)));
+			if (at.size === 0) {
+				return undefined;
+			}
+			const wanted = new Map(at);
+			const records = await this.fetchRound(consumer, state, at, 0, signal, step);
+			const times = records.filter((r) => wanted.get(r.partition) === r.offset).map((r) => r.timestamp);
+			return times.length > 0 ? Math.max(...times) : undefined;
+		} catch (err) {
+			if (signal.aborted) {
+				return undefined;
+			}
+			await this.close();
+			throw asLogReadError(err);
+		}
+	}
+
+	async retentionMs(signal: AbortSignal): Promise<number | undefined> {
+		if (signal.aborted) {
+			return undefined;
+		}
+		let admin: InstanceType<Kafka['Admin']> | undefined;
+		const onAbort = () => void admin?.close().catch(() => undefined);
+		signal.addEventListener('abort', onAbort, { once: true });
+		try {
+			const { Admin } = await this.kafka();
+			if (signal.aborted) {
+				return undefined;
+			}
+			admin = new Admin(this.baseOptions());
+			const described = await admin.describeConfigs({
+				resources: [{ resourceType: TOPIC_RESOURCE, resourceName: LOGS_TOPIC, configurationKeys: ['retention.ms'] }],
+			});
+			const value = described.find((d) => d.resourceName === LOGS_TOPIC)?.configs.find((c) => c.name === 'retention.ms')?.value;
+			const ms = value === null || value === undefined || value === '' ? NaN : Number(value);
+			return Number.isFinite(ms) ? ms : undefined;
+		} catch {
+			// Refused (DescribeConfigs not allowed) or any other failure: the panel says "within the topic's retention".
+			return undefined;
+		} finally {
+			signal.removeEventListener('abort', onAbort);
+			await admin?.close().catch(() => undefined);
+		}
+	}
+}
+
+/** Thrown by `step` once the signal aborted. */
+function abortStep(signal: AbortSignal): <T>(value: T) => T {
+	return <T>(value: T): T => {
+		if (signal.aborted) {
+			throw new Aborted();
+		}
+		return value;
+	};
 }
 
 /**

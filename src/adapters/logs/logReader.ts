@@ -1,4 +1,4 @@
-// The pipeline logs reader (AD-24, ticket 6.2): what the extension needs from the cluster's
+// The pipeline logs reader (AD-24, tickets 6.2, 6.3): what the extension needs from the cluster's
 // `__redpanda.connect.logs` topic, behind an interface so the integration tests use an in-memory fake
 // (`src/test/helpers/fakeLogs.ts`) and the client (`platformaticReader.ts`, `@platformatic/kafka`) can
 // be replaced. A reader is made for one cluster and one Redpanda user: the address is the cluster's
@@ -67,6 +67,19 @@ export function isLogReadError(err: unknown): err is { readonly kind: LogReadErr
 	return e.name === 'LogReadError' && (e.kind === 'signIn' || e.kind === 'notAllowed' || e.kind === 'connection') && typeof e.message === 'string';
 }
 
+/** How a bounded read (`range`) ended. */
+export interface LogRangeEnd {
+	/** The offset it started at on each partition: ListOffsets(fromTime), the end where no record is that late. */
+	readonly start: LogPositions;
+	/** The next offset on each partition after the read: a tail goes on from here. */
+	readonly next: LogPositions;
+	/**
+	 * Partitions given up before their stop: fetches kept answering no records (as a slow tiered-storage
+	 * read might) for the reader's time limit; `next` is where each stopped.
+	 */
+	readonly stalled?: readonly number[];
+}
+
 export interface LogReader {
 	/**
 	 * The test read of log access: the topic's metadata and one fetch. Resolves when both succeed;
@@ -88,6 +101,35 @@ export interface LogReader {
 		signal: AbortSignal,
 		resumeAt?: LogPositions,
 	): Promise<void>;
+	/**
+	 * A bounded read (ticket 6.3): the same partitions as `tail`, forward from the first record at or
+	 * after `fromTime` (ListOffsets by time; never below the log's first offset) up to the first record
+	 * after `toTime` or the end offsets taken when it starts, whichever is first; then it ends.
+	 * `onRecords` gets every record read, of any key, after each fetch. Records older than the brokers'
+	 * local retention come from tiered storage through the same fetch. The client stays open for the
+	 * reader's next `range`, `logStart` or `retentionMs` and is closed once `signal` aborts (the caller
+	 * aborts it when it is done); an abort ends the read early. Rejects with a `LogReadError`.
+	 */
+	range(
+		pipelineId: string,
+		fromTime: number,
+		toTime: number,
+		onRecords: (records: readonly LogRecord[]) => void,
+		signal: AbortSignal,
+	): Promise<LogRangeEnd>;
+	/** The log's first offset on each partition (ListOffsets earliest); the client as for `range`. */
+	logStart(signal: AbortSignal): Promise<LogPositions>;
+	/**
+	 * The time of the newest of the records just before `start` (offset − 1 on each partition, where
+	 * that is not below the log's first offset), any key; `undefined` when there is none. Load older
+	 * jumps over a silence with it. The client as for `range`.
+	 */
+	timeBefore(start: LogPositions, signal: AbortSignal): Promise<number | undefined>;
+	/**
+	 * The topic's `retention.ms` (DescribeConfigs), `-1` for no time limit; `undefined` when it cannot
+	 * be read (DescribeConfigs not allowed, or any other failure). Never rejects.
+	 */
+	retentionMs(signal: AbortSignal): Promise<number | undefined>;
 }
 
 export type LogReaderFactory = (target: LogTarget) => LogReader;

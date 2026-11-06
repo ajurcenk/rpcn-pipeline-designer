@@ -92,3 +92,142 @@ body {
 	border-top: 1px solid var(--vscode-panel-border, transparent);
 	color: var(--vscode-descriptionForeground);
 }
+/* Ticket 6.3: the Live toggle, the time-range menu, Load older and the gap notes. */
+.rpcn-logs-tools {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.rpcn-logs-button {
+	font: inherit;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	background: var(--vscode-button-secondaryBackground, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border-radius: 2px;
+	padding: 1px 8px;
+	cursor: pointer;
+}
+.rpcn-logs-button:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+.rpcn-logs-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.rpcn-logs-button:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+.rpcn-logs-live {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.rpcn-logs-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	box-sizing: border-box;
+	border: 1.5px solid var(--vscode-descriptionForeground);
+}
+.rpcn-logs-dot-on {
+	background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, currentColor));
+	border-color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, currentColor));
+}
+.rpcn-logs-range {
+	position: relative;
+}
+.rpcn-logs-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 4px);
+	z-index: 10;
+	width: 300px;
+	padding: 4px 0;
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, var(--vscode-panel-border, transparent)));
+	border-radius: 4px;
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, transparent);
+}
+.rpcn-logs-option {
+	display: block;
+	width: 100%;
+	text-align: left;
+	font: inherit;
+	color: inherit;
+	background: transparent;
+	border: 0;
+	padding: 3px 14px;
+	cursor: pointer;
+}
+.rpcn-logs-option:hover, .rpcn-logs-option:focus-visible {
+	color: var(--vscode-menu-selectionForeground, inherit);
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+	outline: none;
+}
+.rpcn-logs-option-selected {
+	font-weight: 600;
+}
+.rpcn-logs-menu-sep {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border, transparent));
+}
+.rpcn-logs-custom {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 6px 8px;
+	padding: 6px 14px;
+}
+.rpcn-logs-custom label {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.rpcn-logs-custom input {
+	font-family: var(--vscode-editor-font-family);
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	padding: 2px 4px;
+	min-width: 0;
+}
+.rpcn-logs-custom input[aria-invalid="true"] {
+	border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+}
+.rpcn-logs-custom button {
+	grid-column: 1 / -1;
+	justify-self: start;
+}
+.rpcn-logs-custom-error {
+	grid-column: 1 / -1;
+	margin: 0;
+	color: var(--vscode-errorForeground);
+}
+.rpcn-logs-retention {
+	margin: 4px 14px 6px;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-older {
+	display: flex;
+	justify-content: center;
+	padding: 4px 0;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-no-older {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-gap {
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+.rpcn-logs-older {
+	flex-wrap: wrap;
+	gap: 4px 12px;
+}
+.rpcn-logs-older-error {
+	color: var(--vscode-errorForeground);
+}

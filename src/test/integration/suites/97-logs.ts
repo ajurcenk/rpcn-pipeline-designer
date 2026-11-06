@@ -8,6 +8,9 @@
 // every message, output line, view item, posted message, setting and the secret storage's other keys.
 // BUNDLE loads the real client from dist/extension.js: its CRC-32C comes from the wasm, not the
 // native `@node-rs/crc32` (installed in this checkout's node_modules as an optional dependency).
+// Ticket 6.3 (history): every matrix row of its plan (RANGE … SWITCH) drives the panel's time-range
+// menu, Live toggle and Load older through the test seam, as the webview's messages do; HISTORY_3_DAYS
+// is its acceptance check (a pipeline's records over 3 days, Last 24 hours, then Load older twice).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -16,8 +19,9 @@ import {
 	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, noLogAccessMessage, SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND,
 	SHOW_LOGS_COMMAND, signInRefusedMessage,
 } from '../../../adapters/vscode/cloudView';
-import { FOLLOWING_STATUS, LOGS_VIEW_ID, LOGS_WINDOW_MS } from '../../../adapters/vscode/logsPanel';
-import { MAX_LOG_ROWS } from '../../../shared/logsProtocol';
+import { FOLLOWING_STATUS, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, STOPPED_PREFIX } from '../../../adapters/vscode/logsPanel';
+import { gapsIn, MAX_LOG_ROWS } from '../../../shared/logsProtocol';
+import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
 import { FakeLogs } from '../../helpers/fakeLogs';
@@ -37,6 +41,8 @@ const ORDERS = 'd3orders000000000001';
 const CLICKS = 'd3clicks000000000002';
 const LICENSE_ORG = '7f0c1d2e-3a4b-5c6d-7e8f-9a0b1c2d3e4f';
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 type Input = string | undefined;
 
@@ -110,6 +116,20 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		key: id, timestamp: Date.now() - ago,
 		value: { instance_id: `${id}-inst-1`, level: 'INFO', message: `${id}:${text}`, path: '/config/connect.yaml', pipeline_id: id, time: new Date(Date.now() - ago).toISOString(), ...extra },
 	});
+
+	/** A record of pipeline `id` with `message` "<id>:<text>", at time `ts`. */
+	const recAt = (id: string, text: string, ts: number) => ({
+		key: id, timestamp: ts,
+		value: { instance_id: `${id}-inst-1`, level: 'INFO', message: `${id}:${text}`, pipeline_id: id, time: new Date(ts).toISOString() },
+	});
+	/** The shown rows' texts after "<id>:". */
+	const texts = () => logs().rows().map((r) => r.message.slice(r.message.indexOf(':') + 1));
+	/** Shows ORDERS' logs (access set up) and waits until the default read follows. */
+	async function showOrders(): Promise<void> {
+		await setUpAccess();
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().visible && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+	}
 
 	async function connectAndRead(): Promise<void> {
 		script({ inputs: [CLIENT_ID, CLIENT_SECRET] });
@@ -410,6 +430,310 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(second.resumeAt && [...second.resumeAt], [[0, 1]], 'from where the first stopped');
 		assert.deepStrictEqual(messages(ORDERS), [`${ORDERS}:before`, `${ORDERS}:while hidden`]);
 		assert.strictEqual(topic.tails.length, 2);
+	});
+
+	// --- ticket 6.3: history ---
+
+	test('HISTORY_3_DAYS: Last 24 hours, then Load older twice: each 24 hours before, oldest first, with a gap note wherever 30 minutes or more pass', async () => {
+		const t0 = Date.now();
+		// Every 10 minutes over 3 days (5 minutes off the 10, away from the bounds), but for two silences:
+		// 10:05–11:35 ago (110 minutes between records) and 30:05–39:55 ago (610 minutes); another pipeline's records in between.
+		const agos = Array.from({ length: 432 }, (_, k) => 5 + 10 * k).filter((m) => !(m > 600 && m < 700) && !(m > 1800 && m < 2400)).reverse();
+		topic.write(...agos.flatMap((m) => [recAt(ORDERS, `-${m}m`, t0 - m * MINUTE), recAt(CLICKS, `-${m}m`, t0 - m * MINUTE + 1)]));
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'day' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		const upTo = (minutes: number) => agos.filter((m) => m <= minutes).map((m) => `-${m}m`);
+		assert.deepStrictEqual(texts(), upTo(1435), 'the last 24 hours, oldest first, only orders\'');
+		assert.strictEqual(logs().viewState.live, false, 'Live off');
+		assert.deepStrictEqual(topic.activeTails(), [], 'nothing follows');
+		const gapMinutes = () => gapsIn(logs().rows()).map((g) => Math.round((g.to - g.from) / MINUTE));
+		assert.deepStrictEqual(gapMinutes(), [110]);
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), upTo(2875), 'the 24 hours before the oldest shown, prepended');
+		assert.deepStrictEqual(gapMinutes(), [610, 110]);
+		assert.strictEqual(logs().viewState.older, 'more');
+		assert.strictEqual(logs().posted.filter((m) => m.type === 'prepend').length, 1);
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), upTo(4315), 'and the day before that');
+		assert.strictEqual(logs().viewState.older, 'none', 'the log\'s first record is shown: No older records');
+		assert.strictEqual(logs().rows().length, agos.length);
+		assert.ok(logs().rows().every((r, i, all) => i === 0 || all[i - 1].time <= r.time), 'oldest first');
+	});
+
+	test('RANGE: Last 24 hours reads to its end and stops (Live off); Live on goes on after it; a read failure is the status line', async () => {
+		topic.write(rec(ORDERS, 'two days', 2 * DAY), rec(ORDERS, 'yesterday', 20 * HOUR), rec(ORDERS, 'an hour', HOUR));
+		await showOrders();
+		assert.deepStrictEqual(texts(), []);
+		await logs().chooseRange({ kind: 'day' });
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['yesterday', 'an hour']);
+		const range = topic.ranges.at(-1)!;
+		assert.ok(Math.abs(range.toTime - range.fromTime - DAY) < 1_000, 'from now − 24 hours to now');
+		assert.ok(range.end, 'the read ended');
+		assert.strictEqual(logs().viewState.range.kind, 'day');
+		assert.strictEqual(logs().viewState.live, false);
+		assert.strictEqual(logs().statusText, 'Read 2 records of the last 24 hours. Live is off.');
+		topic.write(rec(ORDERS, 'new'));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepStrictEqual(texts(), ['yesterday', 'an hour'], 'nothing appended: Live is off');
+		assert.deepStrictEqual(topic.activeTails(), []);
+		// Live on goes on after the range's end: the record written since appears.
+		await logs().setLive(true);
+		assert.ok(await waitFor(() => texts().length === 3, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['yesterday', 'an hour', 'new']);
+		const resumed = topic.activeTails()[0].resumeAt;
+		assert.deepStrictEqual(resumed && [...resumed], [[0, 3]]);
+		// A read failure.
+		topic.refuseRead = true;
+		await logs().chooseRange({ kind: 'hour' });
+		assert.ok(await waitFor(() => logs().statusText.startsWith(STOPPED_PREFIX), 10_000), logs().statusText);
+		assert.match(logs().statusText, /not allowed to read __redpanda\.connect\.logs/);
+		assert.ok(await waitFor(() => !logs().reading, 10_000));
+	});
+
+	test('LIVE_DEFAULTS: Live reads no history, only new records; Live off stops it and on again goes on where it stopped; the default is 6.2\'s', async () => {
+		topic.write(rec(ORDERS, 'old', 5 * MINUTE));
+		await showOrders();
+		assert.deepStrictEqual(texts(), ['old'], 'the default: the last 15 minutes');
+		assert.strictEqual(logs().viewState.range.kind, 'recent');
+		assert.strictEqual(logs().viewState.live, true);
+		const before = Date.now();
+		await logs().chooseRange({ kind: 'live' });
+		assert.ok(await waitFor(() => topic.activeTails().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.ok(topic.activeTails()[0].fromTime >= before - 1_000, 'from now');
+		assert.deepStrictEqual(texts(), [], 'no history');
+		topic.write(rec(ORDERS, 'live 1'));
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		await logs().setLive(false);
+		assert.strictEqual(logs().statusText, LIVE_OFF_STATUS);
+		assert.ok(await waitFor(() => topic.activeTails().length === 0, 10_000));
+		topic.write(rec(ORDERS, 'while off'));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepStrictEqual(texts(), ['live 1']);
+		await logs().setLive(true);
+		assert.ok(await waitFor(() => texts().length === 2, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['live 1', 'while off'], 'from where it stopped, nothing twice');
+		// The default again: the last 15 minutes, then live.
+		await logs().chooseRange({ kind: 'recent' });
+		assert.ok(await waitFor(() => texts().length === 3, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['old', 'live 1', 'while off']);
+	});
+
+	test('SINCE_DEPLOY: from the pipeline\'s update_time (read fresh) to now, then live; the pipeline gone: said so, nothing read', async () => {
+		const deployed = Date.now() - 2 * HOUR;
+		fake.cluster(VILNIUS).pipelines.find((p) => p.id === ORDERS)!.update_time = new Date(deployed).toISOString().replace('Z', '123456Z');
+		topic.write(rec(ORDERS, 'before the deploy', 3 * HOUR), rec(ORDERS, 'after the deploy', HOUR));
+		await showOrders();
+		const requests = fake.requests.length;
+		assert.strictEqual(await logs().chooseRange({ kind: 'deploy' }), true);
+		assert.ok(fake.requests.slice(requests).some((r) => r.method === 'GET' && r.url.endsWith(`/pipelines/${ORDERS}`)), 'the pipeline read now');
+		assert.ok(await waitFor(() => texts().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['after the deploy']);
+		assert.strictEqual(topic.activeTails()[0].fromTime, deployed, 'from update_time');
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'deploy', from: deployed, to: null });
+		assert.strictEqual(logs().viewState.deployedAt, deployed);
+		topic.write(rec(ORDERS, 'live'));
+		assert.ok(await waitFor(() => texts().length === 2, 10_000), 'then live');
+		// Gone.
+		fake.cluster(VILNIUS).pipelines = fake.cluster(VILNIUS).pipelines.filter((p) => p.id !== ORDERS);
+		const tails = topic.tails.length;
+		infos.length = 0;
+		assert.strictEqual(await logs().chooseRange({ kind: 'deploy' }), false);
+		assert.deepStrictEqual(infos, ['Pipeline orders is no longer on rpc-vilnius, so it has no last deploy. Nothing was read.']);
+		assert.strictEqual(topic.tails.length, tails, 'nothing read');
+		assert.deepStrictEqual(texts(), ['after the deploy', 'live'], 'the shown log is kept');
+	});
+
+	test('CUSTOM: From–To reads that range; To before From or From in the future is refused', async () => {
+		topic.write(rec(ORDERS, '6h', 6 * HOUR), rec(ORDERS, '4h', 4 * HOUR), rec(ORDERS, '3h', 3 * HOUR), rec(ORDERS, '1h', HOUR));
+		await showOrders();
+		const now = Date.now();
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: now - 5 * HOUR, to: now - 2 * HOUR }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['4h', '3h']);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: now - 5 * HOUR, to: now - 2 * HOUR });
+		const ranges = topic.ranges.length;
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: now - 2 * HOUR, to: now - 5 * HOUR }), false, 'To before From');
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: now + HOUR, to: now + 2 * HOUR }), false, 'From in the future');
+		assert.strictEqual(topic.ranges.length, ranges, 'nothing read');
+		assert.deepStrictEqual(texts(), ['4h', '3h']);
+	});
+
+	test('OVER_CAP: a range with more than the cap keeps its newest; the older ones are left out (the footer\'s count); Load older pages back', async () => {
+		topic.write(...Array.from({ length: 8 }, (_, i) => rec(ORDERS, `r${i}`, (8 - i) * MINUTE + 30 * MINUTE)));
+		await showOrders();
+		logs().cap = 5;
+		await logs().chooseRange({ kind: 'hour' });
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['r3', 'r4', 'r5', 'r6', 'r7'], 'the newest 5');
+		assert.strictEqual(logs().droppedCount, 3);
+		const append = logs().posted.filter((m) => m.type === 'append').at(-1);
+		assert.strictEqual(append?.type === 'append' ? append.dropped : undefined, 3, 'the webview\'s footer count');
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['r0', 'r1', 'r2', 'r3', 'r4'], 'the left-out ones read back; the newest dropped at the cap');
+		assert.strictEqual(logs().droppedCount, 0);
+		assert.strictEqual(logs().viewState.newerDropped, 3);
+	});
+
+	test('LOAD_OLDER: the window before the oldest shown, prepended; at the cap the newest are dropped and Live pauses; at the log\'s first offset "No older records"', async () => {
+		topic.write(
+			rec(ORDERS, 'gone 1', 29 * MINUTE), rec(ORDERS, 'gone 2', 28 * MINUTE),
+			rec(ORDERS, 'o1', 24 * MINUTE), rec(ORDERS, 'o2', 22 * MINUTE), rec(ORDERS, 'o3', 20 * MINUTE),
+			rec(ORDERS, 'n1', 10 * MINUTE), rec(ORDERS, 'n2', 5 * MINUTE), rec(ORDERS, 'n3', 2 * MINUTE),
+		);
+		// The first two are below the log's start (the topic's retention passed).
+		topic.logStart = [2];
+		await showOrders();
+		assert.deepStrictEqual(texts(), ['n1', 'n2', 'n3']);
+		logs().cap = 5;
+		const targets = topic.targets.length;
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['o1', 'o2', 'o3', 'n1', 'n2'], 'prepended; the newest dropped for the cap');
+		assert.strictEqual(logs().viewState.newerDropped, 1);
+		assert.strictEqual(logs().viewState.live, false, 'Live paused');
+		assert.strictEqual(logs().statusText, livePausedStatus(5));
+		assert.ok(await waitFor(() => topic.activeTails().length === 0, 10_000), 'nothing follows');
+		assert.strictEqual(topic.targets.length, targets + 1, 'one reader for the Load older');
+		assert.strictEqual(topic.logStartReads, 1);
+		assert.ok(topic.ranges.every((r) => r.signal.aborted), 'its client closed');
+		assert.strictEqual(logs().viewState.older, 'none', 'the window began at the log\'s first offset');
+		await logs().loadOlder();
+		assert.strictEqual(topic.ranges.length, 1, 'no older read once none are left');
+		topic.write(rec(ORDERS, 'n4'));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.ok(!texts().includes('n4'));
+		// Live on after the newest were dropped: the default range again.
+		await logs().setLive(true);
+		assert.ok(await waitFor(() => texts().includes('n4'), 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['n1', 'n2', 'n3', 'n4']);
+		assert.strictEqual(logs().viewState.older, 'more');
+	});
+
+	test('EMPTY_WINDOWS: Load older over windows with none of the pipeline\'s records jumps to the record just before each, until one has them', async () => {
+		// In time order, as ListOffsets by time assumes; the other pipeline's records make windows that are not empty but hold none of orders'.
+		topic.write(rec(ORDERS, 'two hours', 2 * HOUR), rec(CLICKS, 'other', 50 * MINUTE), rec(CLICKS, 'other 2', 20 * MINUTE));
+		await showOrders();
+		assert.deepStrictEqual(texts(), []);
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['two hours']);
+		const [orders, other] = topic.partitions[0];
+		assert.deepStrictEqual(topic.ranges.map((r) => r.toTime).slice(1), [other.timestamp, orders.timestamp], 'each next window ends at the record just before the last');
+		assert.ok(topic.ranges.every((r) => r.toTime - r.fromTime === LOGS_WINDOW_MS));
+		assert.strictEqual(topic.timeBeforeReads, 2);
+		assert.strictEqual(topic.logStartReads, 1, 'one reader for the whole walk');
+		// The record two hours back is the log's first: nothing older.
+		assert.strictEqual(logs().viewState.older, 'none');
+	});
+
+	test('EMPTY_WEEK: a week of silence before the default range is jumped over: one empty window, then the record before it', async () => {
+		topic.write(rec(ORDERS, 'a week ago', 7 * DAY + HOUR));
+		await showOrders();
+		assert.deepStrictEqual(texts(), []);
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['a week ago']);
+		assert.strictEqual(topic.ranges.length, 2, 'one empty window, then the one with the record');
+		assert.strictEqual(logs().viewState.older, 'none');
+	});
+
+	test('LOAD_OLDER while a range is read: refused (nothing read) until the range is read', async () => {
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 3000 }, (_, i) => recAt(ORDERS, `w${i}`, t0 - 6 * DAY + i * MINUTE)));
+		await showOrders();
+		topic.rangeDelayMs = 100;
+		await logs().chooseRange({ kind: 'week' });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000));
+		await logs().loadOlder();
+		assert.strictEqual(topic.ranges.length, 1, 'no Load older read');
+		assert.strictEqual(topic.logStartReads, 0);
+		assert.strictEqual(logs().viewState.older, 'more');
+		assert.ok(await waitFor(() => logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(texts().length, 3000);
+	});
+
+	test('LOAD_OLDER failure: "Could not load older records: …" in its row, kept while the tail goes on; the status line stays the tail\'s', async () => {
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		topic.refuseRead = true;
+		await logs().loadOlder();
+		assert.match(logs().viewState.olderError ?? '', /^Could not load older records: not allowed to read __redpanda\.connect\.logs/);
+		assert.ok(!logs().statusText.startsWith(STOPPED_PREFIX), logs().statusText);
+		assert.strictEqual(logs().viewState.older, 'more');
+		topic.write(rec(ORDERS, 'two'));
+		assert.ok(await waitFor(() => texts().length === 2, 10_000), 'the tail goes on');
+		assert.strictEqual(logs().statusText, FOLLOWING_STATUS);
+		assert.match(logs().viewState.olderError ?? '', /^Could not load older records: /, 'still shown');
+	});
+
+	test('SINCE_DEPLOY slow: another range chosen while the pipeline\'s GET is slow wins; the deploy range is dropped', async () => {
+		fake.cluster(VILNIUS).pipelines.find((p) => p.id === ORDERS)!.update_time = new Date(Date.now() - 2 * HOUR).toISOString();
+		topic.write(rec(ORDERS, '3h', 3 * HOUR), rec(ORDERS, '30m', 30 * MINUTE));
+		await showOrders();
+		fake.delay = (req) => (req.method === 'GET' && req.url.endsWith(`/pipelines/${ORDERS}`) ? 800 : 0);
+		try {
+			const deploy = logs().chooseRange({ kind: 'deploy' });
+			assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+			assert.strictEqual(await deploy, false, 'the deploy range gave way');
+			assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+			assert.strictEqual(logs().viewState.range.kind, 'hour');
+			assert.deepStrictEqual(texts(), ['30m']);
+			assert.deepStrictEqual(topic.activeTails(), [], 'no tail from the deploy time');
+		} finally {
+			fake.delay = undefined;
+		}
+	});
+
+	test('GAP: two shown records 30 minutes or more apart get a note (computed from the rows); a range with none is read to its end (its note)', async () => {
+		topic.write(rec(ORDERS, 'a', 50 * MINUTE), rec(ORDERS, 'b', 45 * MINUTE), rec(ORDERS, 'c', 10 * MINUTE));
+		await showOrders();
+		await logs().chooseRange({ kind: 'hour' });
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['a', 'b', 'c']);
+		assert.deepStrictEqual(gapsIn(logs().rows()).map((g) => g.before), [2], 'one note, before c');
+		const now = Date.now();
+		await logs().chooseRange({ kind: 'custom', from: now - 40 * MINUTE, to: now - 20 * MINUTE });
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), []);
+		const last = logs().posted.filter((m) => m.type === 'state').at(-1);
+		assert.ok(last?.type === 'state' && last.state.done && last.state.range.to === now - 20 * MINUTE, 'the webview\'s empty-range note gets its From and To');
+	});
+
+	test('RETENTION: the menu\'s line from retention.ms, read once per pipeline; DescribeConfigs refused: within the topic\'s retention', async () => {
+		await showOrders();
+		assert.strictEqual(logs().viewState.retention, null, 'not read before the menu opens');
+		assert.strictEqual(topic.retentionReads, 0);
+		logs().requestRetention();
+		assert.ok(await waitFor(() => logs().viewState.retention !== null, 10_000));
+		assert.strictEqual(logs().viewState.retention, 'Records older than 7 days are gone (the topic\'s retention).');
+		logs().requestRetention();
+		assert.strictEqual(topic.retentionReads, 1);
+		topic.retentionMs = 'refused';
+		await showLogs(CLICKS);
+		logs().requestRetention();
+		assert.ok(await waitFor(() => logs().viewState.retention !== null, 10_000));
+		assert.strictEqual(logs().viewState.retention, RETENTION_UNKNOWN);
+	});
+
+	test('SWITCH: another range, or another pipeline, while a range is read: the earlier read stops, the new one starts', async () => {
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 3000 }, (_, i) => recAt(ORDERS, `w${i}`, t0 - 6 * DAY + i * MINUTE)), rec(ORDERS, 'recent', 30 * MINUTE));
+		await showOrders();
+		topic.rangeDelayMs = 100;
+		await logs().chooseRange({ kind: 'week' });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000));
+		const week = topic.activeRanges()[0];
+		await logs().chooseRange({ kind: 'hour' });
+		assert.strictEqual(week.signal.aborted, true, 'the week\'s read stopped');
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['recent']);
+		await logs().chooseRange({ kind: 'week' });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000));
+		const again = topic.activeRanges()[0];
+		await showLogs(CLICKS);
+		assert.strictEqual(again.signal.aborted, true, 'another pipeline stops it');
+		assert.strictEqual(logs().viewState.range.kind, 'recent', 'the new pipeline on the default range');
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), []);
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

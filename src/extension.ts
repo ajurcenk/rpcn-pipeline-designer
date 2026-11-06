@@ -103,11 +103,11 @@ export interface ExtensionApi {
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
 		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue'>;
 	/**
-	 * The Pipeline Logs tab (ticket 6.2): the shown pipeline, its kept rows and status, whether it
-	 * reads, the cap and window to change, the posted messages; and the bundled Kafka client's check
+	 * The Pipeline Logs tab (tickets 6.2, 6.3): the shown pipeline, its kept rows and status, whether it
+	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions; and the bundled Kafka client's check
 	 * (no native module). Only in `ExtensionMode.Test`.
 	 */
-	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'visible' | 'rows' | 'droppedCount' | 'cap' | 'windowMs' | 'posted' | 'onDidChange'>
+	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention'>
 		& { checkClient: typeof checkClient };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];

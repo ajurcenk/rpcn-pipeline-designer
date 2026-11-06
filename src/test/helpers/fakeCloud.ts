@@ -61,6 +61,8 @@ export interface FakePipeline {
 	tags: Record<string, string>;
 	state: string;
 	status?: { error: string };
+	/** Its `update_time` (RFC 3339), when set (ticket 6.3: Since the last deploy). */
+	update_time?: string;
 	/** The states its next GETs answer, one per call; the last one stays. */
 	sequence: FakeState[];
 }
@@ -150,6 +152,8 @@ export class FakeCloud {
 	secretsPageSize = 100;
 	/** Error answers for chosen requests, checked before every other route (after the token check). */
 	failures: FakeFailure[] = [];
+	/** How long to hold the answer to a request (ticket 6.3: a slow GET); none: at once. */
+	delay: ((req: FakeRequest) => number) | undefined;
 	private server: http.Server | undefined;
 	private nextPipeline = 1;
 
@@ -194,8 +198,16 @@ export class FakeCloud {
 				const recorded: FakeRequest = { method: req.method ?? '', url: req.url ?? '', headers: req.headers, body };
 				this.requests.push(recorded);
 				const [status, answer] = this.answer(recorded);
-				res.writeHead(status, { 'content-type': 'application/json' });
-				res.end(JSON.stringify(answer));
+				const send = () => {
+					res.writeHead(status, { 'content-type': 'application/json' });
+					res.end(JSON.stringify(answer));
+				};
+				const ms = this.delay?.(recorded) ?? 0;
+				if (ms > 0) {
+					setTimeout(send, ms);
+				} else {
+					send();
+				}
 			});
 		});
 		await new Promise<void>((resolve) => this.server!.listen(0, '127.0.0.1', resolve));
