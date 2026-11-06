@@ -124,3 +124,5 @@ context:
 | 6 | (triage) Load older over a long silence steps back one window at a time: hundreds of ListOffsets for a quiet week (the implementer's own risk note) | medium | the walk back in `loadOlder` | patch (jump to the record before the oldest shown) |
 
 **Verification (2026-11-06):** compile, corpus 156, webview 345, multiroot 10, stable 1287 passing with one failure, COPY_ID, which read the desktop clipboard through the Wayland session; rerun alone with `-u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11` it passed while the desktop clipboard held other text. The floor run was stopped: the user does not test on VS Code 1.100.0 (2026-11-06), so the floor is out of Verification.
+
+**Manual check result (user, 2026-11-06):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (vscode-tracer.yaml with a `log` processor at INFO every 5 s; the time ranges, Load older, gap notes, Since the last deploy, a custom range and switching ranges).
