@@ -291,9 +291,15 @@
       },
       {
         "command": "redpandaConnect.cloud.showLogs",
-        "title": "Show logs",
+        "title": "Show pipeline logs",
         "category": "Redpanda Connect",
         "icon": "$(output)"
+      },
+      {
+        "command": "redpandaConnect.cloud.showLogsAroundError",
+        "title": "Show logs around the error",
+        "category": "Redpanda Connect",
+        "icon": "$(error)"
       }
     ],
     "menus": {
@@ -427,7 +433,10 @@
           "when": "false"
         },
         {
-          "command": "redpandaConnect.cloud.showLogs",
+          "command": "redpandaConnect.cloud.showLogs"
+        },
+        {
+          "command": "redpandaConnect.cloud.showLogsAroundError",
           "when": "false"
         }
       ],
@@ -675,6 +684,11 @@
           "command": "redpandaConnect.cloud.showLogs",
           "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/",
           "group": "0_open@4"
+        },
+        {
+          "command": "redpandaConnect.cloud.showLogsAroundError",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline state-error\\b/",
+          "group": "0_open@5"
         }
       ]
     },

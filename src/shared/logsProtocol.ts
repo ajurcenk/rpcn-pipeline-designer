@@ -1,4 +1,4 @@
-// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4): every
+// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4, 6.5): every
 // message of the third webview, as discriminated unions on `type`, plus the validators each side uses on
 // what it receives, and the pure rules both share (the range menu's choices, local date-times, the gap
 // notes; ticket 6.4: the levels, the filter and its search pattern). The panel adapter (`src/adapters/vscode/logsPanel.ts`), the record shaping
@@ -240,6 +240,12 @@ export interface LogsViewState {
 	readonly filter: LogFilter;
 	/** The level chips' counts and "N of M records match". */
 	readonly counts: LogCounts;
+	/** Ticket 6.5: the ERROR records are highlighted (opened from an Error: its notification, or around the error). */
+	readonly highlightErrors: boolean;
+	/** Ticket 6.5: the row to scroll to and mark (the error "around the error" found), until the next range; else `null`. */
+	readonly focusId: string | null;
+	/** Ticket 6.5: a note above the records ("No ERROR record in the last 24 hours"), until the next range; else `null`. */
+	readonly note: string | null;
 }
 
 export type LogsHostMessage =
@@ -324,7 +330,8 @@ function isState(v: unknown): v is LogsViewState {
 	return isKind(r.kind) && isTime(r.from) && (r.to === null || isTime(r.to))
 		&& typeof v.live === 'boolean' && typeof v.done === 'boolean' && (v.older === 'more' || v.older === 'reading' || v.older === 'none')
 		&& (v.olderError === null || typeof v.olderError === 'string') && (v.olderNote === null || typeof v.olderNote === 'string') && isCount(v.newerDropped) && (v.retention === null || typeof v.retention === 'string') && (v.deployedAt === null || isTime(v.deployedAt))
-		&& isTime(v.olderBefore) && parseLogFilter(v.filter) !== undefined && isCounts(v.counts);
+		&& isTime(v.olderBefore) && parseLogFilter(v.filter) !== undefined && isCounts(v.counts)
+		&& typeof v.highlightErrors === 'boolean' && (v.focusId === null || typeof v.focusId === 'string') && (v.note === null || typeof v.note === 'string');
 }
 
 /** A host message, or `undefined` for anything malformed. */

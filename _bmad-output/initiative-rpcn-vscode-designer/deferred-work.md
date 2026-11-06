@@ -123,3 +123,9 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-check-the-config-against-the-cluster-before-deploying-plan.md`
   summary: The graph-markers test "HELD (story 13): a Red Hat marker stays on its node when a node is inserted above it before Red Hat republishes" fails intermittently.
   evidence: It failed in the 5.5 implementer's full run (passed when its suite was rerun alone) and on CI run 42058471336 for 0357b6d (VS Code 1.145.0, 1230 passing, 1 failing); the re-run of that job passed. Neither change touches the graph markers code.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-open-the-log-from-the-command-the-row-menu-and-an-error-plan.md`
+  summary: Merge `cloudView.ts`'s two palette target paths, `logsTarget()` (6.5) and `actionTarget()` (5.4): the connect check, the active config's `.cloud.json` (mapping, gone, invalid), loading every cluster's pipelines and the pick.
+  evidence: 6.5's review found them duplicated and already different (logsTarget falls through to the pick after "gone" and sorts; actionTarget stops and does not sort); for epic 6's refactor sweep (6.9).
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-open-the-log-from-the-command-the-row-menu-and-an-error-plan.md`
+  summary: The Environment view test "ticket 39 VALUE_DEFAULT … its record goes too" fails intermittently in a full run.
+  evidence: It failed in 6.3's floor run and 6.5's stable run (VS Code 1.145.0, 1319 passing, 1 failing); the suite alone passed 34/34 both times; neither story touches the Environment view.

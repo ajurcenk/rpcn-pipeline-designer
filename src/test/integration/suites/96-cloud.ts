@@ -24,6 +24,7 @@ import {
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
 	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION, CHECK_SOURCE, DEPLOY_ANYWAY_ACTION,
+	SET_UP_LOG_ACCESS_ACTION,
 } from '../../../adapters/vscode/cloudView';
 import type { LintResult } from '../../../adapters/redpandaConnect/lint';
 import { componentCatalogue } from '../../../core/catalogue';
@@ -198,7 +199,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 			clientSecret: CLIENT_SECRET,
 			clientName: 'deploy-bot',
 			clusters: [
-				{ id: 'cvilnius0000000000aa', name: 'rpc-vilnius', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-2', connectVersion: '4.115.0', pipelines: [] },
+				// Ticket 6.5: rpc-vilnius has a Kafka address (its Error notifications offer the log), byoc-eu none.
+				{ id: 'cvilnius0000000000aa', name: 'rpc-vilnius', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-2', connectVersion: '4.115.0', seedBrokers: ['seed-0.vilnius.example:9092'], pipelines: [] },
 				{ id: 'cbyoc000000000000bbb', name: 'byoc-eu', type: 'TYPE_BYOC', cloudProvider: 'CLOUD_PROVIDER_GCP', region: 'europe-west1', connectVersion: '4.116.0', pipelines: [] },
 				{ id: 'cnodp000000000000ccc', name: 'no-dp', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-west-2', dataplane: false, pipelines: [] },
 				{ id: 'cserverless000000ddd', name: 'serverless-one', type: 'TYPE_SERVERLESS', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-1', pipelines: [] },
@@ -492,6 +494,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const first = await vscode.commands.executeCommand<{ kind: string; state?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(first?.state, 'STATE_ERROR');
 		assert.deepStrictEqual(errors, ['Pipeline with-reason on rpc-vilnius is in Error: out of memory.']);
+		// Ticket 6.5: the cluster has no log access: Set up log access… (then the log), not chosen here.
+		assert.deepStrictEqual(errorActions, [[SET_UP_LOG_ACCESS_ACTION]]);
 		fake.createSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR' }];
 		fs.rmSync(sidecarFile());
 		script({ picks: ['rpc-vilnius'], confirms: [CREATE_NEW_ACTION], inputs: ['no-reason'] });
@@ -1530,6 +1534,31 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(errors[1], `Pipeline orders on rpc-vilnius is in Error: ${NO_REASON}.`);
 		assert.strictEqual(pipelineRow('orders')!.description, `Error (${NO_REASON})`);
 		assert.strictEqual(lifecycle().length, 2);
+	});
+
+	test('ERROR_NOTIFICATION (ticket 6.5): an update and a start that end in Error offer Set up log access… (no access set); a cluster without a Kafka address offers nothing', async () => {
+		const { doc } = await deployOnce();
+		fake.restartSequence = [{ state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad update' }];
+		await editConfig(doc, `${CONFIG}# changed\n`);
+		script({ confirms: [REPLACE_ACTION] });
+		const updated = await vscode.commands.executeCommand<{ kind: string; state?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(updated?.state, 'STATE_ERROR', errors.join('\n'));
+		assert.deepStrictEqual(errors, ['Pipeline orders on rpc-vilnius is in Error: bad update.']);
+		assert.deepStrictEqual(errorActions, [[SET_UP_LOG_ACCESS_ACTION]], 'the update\'s Error');
+		errors.length = 0;
+		errorActions.length = 0;
+		seed('p0000000000000start', 'to-start', 'STATE_STOPPED');
+		fake.cluster('cbyoc000000000000bbb').pipelines.push({
+			id: 'p00000000000000byoc', display_name: 'on-byoc', description: '', config_yaml: CONFIG, resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: {}, state: 'STATE_STOPPED', sequence: [],
+		});
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		await cloud().refresh({ kind: 'cluster', id: 'cbyoc000000000000bbb' });
+		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad input' }];
+		assert.strictEqual((await run(START_COMMAND, pipelineRow('to-start')!.node))?.state, 'STATE_ERROR');
+		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad input' }];
+		assert.strictEqual((await run(START_COMMAND, pipelineRow('on-byoc')!.node))?.state, 'STATE_ERROR');
+		assert.deepStrictEqual(errors, ['Pipeline to-start on rpc-vilnius is in Error: bad input.', 'Pipeline on-byoc on byoc-eu is in Error: bad input.']);
+		assert.deepStrictEqual(errorActions, [[SET_UP_LOG_ACCESS_ACTION], []], 'the start\'s Error; none without a Kafka address');
 	});
 
 	test('DELETE: Cancel sends nothing; already gone (404): the row removed, said so', async () => {

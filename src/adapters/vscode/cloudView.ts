@@ -78,6 +78,14 @@
 // first, with the action. The password is read from the secret storage when needed and handed to the
 // reader in memory; it is masked like the client secret.
 //
+// Ticket 6.5 (board 2): **Show pipeline logs** in the Command Palette shows the log of the pipeline the
+// active config's `.cloud.json` maps to (read now; gone: said so, then the pick), else a pick of every
+// pipeline on every cluster (name; cluster, state, local file; "no log access set" where its cluster has
+// none, and choosing it offers Set up log access first), sorted by cluster then name. The Error
+// notification of a deploy, an update and a start offers **Show logs** (the default range, its ERROR
+// records highlighted), or **Set up log access…** first when the cluster has none. **Show logs around the
+// error** on an Error pipeline's row opens the log around its newest ERROR record (`logsPanel.ts`).
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -96,7 +104,7 @@ import { type ServiceAccount, TokenCache } from '../cloud/token';
 import { isLogReadError, isSaslMechanism, type LogAccess, type LogReaderFactory, LOGS_TOPIC, SASL_MECHANISMS, type SaslMechanism } from '../logs/logReader';
 import { PlatformaticReader } from '../logs/platformaticReader';
 import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
-import type { LogSource } from './logsPanel';
+import type { LogsShowOptions, LogSource } from './logsPanel';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
 import type { ComponentCatalog } from '../../core/catalogue';
@@ -124,6 +132,12 @@ export const COPY_ID_COMMAND = 'redpandaConnect.cloud.copyId';
 /** Ticket 6.2: a cluster row's log access, a pipeline row's log. */
 export const SET_UP_LOG_ACCESS_COMMAND = 'redpandaConnect.cloud.setUpLogAccess';
 export const SHOW_LOGS_COMMAND = 'redpandaConnect.cloud.showLogs';
+/** Ticket 6.5: an Error pipeline row's log around its newest ERROR record. */
+export const SHOW_LOGS_AROUND_ERROR_COMMAND = 'redpandaConnect.cloud.showLogsAroundError';
+/** Ticket 6.5: the Error notification's way to the log. */
+export const SHOW_LOGS_ACTION = 'Show logs';
+/** Ticket 6.5: the palette pick's note on a pipeline whose cluster has no log access. */
+export const NO_LOG_ACCESS_SET = 'no log access set';
 /** The secret storage key of a cluster's log access (one JSON record: username, password, mechanism). */
 export const LOG_ACCESS_PREFIX = 'redpandaConnect.cloud.logs.';
 export const logAccessKey = (clusterId: string): string => `${LOG_ACCESS_PREFIX}${clusterId}`;
@@ -432,7 +446,7 @@ export interface CloudViewOptions {
 	/** Ticket 8: the local schema's catalogue, when one is loaded (else the cluster's is used). */
 	readonly catalogue?: () => ComponentCatalog | undefined;
 	/** Ticket 6.2: the Pipeline Logs tab, which Show logs opens on a pipeline. */
-	readonly logs?: { show(source: LogSource): Promise<void> };
+	readonly logs?: { show(source: LogSource, options?: LogsShowOptions): Promise<void> };
 	/** Ticket 6.2: how a cluster's logs are read (default: `@platformatic/kafka`). */
 	readonly logReader?: LogReaderFactory;
 }
@@ -475,6 +489,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	logReader: LogReaderFactory;
 	/** Ticket 6.2: the Node version the logs check (the test seam may change it). */
 	nodeVersion = process.versions.node;
+	/** Ticket 6.5: what the last Error notification's action did, once chosen (the test seam awaits it). */
+	errorFollowUp: Promise<ShowLogsResult | undefined> | undefined;
 	/** Ticket 6.2: each cluster's log access as stored (never its password), read with the clusters. */
 	private readonly logUsers = new Map<string, { readonly username: string; readonly mechanism: SaslMechanism }>();
 	/**
@@ -571,7 +587,9 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(DEPLOY_AGAIN_COMMAND, (node?: CloudNode) => this.rowAction('deployAgain', node)),
 			vscode.commands.registerCommand(COPY_ID_COMMAND, (node?: CloudNode) => this.rowAction('copyId', node)),
 			vscode.commands.registerCommand(SET_UP_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.setUpLogAccess(node)),
+			// From the palette (ticket 6.5) it gets no argument: the mapped pipeline, else a pick.
 			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
+			vscode.commands.registerCommand(SHOW_LOGS_AROUND_ERROR_COMMAND, (node?: CloudNode) => this.showLogsAroundError(node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -1834,7 +1852,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				if (result.state === 'STATE_ERROR') {
 					const reason = result.error ?? NO_REASON;
 					this.log(`Redpanda Cloud: pipeline ${name} ${on} is in Error: ${reason}`);
-					void this.showError(`Pipeline ${name} ${on} is in Error: ${reason}.`);
+					this.showErrorWithLogs(`Pipeline ${name} ${on} is in Error: ${reason}.`, cluster, result.pipelineId, name);
 					return;
 				}
 				this.log(`Redpanda Cloud: pipeline ${name} (${result.pipelineId}) ${on} is ${state}${updated ? ', updated from ' + file : ''}.`);
@@ -2028,7 +2046,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				if (result.state === 'STATE_ERROR') {
 					const reason = result.error ?? NO_REASON;
 					this.log(`Redpanda Cloud: pipeline ${name} ${on} is in Error: ${reason}`);
-					void this.showError(`Pipeline ${name} ${on} is in Error: ${reason}.`);
+					this.showErrorWithLogs(`Pipeline ${name} ${on} is in Error: ${reason}.`, cluster, result.pipelineId, name);
 				} else {
 					this.log(`Redpanda Cloud: pipeline ${name} (${result.pipelineId}) ${on} is ${pipelineStateText(result.state)}.`);
 					void this.showInfo(`Pipeline ${name} ${on} is ${stateWord(result.state)}.`);
@@ -2468,16 +2486,25 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/**
-	 * Show logs on a pipeline row: the Pipeline Logs tab on that pipeline, read with its cluster's
-	 * log access (none: offered first). Never throws.
+	 * Show logs: on a pipeline row, the Pipeline Logs tab on that pipeline; from the palette (no node,
+	 * ticket 6.5), the pipeline the active config maps to, else one picked from every cluster's. Read with
+	 * its cluster's log access (none: offered first). Never throws.
 	 */
-	async showLogs(node?: CloudNode): Promise<ShowLogsResult> {
+	async showLogs(node?: CloudNode, options: LogsShowOptions = {}): Promise<ShowLogsResult> {
 		try {
 			const unsupported = this.logsNotSupported();
 			if (unsupported) {
 				return unsupported;
 			}
-			if (node?.kind !== 'pipeline') {
+			if (node === undefined) {
+				if (!this.options.logs) {
+					void this.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
+					return LOGS_NOT_STARTED;
+				}
+				const target = await this.logsTarget();
+				return target ? await this.openLogs(target.cluster, target.pipeline, options) : LOGS_NOT_STARTED;
+			}
+			if (node.kind !== 'pipeline') {
 				void this.showInfo('Choose a pipeline in the Cloud view.');
 				return LOGS_NOT_STARTED;
 			}
@@ -2487,40 +2514,169 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				void this.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
 				return LOGS_NOT_STARTED;
 			}
-			let access = await this.readLogAccess(cluster.id);
-			if (!access) {
-				this.fire();
-				const choice = await this.showInfo(noLogAccessMessage(cluster.name), SET_UP_LOG_ACCESS_ACTION);
-				if (choice !== SET_UP_LOG_ACCESS_ACTION || (await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
-					return { kind: 'noAccess' };
-				}
-				access = await this.readLogAccess(cluster.id);
-				if (!access) {
-					return { kind: 'noAccess' };
-				}
-			}
-			const brokers = cluster.seedBrokers;
-			if (!brokers?.length) {
-				void this.showError(`${cluster.name} gives no Kafka address, so its pipeline logs can't be read.`);
-				return LOGS_NOT_STARTED;
-			}
-			const target = { brokers, access };
-			this.log(`Redpanda Cloud: showing the logs of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}, read as ${access.username}.`);
-			await this.options.logs.show({
-				title: `${pipeline.displayName} · ${cluster.name}`,
-				pipelineId: pipeline.id,
-				reader: () => this.logReader(target),
-				mask: (text) => this.mask(text),
-				...(pipeline.updateTime !== undefined ? { deployedAt: pipeline.updateTime } : {}),
-				lastDeploy: () => this.lastDeployOf(cluster.id, pipeline.id),
-			});
-			return { kind: 'shown', pipelineId: pipeline.id };
+			return await this.openLogs(cluster, pipeline, options);
 		} catch (err) {
 			const message = this.mask(reasonOf(err));
 			this.log(`Redpanda Cloud: Show logs failed: ${message}`);
 			void this.showError(`Show logs failed: ${message}`);
 			return LOGS_NOT_STARTED;
 		}
+	}
+
+	/** Show logs around the error (ticket 6.5) on an Error pipeline's row: the log around its newest ERROR record. Never throws. */
+	showLogsAroundError(node?: CloudNode): Promise<ShowLogsResult> {
+		if (node?.kind !== 'pipeline') {
+			void this.showInfo('Choose a pipeline in the Cloud view.');
+			return Promise.resolve(LOGS_NOT_STARTED);
+		}
+		return this.showLogs(node, { aroundError: true });
+	}
+
+	/**
+	 * The Pipeline Logs tab on `pipeline`, read with its cluster's log access (none: Set up log access…
+	 * offered first, then the log).
+	 */
+	private async openLogs(cluster: CloudCluster, pipeline: Pick<CloudPipeline, 'id' | 'displayName' | 'updateTime'>, options: LogsShowOptions): Promise<ShowLogsResult> {
+		if (!this.options.logs) {
+			return LOGS_NOT_STARTED;
+		}
+		let access = await this.readLogAccess(cluster.id);
+		if (!access) {
+			this.fire();
+			const choice = await this.showInfo(noLogAccessMessage(cluster.name), SET_UP_LOG_ACCESS_ACTION);
+			if (choice !== SET_UP_LOG_ACCESS_ACTION || (await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
+				return { kind: 'noAccess' };
+			}
+			access = await this.readLogAccess(cluster.id);
+			if (!access) {
+				return { kind: 'noAccess' };
+			}
+		}
+		const brokers = cluster.seedBrokers;
+		if (!brokers?.length) {
+			void this.showError(`${cluster.name} gives no Kafka address, so its pipeline logs can't be read.`);
+			return LOGS_NOT_STARTED;
+		}
+		const target = { brokers, access };
+		this.log(`Redpanda Cloud: showing the logs of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}${options.aroundError ? ' around its newest ERROR record' : ''}, read as ${access.username}.`);
+		await this.options.logs.show({
+			title: `${pipeline.displayName} · ${cluster.name}`,
+			pipelineId: pipeline.id,
+			reader: () => this.logReader(target),
+			mask: (text) => this.mask(text),
+			...(pipeline.updateTime !== undefined ? { deployedAt: pipeline.updateTime } : {}),
+			lastDeploy: () => this.lastDeployOf(cluster.id, pipeline.id),
+		}, options);
+		return { kind: 'shown', pipelineId: pipeline.id };
+	}
+
+	/**
+	 * Show pipeline logs from the palette (ticket 6.5): connected first (Connect offered); the pipeline
+	 * the active config's `.cloud.json` maps to (read now), else, or when it is gone, one picked from
+	 * every cluster's pipelines (sorted by cluster, then name). `undefined`: nothing to show (said so).
+	 */
+	private async logsTarget(): Promise<{ readonly cluster: CloudCluster; readonly pipeline: CloudPipeline } | undefined> {
+		await this.ready;
+		if (!this.account) {
+			const choice = await this.showInfo('No Redpanda Cloud service account is connected.', CONNECT_ACTION);
+			if (choice !== CONNECT_ACTION || !(await this.connect())) {
+				return undefined;
+			}
+		}
+		this.requested = true;
+		await this.loadClusters(false);
+		if (this.clusters?.kind !== 'ok') {
+			if (this.clusters?.kind === 'error') {
+				void this.showError(`Could not list the Redpanda Cloud clusters: ${this.clusters.message}`);
+			}
+			return undefined;
+		}
+		const doc = vscode.window.activeTextEditor?.document;
+		const config = doc && !doc.isUntitled && doc.uri.scheme === 'file' && this.options.isDetected(doc.uri) ? doc.uri : undefined;
+		if (config) {
+			const file = path.basename(config.fsPath);
+			const mappingName = path.basename(sidecarPath(config.fsPath));
+			const read = await readMapping(sidecarPath(config.fsPath));
+			if (read.kind === 'bad') {
+				this.log(`Redpanda Cloud: ${sidecarPath(config.fsPath)} is not a deploy mapping: ${read.reason}`);
+				void this.showInfo(`${mappingName} could not be read: ${read.reason}. Choose the pipeline whose logs to show.`);
+			} else if (read.kind === 'ok') {
+				const m = read.mapping;
+				const cluster = this.clusterById(m.clusterId);
+				const dp = cluster && this.dataplaneUrlOf(cluster);
+				const shown = m.pipelineName ?? m.pipelineId;
+				if (!cluster || !dp) {
+					const named = cluster?.name ?? m.clusterName ?? m.clusterId;
+					void this.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Choose the pipeline whose logs to show.`);
+				} else {
+					const got = await this.readPipeline(cluster, dp, m.pipelineId, shown);
+					if (got.kind === 'ok') {
+						return { cluster, pipeline: got.value };
+					}
+					if (got.status !== 404) {
+						return undefined;
+					}
+					this.removePipeline(cluster.id, m.pipelineId);
+					void this.showInfo(`Pipeline ${shown}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Choose the pipeline whose logs to show.`);
+				}
+			}
+		}
+		const clusters = this.clusters.value.filter((c) => this.dataplaneUrlOf(c));
+		await Promise.all(clusters.map((c) => this.loadPipelines(c.id, true)));
+		this.fire();
+		const choices: PipelineChoice[] = [];
+		const unread: string[] = [];
+		const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' }) || a.localeCompare(b);
+		for (const c of [...clusters].sort((a, b) => byName(a.name, b.name))) {
+			const listed = this.pipelines.get(c.id);
+			if (listed?.kind !== 'ok') {
+				unread.push(`${c.name} (${listed?.kind === 'error' ? listed.message : 'not read'})`);
+				continue;
+			}
+			const access = this.logUsers.has(c.id);
+			for (const pipeline of [...listed.value].sort((a, b) => byName(a.displayName, b.displayName))) {
+				const local = this.localFileOf(pipeline);
+				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE : undefined;
+				const parts = [c.name, pipelineStateDescription(pipeline), ...(from ? [from] : []), ...(access ? [] : [NO_LOG_ACCESS_SET])];
+				choices.push({ cluster: c, pipeline, label: this.mask(pipeline.displayName), description: this.mask(parts.join(' · ')) });
+			}
+		}
+		if (choices.length === 0) {
+			void this.showInfo(`No pipeline on the clusters to show the logs of.${unread.length > 0 ? ` Could not list the pipelines of ${unread.join(', ')}.` : ''}`);
+			return undefined;
+		}
+		const picked = await this.ui.pickPipeline(choices, 'Show pipeline logs: the pipeline');
+		return picked ? { cluster: picked.cluster, pipeline: picked.pipeline } : undefined;
+	}
+
+	/**
+	 * A deploy's, an update's or a start's Error (ticket 6.5): the message with **Show logs** (the
+	 * default range, its ERROR records highlighted), or **Set up log access…** first when the cluster
+	 * has none; no action where its logs cannot be read (no Kafka address, an old VS Code).
+	 */
+	private showErrorWithLogs(message: string, cluster: CloudCluster, pipelineId: string, name: string): void {
+		if (!this.options.logs || !cluster.seedBrokers?.length || !nodeSupported(this.nodeVersion)) {
+			void this.showError(message);
+			return;
+		}
+		const action = this.logUsers.has(cluster.id) ? SHOW_LOGS_ACTION : SET_UP_LOG_ACCESS_ACTION;
+		this.errorFollowUp = Promise.resolve(this.showError(message, action)).then(async (choice): Promise<ShowLogsResult | undefined> => {
+			if (choice !== action) {
+				return undefined;
+			}
+			try {
+				if (action === SET_UP_LOG_ACCESS_ACTION && (await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
+					return { kind: 'noAccess' };
+				}
+				const known = this.pipelineById(cluster.id, pipelineId);
+				return await this.openLogs(this.clusterById(cluster.id) ?? cluster, known ?? { id: pipelineId, displayName: name }, { highlightErrors: true });
+			} catch (err) {
+				const reason = this.mask(reasonOf(err));
+				this.log(`Redpanda Cloud: Show logs failed: ${reason}`);
+				void this.showError(`Show logs failed: ${reason}`);
+				return LOGS_NOT_STARTED;
+			}
+		});
 	}
 
 	/**

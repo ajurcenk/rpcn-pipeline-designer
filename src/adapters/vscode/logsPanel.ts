@@ -1,4 +1,4 @@
-// The Pipeline Logs tab (tickets 6.2, 6.3, 6.4, AD-24): a webview view in its own container in the bottom
+// The Pipeline Logs tab (tickets 6.2, 6.3, 6.4, 6.5, AD-24): a webview view in its own container in the bottom
 // panel, next to Output. It shows one pipeline at a time, named in the view's description and the
 // webview's header ("<pipeline> · <cluster>"); Show logs on another pipeline (the Cloud view's
 // `LogSource`) switches to it, and the first one is no longer read.
@@ -30,6 +30,15 @@
 // range again (a live range whose Live is off is read up to now, and Live stays off); the filter stays
 // when the range changes and is cleared by Show logs. Show records around this one reads the 5 minutes
 // before and after a row (a custom range), the filter cleared; Copy JSON copies a row's JSON.
+//
+// Ticket 6.5 (board 2): Show logs from an Error (a deploy's, an update's or a start's notification)
+// shows the default range with the ERROR records highlighted. **Show logs around the error** first
+// searches the log back from now, a window of an hour at a time, up to 24 hours or the log's first
+// offset, for the pipeline's newest ERROR-level record (the level as the chips match it, on the host),
+// then reads the 5 minutes before and after it (a custom range, every level), that record scrolled to
+// and marked; with none found it says "No ERROR record in the last 24 hours" and reads the last hour.
+// The search is a read like any other: it runs only while the tab is visible (hidden, it stops, and
+// it runs again once the tab is shown), and another range or pipeline replaces it.
 
 import * as vscode from 'vscode';
 import {
@@ -39,7 +48,7 @@ import {
 import { isLogReadError, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';
 import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText } from '../logs/history';
-import { compileFilter, Counter, matches, sameFilter, type CompiledFilter } from '../logs/filter';
+import { compileFilter, Counter, levelOf, matches, sameFilter, type CompiledFilter } from '../logs/filter';
 import { webviewHtml } from '../graphPanel/html';
 
 export const LOGS_VIEW_ID = 'redpandaConnect.pipelineLogs';
@@ -69,6 +78,25 @@ export function noMatchesBackText(time: number): string {
 	return `No matches back to ${localMinute(time)}; Load older to search further`;
 }
 
+/** Around the error: how far back the newest ERROR record is searched for. */
+export const ERROR_SEARCH_MS = 24 * 60 * MINUTE_MS;
+/** Around the error: the window read at a time, newest first. */
+export const ERROR_SEARCH_WINDOW_MS = 60 * MINUTE_MS;
+export const SEARCHING_ERROR_STATUS = 'Looking for the newest ERROR record in the last 24 hours…';
+export const NO_ERROR_NOTE = 'No ERROR record in the last 24 hours';
+/** Around the error: the record found is not among those shown. */
+export function focusNotShownText(time: number): string {
+	return `The ERROR record of ${localMinute(time)} could not be shown.`;
+}
+
+/** How an entry point opens the log (ticket 6.5). */
+export interface LogsShowOptions {
+	/** The ERROR records highlighted (an Error notification's Show logs). */
+	readonly highlightErrors?: boolean;
+	/** Show logs around the error: the 5 minutes around the newest ERROR record of the last 24 hours (ERROR records highlighted). */
+	readonly aroundError?: boolean;
+}
+
 /** What Show logs hands the panel: one pipeline, the way to read its cluster's logs, the mask. */
 export interface LogSource {
 	/** "<pipeline> · <cluster>". */
@@ -90,6 +118,14 @@ export interface LogSource {
 export interface LogsPanelOptions {
 	readonly extensionUri: vscode.Uri;
 	readonly log: (line: string) => void;
+}
+
+/** Around the error: the newest ERROR record found so far (its row's id and time, its place). */
+interface ErrorCandidate {
+	readonly id: string;
+	readonly time: number;
+	readonly partition: number;
+	readonly offset: number;
 }
 
 /** A kept row and its record's timestamp (where Load older reads back from). */
@@ -132,6 +168,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	cap = MAX_LOG_ROWS;
 	/** How far back the default range goes, and the shortest Load older window (the test seam may change it). */
 	windowMs = LOGS_WINDOW_MS;
+	/** Around the error's search window (the test seam may change it). */
+	errorWindowMs = ERROR_SEARCH_WINDOW_MS;
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: LogsHostMessage[] = [];
 	private view: vscode.WebviewView | undefined;
@@ -150,6 +188,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private live = true;
 	/** A bounded range still to be read (it is read when the tab is visible). */
 	private pendingRange = false;
+	/** Around the error's search still to be made (it is made when the tab is visible). */
+	private pendingAround = false;
+	/** Ticket 6.5: the ERROR records highlighted, for the pipeline shown. */
+	private highlightErrors = false;
+	/** Ticket 6.5: the row to scroll to and mark, and the note above the records; both until the next range. */
+	private focusId: string | null = null;
+	/** The marked row's time (the status names it when the row cannot be shown). */
+	private focusTime = 0;
+	private note: string | null = null;
 	/** The range's read has ended. */
 	private done = false;
 	/** Where a tail goes on: after the newest record read. */
@@ -246,6 +293,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			olderBefore: this.olderAnchor(),
 			filter: this.filter,
 			counts: this.counter.counts,
+			highlightErrors: this.highlightErrors,
+			focusId: this.focusId,
+			note: this.note,
 		};
 	}
 
@@ -323,8 +373,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 	}
 
-	/** Show logs: `source`'s pipeline replaces the shown one, on the default range; the tab opens and reading starts. */
-	async show(source: LogSource): Promise<void> {
+	/**
+	 * Show logs: `source`'s pipeline replaces the shown one, on the default range (with
+	 * `highlightErrors`, its ERROR records highlighted), or, with `aroundError`, around its newest ERROR
+	 * record of the last 24 hours; the tab opens and reading starts.
+	 */
+	async show(source: LogSource, options: LogsShowOptions = {}): Promise<void> {
 		this.choices++;
 		this.stopAll();
 		this.stopRetention();
@@ -333,9 +387,19 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.compiled = NO_FILTER_COMPILED;
 		this.retention = null;
 		this.deployedAt = source.deployedAt ?? null;
+		this.highlightErrors = options.highlightErrors === true || options.aroundError === true;
 		const now = Date.now();
-		this.reset(rangeFor({ kind: 'recent' }, now, undefined, this.windowMs)!, now);
-		this.options.log(this.mask(source, `Pipeline logs: showing ${source.title} from ${new Date(this.range.from).toISOString()}.`));
+		if (options.aroundError) {
+			// Searched first (when the tab is visible); the menu says the last 24 hours meanwhile.
+			this.reset({ kind: 'day', from: now - ERROR_SEARCH_MS, to: now }, now);
+			this.pendingRange = false;
+			this.pendingAround = true;
+			this.status = SEARCHING_ERROR_STATUS;
+			this.options.log(this.mask(source, `Pipeline logs: showing ${source.title} around its newest ERROR record.`));
+		} else {
+			this.reset(rangeFor({ kind: 'recent' }, now, undefined, this.windowMs)!, now);
+			this.options.log(this.mask(source, `Pipeline logs: showing ${source.title} from ${new Date(this.range.from).toISOString()}.`));
+		}
 		this.updateDescription();
 		this.postShow();
 		this.changed.fire();
@@ -471,6 +535,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.chosenAt = now;
 		this.live = isLiveRange(range.kind);
 		this.pendingRange = !this.live;
+		this.pendingAround = false;
+		this.focusId = null;
+		this.note = null;
 		this.done = false;
 		this.older = 'more';
 		this.olderError = null;
@@ -502,7 +569,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.postState();
 			return;
 		}
-		if (this.pendingRange || (this.positions && this.newerDropped === 0)) {
+		if (!this.pendingAround && (this.pendingRange || (this.positions && this.newerDropped === 0))) {
 			this.live = true;
 			this.postState();
 			this.start();
@@ -550,7 +617,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		if (!this.source || this.session || !this.view?.visible) {
 			return;
 		}
-		if (this.pendingRange) {
+		if (this.pendingAround) {
+			void this.findError(this.source);
+		} else if (this.pendingRange) {
 			this.readRange(this.source);
 		} else if (this.live) {
 			this.tail(this.source);
@@ -639,7 +708,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			const read = filterActive(this.filter)
 				? `Read ${recordsText(total)} of ${rangeText(range)}; ${matched.toLocaleString('en-US')} ${matched === 1 ? 'matches' : 'match'}.${stalled}`
 				: `Read ${recordsText(total)} of ${rangeText(range)}.${stalled}`;
-			this.setStatus(this.live ? read : `${read} ${LIVE_OFF_STATUS}`);
+			// Around the error: the record found should be among those kept (`receive` keeps it); else say so.
+			const lost = this.focusId !== null && !this.keptIds.has(this.focusId) ? ` ${focusNotShownText(this.focusTime)}` : '';
+			this.setStatus(`${this.live ? read : `${read} ${LIVE_OFF_STATUS}`}${lost}`);
 			this.postState();
 		}, (err: unknown) => {
 			if (current()) {
@@ -671,7 +742,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 */
 	async loadOlder(): Promise<void> {
 		const source = this.source;
-		if (!source || this.older !== 'more' || !this.view?.visible || this.pendingRange) {
+		if (!source || this.older !== 'more' || !this.view?.visible || this.pendingRange || this.pendingAround) {
 			return;
 		}
 		this.olderError = null;
@@ -754,6 +825,112 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 	}
 
+	/**
+	 * Around the error (ticket 6.5): the log read back from now, `errorWindowMs` at a time, until a window
+	 * holds an ERROR record of the pipeline, 24 hours are read or the log's first offset is reached; then
+	 * the 5 minutes around the newest such record (it is marked), else the last hour with a note. Stopped
+	 * (the tab hidden), it is made again when the tab is shown.
+	 */
+	private async findError(source: LogSource): Promise<void> {
+		const abort = new AbortController();
+		const generation = this.generation;
+		const current = () => !abort.signal.aborted && generation === this.generation && source === this.source;
+		this.session = { abort, kind: 'range' };
+		this.setStatus(SEARCHING_ERROR_STATUS);
+		this.changed.fire();
+		const reader = this.newReader(source);
+		if (!reader) {
+			this.session = undefined;
+			return;
+		}
+		const now = Date.now();
+		let outcome: { readonly found: { readonly id: string; readonly time: number } | undefined } | undefined;
+		try {
+			const first = await reader.logStart(abort.signal);
+			let to = now;
+			let found: ErrorCandidate | undefined;
+			while (current() && !found && now - to < ERROR_SEARCH_MS) {
+				const from = Math.max(to - this.errorWindowMs, now - ERROR_SEARCH_MS);
+				// Only the newest ERROR candidate of the window is kept, not its records.
+				let candidate: ErrorCandidate | undefined;
+				const end = await reader.range(source.pipelineId, from, to, (records) => {
+					candidate = this.newestError(source, records, candidate);
+				}, abort.signal);
+				if (!current()) {
+					break;
+				}
+				found = candidate;
+				if (atLogStart(end.start, first)) {
+					break;
+				}
+				to = from;
+			}
+			if (current()) {
+				outcome = { found };
+			}
+		} catch (err) {
+			if (current()) {
+				this.failed(source, err);
+			}
+		} finally {
+			if (this.session?.abort === abort) {
+				this.session = undefined;
+			}
+			// Closes the reader's client.
+			abort.abort();
+			this.changed.fire();
+		}
+		if (!outcome || generation !== this.generation || source !== this.source) {
+			return;
+		}
+		const at = Date.now();
+		const { found } = outcome;
+		if (found) {
+			this.reset({ kind: 'custom', from: Math.min(found.time - AROUND_MS, at), to: found.time + AROUND_MS }, at);
+			this.focusId = found.id;
+			this.focusTime = found.time;
+			this.options.log(this.mask(source, `Pipeline logs: the newest ERROR record of ${source.title} is at ${new Date(found.time).toISOString()}; reading around it.`));
+		} else {
+			this.reset(rangeFor({ kind: 'hour' }, at)!, at);
+			this.note = NO_ERROR_NOTE;
+			this.options.log(this.mask(source, `Pipeline logs: no ERROR record of ${source.title} in the last 24 hours; reading the last hour.`));
+		}
+		this.postShow();
+		this.changed.fire();
+		this.start();
+	}
+
+	/**
+	 * The newest ERROR-level record of the pipeline in `records` or `found` (the candidate so far):
+	 * later by its row's time; at the same time, a later offset on the same partition, else the first found.
+	 */
+	private newestError(source: LogSource, records: readonly LogRecord[], found: ErrorCandidate | undefined): ErrorCandidate | undefined {
+		this.noteOrgs(records);
+		for (const r of records) {
+			if (!isPipelineRecord(r, source.pipelineId)) {
+				continue;
+			}
+			const row = toLogRow(r, source.mask, this.orgs);
+			if (levelOf(row) !== 'error') {
+				continue;
+			}
+			if (!found || row.time > found.time || (row.time === found.time && r.partition === found.partition && r.offset > found.offset)) {
+				found = { id: row.id, time: row.time, partition: r.partition, offset: r.offset };
+			}
+		}
+		return found;
+	}
+
+	/** Every `license_org` of `records` noted, so a record before the one that carries it is masked too. */
+	private noteOrgs(records: readonly LogRecord[]): void {
+		for (const r of records) {
+			const org = licenseOrgOf(r);
+			if (org) {
+				this.orgs.add(org);
+			}
+		}
+	}
+
 	/** The menu opened: the topic's retention, read once per pipeline shown. */
 	requestRetention(): void {
 		const source = this.source;
@@ -823,13 +1000,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 * and those matching the filter not yet kept (`matching`). Every org of the batch is noted first.
 	 */
 	private take(source: LogSource, records: readonly LogRecord[]): { readonly matching: Kept[]; readonly counted: number } {
-		// Every org of the batch first, so a record before the one that carries it is masked too.
-		for (const r of records) {
-			const org = licenseOrgOf(r);
-			if (org) {
-				this.orgs.add(org);
-			}
-		}
+		this.noteOrgs(records);
 		const seen = new Set<string>();
 		const matching: Kept[] = [];
 		let counted = 0;
@@ -878,14 +1049,28 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.keptIds.add(k.row.id);
 		}
 		const over = this.kept.length - this.cap;
+		let appended = mine;
 		if (over > 0) {
-			for (const k of this.kept.splice(0, over)) {
-				this.keptIds.delete(k.row.id);
+			// Around the error: the oldest are left out only up to the marked row; past it the newest are dropped.
+			const focusAt = this.focusId === null ? -1 : this.kept.findIndex((k) => k.row.id === this.focusId);
+			const older = focusAt < 0 ? over : Math.min(over, focusAt);
+			const newer = over - older;
+			if (newer > 0) {
+				for (const k of this.kept.splice(this.kept.length - newer, newer)) {
+					this.keptIds.delete(k.row.id);
+				}
+				appended = mine.slice(0, mine.length - newer);
+				this.newerDropped += newer;
 			}
-			this.dropped += over;
-			this.leftOutEver = true;
+			if (older > 0) {
+				for (const k of this.kept.splice(0, older)) {
+					this.keptIds.delete(k.row.id);
+				}
+				this.dropped += older;
+				this.leftOutEver = true;
+			}
 		}
-		this.post({ type: 'append', rows: mine.slice(-this.cap).map((k) => k.row), dropped: this.dropped });
+		this.post({ type: 'append', rows: appended.slice(-this.cap).map((k) => k.row), dropped: this.dropped });
 		if (counted > 0) {
 			this.postState();
 		} else {

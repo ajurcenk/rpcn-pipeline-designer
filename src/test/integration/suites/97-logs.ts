@@ -15,15 +15,23 @@
 // for a record's JSON or the records around it through the test seam, as the webview's messages do;
 // SEVEN_DAYS_MATCHES is its acceptance check (20,000 records over 7 days, 40 of them WARN with
 // "secret" in a field, Last 7 days with Warn only and the search "secret").
+// Ticket 6.5 (entry points): Show pipeline logs from the palette (the active config's mapped pipeline,
+// else the pick), the Error notification's Show logs or Set up log access…, and Show logs around the
+// error on an Error row; every matrix row of its plan (PALETTE_MAPPED … SWITCH). The notifications'
+// actions on a deploy and an update are checked in 96-cloud.ts; here a start's, through to the log.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, noLogAccessMessage, SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND,
-	SHOW_LOGS_COMMAND, signInRefusedMessage,
+	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, NO_LOG_ACCESS_SET, noLogAccessMessage, type PipelineChoice,
+	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND,
 } from '../../../adapters/vscode/cloudView';
-import { AROUND_MS, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, STOPPED_PREFIX } from '../../../adapters/vscode/logsPanel';
+import {
+	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, STOPPED_PREFIX,
+} from '../../../adapters/vscode/logsPanel';
+import { serializeMapping } from '../../../adapters/cloud/sidecar';
+import { resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { gapsIn, MAX_LOG_ROWS, NO_FILTER, type LogFilter } from '../../../shared/logsProtocol';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
@@ -71,6 +79,8 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 	let originalUi: CloudUi;
 	let originalReader: ReturnType<typeof cloud>['logReader'];
 	let originalCap: number;
+	let originalErrorWindow: number;
+	let originalPollMs: number;
 	/** The suite's own temporary directory (NO_LEAK reads every file in it). */
 	let dir: string;
 	let inputs: Input[] = [];
@@ -78,7 +88,12 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 	let choices: (string | undefined)[] = [];
 	let questions: { title: string; question: string; choices: string[] }[] = [];
 	let actions: (string | undefined)[] = [];
+	/** Ticket 6.5: the palette's pipeline picks (by name), and what each offered. */
+	let pipelinePicks: (string | undefined)[] = [];
+	let pipelinesOffered: PipelineChoice[][] = [];
 	const errors: string[] = [];
+	/** The actions each error offered. */
+	const errorActions: string[][] = [];
 	const infos: string[] = [];
 	/** The actions each info offered. */
 	const infoActions: string[][] = [];
@@ -86,7 +101,9 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 	const allShown: string[] = [];
 	const seenItems: CloudItem[] = [];
 
-	function script(next: { inputs?: Input[]; choices?: (string | undefined)[]; actions?: (string | undefined)[] }): void {
+	function script(next: { inputs?: Input[]; choices?: (string | undefined)[]; actions?: (string | undefined)[]; pipelinePicks?: (string | undefined)[] }): void {
+		pipelinePicks = next.pipelinePicks ?? [];
+		pipelinesOffered = [];
 		inputs = next.inputs ?? [];
 		choices = next.choices ?? [];
 		actions = next.actions ?? [];
@@ -168,6 +185,8 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		originalUi = cloud().ui;
 		originalReader = cloud().logReader;
 		originalCap = logs().cap;
+		originalErrorWindow = logs().errorWindowMs;
+		originalPollMs = cloud().pollMs;
 		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
 		cloud().ui = {
 			...originalUi,
@@ -181,10 +200,20 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 				allShown.push(title, question, ...offered);
 				return choices.shift();
 			},
-			error: async (m) => {
+			error: async (m, ...offered) => {
 				errors.push(m);
+				errorActions.push(offered);
 				allShown.push(m);
 				return actions.shift();
+			},
+			// Ticket 6.5's deploys: rpc-vilnius, the pre-set size.
+			pickCluster: async (clusters) => clusters.find((c) => c.name === 'rpc-vilnius'),
+			pickUnits: async (_title, current) => current ?? resourcesOf(1),
+			pickPipeline: async (offered) => {
+				pipelinesOffered.push([...offered]);
+				allShown.push(...offered.flatMap((c) => [c.label, c.description]));
+				const name = pipelinePicks.shift();
+				return offered.find((c) => c.pipeline.displayName === name);
 			},
 			info: async (m, ...offered) => {
 				infos.push(m);
@@ -212,12 +241,16 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		logs().cap = originalCap;
 		fake.cluster(VILNIUS).pipelines = [pipeline(ORDERS, 'orders'), pipeline(CLICKS, 'clicks')];
 		fake.cluster(BYOC).pipelines = [pipeline('d3byoc00000000000003', 'events')];
+		logs().errorWindowMs = originalErrorWindow;
+		cloud().pollMs = originalPollMs;
 		errors.length = 0;
+		errorActions.length = 0;
 		infos.length = 0;
 		infoActions.length = 0;
 		script({});
 		await connectAndRead();
 		errors.length = 0;
+		errorActions.length = 0;
 		infos.length = 0;
 		infoActions.length = 0;
 	});
@@ -233,13 +266,16 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		cloud().ui = originalUi;
 		cloud().logReader = originalReader;
 		logs().cap = originalCap;
+		logs().errorWindowMs = originalErrorWindow;
+		cloud().pollMs = originalPollMs;
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		await fake?.stop();
 		if (dir) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	test('package.json: the Pipeline Logs tab in the bottom panel; Set up log access… on a cluster row, Show logs on a pipeline row (inline with access, always in the menu), rows only', () => {
+	test('package.json: the Pipeline Logs tab in the bottom panel; Set up log access… on a cluster row, Show logs on a pipeline row (inline with access, always in the menu) and in the palette, Show logs around the error on Error rows only', () => {
 		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
 			contributes: {
 				viewsContainers: Record<string, { id: string; title: string }[]>;
@@ -251,14 +287,17 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		const container = pkg.contributes.viewsContainers.panel?.find((c) => c.title === 'Pipeline Logs');
 		assert.ok(container, 'a container in the bottom panel');
 		assert.deepStrictEqual(pkg.contributes.views[container.id], [{ type: 'webview', id: LOGS_VIEW_ID, name: 'Pipeline Logs', contextualTitle: 'Pipeline Logs' }]);
-		assert.deepStrictEqual([SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_COMMAND].map((c) => pkg.contributes.commands.find((x) => x.command === c)?.title), ['Set up log access…', 'Show logs']);
-		for (const c of [SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_COMMAND]) {
+		assert.deepStrictEqual([SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_COMMAND, SHOW_LOGS_AROUND_ERROR_COMMAND].map((c) => pkg.contributes.commands.find((x) => x.command === c)?.title),
+			['Set up log access…', 'Show pipeline logs', 'Show logs around the error']);
+		for (const c of [SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_AROUND_ERROR_COMMAND]) {
 			assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === c)?.when, 'false', `${c}: rows only`);
 		}
+		const paletteEntry = pkg.contributes.menus.commandPalette.find((m) => m.command === SHOW_LOGS_COMMAND);
+		assert.ok(paletteEntry && paletteEntry.when === undefined, 'PALETTE: Show pipeline logs, also when not connected (Connect is offered first)');
 		const offered = (contextValue: string, inline: boolean) => pkg.contributes.menus['view/item/context']
 			.filter((m) => (m.group?.startsWith('inline') ?? false) === inline)
 			.filter((m) => { const r = /viewItem =~ \/(.+)\/$/.exec(m.when ?? ''); return r && new RegExp(r[1]).test(contextValue); })
-			.map((m) => m.command).filter((c) => c === SET_UP_LOG_ACCESS_COMMAND || c === SHOW_LOGS_COMMAND || c === 'redpandaConnect.cloud.refresh');
+			.map((m) => m.command).filter((c) => c === SET_UP_LOG_ACCESS_COMMAND || c === SHOW_LOGS_COMMAND || c === SHOW_LOGS_AROUND_ERROR_COMMAND || c === 'redpandaConnect.cloud.refresh');
 		assert.deepStrictEqual(offered('cloudCluster', false), ['redpandaConnect.cloud.refresh', SET_UP_LOG_ACCESS_COMMAND]);
 		assert.deepStrictEqual(offered('cloudCluster logs', false), ['redpandaConnect.cloud.refresh', SET_UP_LOG_ACCESS_COMMAND]);
 		assert.deepStrictEqual(offered('cloudCluster logs', true), ['redpandaConnect.cloud.refresh'], 'Refresh stays inline with access');
@@ -266,6 +305,13 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(offered('cloudPipeline state-running', true), [], 'no inline Show logs without access');
 		assert.deepStrictEqual(offered('cloudPipeline state-running hasFile logs', true), [SHOW_LOGS_COMMAND]);
 		assert.deepStrictEqual(offered('cloudPipeline state-running', false), [SHOW_LOGS_COMMAND], 'the menu always has it (NO_ACCESS)');
+		// AROUND_MENU (ticket 6.5): only on Error rows, in the menu.
+		assert.deepStrictEqual(offered('cloudPipeline state-error hasFile logs', false), [SHOW_LOGS_COMMAND, SHOW_LOGS_AROUND_ERROR_COMMAND]);
+		assert.deepStrictEqual(offered('cloudPipeline state-error', false), [SHOW_LOGS_COMMAND, SHOW_LOGS_AROUND_ERROR_COMMAND]);
+		assert.deepStrictEqual(offered('cloudPipeline state-error logs', true), [SHOW_LOGS_COMMAND], 'not inline');
+		for (const state of ['running', 'starting', 'stopped', 'stopping', 'completed', 'unknown']) {
+			assert.deepStrictEqual(offered(`cloudPipeline state-${state} logs`, false), [SHOW_LOGS_COMMAND], state);
+		}
 	});
 
 	test('SETUP_CANCEL: Escape at the username, the password or the mechanism stores nothing and sends nothing', async () => {
@@ -972,6 +1018,327 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(logs().viewState.filter, NO_FILTER);
 		assert.ok(await waitFor(() => texts().length === 1, 10_000), logs().statusText);
 		assert.deepStrictEqual(counts(), { levels: { error: 0, warn: 0, info: 1, debug: 0, other: 0 }, total: 1, matched: 1 });
+	});
+
+	// --- ticket 6.5: entry points ---
+
+	const palette = () => vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(SHOW_LOGS_COMMAND);
+	const aroundError = (id = ORDERS, clusterId = VILNIUS) =>
+		vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(SHOW_LOGS_AROUND_ERROR_COMMAND, pipelineNode(clusterId, id));
+	/** An ERROR record of pipeline `id` at time `ts`. */
+	const errAt = (id: string, text: string, ts: number) => {
+		const r = recAt(id, text, ts);
+		return { ...r, value: { ...r.value, level: 'ERROR' } };
+	};
+	/** A record of pipeline `id` at `ts` with `level`. */
+	const levelAt = (id: string, text: string, ts: number, level: string) => {
+		const r = recAt(id, text, ts);
+		return { ...r, value: { ...r.value, level } };
+	};
+
+	/** A detected config `<name>.yaml` in the suite's directory, active in the editor; with `mapTo`, its `.cloud.json` maps it there. */
+	async function openConfig(name: string, mapTo?: { readonly clusterId: string; readonly pipelineId: string; readonly pipelineName: string }): Promise<vscode.TextDocument> {
+		const file = path.join(dir, `${name}.yaml`);
+		fs.writeFileSync(file, 'input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n');
+		const sidecar = path.join(dir, `${name}.cloud.json`);
+		if (mapTo) {
+			fs.writeFileSync(sidecar, serializeMapping({ clusterName: 'rpc-vilnius', ...mapTo }));
+		} else {
+			fs.rmSync(sidecar, { force: true });
+		}
+		const doc = await vscode.workspace.openTextDocument(file);
+		await vscode.window.showTextDocument(doc, { preview: false });
+		assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 10_000), `${file} is not detected`);
+		return doc;
+	}
+
+	test('PALETTE_MAPPED: Show pipeline logs with a config whose .cloud.json maps it to a pipeline: that pipeline\'s log at once, as from its row; the pipeline gone: said so, then the pick', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'o1', MINUTE), rec(CLICKS, 'c1', MINUTE));
+		try {
+			await openConfig('orders', { clusterId: VILNIUS, pipelineId: ORDERS, pipelineName: 'orders' });
+			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
+			assert.deepStrictEqual(pipelinesOffered, [], 'no pick');
+			assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+			assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000), logs().statusText);
+			assert.strictEqual(logs().viewState.range.kind, 'recent', 'the default range, as Show logs on its row');
+			assert.strictEqual(logs().viewState.highlightErrors, false);
+			// The mapped pipeline gone: said so, then the pick.
+			await openConfig('gone', { clusterId: VILNIUS, pipelineId: 'd3gone00000000000009', pipelineName: 'gone' });
+			script({ pipelinePicks: ['clicks'] });
+			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: CLICKS });
+			assert.ok(infos.includes('Pipeline gone, which gone.cloud.json maps gone.yaml to, is no longer on rpc-vilnius. Choose the pipeline whose logs to show.'), infos.join('\n'));
+			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
+			assert.strictEqual(logs().title, 'clicks · rpc-vilnius', 'SWITCH: the tab switches to it');
+			assert.ok(await waitFor(() => messages(CLICKS).length === 1, 10_000), logs().statusText);
+			// A .cloud.json that is not a mapping: said so, then the pick.
+			await openConfig('bad');
+			fs.writeFileSync(path.join(dir, 'bad.cloud.json'), '{ not json');
+			infos.length = 0;
+			script({ pipelinePicks: ['orders'] });
+			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
+			assert.strictEqual(infos.length, 1, infos.join('\n'));
+			assert.match(infos[0], /^bad\.cloud\.json could not be read: it is not JSON \(.+\)\. Choose the pipeline whose logs to show\.$/);
+			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		}
+	});
+
+	test('ERROR_NOTIFICATION (AC1): a deploy (create) and an update that end in Error on a cluster with log access: Show logs opens the last 15 minutes, its ERROR records highlighted', async () => {
+		await setUpAccess();
+		cloud().pollMs = 20;
+		const lint = cloud().lint;
+		const localVersion = cloud().localVersion;
+		const localCatalogue = cloud().localCatalogue;
+		cloud().lint = async () => ({ kind: 'findings', findings: [], logLines: [] });
+		cloud().localVersion = () => undefined;
+		cloud().localCatalogue = () => undefined;
+		try {
+			const doc = await openConfig('deployed');
+			fake.createSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad input' }];
+			script({ inputs: ['deployed'], actions: [SHOW_LOGS_ACTION] });
+			const created = await vscode.commands.executeCommand<{ kind: string; state?: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(created?.state, 'STATE_ERROR', errors.join('\n'));
+			const id = created!.pipelineId!;
+			assert.deepStrictEqual(errors, ['Pipeline deployed on rpc-vilnius is in Error: bad input.']);
+			assert.deepStrictEqual(errorActions, [[SHOW_LOGS_ACTION]], 'log access set: Show logs');
+			const before = Date.now();
+			assert.deepStrictEqual(await cloud().errorFollowUp, { kind: 'shown', pipelineId: id });
+			assert.strictEqual(logs().title, 'deployed · rpc-vilnius');
+			const tail = topic.activeTails()[0];
+			assert.ok(tail && Math.abs(tail.fromTime - (before - LOGS_WINDOW_MS)) < 5_000, 'the last 15 minutes');
+			topic.write(rec(id, 'starting', 2 * MINUTE), rec(id, 'failed', MINUTE, { level: 'ERROR' }));
+			assert.ok(await waitFor(() => messages(id).length === 2, 10_000), logs().statusText);
+			assert.strictEqual(logs().viewState.range.kind, 'recent');
+			assert.strictEqual(logs().viewState.highlightErrors, true, 'its ERROR records highlighted');
+			assert.strictEqual(logs().rows()[1].level, 'ERROR');
+			// The update of that pipeline (in Error, so not restarted) ends in Error too.
+			await showLogs(CLICKS);
+			assert.strictEqual(logs().viewState.highlightErrors, false);
+			const edit = new vscode.WorkspaceEdit();
+			edit.insert(doc.uri, doc.positionAt(doc.getText().length), '# changed\n');
+			assert.ok(await vscode.workspace.applyEdit(edit));
+			errors.length = 0;
+			errorActions.length = 0;
+			script({ actions: [SHOW_LOGS_ACTION] });
+			const updated = await vscode.commands.executeCommand<{ kind: string; state?: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(updated?.state, 'STATE_ERROR', errors.join('\n'));
+			assert.strictEqual(updated?.pipelineId, id, 'an update of the same pipeline');
+			assert.deepStrictEqual(errorActions, [[SHOW_LOGS_ACTION]]);
+			assert.deepStrictEqual(await cloud().errorFollowUp, { kind: 'shown', pipelineId: id });
+			assert.strictEqual(logs().title, 'deployed · rpc-vilnius');
+			assert.ok(await waitFor(() => messages(id).length === 2, 10_000), logs().statusText);
+			assert.deepStrictEqual(texts(), ['starting', 'failed'], 'the last 15 minutes');
+			assert.strictEqual(logs().viewState.highlightErrors, true);
+		} finally {
+			cloud().lint = lint;
+			cloud().localVersion = localVersion;
+			cloud().localCatalogue = localCatalogue;
+			fake.createSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+			await vscode.workspace.saveAll();
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		}
+	});
+
+	test('PALETTE_PICK: no mapped config: every pipeline on every cluster, by cluster then name (name; cluster, state); choosing one opens its log; Escape opens nothing; not connected: Connect first', async () => {
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		await setUpAccess();
+		fake.cluster(VILNIUS).pipelines.push(pipeline('d3alpha0000000000004', 'alpha'));
+		topic.write(rec(ORDERS, 'o1', MINUTE));
+		const readers = topic.targets.length;
+		script({ pipelinePicks: [undefined] });
+		assert.deepStrictEqual(await palette(), { kind: 'notStarted' });
+		assert.deepStrictEqual(pipelinesOffered[0].map((c) => [c.label, c.description]), [
+			['events', `byoc-eu · Running · ${NO_LOG_ACCESS_SET}`],
+			['alpha', 'rpc-vilnius · Running'],
+			['clicks', 'rpc-vilnius · Running'],
+			['orders', 'rpc-vilnius · Running'],
+		]);
+		assert.strictEqual(topic.targets.length, readers, 'Escape: nothing read');
+		script({ pipelinePicks: ['orders'] });
+		assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000), logs().statusText);
+		// Not connected: Connect is offered first; declined, nothing.
+		await cloud().disconnect();
+		await new Promise((r) => setTimeout(r, 300));
+		infoActions.length = 0;
+		script({ actions: [undefined] });
+		assert.deepStrictEqual(await palette(), { kind: 'notStarted' });
+		assert.deepStrictEqual(infoActions, [[CONNECT_ACTION]]);
+		assert.deepStrictEqual(pipelinesOffered, []);
+		// Connected from there: the pick.
+		script({ actions: [CONNECT_ACTION], inputs: [CLIENT_ID, CLIENT_SECRET], pipelinePicks: ['clicks'] });
+		assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: CLICKS });
+		assert.strictEqual(logs().title, 'clicks · rpc-vilnius');
+	});
+
+	test('PALETTE_NO_ACCESS: a pipeline on a cluster without log access says "no log access set"; choosing it offers Set up log access (declined: nothing), then the log', async () => {
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		const EVENTS = 'd3byoc00000000000003';
+		topic.write(rec(EVENTS, 'e1', MINUTE));
+		script({ pipelinePicks: ['events'], actions: [undefined] });
+		assert.deepStrictEqual(await palette(), { kind: 'noAccess' });
+		assert.ok(pipelinesOffered[0].every((c) => c.description.endsWith(` · ${NO_LOG_ACCESS_SET}`)), 'neither cluster has access');
+		assert.deepStrictEqual(infos, [noLogAccessMessage('byoc-eu')]);
+		assert.deepStrictEqual(infoActions, [[SET_UP_LOG_ACCESS_ACTION]]);
+		assert.strictEqual(topic.targets.length, 0, 'declined: nothing read');
+		script({ pipelinePicks: ['events'], actions: [SET_UP_LOG_ACCESS_ACTION], inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: EVENTS });
+		assert.deepStrictEqual(await cloud().storedLogAccess(BYOC), { username: USERNAME, mechanism: 'SCRAM-SHA-256' });
+		assert.strictEqual(logs().title, 'events · byoc-eu');
+		assert.ok(await waitFor(() => messages(EVENTS).length === 1, 10_000), logs().statusText);
+	});
+
+	test('ERROR_NOTIFICATION: a start that ends in Error offers Set up log access… (no access), then the log; with access Show logs: the last 15 minutes, ERROR records highlighted; declined: nothing', async () => {
+		cloud().pollMs = 20;
+		fake.cluster(VILNIUS).pipelines = [{ ...pipeline(ORDERS, 'orders'), state: 'STATE_STOPPED' }, pipeline(CLICKS, 'clicks')];
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		topic.write(rec(ORDERS, 'starting', 20 * MINUTE), rec(ORDERS, 'loading', 2 * MINUTE), rec(ORDERS, 'failed', MINUTE, { level: 'ERROR' }));
+		const startToError = async () => {
+			fake.cluster(VILNIUS).pipelines.find((p) => p.id === ORDERS)!.state = 'STATE_STOPPED';
+			fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_ERROR', error: 'bad input' }];
+			const started = await vscode.commands.executeCommand<{ kind: string; state?: string }>(START_COMMAND, pipelineNode(VILNIUS, ORDERS));
+			assert.strictEqual(started?.state, 'STATE_ERROR', errors.join('\n'));
+			return cloud().errorFollowUp;
+		};
+		script({ actions: [SET_UP_LOG_ACCESS_ACTION], inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.deepStrictEqual(await startToError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.deepStrictEqual(errors, ['Pipeline orders on rpc-vilnius is in Error: bad input.']);
+		assert.deepStrictEqual(errorActions, [[SET_UP_LOG_ACCESS_ACTION]]);
+		assert.deepStrictEqual(await cloud().storedLogAccess(VILNIUS), { username: USERNAME, mechanism: 'SCRAM-SHA-256' });
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+		assert.ok(await waitFor(() => messages(ORDERS).length === 2, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['loading', 'failed'], 'the default range: the last 15 minutes');
+		assert.strictEqual(logs().viewState.range.kind, 'recent');
+		assert.strictEqual(logs().viewState.highlightErrors, true, 'its ERROR records highlighted');
+		// SWITCH: another pipeline shown from its row (no highlight), then the notification's Show logs.
+		await showLogs(CLICKS);
+		assert.strictEqual(logs().viewState.highlightErrors, false);
+		errors.length = 0;
+		errorActions.length = 0;
+		script({ actions: [SHOW_LOGS_ACTION] });
+		assert.deepStrictEqual(await startToError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.deepStrictEqual(errorActions, [[SHOW_LOGS_ACTION]], 'log access set: Show logs');
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+		assert.ok(await waitFor(() => messages(ORDERS).length === 2, 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.highlightErrors, true);
+		const shown = logs().posted.filter((m) => m.type === 'show').at(-1);
+		assert.strictEqual(shown?.type === 'show' && shown.state.highlightErrors, true, 'the webview is told');
+		// Declined: nothing opens.
+		await showLogs(CLICKS);
+		script({ actions: [undefined] });
+		assert.strictEqual(await startToError(), undefined);
+		assert.strictEqual(logs().title, 'clicks · rpc-vilnius');
+	});
+
+	test('AROUND (acceptance): Show logs around the error on an Error row: the newest ERROR record (3 hours old), the 5 minutes around it, every level, that record marked; SWITCH from another pipeline', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		const at = (minutes: number) => t0 - minutes * MINUTE;
+		topic.write(
+			errAt(ORDERS, 'older error', at(300)),
+			recAt(ORDERS, '-188m', at(188)),
+			levelAt(ORDERS, '-184m warn', at(184), 'WARN'),
+			errAt(ORDERS, 'the error', at(180)),
+			levelAt(ORDERS, '-177m debug', at(177), 'DEBUG'),
+			recAt(ORDERS, '-172m', at(172)),
+			errAt(CLICKS, 'another pipeline\'s error', at(50)),
+			recAt(ORDERS, '-10m', at(10)),
+		);
+		await showLogs(CLICKS);
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius', 'SWITCH: the tab switches to it');
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['-184m warn', 'the error', '-177m debug'], 'the 5 minutes around it, every level');
+		const target = logs().rows()[1];
+		assert.strictEqual(target.level, 'ERROR');
+		const errorTime = at(180);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: errorTime - AROUND_MS, to: errorTime + AROUND_MS });
+		assert.strictEqual(logs().viewState.focusId, target.id, 'the found record is marked');
+		assert.strictEqual(logs().viewState.highlightErrors, true);
+		assert.strictEqual(logs().viewState.note, null);
+		assert.strictEqual(logs().viewState.live, false);
+		assert.deepStrictEqual(logs().viewState.filter, NO_FILTER);
+		assert.deepStrictEqual(topic.activeTails(), [], 'the other pipeline is no longer read');
+		// The search read back an hour at a time, newest first, and stopped at the window with the error.
+		const search = topic.ranges.slice(0, -1);
+		assert.strictEqual(search.length, 4, search.map((r) => Math.round((t0 - r.fromTime) / MINUTE)).join(', '));
+		assert.ok(search.every((r, i) => i === 0 || r.toTime === search[i - 1].fromTime), 'contiguous windows, newest first');
+		const shown = logs().posted.filter((m) => m.type === 'show').at(-1);
+		assert.strictEqual(shown?.type === 'show' ? shown.state.focusId : undefined, target.id, 'the webview is told which row to scroll to');
+		// Another range: the mark goes.
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.strictEqual(logs().viewState.focusId, null);
+	});
+
+	test('AROUND over the cap: more than the cap after the error: the found record is kept and marked, the newest dropped instead', async () => {
+		await setUpAccess();
+		logs().cap = 5;
+		const t0 = Date.now();
+		const errorTime = t0 - 30 * MINUTE;
+		topic.write(
+			recAt(ORDERS, 'b2', errorTime - 2 * MINUTE),
+			recAt(ORDERS, 'b1', errorTime - MINUTE),
+			errAt(ORDERS, 'the error', errorTime),
+			...Array.from({ length: 10 }, (_, i) => recAt(ORDERS, `a${i}`, errorTime + (i + 1) * 10_000)),
+		);
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['the error', 'a0', 'a1', 'a2', 'a3'], 'the older ones left out only up to it, then the newest dropped');
+		assert.strictEqual(logs().viewState.focusId, logs().rows()[0].id);
+		assert.strictEqual(logs().droppedCount, 2);
+		assert.strictEqual(logs().viewState.newerDropped, 6);
+		assert.ok(!logs().statusText.includes(focusNotShownText(errorTime)), logs().statusText);
+		// The webview keeps the last `cap` of what it is sent: the same rows.
+		const appended = logs().posted.filter((m) => m.type === 'append').flatMap((m) => (m.type === 'append' ? m.rows : []));
+		assert.deepStrictEqual(appended.slice(-5).map((r) => r.message.slice(ORDERS.length + 1)), texts(), 'the webview shows the same rows');
+	});
+
+	test('AROUND none: no ERROR record within 24 hours: "No ERROR record in the last 24 hours" and the last hour; the search stops at the log\'s first offset', async () => {
+		await setUpAccess();
+		logs().errorWindowMs = 6 * HOUR;
+		const t0 = Date.now();
+		topic.write(
+			errAt(ORDERS, 'too old', t0 - 25 * HOUR),
+			recAt(ORDERS, '-2h', t0 - 2 * HOUR),
+			recAt(ORDERS, '-30m', t0 - 30 * MINUTE),
+			errAt(CLICKS, 'not this pipeline\'s', t0 - 20 * MINUTE),
+		);
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'hour' && logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.note, NO_ERROR_NOTE);
+		assert.deepStrictEqual(texts(), ['-30m'], 'the last hour');
+		assert.strictEqual(logs().viewState.focusId, null);
+		assert.strictEqual(logs().viewState.highlightErrors, true);
+		const search = topic.ranges.slice(0, -1);
+		assert.strictEqual(search.length, 4, 'every window back to 24 hours');
+		assert.strictEqual(search[0].toTime - search.at(-1)!.fromTime, ERROR_SEARCH_MS);
+		// Only records of the last 2 hours: the first window starts at the log's first offset, the search stops there.
+		topic.clear();
+		topic.write(recAt(ORDERS, '-2h', t0 - 2 * HOUR), recAt(ORDERS, '-30m', t0 - 30 * MINUTE));
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'hour' && logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(topic.ranges.length, 2, 'one search window, then the last hour');
+		assert.strictEqual(logs().viewState.note, NO_ERROR_NOTE);
+	});
+
+	test('AROUND hidden: the search stops with the tab hidden and is made again once it is shown', async () => {
+		await setUpAccess();
+		topic.rangeDelayMs = 300;
+		topic.write(errAt(ORDERS, 'the error', Date.now() - 30 * MINUTE));
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1 && logs().reading, 10_000), 'searching');
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !logs().reading && topic.activeRanges().length === 0, 10_000), 'the search stopped');
+		assert.strictEqual(logs().viewState.range.kind, 'day', 'not found yet');
+		topic.rangeDelayMs = 0;
+		await vscode.commands.executeCommand(`${LOGS_VIEW_ID}.focus`);
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['the error']);
+		assert.strictEqual(logs().viewState.focusId, logs().rows()[0].id);
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

@@ -399,3 +399,17 @@ button.rpcn-logs-value:hover {
 .rpcn-logs-copied {
 	color: var(--vscode-descriptionForeground);
 }
+/* Ticket 6.5: the ERROR records highlighted (opened from an Error), the record around the error marked, the note. */
+.rpcn-logs-table tbody tr.rpcn-logs-error-row {
+	background: var(--vscode-inputValidation-errorBackground, transparent);
+	box-shadow: inset 3px 0 0 var(--vscode-errorForeground);
+}
+.rpcn-logs-table tbody tr.rpcn-logs-focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+	box-shadow: inset 3px 0 0 var(--vscode-focusBorder);
+}
+.rpcn-logs-note {
+	margin: 4px 8px;
+	color: var(--vscode-descriptionForeground);
+}

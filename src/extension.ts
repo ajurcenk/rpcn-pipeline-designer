@@ -101,13 +101,13 @@ export interface ExtensionApi {
 	 */
 	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
-		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue'>;
+		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue' | 'showLogsAroundError' | 'errorFollowUp'>;
 	/**
 	 * The Pipeline Logs tab (tickets 6.2, 6.3): the shown pipeline, its kept rows and status, whether it
 	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions; and the bundled Kafka client's check
 	 * (no native module). Only in `ExtensionMode.Test`.
 	 */
-	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention' | 'setFilter' | 'around' | 'copyJson'>
+	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'errorWindowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention' | 'setFilter' | 'around' | 'copyJson'>
 		& { checkClient: typeof checkClient };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];

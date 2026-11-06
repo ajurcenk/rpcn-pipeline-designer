@@ -17,6 +17,10 @@
 // match". The host applies the filter while it reads; the view highlights the search's matches. A
 // record's ▸ expands it in place: its whole JSON, **Copy JSON** (the webview's clipboard, else the
 // host's) and **Show records around this one**.
+//
+// Ticket 6.5: opened from an Error, the ERROR records are highlighted (`highlightErrors`); around the
+// error, the record found (`focusId`) is scrolled to once and marked, and a note above the records says
+// when none was found ("No ERROR record in the last 24 hours").
 
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -129,7 +133,7 @@ interface State {
 
 const INITIAL_VIEW: LogsViewState = {
 	range: { kind: 'recent', from: 0, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
-	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS,
+	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null,
 };
 const INITIAL: State = { title: null, rows: [], dropped: 0, cap: MAX_LOG_ROWS, status: '', view: INITIAL_VIEW };
 
@@ -279,6 +283,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	/** The records expanded in place. */
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+	/** The marked row last scrolled to (ticket 6.5): scrolled to once, then the view is the user's. */
+	const focused = useRef<string | null>(null);
 
 	useEffect(() => {
 		const onMessage = (event: MessageEvent) => {
@@ -369,12 +375,25 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 		const el = scroller.current;
 		const before = prepended.current;
 		prepended.current = undefined;
-		if (el && before) {
+		const focusId = state.view.focusId;
+		const target = el && focusId !== null && focused.current !== focusId
+			? [...el.querySelectorAll<HTMLElement>('tr[data-id]')].find((tr) => tr.dataset.id === focusId) : undefined;
+		if (el && target) {
+			// The record around the error: scrolled to once; the view no longer follows the bottom.
+			focused.current = focusId;
+			atBottom.current = false;
+			if (typeof target.scrollIntoView === 'function') {
+				target.scrollIntoView({ block: 'center' });
+			}
+		} else if (el && before) {
 			el.scrollTop = before.top + (el.scrollHeight - before.height);
 		} else if (el && atBottom.current) {
 			el.scrollTop = el.scrollHeight;
 		}
-	}, [state.rows]);
+		if (focusId === null) {
+			focused.current = null;
+		}
+	}, [state.rows, state.view.focusId]);
 
 	const onScroll = () => {
 		const el = scroller.current;
@@ -434,6 +453,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 						{view.olderNote ? <span className="rpcn-logs-older-note" role="status">{view.olderNote}</span> : null}
 					</div>
 				) : null}
+				{shown && view.note ? <p className="rpcn-logs-note" role="status">{view.note}</p> : null}
 				{shown && state.rows.length === 0 ? <p className="rpcn-logs-empty rpcn-logs-gap">{emptyText}</p> : null}
 				{state.rows.length > 0 ? (
 					<table className="rpcn-logs-table">
@@ -444,10 +464,15 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 							{state.rows.map((row, i) => {
 								const gap = gaps.get(i);
 								const open = expanded.has(row.id);
+								const classes = [
+									open ? 'rpcn-logs-open' : '',
+									view.highlightErrors && levelOfText(row.level) === 'error' ? 'rpcn-logs-error-row' : '',
+									view.focusId === row.id ? 'rpcn-logs-focus' : '',
+								].filter(Boolean).join(' ');
 								return (
 									<Fragment key={row.id}>
 										{gap ? <tr className="rpcn-logs-gap-row"><td colSpan={4} className="rpcn-logs-gap">{noRecordsText(gap.from, gap.to)}</td></tr> : null}
-										<tr data-id={row.id} className={open ? 'rpcn-logs-open' : undefined}>
+										<tr data-id={row.id} className={classes || undefined} aria-current={view.focusId === row.id ? 'true' : undefined}>
 											<td className="rpcn-logs-time">
 												<button type="button" className="rpcn-logs-expand" aria-expanded={open} aria-label={open ? 'Hide the whole record' : 'Show the whole record'}
 													onClick={() => toggleExpanded(row.id)} />

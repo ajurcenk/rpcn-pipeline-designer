@@ -8,7 +8,9 @@
 // empty range's note. Ticket 6.4: the level chips and their counts, the search box (debounced, Match
 // case, regular expression, an invalid one refused at the box), highlighted matches, field chips from a
 // record's values, "N of M records match", "No records match", and a record's JSON (Copy JSON, Show
-// records around this one).
+// records around this one). Ticket 6.5: the ERROR records highlighted, the record around the error
+// scrolled to once and marked, the "No ERROR record in the last 24 hours" note, and a state without
+// those fields refused.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -36,7 +38,7 @@ const T0 = new Date(2026, 10, 5, 9, 4, 5, 7).getTime();
 const MIN = 60_000;
 const STATE: LogsViewState = {
 	range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
-	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS,
+	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null,
 };
 const state = (extra: Partial<LogsViewState> = {}): LogsViewState => ({ ...STATE, ...extra });
 const row = (n: number, extra: Partial<LogRow> = {}): LogRow => ({
@@ -411,5 +413,60 @@ describe('Pipeline Logs filter and search (ticket 6.4)', () => {
 		expect(searchPattern('', false, false)).toBeUndefined();
 		expect(searchError({ text: '(', matchCase: false, regex: false })).toBeUndefined();
 		expect(searchError({ text: '(', matchCase: false, regex: true })).toMatch(/Invalid regular expression/);
+	});
+});
+
+describe('Pipeline Logs entry points (ticket 6.5)', () => {
+	const show = async (rows: LogRow[], extra: Partial<LogsViewState> = {}) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows, dropped: 0, cap: 5000, status: '', state: state(extra) });
+	const rowEl = (id: string) => host.querySelector<HTMLTableRowElement>(`tbody tr[data-id="${id}"]`)!;
+	const rows = () => [row(1), row(2, { level: 'ERROR' }), row(3, { level: 'fatal' }), row(4, { level: 'WARN' })];
+
+	it('HIGHLIGHT: with highlightErrors the ERROR-level rows are highlighted (ERROR, FATAL…), others not; without it none', async () => {
+		await show(rows(), { highlightErrors: true });
+		expect(['0:1', '0:2', '0:3', '0:4'].map((id) => rowEl(id).classList.contains('rpcn-logs-error-row'))).toEqual([false, true, true, false]);
+		await show(rows());
+		expect(host.querySelectorAll('.rpcn-logs-error-row').length).toBe(0);
+	});
+
+	it('AROUND: the focused row is marked and scrolled to once (when it arrives); a later batch does not scroll again', async () => {
+		const scrolled: string[] = [];
+		const original = Element.prototype.scrollIntoView;
+		Element.prototype.scrollIntoView = function (this: Element) {
+			scrolled.push((this as HTMLElement).dataset.id ?? '');
+		};
+		try {
+			// The range is read: the focused row arrives in a later batch.
+			await show([row(1)], { highlightErrors: true, focusId: '0:3', range: { kind: 'custom', from: T0 - 5 * MIN, to: T0 + 5 * MIN } });
+			expect(scrolled).toEqual([]);
+			await send({ type: 'append', rows: [row(2), row(3, { level: 'ERROR' })], dropped: 0 });
+			expect(scrolled).toEqual(['0:3']);
+			expect(rowEl('0:3').classList.contains('rpcn-logs-focus')).toBe(true);
+			expect(rowEl('0:3').getAttribute('aria-current')).toBe('true');
+			expect(rowEl('0:3').classList.contains('rpcn-logs-error-row')).toBe(true);
+			expect(rowEl('0:2').classList.contains('rpcn-logs-focus')).toBe(false);
+			await send({ type: 'append', rows: [row(4)], dropped: 0 });
+			expect(scrolled, 'once').toEqual(['0:3']);
+			// Another range: no mark.
+			await show([row(3)], { focusId: null });
+			expect(host.querySelectorAll('.rpcn-logs-focus').length).toBe(0);
+		} finally {
+			Element.prototype.scrollIntoView = original;
+		}
+	});
+
+	it('NO_ERROR: the note above the records', async () => {
+		await show([row(1)], { note: 'No ERROR record in the last 24 hours', highlightErrors: true });
+		expect(host.querySelector('.rpcn-logs-note')?.textContent).toBe('No ERROR record in the last 24 hours');
+		await show([row(1)]);
+		expect(host.querySelector('.rpcn-logs-note')).toBeNull();
+	});
+
+	it('a state without highlightErrors, focusId or note is refused', async () => {
+		const { highlightErrors: _h, ...without } = state();
+		await send({ type: 'show', title: 'refused', rows: [], dropped: 0, cap: 5000, status: '', state: without });
+		expect(title()).toBe(NO_PIPELINE_TITLE);
+		await send({ type: 'show', title: 'refused', rows: [], dropped: 0, cap: 5000, status: '', state: { ...state(), focusId: 3 } });
+		expect(title()).toBe(NO_PIPELINE_TITLE);
 	});
 });
