@@ -86,6 +86,11 @@
 // records highlighted), or **Set up log access…** first when the cluster has none. **Show logs around the
 // error** on an Error pipeline's row opens the log around its newest ERROR record (`logsPanel.ts`).
 //
+// Ticket 6.6 (board 6): Show logs on a pipeline whose cluster has no log access opens the tab in its No
+// log access state (and still offers Set up log access…); every source handed to the tab carries
+// `setUpAccess`, 6.2's Set up log access for its cluster, which the tab's Set up log access again… and
+// Use another user… run before reading the same range again.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 
 import * as fs from 'fs';
@@ -493,6 +498,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	errorFollowUp: Promise<ShowLogsResult | undefined> | undefined;
 	/** Ticket 6.2: each cluster's log access as stored (never its password), read with the clusters. */
 	private readonly logUsers = new Map<string, { readonly username: string; readonly mechanism: SaslMechanism }>();
+	/** Ticket 6.6: each cluster's log access as last read or stored (in memory only), so a reader made later signs in with the newest. */
+	private readonly logAccesses = new Map<string, LogAccess>();
+	/** Ticket 6.6: the clusters whose Set up log access is running (a second one is ignored). */
+	private readonly settingUpLogs = new Set<string>();
 	/**
 	 * The workspace folders a pipeline's tag is resolved in (the local file of a row, the mapping a
 	 * delete removes): VS Code's `file:` folders; the test seam replaces it (the stable run opens none).
@@ -2360,8 +2369,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		if (access) {
 			this.seenSecrets.add(access.password);
 			this.logUsers.set(clusterId, { username: access.username, mechanism: access.mechanism });
+			this.logAccesses.set(clusterId, access);
 		} else {
 			this.logUsers.delete(clusterId);
+			this.logAccesses.delete(clusterId);
 		}
 		return access;
 	}
@@ -2375,6 +2386,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.writing--;
 		}
 		this.logUsers.delete(clusterId);
+		this.logAccesses.delete(clusterId);
 		this.fire();
 	}
 
@@ -2403,9 +2415,27 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	/**
 	 * Set up log access… on a cluster row: the username, the password (a password box) and the
 	 * mechanism; a test read; stored only once it passes. Escape at any step: nothing stored or sent.
-	 * Never throws.
+	 * Never throws. Ticket 6.6: one at a time per cluster; another request while one runs is ignored.
 	 */
 	async setUpLogAccess(node?: CloudNode): Promise<LogAccessResult> {
+		const clusterId = node?.kind === 'cluster' ? node.id : undefined;
+		if (clusterId !== undefined && this.settingUpLogs.has(clusterId)) {
+			this.log('Redpanda Cloud: Set up log access is already running for that cluster; this request was ignored.');
+			return LOGS_NOT_STARTED;
+		}
+		if (clusterId !== undefined) {
+			this.settingUpLogs.add(clusterId);
+		}
+		try {
+			return await this.setUpLogAccessNow(node);
+		} finally {
+			if (clusterId !== undefined) {
+				this.settingUpLogs.delete(clusterId);
+			}
+		}
+	}
+
+	private async setUpLogAccessNow(node?: CloudNode): Promise<LogAccessResult> {
 		try {
 			const unsupported = this.logsNotSupported();
 			if (unsupported) {
@@ -2473,6 +2503,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				this.writing--;
 			}
 			this.logUsers.set(cluster.id, { username, mechanism });
+			this.logAccesses.set(cluster.id, access);
 			this.fire();
 			this.log(`Redpanda Cloud: log access to ${cluster.name} set up for ${username} (${mechanism}).`);
 			void this.showInfo(`Log access to ${cluster.name} is set up for ${username}.`);
@@ -2533,8 +2564,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/**
-	 * The Pipeline Logs tab on `pipeline`, read with its cluster's log access (none: Set up log access…
-	 * offered first, then the log).
+	 * The Pipeline Logs tab on `pipeline`, read with its cluster's log access (none: the tab shows its No
+	 * log access state, ticket 6.6, and Set up log access… is offered, then the log).
 	 */
 	private async openLogs(cluster: CloudCluster, pipeline: Pick<CloudPipeline, 'id' | 'displayName' | 'updateTime'>, options: LogsShowOptions): Promise<ShowLogsResult> {
 		if (!this.options.logs) {
@@ -2543,6 +2574,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		let access = await this.readLogAccess(cluster.id);
 		if (!access) {
 			this.fire();
+			// Ticket 6.6: the tab shows the pipeline in its No log access state (its own Set up log access…).
+			await this.options.logs.show(this.logSource(cluster, pipeline, undefined), options);
 			const choice = await this.showInfo(noLogAccessMessage(cluster.name), SET_UP_LOG_ACCESS_ACTION);
 			if (choice !== SET_UP_LOG_ACCESS_ACTION || (await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
 				return { kind: 'noAccess' };
@@ -2557,17 +2590,55 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			void this.showError(`${cluster.name} gives no Kafka address, so its pipeline logs can't be read.`);
 			return LOGS_NOT_STARTED;
 		}
-		const target = { brokers, access };
 		this.log(`Redpanda Cloud: showing the logs of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}${options.aroundError ? ' around its newest ERROR record' : ''}, read as ${access.username}.`);
-		await this.options.logs.show({
+		await this.options.logs.show(this.logSource(cluster, pipeline, access), options);
+		return { kind: 'shown', pipelineId: pipeline.id };
+	}
+
+	/**
+	 * What the Pipeline Logs tab reads `pipeline` with: its cluster's Kafka address and `access` (none:
+	 * the tab's No log access state, nothing read). Ticket 6.6: `setUpAccess` runs Set up log access for
+	 * the cluster (the tab's Set up log access…, Set up log access again… and Use another user…) and,
+	 * once stored, gives the source with the new access.
+	 */
+	private logSource(cluster: CloudCluster, pipeline: Pick<CloudPipeline, 'id' | 'displayName' | 'updateTime'>, access: LogAccess | undefined): LogSource {
+		const brokers = cluster.seedBrokers;
+		const target = access && brokers?.length ? { brokers, access } : undefined;
+		// The newest access stored for the cluster (Set up log access again, from the row too), else the one given.
+		const current = () => (target ? { brokers: target.brokers, access: this.logAccesses.get(cluster.id) ?? target.access } : undefined);
+		const accesses = this.logAccesses;
+		return {
 			title: `${pipeline.displayName} · ${cluster.name}`,
 			pipelineId: pipeline.id,
-			reader: () => this.logReader(target),
+			pipelineName: pipeline.displayName,
+			clusterName: cluster.name,
+			get username() {
+				return target ? accesses.get(cluster.id)?.username ?? target.access.username : undefined;
+			},
+			noAccess: !target,
+			reader: () => {
+				const now = current();
+				if (!now) {
+					throw new Error(noLogAccessMessage(cluster.name));
+				}
+				return this.logReader(now);
+			},
 			mask: (text) => this.mask(text),
 			...(pipeline.updateTime !== undefined ? { deployedAt: pipeline.updateTime } : {}),
 			lastDeploy: () => this.lastDeployOf(cluster.id, pipeline.id),
-		}, options);
-		return { kind: 'shown', pipelineId: pipeline.id };
+			setUpAccess: async () => {
+				if ((await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
+					return undefined;
+				}
+				const fresh = await this.readLogAccess(cluster.id);
+				const now = this.clusterById(cluster.id) ?? cluster;
+				if (!fresh || !now.seedBrokers?.length) {
+					return undefined;
+				}
+				this.log(`Redpanda Cloud: reading the logs of pipeline ${pipeline.displayName} (${pipeline.id}) on ${now.name} as ${fresh.username}.`);
+				return this.logSource(now, this.pipelineById(now.id, pipeline.id) ?? pipeline, fresh);
+			},
+		};
 	}
 
 	/**

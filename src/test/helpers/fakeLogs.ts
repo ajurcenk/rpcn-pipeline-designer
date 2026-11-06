@@ -12,6 +12,11 @@
 // as after the retention), `retentionMs` what DescribeConfigs answers (`'refused'`: not allowed), and
 // `rangeDelayMs` slows each batch of a bounded read so a test can switch while it reads. Every range
 // read is recorded.
+//
+// States (ticket 6.6): `dropConnections` ends every following tail with a connection error (as a dropped
+// connection) and makes the next sign-ins fail the same way, so a test can tell the panel tries again
+// and recovers after N tries; a refused sign-in comes from a changed `password`, a refused read from
+// `refuseRead`; `rangeDelayMs` makes a slow read.
 
 import type { LogPositions, LogRangeEnd, LogReader, LogReadErrorKind, LogRecord, LogTarget } from '../../adapters/logs/logReader';
 
@@ -74,7 +79,14 @@ export class FakeLogs {
 	refuseRead = false;
 	/** When set, the test read fails with this connection error. */
 	failTest: string | undefined;
+	/** The next this many sign-ins fail with a connection error (then they pass again). */
+	connectionFailures = 0;
+	/** How many sign-ins failed with a connection error. */
+	connectionsRefused = 0;
+	/** When set, the next bounded read drops its connection after delivering this many batches (once). */
+	dropRangeAfter: number | undefined;
 	private readonly waiting = new Set<() => void>();
+	private readonly dropping = new Set<(err: Error) => void>();
 
 	constructor(options: { readonly username: string; readonly password: string; readonly partitions?: number }) {
 		this.username = options.username;
@@ -104,6 +116,17 @@ export class FakeLogs {
 		return written;
 	}
 
+	/**
+	 * A dropped connection: every following tail ends with a connection error, and the next `failures`
+	 * sign-ins fail the same way (0: the first try after the drop succeeds).
+	 */
+	dropConnections(failures = 0): void {
+		this.connectionFailures = failures;
+		const drop = [...this.dropping];
+		this.dropping.clear();
+		drop.forEach((d) => d(readError('connection', 'Connection closed by the broker (ECONNRESET)')));
+	}
+
 	clear(): void {
 		this.partitions.forEach((p) => (p.length = 0));
 		this.targets.length = 0;
@@ -118,6 +141,9 @@ export class FakeLogs {
 		this.rangeDelayMs = 0;
 		this.refuseRead = false;
 		this.failTest = undefined;
+		this.connectionFailures = 0;
+		this.connectionsRefused = 0;
+		this.dropRangeAfter = undefined;
 	}
 
 	/** The ranges still reading. */
@@ -137,6 +163,11 @@ export class FakeLogs {
 	}
 
 	private signIn(target: LogTarget): void {
+		if (this.connectionFailures > 0) {
+			this.connectionFailures--;
+			this.connectionsRefused++;
+			throw readError('connection', 'Cannot connect to any broker: connect ECONNREFUSED');
+		}
 		if (target.access.username !== this.username || target.access.password !== this.password) {
 			throw readError('signIn', 'Cannot connect to any broker: SASL authentication failed');
 		}
@@ -171,13 +202,22 @@ export class FakeLogs {
 					tail.delivered.push(...batch);
 					onRecords(batch, new Map(at));
 					// The live fetch's wait: until a write or the abort.
-					await new Promise<void>((resolve) => {
-						const wake = () => {
+					await new Promise<void>((resolve, reject) => {
+						const done = () => {
 							signal.removeEventListener('abort', wake);
 							this.waiting.delete(wake);
+							this.dropping.delete(drop);
+						};
+						const wake = () => {
+							done();
 							resolve();
 						};
+						const drop = (err: Error) => {
+							done();
+							reject(err);
+						};
 						this.waiting.add(wake);
+						this.dropping.add(drop);
 						signal.addEventListener('abort', wake);
 					});
 				}
@@ -196,6 +236,10 @@ export class FakeLogs {
 							if (signal.aborted) {
 								break;
 							}
+						}
+						if (this.dropRangeAfter !== undefined && range.delivered.length >= this.dropRangeAfter * RANGE_BATCH) {
+							this.dropRangeAfter = undefined;
+							throw readError('connection', 'Connection closed by the broker (ECONNRESET)');
 						}
 						const batch = this.partitions[p].slice(o, Math.min(o + RANGE_BATCH, stop.get(p)!));
 						range.delivered.push(...batch);

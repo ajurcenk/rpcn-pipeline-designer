@@ -21,12 +21,19 @@
 // Ticket 6.5: opened from an Error, the ERROR records are highlighted (`highlightErrors`); around the
 // error, the record found (`focusId`) is scrolled to once and marked, and a note above the records says
 // when none was found ("No ERROR record in the last 24 hours").
+//
+// Ticket 6.6 (board 6): the host's `panelState` fills the list area under the toolbar (the header and
+// the filter bar stay): No log access (Set up log access…), Sign-in refused (Set up log access again…,
+// Retry), Not allowed (Retry, Use another user…), No records (Last 24 hours, Show every level when
+// levels are hidden), Reading (the count so far, Stop reading) and Connection lost (the wait counted
+// down, Retry now). The rows already shown stay below Reading and Connection lost. 6.4's "No records
+// match" stays its own line.
 
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-	customRangeError, filterActive, gapsIn, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER,
-	noRecordsText, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, searchError, searchPattern,
-	type LogFilter, type LogLevel, type LogRow, type LogsViewState, type LogsWebviewMessage, type RangeKind,
+	customRangeError, filterActive, gapsIn, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
+	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, soFarText,
+	type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogsViewState, type LogsWebviewMessage, type RangeKind,
 } from '../../../src/shared/logsProtocol';
 
 export const NO_PIPELINE_TITLE = 'No pipeline';
@@ -34,6 +41,8 @@ export const NO_RECORDS_TEXT = 'No records of this pipeline yet.';
 export const NO_OLDER_TEXT = 'No older records';
 export const LOADING_OLDER_TEXT = 'Loading older records…';
 export const NO_MATCH_TEXT = 'No records match';
+/** Ticket 6.6: Stop reading came before any record. */
+export const STOPPED_EMPTY_TEXT = 'Reading stopped before any record';
 /** The search is posted once typing pauses this long. */
 export const SEARCH_DEBOUNCE_MS = 300;
 /** The field chip that stands for the instance column (as the host's `filter.ts`). */
@@ -133,7 +142,8 @@ interface State {
 
 const INITIAL_VIEW: LogsViewState = {
 	range: { kind: 'recent', from: 0, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
-	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null,
+	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null, panelState: NO_PANEL_STATE,
+	stoppedShort: false, settingUp: false,
 };
 const INITIAL: State = { title: null, rows: [], dropped: 0, cap: MAX_LOG_ROWS, status: '', view: INITIAL_VIEW };
 
@@ -181,6 +191,81 @@ function FilterBar({ draft, view, change }: {
 			{filterActive(view.filter) ? <span className="rpcn-logs-match-count">{matchText(view.counts.matched, view.counts.total)}</span> : null}
 			{error ? <p className="rpcn-logs-search-error" role="alert">{error}</p> : null}
 		</div>
+	);
+}
+
+/** The seconds a lost connection's countdown shows at `now` (at least 1, at most the state's wait); `null`: trying now. */
+export function secondsLeft(state: Extract<LogsPanelState, { kind: 'connectionLost' }>, now: number): number | null {
+	if (state.retryAt === null) {
+		return null;
+	}
+	return Math.max(1, Math.min(state.retryInS, Math.ceil((state.retryAt - now) / 1000)));
+}
+
+/** A state's buttons (board 6): the label, the message it posts, whether it is the primary one. */
+export function stateActions(state: LogsPanelState): readonly { readonly label: string; readonly message: LogsWebviewMessage; readonly primary?: true }[] {
+	switch (state.kind) {
+		case 'noAccess':
+			return [{ label: 'Set up log access…', message: { type: 'setUpAccess' }, primary: true }];
+		case 'signIn':
+			return [{ label: 'Set up log access again…', message: { type: 'setUpAccess' }, primary: true }, { label: 'Retry', message: { type: 'retryNow' } }];
+		case 'notAllowed':
+			return [{ label: 'Retry', message: { type: 'retryNow' } }, { label: 'Use another user…', message: { type: 'useAnotherUser' } }];
+		case 'noRecords':
+			return [
+				{ label: 'Last 24 hours', message: { type: 'last24h' } },
+				...(state.hiddenLevels.length > 0 ? [{ label: 'Show every level', message: { type: 'showEveryLevel' } } as const] : []),
+			];
+		case 'reading':
+			return [{ label: 'Stop reading', message: { type: 'stopReading' } }];
+		case 'connectionLost':
+			return [{ label: 'Retry now', message: { type: 'retryNow' } }];
+		case 'none':
+			return [];
+	}
+}
+
+/** Board 6's panel for `state`: its label, title, text and buttons; a lost connection's wait counted down. */
+function StatePanel({ state, post, settingUp }: { readonly state: LogsPanelState; readonly post: (m: LogsWebviewMessage) => void; readonly settingUp: boolean }) {
+	const [now, setNow] = useState(() => Date.now());
+	const counting = state.kind === 'connectionLost' && state.retryAt !== null;
+	useEffect(() => {
+		if (!counting) {
+			return undefined;
+		}
+		setNow(Date.now());
+		const timer = setInterval(() => setNow(Date.now()), 250);
+		return () => clearInterval(timer);
+	}, [counting, state]);
+	const seconds = state.kind === 'connectionLost' ? secondsLeft(state, now) : undefined;
+	const texts = panelStateTexts(state, seconds);
+	if (!texts) {
+		return null;
+	}
+	const alert = state.kind === 'signIn' || state.kind === 'notAllowed' || state.kind === 'connectionLost';
+	// The countdown changes every second: kept out of the alert's announcement (`aria-live="off"`).
+	const retry = seconds === undefined ? undefined : retryText(seconds);
+	const body = retry !== undefined && texts.body.endsWith(retry) ? texts.body.slice(0, -retry.length) : texts.body;
+	return (
+		<section className={`rpcn-logs-state rpcn-logs-state-${state.kind}`} data-state={state.kind} role={alert ? 'alert' : 'status'} aria-label={texts.label}>
+			<div className="rpcn-logs-state-label">{texts.label}</div>
+			<div className="rpcn-logs-state-title">{texts.title}</div>
+			<div className="rpcn-logs-state-body">
+				{retry !== undefined && body !== texts.body ? <>{body}<span className="rpcn-logs-state-countdown" aria-live="off">{retry}</span></> : texts.body}
+			</div>
+			{state.kind === 'reading' ? (
+				<>
+					<div className="rpcn-logs-progress" role="progressbar" aria-label="Records read"><div className="rpcn-logs-progress-bar" /></div>
+					<div className="rpcn-logs-state-count">{soFarText(state.count)}</div>
+				</>
+			) : null}
+			<div className="rpcn-logs-state-actions">
+				{stateActions(state).map((a) => (
+					<button key={a.label} type="button" className={a.primary ? 'rpcn-logs-button rpcn-logs-primary' : 'rpcn-logs-button'}
+						disabled={settingUp && (a.message.type === 'setUpAccess' || a.message.type === 'useAnotherUser')} onClick={() => post(a.message)}>{a.label}</button>
+				))}
+			</div>
+		</section>
 	);
 }
 
@@ -413,7 +498,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const { view } = state;
 	const shown = state.title !== null;
 	const gaps = new Map(gapsIn(state.rows).map((g) => [g.before, g]));
-	const emptyText = filterActive(view.filter) && view.counts.total > 0 ? NO_MATCH_TEXT
+	const panel = view.panelState;
+	const emptyText = view.stoppedShort ? STOPPED_EMPTY_TEXT : filterActive(view.filter) && view.counts.total > 0 ? NO_MATCH_TEXT
 		: view.range.to !== null && view.done ? noRecordsText(view.range.from, view.range.to) : NO_RECORDS_TEXT;
 	const oldest = view.olderBefore;
 	/** A bounded range still being read: Load older waits until it is read (the host refuses it too). */
@@ -440,7 +526,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 			</div>
 			{shown ? <FilterBar draft={draft} view={view} change={changeFilter} /> : null}
 			<div className="rpcn-logs-scroll" ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Log records">
-				{shown ? (
+				{shown && panel.kind !== 'noAccess' ? (
 					<div className="rpcn-logs-older">
 						{view.older === 'none'
 							? <span className="rpcn-logs-no-older">{NO_OLDER_TEXT}</span>
@@ -454,7 +540,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 					</div>
 				) : null}
 				{shown && view.note ? <p className="rpcn-logs-note" role="status">{view.note}</p> : null}
-				{shown && state.rows.length === 0 ? <p className="rpcn-logs-empty rpcn-logs-gap">{emptyText}</p> : null}
+				{shown && panel.kind !== 'none' ? <StatePanel state={panel} post={post} settingUp={view.settingUp} /> : null}
+				{shown && panel.kind === 'none' && state.rows.length === 0 ? <p className="rpcn-logs-empty rpcn-logs-gap">{emptyText}</p> : null}
 				{state.rows.length > 0 ? (
 					<table className="rpcn-logs-table">
 						<thead>

@@ -19,6 +19,8 @@
 // else the pick), the Error notification's Show logs or Set up log access…, and Show logs around the
 // error on an Error row; every matrix row of its plan (PALETTE_MAPPED … SWITCH). The notifications'
 // actions on a deploy and an update are checked in 96-cloud.ts; here a start's, through to the log.
+// Ticket 6.6 (states): every matrix row of its plan (NO_ACCESS … AFTER_SETUP), the retries' waits
+// shortened through the panel's `retryDelaysMs` seam (the states still say the real waits).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -28,11 +30,11 @@ import {
 	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND,
 } from '../../../adapters/vscode/cloudView';
 import {
-	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, STOPPED_PREFIX,
+	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, stoppedReadingStatus,
 } from '../../../adapters/vscode/logsPanel';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
-import { gapsIn, MAX_LOG_ROWS, NO_FILTER, type LogFilter } from '../../../shared/logsProtocol';
+import { gapsIn, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
@@ -80,6 +82,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 	let originalReader: ReturnType<typeof cloud>['logReader'];
 	let originalCap: number;
 	let originalErrorWindow: number;
+	let originalRetryDelays: readonly number[];
 	let originalPollMs: number;
 	/** The suite's own temporary directory (NO_LEAK reads every file in it). */
 	let dir: string;
@@ -186,6 +189,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		originalReader = cloud().logReader;
 		originalCap = logs().cap;
 		originalErrorWindow = logs().errorWindowMs;
+		originalRetryDelays = logs().retryDelaysMs;
 		originalPollMs = cloud().pollMs;
 		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
 		cloud().ui = {
@@ -242,6 +246,8 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		fake.cluster(VILNIUS).pipelines = [pipeline(ORDERS, 'orders'), pipeline(CLICKS, 'clicks')];
 		fake.cluster(BYOC).pipelines = [pipeline('d3byoc00000000000003', 'events')];
 		logs().errorWindowMs = originalErrorWindow;
+		// Ticket 6.6: short waits in every test, so no retry timer outlives one (closing the panel above stops it too).
+		logs().retryDelaysMs = [200, 400, 600, 800, 1_000];
 		cloud().pollMs = originalPollMs;
 		errors.length = 0;
 		errorActions.length = 0;
@@ -253,6 +259,14 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		errorActions.length = 0;
 		infos.length = 0;
 		infoActions.length = 0;
+	});
+
+	/** Ticket 6.6: what a test leaves to undo (its listeners). */
+	const teardowns: (() => void)[] = [];
+	teardown(() => {
+		teardowns.splice(0).forEach((t) => t());
+		// No retry timer outlives a test: a lost connection waits with the tab hidden, and the next test's show resets it.
+		topic.connectionFailures = 0;
 	});
 
 	suiteTeardown(async () => {
@@ -267,6 +281,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		cloud().logReader = originalReader;
 		logs().cap = originalCap;
 		logs().errorWindowMs = originalErrorWindow;
+		logs().retryDelaysMs = originalRetryDelays;
 		cloud().pollMs = originalPollMs;
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		await fake?.stop();
@@ -373,12 +388,19 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.strictEqual(asked[0].value, USERNAME);
 	});
 
-	test('NO_ACCESS: Show logs where the cluster has no access says to set it up first, with the action; nothing is read', async () => {
+	test('NO_ACCESS: Show logs where the cluster has no access says to set it up first, with the action; the tab shows its No log access state; nothing is read', async () => {
 		script({ actions: [undefined] });
 		assert.deepStrictEqual(await showLogs(), { kind: 'noAccess' });
 		assert.deepStrictEqual(infos, [noLogAccessMessage('rpc-vilnius')]);
 		assert.deepStrictEqual(infoActions, [[SET_UP_LOG_ACCESS_ACTION]]);
-		assert.strictEqual(topic.targets.length, 0);
+		assert.strictEqual(logs().title, 'orders · rpc-vilnius');
+		assert.deepStrictEqual(logs().panelState, { kind: 'noAccess', cluster: 'rpc-vilnius', topic: '__redpanda.connect.logs' });
+		assert.strictEqual(panelStateTexts(logs().panelState)?.title, 'rpc-vilnius has no log access set');
+		assert.strictEqual(logs().statusText, 'rpc-vilnius has no log access set');
+		assert.ok(await waitFor(() => logs().visible, 10_000));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.strictEqual(topic.targets.length, 0, 'nothing read');
+		assert.strictEqual(logs().reading, false);
 		// The action runs Set up log access…, then the log is shown.
 		topic.write(rec(ORDERS, 'one', MINUTE));
 		script({ actions: [SET_UP_LOG_ACCESS_ACTION], inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
@@ -534,11 +556,12 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(texts(), ['yesterday', 'an hour', 'new']);
 		const resumed = topic.activeTails()[0].resumeAt;
 		assert.deepStrictEqual(resumed && [...resumed], [[0, 3]]);
-		// A read failure.
+		// A read failure (ticket 6.6: its state).
 		topic.refuseRead = true;
 		await logs().chooseRange({ kind: 'hour' });
-		assert.ok(await waitFor(() => logs().statusText.startsWith(STOPPED_PREFIX), 10_000), logs().statusText);
-		assert.match(logs().statusText, /not allowed to read __redpanda\.connect\.logs/);
+		assert.ok(await waitFor(() => logs().panelState.kind === 'notAllowed', 10_000), logs().statusText);
+		assert.strictEqual(logs().statusText, 'logs-reader may not read the logs topic');
+		assert.ok(api().outputLines().some((l) => /not allowed to read __redpanda\.connect\.logs/.test(l)), 'the reason in the output channel');
 		assert.ok(await waitFor(() => !logs().reading, 10_000));
 	});
 
@@ -707,7 +730,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		topic.refuseRead = true;
 		await logs().loadOlder();
 		assert.match(logs().viewState.olderError ?? '', /^Could not load older records: not allowed to read __redpanda\.connect\.logs/);
-		assert.ok(!logs().statusText.startsWith(STOPPED_PREFIX), logs().statusText);
+		assert.strictEqual(logs().panelState.kind, 'none', 'no state: the tail goes on');
 		assert.strictEqual(logs().viewState.older, 'more');
 		topic.write(rec(ORDERS, 'two'));
 		assert.ok(await waitFor(() => texts().length === 2, 10_000), 'the tail goes on');
@@ -1339,6 +1362,267 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 10_000), logs().statusText);
 		assert.deepStrictEqual(texts(), ['the error']);
 		assert.strictEqual(logs().viewState.focusId, logs().rows()[0].id);
+	});
+
+	// --- Ticket 6.6: the panel's empty and error states (board 6) ---
+
+	/**
+	 * Records the connection-lost countdowns from now on (each once, as its wait in seconds), read from
+	 * the panel's state on each change (`posted` keeps only its last 200 messages). Disposed by the caller.
+	 */
+	const watchCountdowns = () => {
+		const seen = new Map<number, number>();
+		const sub = logs().onDidChange(() => {
+			const p = logs().panelState;
+			if (p.kind === 'connectionLost' && p.retryAt !== null) {
+				seen.set(p.retryAt, p.retryInS);
+			}
+		});
+		return { values: () => [...seen.values()], dispose: () => sub.dispose() };
+	};
+	const stateKind = () => logs().panelState.kind;
+	const retryBody = (state: LogsPanelState) => panelStateTexts(state)?.body ?? '';
+
+	test('NO_ACCESS (6.6): the state\'s Set up log access… runs 6.2\'s flow for the cluster and then reads the range; cancelled: the state stays', async () => {
+		script({ actions: [undefined] });
+		assert.deepStrictEqual(await showLogs(), { kind: 'noAccess' });
+		assert.ok(await waitFor(() => logs().visible && stateKind() === 'noAccess', 10_000), stateKind());
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		script({ inputs: [undefined] });
+		assert.strictEqual(await logs().setUpAccess(), false, 'cancelled');
+		assert.strictEqual(stateKind(), 'noAccess', 'the state stays');
+		assert.strictEqual(topic.tails.length, 0);
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.deepStrictEqual(await cloud().storedLogAccess(VILNIUS), { username: USERNAME, mechanism: 'SCRAM-SHA-256' });
+		assert.ok(await waitFor(() => texts().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['one']);
+		assert.strictEqual(stateKind(), 'none');
+		assert.strictEqual(logs().viewState.range.kind, 'recent', 'the same range');
+	});
+
+	test('SIGN_IN (acceptance): a stored password the cluster refuses is Sign-in refused with its two actions; never tried again by itself; Retry tries once; Set up log access again… reads the same range', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'one', 2 * MINUTE));
+		topic.password = 'rotated-logs-password-6-6-Qa9';
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => stateKind() === 'signIn', 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().panelState, { kind: 'signIn', user: USERNAME, cluster: 'rpc-vilnius' });
+		const texts6 = panelStateTexts(logs().panelState)!;
+		assert.strictEqual(texts6.title, 'logs-reader could not sign in to rpc-vilnius');
+		assert.ok(!texts6.body.includes('seed-0') && !texts6.body.includes(PASSWORD), 'no broker host or credential');
+		assert.strictEqual(logs().statusText, texts6.title);
+		const shown = logs().posted.filter((m) => m.type === 'state' || m.type === 'show').at(-1)!;
+		assert.strictEqual((shown.type === 'state' || shown.type === 'show') && shown.state.panelState.kind, 'signIn', 'the webview is told');
+		const tries = topic.tails.length;
+		await new Promise((r) => setTimeout(r, 800));
+		assert.strictEqual(topic.tails.length, tries, 'not tried again by itself');
+		// Retry: one more try, refused again.
+		assert.strictEqual(logs().retry(), true);
+		assert.ok(await waitFor(() => topic.tails.length === tries + 1 && stateKind() === 'signIn', 10_000), stateKind());
+		// AFTER_SETUP: cancelled, the state stays; then the new password is stored and the same range is read.
+		script({ inputs: [USERNAME, undefined] });
+		assert.strictEqual(await logs().setUpAccess(), false);
+		assert.strictEqual(stateKind(), 'signIn');
+		script({ inputs: [USERNAME, topic.password], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(await waitFor(() => texts().length === 1 && stateKind() === 'none', 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.range.kind, 'recent');
+		assert.strictEqual(topic.activeTails()[0]?.pipelineId, ORDERS);
+	});
+
+	test('NOT_ALLOWED: a user that may not read the topic is Not allowed, naming the topic; not tried again by itself; Use another user… failing keeps it; Retry reads once allowed', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		topic.refuseRead = true;
+		await showLogs();
+		assert.ok(await waitFor(() => stateKind() === 'notAllowed', 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().panelState, { kind: 'notAllowed', user: USERNAME, topic: '__redpanda.connect.logs' });
+		assert.match(panelStateTexts(logs().panelState)!.body, /__redpanda\.connect\.logs/);
+		const tries = topic.tails.length;
+		await new Promise((r) => setTimeout(r, 800));
+		assert.strictEqual(topic.tails.length, tries, 'not tried again by itself');
+		// Use another user…: its test read is refused too, so nothing is stored and the state stays.
+		script({ inputs: ['other-reader', PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), false);
+		assert.strictEqual(stateKind(), 'notAllowed');
+		// Retry while still refused: refused again.
+		const before = topic.tails.length;
+		assert.strictEqual(logs().retry(), true);
+		assert.ok(await waitFor(() => topic.tails.length === before + 1 && stateKind() === 'notAllowed', 10_000), stateKind());
+		// On the last hour, Use another user… with a user that may read: stored, and the same range read again.
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => stateKind() === 'notAllowed', 10_000), stateKind());
+		topic.refuseRead = false;
+		topic.username = 'other-reader';
+		topic.password = 'other-password-6-6-Kp2w';
+		script({ inputs: ['other-reader', topic.password], choices: ['SCRAM-SHA-512'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.deepStrictEqual(await cloud().storedLogAccess(VILNIUS), { username: 'other-reader', mechanism: 'SCRAM-SHA-512' });
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1, 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.range.kind, 'hour', 'the same range');
+		assert.strictEqual(stateKind(), 'none');
+		assert.strictEqual(topic.targets.at(-1)?.access.username, 'other-reader');
+	});
+
+	test('ROW_SETUP (6.6): after Sign-in refused, Set up log access again from the cluster\'s row; the tab\'s Retry signs in with the new password', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		topic.password = 'rotated-on-the-row-6-6-Zt5';
+		await showLogs();
+		assert.ok(await waitFor(() => stateKind() === 'signIn', 10_000), logs().statusText);
+		script({ inputs: [USERNAME, topic.password], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'stored', errors.join('\n'));
+		assert.strictEqual(stateKind(), 'signIn', 'not tried again by itself');
+		assert.strictEqual(logs().retry(), true);
+		assert.ok(await waitFor(() => texts().length === 1 && stateKind() === 'none', 10_000), logs().statusText);
+		assert.strictEqual(topic.targets.at(-1)?.access.password, topic.password);
+	});
+
+	test('SETUP_ONCE (6.6): a second Set up log access for a cluster while one runs is ignored', async () => {
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		const [first, second] = await Promise.all([setUp(), setUp()]);
+		assert.deepStrictEqual([first?.kind, second?.kind], ['stored', 'notStarted']);
+		assert.strictEqual(topic.tests.length, 1, 'one test read');
+	});
+
+	test('RANGE_RESUME (6.6): a bounded read that loses its connection mid-way keeps its rows through the retry and reads on from where it reached, no row twice', async () => {
+		logs().retryDelaysMs = [200];
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 1500 }, (_, i) => recAt(ORDERS, `r${i}`, t0 - 50 * MINUTE + i * 1_000)));
+		await showOrders();
+		topic.rangeDelayMs = 50;
+		topic.dropRangeAfter = 1;
+		let fewest = Number.POSITIVE_INFINITY;
+		let lostSeen = false;
+		const sub = logs().onDidChange(() => {
+			if (logs().panelState.kind === 'connectionLost') {
+				lostSeen = true;
+			}
+			if (lostSeen) {
+				fewest = Math.min(fewest, logs().rows().length);
+			}
+		});
+		teardowns.push(() => sub.dispose());
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => lostSeen, 10_000), logs().statusText);
+		assert.ok(await waitFor(() => logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(fewest, 500, 'the 500 rows read before the loss stayed through the retry');
+		assert.strictEqual(texts().length, 1500);
+		assert.strictEqual(new Set(logs().rows().map((r) => r.id)).size, 1500, 'no row twice');
+		assert.deepStrictEqual(texts().slice(0, 2), ['r0', 'r1'], 'in order');
+		assert.strictEqual(logs().viewState.counts.total, 1500, 'none counted twice');
+		const resumed = topic.ranges.at(-1)!;
+		assert.strictEqual(resumed.fromTime, t0 - 50 * MINUTE + 499 * 1_000, 'from the newest record it had reached');
+		assert.strictEqual(stateKind(), 'none');
+	});
+
+	test('NO_RECORDS: a range read to its end with none of the pipeline\'s records; with only hidden levels, Show every level; a search with no match stays "No records match"', async () => {
+		topic.write(rec(CLICKS, 'other', 10 * MINUTE));
+		await showOrders();
+		assert.strictEqual(stateKind(), 'none', 'a live range is not read to an end');
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().panelState, { kind: 'noRecords', pipeline: 'orders', range: 'the last hour', hiddenLevels: [] });
+		assert.strictEqual(panelStateTexts(logs().panelState)!.title, 'No records for orders in the last hour');
+		// Only DEBUG records, Debug hidden: Show every level is offered, and clears the level filter.
+		topic.write(rec(ORDERS, 'debug one', 5 * MINUTE, { level: 'DEBUG' }));
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, levels: LOG_LEVELS.filter((l) => l !== 'debug') }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && logs().viewState.counts.total === 1, 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().panelState, { kind: 'noRecords', pipeline: 'orders', range: 'the last hour', hiddenLevels: ['debug'] });
+		assert.strictEqual(panelStateTexts(logs().panelState)!.body, 'It wrote only levels that are hidden (Debug).');
+		assert.strictEqual(logs().setFilter({ ...logs().viewState.filter, levels: LOG_LEVELS }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1, 10_000), logs().statusText);
+		assert.strictEqual(stateKind(), 'none');
+		// A search with no match is 6.4's "No records match", not this state.
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'nothing like it' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && logs().viewState.counts.total === 1, 10_000), logs().statusText);
+		assert.strictEqual(stateKind(), 'none');
+		// Last 24 hours.
+		assert.strictEqual(await logs().chooseRange({ kind: 'day' }), true);
+		assert.strictEqual(logs().viewState.range.kind, 'day');
+	});
+
+	test('READING: a bounded range shows the records so far, "<n> records so far" and Stop reading, which keeps what was read and ends the read', async () => {
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 3000 }, (_, i) => recAt(ORDERS, `w${i}`, t0 - 6 * DAY + i * MINUTE)));
+		await showOrders();
+		topic.rangeDelayMs = 150;
+		await logs().chooseRange({ kind: 'week' });
+		assert.ok(await waitFor(() => logs().panelState.kind === 'reading' && texts().length > 0, 10_000), stateKind());
+		const reading = logs().panelState;
+		assert.strictEqual(reading.kind === 'reading' && reading.what, 'Reading the last 7 days…');
+		assert.ok(reading.kind === 'reading' && reading.count > 0 && reading.count < 3000, 'the count so far');
+		assert.strictEqual(logs().stopReading(), true);
+		const kept = texts().length;
+		assert.ok(kept > 0 && kept < 3000, `${kept} records kept`);
+		assert.strictEqual(stateKind(), 'none', 'the state goes; not "No records"');
+		assert.strictEqual(logs().viewState.live, false);
+		assert.strictEqual(logs().statusText, stoppedReadingStatus('the last 7 days', logs().viewState.counts.total));
+		assert.ok(await waitFor(() => topic.activeRanges().length === 0, 10_000), 'the read ended');
+		await new Promise((r) => setTimeout(r, 400));
+		assert.strictEqual(texts().length, kept, 'nothing more read');
+		assert.strictEqual(logs().stopReading(), false, 'nothing reads now');
+	});
+
+	test('CONNECTION_LOST (acceptance): a live read whose connection drops twice: "Trying again in 5 s", then 10 s, then Live goes on from where it stopped with no duplicate rows', async () => {
+		logs().retryDelaysMs = [300, 600, 900, 1200, 1500];
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		const watch = watchCountdowns();
+		const countdowns = () => watch.values();
+		teardowns.push(watch.dispose);
+		topic.dropConnections(1);
+		assert.ok(await waitFor(() => stateKind() === 'connectionLost', 10_000), logs().statusText);
+		const lost = logs().panelState;
+		assert.strictEqual(lost.kind === 'connectionLost' && lost.cluster, 'rpc-vilnius');
+		assert.strictEqual(panelStateTexts(lost)!.title, 'Lost the connection to rpc-vilnius');
+		assert.strictEqual(retryBody(lost), 'Live is paused; the records already shown stay. Trying again in 5 s.');
+		assert.deepStrictEqual(texts(), ['one'], 'the records already shown stay');
+		assert.ok(await waitFor(() => topic.connectionsRefused === 1 && countdowns().length >= 2, 10_000), `${countdowns()}`);
+		assert.ok(await waitFor(() => stateKind() === 'none' && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(countdowns(), [5, 10]);
+		const resumed = topic.activeTails()[0].resumeAt;
+		assert.deepStrictEqual(resumed && [...resumed], [[0, 1]], 'from where it stopped');
+		topic.write(rec(ORDERS, 'two'));
+		assert.ok(await waitFor(() => texts().length === 2, 10_000));
+		assert.deepStrictEqual(texts(), ['one', 'two'], 'no duplicate rows');
+		assert.strictEqual(new Set(logs().rows().map((r) => r.id)).size, 2);
+	});
+
+	test('CONNECTION_LOST backoff: 5, 10, 20, 30, 60, then every 60 s; none while the tab is hidden; Retry now tries at once', async () => {
+		logs().retryDelaysMs = [150, 150, 150, 150, 150];
+		await showOrders();
+		const watch = watchCountdowns();
+		const countdowns = () => watch.values();
+		teardowns.push(watch.dispose);
+		topic.dropConnections(100);
+		assert.ok(await waitFor(() => topic.connectionsRefused >= 6, 20_000), `${topic.connectionsRefused}`);
+		const seen = countdowns();
+		assert.ok(seen.length >= 6, `${seen}`);
+		assert.deepStrictEqual(seen.slice(0, 7), [5, 10, 20, 30, 60, 60, 60].slice(0, Math.min(7, seen.length)));
+		assert.deepStrictEqual(RETRY_DELAYS_MS, [5_000, 10_000, 20_000, 30_000, 60_000]);
+		// Hidden: no tries until it is shown again.
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !logs().visible && !logs().reading, 10_000));
+		const hiddenAt = topic.connectionsRefused;
+		await new Promise((r) => setTimeout(r, 800));
+		assert.strictEqual(topic.connectionsRefused, hiddenAt, 'no tries while hidden');
+		assert.strictEqual(stateKind(), 'connectionLost');
+		// Shown again: the waits go on; Retry now with a long wait tries at once.
+		logs().retryDelaysMs = [60_000];
+		await vscode.commands.executeCommand(`${LOGS_VIEW_ID}.focus`);
+		assert.ok(await waitFor(() => logs().visible && logs().panelState.kind === 'connectionLost' && (logs().panelState as { retryAt: number | null }).retryAt !== null, 10_000), 'counting down again');
+		const again = logs().panelState;
+		assert.ok(again.kind === 'connectionLost' && again.retryAt !== null);
+		assert.strictEqual(again.retryInS, 60, 'the current step');
+		const left = Math.ceil((again.retryAt - Date.now()) / 1_000);
+		assert.ok(left >= 59 && left <= 60, `the wait starts again at the current step: ${left} s left`);
+		assert.strictEqual(retryBody(again), 'Live is paused; the records already shown stay. Trying again in 60 s.');
+		assert.strictEqual(topic.connectionsRefused, hiddenAt);
+		topic.connectionFailures = 0;
+		assert.strictEqual(logs().retry(), true);
+		assert.ok(await waitFor(() => stateKind() === 'none' && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

@@ -129,3 +129,6 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-open-the-log-from-the-command-the-row-menu-and-an-error-plan.md`
   summary: The Environment view test "ticket 39 VALUE_DEFAULT … its record goes too" fails intermittently in a full run.
   evidence: It failed in 6.3's floor run and 6.5's stable run (VS Code 1.145.0, 1319 passing, 1 failing); the suite alone passed 34/34 both times; neither story touches the Environment view.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-the-log-panel-s-empty-and-error-states-plan.md`
+  summary: A full stable run can stall indefinitely in "Live Bloblang diagnostics (integration, 4.5)".
+  evidence: 2026-11-06, VS Code 1.145.2 (newly downloaded): 6.6's implementer's stable run ran 44 minutes stuck in that suite, before the logs suite started; it was stopped by PID and left a `binaryPath` in the test settings; the rerun of the same tree passed in 9 minutes. 6.6 does not touch the Bloblang diagnostics. Cap full runs with `timeout` until it is understood.

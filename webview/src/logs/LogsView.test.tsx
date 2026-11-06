@@ -10,18 +10,20 @@
 // record's values, "N of M records match", "No records match", and a record's JSON (Copy JSON, Show
 // records around this one). Ticket 6.5: the ERROR records highlighted, the record around the error
 // scrolled to once and marked, the "No ERROR record in the last 24 hours" note, and a state without
-// those fields refused.
+// those fields refused. Ticket 6.6: board 6's six states (their texts and buttons, what each button
+// posts), the lost connection's countdown, the rows kept under Reading and Connection lost, "No records
+// match" kept apart, and the new messages' validation.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, parseLocalDateTime, parseLogsWebviewMessage, searchError, searchPattern,
-	type LogFilter, type LogRow, type LogsHostMessage, type LogsViewState, type LogsWebviewMessage,
+	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage, retryDelayMs,
+	searchError, searchPattern, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
 } from '../../../src/shared/logsProtocol';
 import {
 	chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
-	rangeButtonText, SEARCH_DEBOUNCE_MS,
+	rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT,
 } from './LogsView';
 
 let host: HTMLDivElement;
@@ -38,7 +40,8 @@ const T0 = new Date(2026, 10, 5, 9, 4, 5, 7).getTime();
 const MIN = 60_000;
 const STATE: LogsViewState = {
 	range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
-	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null,
+	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null, panelState: NO_PANEL_STATE,
+	stoppedShort: false, settingUp: false,
 };
 const state = (extra: Partial<LogsViewState> = {}): LogsViewState => ({ ...STATE, ...extra });
 const row = (n: number, extra: Partial<LogRow> = {}): LogRow => ({
@@ -468,5 +471,169 @@ describe('Pipeline Logs entry points (ticket 6.5)', () => {
 		expect(title()).toBe(NO_PIPELINE_TITLE);
 		await send({ type: 'show', title: 'refused', rows: [], dropped: 0, cap: 5000, status: '', state: { ...state(), focusId: 3 } });
 		expect(title()).toBe(NO_PIPELINE_TITLE);
+	});
+});
+
+describe('Pipeline Logs states (ticket 6.6)', () => {
+	const show = async (panelState: LogsPanelState, rows: LogRow[] = [], extra: Partial<LogsViewState> = {}) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows, dropped: 0, cap: 5000, status: '', state: state({ panelState, ...extra }) });
+	const panel = () => host.querySelector<HTMLElement>('.rpcn-logs-state');
+	const part = (cls: string) => panel()?.querySelector(`.rpcn-logs-state-${cls}`)?.textContent;
+	const buttons = () => [...(panel()?.querySelectorAll<HTMLButtonElement>('.rpcn-logs-state-actions button') ?? [])];
+	const labels = () => buttons().map((b) => b.textContent);
+	const press = async (label: string) => click(buttons().find((b) => b.textContent === label) ?? null);
+	const TOPIC = '__redpanda.connect.logs';
+
+	it('NO_ACCESS: "<cluster> has no log access set" with Set up log access…, in the list area under the toolbar; no Load older', async () => {
+		await show({ kind: 'noAccess', cluster: 'rpc-vilnius', topic: TOPIC });
+		expect(part('label')).toBe('No log access');
+		expect(part('title')).toBe('rpc-vilnius has no log access set');
+		expect(part('body')).toBe(`Logs are read from the cluster's ${TOPIC} topic, with a Redpanda user that may read it.`);
+		expect(labels()).toEqual(['Set up log access…']);
+		expect(host.querySelector('.rpcn-logs-scroll .rpcn-logs-state')).not.toBeNull();
+		expect(host.querySelector('.rpcn-logs-live'), 'the toolbar stays').not.toBeNull();
+		expect(host.querySelector('.rpcn-logs-filters')).not.toBeNull();
+		expect(host.querySelector('.rpcn-logs-older-button')).toBeNull();
+		expect(host.querySelector('.rpcn-logs-empty')).toBeNull();
+		await press('Set up log access…');
+		expect(posted.at(-1)).toEqual({ type: 'setUpAccess' });
+	});
+
+	it('SIGN_IN: "<user> could not sign in to <cluster>"; Set up log access again…, Retry', async () => {
+		await show({ kind: 'signIn', user: 'logs-reader', cluster: 'rpc-vilnius' });
+		expect(part('label')).toBe('Sign-in refused');
+		expect(part('title')).toBe('logs-reader could not sign in to rpc-vilnius');
+		expect(part('body')).toMatch(/username, password or mechanism is wrong/);
+		expect(panel()?.getAttribute('role')).toBe('alert');
+		expect(labels()).toEqual(['Set up log access again…', 'Retry']);
+		await press('Set up log access again…');
+		await press('Retry');
+		expect(posted.slice(-2)).toEqual([{ type: 'setUpAccess' }, { type: 'retryNow' }]);
+	});
+
+	it('NOT_ALLOWED: names the topic; Retry, Use another user…', async () => {
+		await show({ kind: 'notAllowed', user: 'logs-reader', topic: TOPIC });
+		expect(part('title')).toBe('logs-reader may not read the logs topic');
+		expect(part('body')).toContain(TOPIC);
+		expect(labels()).toEqual(['Retry', 'Use another user…']);
+		await press('Use another user…');
+		expect(posted.at(-1)).toEqual({ type: 'useAnotherUser' });
+	});
+
+	it('NO_RECORDS: "No records for <pipeline> in <range>"; Last 24 hours; Show every level only when levels hide records; "No records match" stays apart', async () => {
+		await show({ kind: 'noRecords', pipeline: 'orders', range: 'the last hour', hiddenLevels: [] }, [], { done: true, range: { kind: 'hour', from: T0 - 60 * MIN, to: T0 } });
+		expect(part('title')).toBe('No records for orders in the last hour');
+		expect(part('body')).toBe('It may not have started yet, or it wrote nothing in this range.');
+		expect(labels()).toEqual(['Last 24 hours']);
+		expect(host.querySelector('.rpcn-logs-empty'), 'not the plain note too').toBeNull();
+		await press('Last 24 hours');
+		expect(posted.at(-1)).toEqual({ type: 'last24h' });
+		await show({ kind: 'noRecords', pipeline: 'orders', range: 'the last hour', hiddenLevels: ['debug', 'info'] });
+		expect(part('body')).toBe('It wrote only levels that are hidden (Debug, Info).');
+		expect(labels()).toEqual(['Last 24 hours', 'Show every level']);
+		await press('Show every level');
+		expect(posted.at(-1)).toEqual({ type: 'showEveryLevel' });
+		// A search with no match: 6.4's line, no state.
+		await show(NO_PANEL_STATE, [], { done: true, filter: { ...NO_FILTER, text: 'x' }, counts: { ...NO_COUNTS, total: 3 } });
+		expect(panel()).toBeNull();
+		expect(host.querySelector('.rpcn-logs-empty')?.textContent).toBe(NO_MATCH_TEXT);
+	});
+
+	it('READING: the records so far stay below, "<n> records so far", Stop reading', async () => {
+		await show({ kind: 'reading', what: 'Reading the last 7 days…', count: 2140 }, [row(1), row(2)], { range: { kind: 'week', from: T0 - 7 * 24 * 60 * MIN, to: T0 } });
+		expect(part('title')).toBe('Reading the last 7 days…');
+		expect(part('count')).toBe('2,140 records so far');
+		expect(panel()?.querySelector('[role="progressbar"]')).not.toBeNull();
+		expect(messages()).toEqual(['message 1', 'message 2']);
+		expect(labels()).toEqual(['Stop reading']);
+		await press('Stop reading');
+		expect(posted.at(-1)).toEqual({ type: 'stopReading' });
+		await send({ type: 'state', state: state({ panelState: { kind: 'reading', what: 'Reading the last 7 days…', count: 1 } }) });
+		expect(part('count')).toBe('1 record so far');
+		await send({ type: 'state', state: state() });
+		expect(panel(), 'the read ended').toBeNull();
+		expect(messages()).toEqual(['message 1', 'message 2']);
+	});
+
+	it('CONNECTION_LOST: "Lost the connection to <cluster>", the wait counted down, Retry now; the rows stay', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+		try {
+			vi.setSystemTime(T0);
+			await show({ kind: 'connectionLost', cluster: 'rpc-vilnius', live: true, retryInS: 5, retryAt: T0 + 5_000 }, [row(1)]);
+			expect(part('label')).toBe('Connection lost');
+			expect(part('title')).toBe('Lost the connection to rpc-vilnius');
+			expect(part('body')).toBe('Live is paused; the records already shown stay. Trying again in 5 s.');
+			expect(messages()).toEqual(['message 1']);
+			await act(async () => {
+				vi.advanceTimersByTime(2_100);
+			});
+			expect(part('body')).toBe('Live is paused; the records already shown stay. Trying again in 3 s.');
+			// The alert's text stays put; the countdown is not announced.
+			const countdown = panel()?.querySelector('.rpcn-logs-state-countdown');
+			expect(countdown?.textContent).toBe('Trying again in 3 s.');
+			expect(countdown?.getAttribute('aria-live')).toBe('off');
+			expect(labels()).toEqual(['Retry now']);
+			await press('Retry now');
+			expect(posted.at(-1)).toEqual({ type: 'retryNow' });
+			await send({ type: 'state', state: state({ panelState: { kind: 'connectionLost', cluster: 'rpc-vilnius', live: false, retryInS: 10, retryAt: null } }) });
+			expect(part('body')).toBe('Reading is paused; the records already shown stay. Trying again…');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('the waits, the countdown\'s bounds and the texts\' helper', () => {
+		expect([1, 2, 3, 4, 5, 6, 9].map((a) => retryDelayMs(a))).toEqual([5_000, 10_000, 20_000, 30_000, 60_000, 60_000, 60_000]);
+		const lost = { kind: 'connectionLost', cluster: 'c', live: true, retryInS: 10, retryAt: T0 + 10_000 } as const;
+		expect(secondsLeft(lost, T0)).toBe(10);
+		expect(secondsLeft(lost, T0 + 9_900)).toBe(1);
+		expect(secondsLeft(lost, T0 + 20_000), 'never 0').toBe(1);
+		expect(secondsLeft(lost, T0 - 60_000), 'never more than the wait').toBe(10);
+		expect(secondsLeft({ ...lost, retryAt: null }, T0)).toBeNull();
+		expect(panelStateTexts(NO_PANEL_STATE)).toBeUndefined();
+	});
+
+	it('the new messages are validated both ways; a state without panelState or with a bad one is refused', async () => {
+		for (const type of ['stopReading', 'retryNow', 'setUpAccess', 'useAnotherUser', 'showEveryLevel', 'last24h'] as const) {
+			expect(parseLogsWebviewMessage({ type, extra: 1 })).toEqual({ type });
+		}
+		const { panelState: _p, ...without } = state();
+		expect(parseLogsHostMessage({ type: 'state', state: without })).toBeUndefined();
+		expect(parseLogsHostMessage({ type: 'state', state: state({ panelState: { kind: 'reading', what: 'x', count: -1 } as unknown as LogsPanelState }) })).toBeUndefined();
+		expect(parseLogsHostMessage({ type: 'state', state: state({ panelState: { kind: 'noRecords', pipeline: 'p', range: 'r', hiddenLevels: ['loud'] } as unknown as LogsPanelState }) })).toBeUndefined();
+		expect(parseLogsHostMessage({ type: 'state', state: state({ panelState: { kind: 'other' } as unknown as LogsPanelState }) })).toBeUndefined();
+		await send({ type: 'show', title: 'refused', rows: [], dropped: 0, cap: 5000, status: '', state: without });
+		expect(title()).toBe(NO_PIPELINE_TITLE);
+	});
+});
+
+describe('Pipeline Logs states after review (ticket 6.6)', () => {
+	const show = async (extra: Partial<LogsViewState>, rows: LogRow[] = []) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows, dropped: 0, cap: 5000, status: '', state: state(extra) });
+
+	it('STOPPED: Stop reading before any record says so, not "No records <from> – <to>"', async () => {
+		const range = { kind: 'week', from: T0 - 7 * 24 * 60 * MIN, to: T0 } as const;
+		await show({ range, done: true, stoppedShort: true });
+		expect(host.querySelector('.rpcn-logs-empty')?.textContent).toBe(STOPPED_EMPTY_TEXT);
+		await show({ range, done: true });
+		expect(host.querySelector('.rpcn-logs-empty')?.textContent).toMatch(/^No records /);
+	});
+
+	it('SETTING_UP: while Set up log access runs, its buttons are disabled; Retry is not', async () => {
+		await show({ panelState: { kind: 'signIn', user: 'u', cluster: 'c' }, settingUp: true });
+		const byLabel = (l: string) => [...host.querySelectorAll<HTMLButtonElement>('.rpcn-logs-state-actions button')].find((b) => b.textContent === l)!;
+		expect(byLabel('Set up log access again…').disabled).toBe(true);
+		expect(byLabel('Retry').disabled).toBe(false);
+		await show({ panelState: { kind: 'notAllowed', user: 'u', topic: 't' }, settingUp: true });
+		expect(byLabel('Use another user…').disabled).toBe(true);
+		await show({ panelState: { kind: 'notAllowed', user: 'u', topic: 't' } });
+		expect(byLabel('Use another user…').disabled).toBe(false);
+	});
+
+	it('a state without stoppedShort or settingUp is refused', () => {
+		const { stoppedShort: _s, ...noStopped } = state();
+		const { settingUp: _u, ...noSettingUp } = state();
+		expect(parseLogsHostMessage({ type: 'state', state: noStopped })).toBeUndefined();
+		expect(parseLogsHostMessage({ type: 'state', state: noSettingUp })).toBeUndefined();
 	});
 });

@@ -39,13 +39,26 @@
 // and marked; with none found it says "No ERROR record in the last 24 hours" and reads the last hour.
 // The search is a read like any other: it runs only while the tab is visible (hidden, it stops, and
 // it runs again once the tab is shown), and another range or pipeline replaces it.
+//
+// Ticket 6.6 (board 6): the states that fill the list area (`panelState`; the toolbar stays). A pipeline
+// whose cluster has no log access is shown in **No log access** (nothing is read). A read that fails is
+// told apart by AD-24's kinds: a refused sign-in is **Sign-in refused**, a refused read **Not allowed**;
+// neither is tried again by itself (Retry does). Anything else is **Connection lost**: tried again after
+// 5 s, then 10, 20, 30 and 60 s, and every 60 s after that, only while the tab is visible (hidden, the
+// timer stops; shown again, the wait starts again); Retry now tries at once. The rows already shown stay,
+// and a tail goes on from its positions (no row twice); the state goes once a read delivers. **Set up
+// log access again…** and **Use another user…** run the source's `setUpAccess` (6.2's flow for its
+// cluster) and, once stored, read the same range again; cancelled, the state stays. **No records**: a
+// range read to its end with none of the pipeline's records, or only records of levels the filter hides
+// (Show every level, Last 24 hours). **Reading**: a bounded range or Load older being read, with the
+// count so far and **Stop reading** (the rows read stay, the read ends, Live off).
 
 import * as vscode from 'vscode';
 import {
-	filterActive, isLiveRange, localMinute, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, parseLogsWebviewMessage, RANGE_LABELS,
-	type LogFilter, type LogRow, type LogsHostMessage, type LogsRange, type LogsViewState, type RangeChoice,
+	filterActive, isLiveRange, localMinute, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
+	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogsViewState, type RangeChoice,
 } from '../../shared/logsProtocol';
-import { isLogReadError, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
+import { isLogReadError, LOGS_TOPIC, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';
 import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText } from '../logs/history';
 import { compileFilter, Counter, levelOf, matches, sameFilter, type CompiledFilter } from '../logs/filter';
@@ -62,8 +75,11 @@ export const READING_STATUS = 'Reading the last 15 minutes…';
 export const RESUMING_STATUS = 'Reading…';
 export const FOLLOWING_STATUS = 'Following new records.';
 export const WAITING_STATUS = 'Waiting for new records…';
-export const STOPPED_PREFIX = 'Reading stopped: ';
 export const LIVE_OFF_STATUS = 'Live is off.';
+/** Stop reading (ticket 6.6) ended a bounded read early. */
+export function stoppedReadingStatus(what: string, count: number): string {
+	return `Stopped reading ${what}: ${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} read. ${LIVE_OFF_STATUS}`;
+}
 /** Load older dropped the newest rows for the cap: Live paused. */
 export function livePausedStatus(cap: number): string {
 	return `Live is paused: the newest records were dropped to keep at most ${cap.toLocaleString('en-US')}. Turn Live on to read the last 15 minutes again.`;
@@ -113,6 +129,18 @@ export interface LogSource {
 	 * it cannot be (the pipeline gone, a failed read): the source has said so then.
 	 */
 	readonly lastDeploy?: () => Promise<number | undefined>;
+	/** Ticket 6.6: the names the states say (unmasked; the panel masks them). */
+	readonly pipelineName?: string;
+	readonly clusterName?: string;
+	/** The Redpanda user the log is read as; absent with `noAccess`. */
+	readonly username?: string;
+	/** The cluster has no log access set: nothing is read (No log access). */
+	readonly noAccess?: boolean;
+	/**
+	 * 6.2's Set up log access for the pipeline's cluster: the source to read with once the access is
+	 * stored; `undefined` when it was cancelled or failed (the flow has said so).
+	 */
+	readonly setUpAccess?: () => Promise<LogSource | undefined>;
 }
 
 export interface LogsPanelOptions {
@@ -170,6 +198,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	windowMs = LOGS_WINDOW_MS;
 	/** Around the error's search window (the test seam may change it). */
 	errorWindowMs = ERROR_SEARCH_WINDOW_MS;
+	/** Ticket 6.6: the waits before each try after a lost connection, the last one repeated (test seam). */
+	retryDelaysMs: readonly number[] = RETRY_DELAYS_MS;
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: LogsHostMessage[] = [];
 	private view: vscode.WebviewView | undefined;
@@ -214,6 +244,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private deployedAt: number | null = null;
 	private session: Session | undefined;
 	private olderSession: AbortController | undefined;
+	/** Stop reading for the Load older in progress. */
+	private olderStop: (() => void) | undefined;
 	private retentionSession: AbortController | undefined;
 	/** The filter (ticket 6.4) and its compiled search. */
 	private filter: LogFilter = NO_FILTER;
@@ -228,6 +260,19 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private readUntil: number | undefined;
 	/** Bumped on every Show logs and range, so an older read's records are not kept. */
 	private generation = 0;
+	/** Ticket 6.6: the failure state (no access, sign-in refused, not allowed, connection lost), else none. */
+	private failure: LogsPanelState = NO_PANEL_STATE;
+	/** The tries after a lost connection so far (the next wait), reset once a read delivers. */
+	private retryAttempt = 0;
+	private retryTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Stop reading ended the range's read early: it is not "No records". */
+	private stoppedShort = false;
+	/** The pipeline's records the current Load older has read. */
+	private olderCount = 0;
+	/** The newest record time (any key) the range's read has reached: a retry after a lost connection goes on from it. */
+	private rangeReached: number | undefined;
+	/** Set up log access runs for this panel's source (a second request is ignored). */
+	private settingUp = false;
 	private ready = false;
 	/** Every `license_org` seen in this window: masked in every later record and every text shown. */
 	private readonly orgs = new Set<string>();
@@ -296,7 +341,50 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			highlightErrors: this.highlightErrors,
 			focusId: this.focusId,
 			note: this.note,
+			panelState: this.panelState,
+			stoppedShort: this.stoppedShort,
+			settingUp: this.settingUp,
 		};
+	}
+
+	/**
+	 * Ticket 6.6: the state of the list area: a failure; else a bounded range or Load older being read;
+	 * else No records (a range read to its end with no row shown and none of the pipeline's records, or
+	 * only records of levels the filter hides, nothing else filtering); else none.
+	 */
+	get panelState(): LogsPanelState {
+		if (this.failure.kind !== 'none') {
+			return this.failure;
+		}
+		const source = this.source;
+		if (!source) {
+			return NO_PANEL_STATE;
+		}
+		if (this.session?.kind === 'range' && this.pendingRange) {
+			return { kind: 'reading', what: `Reading ${rangeText(this.range)}…`, count: this.counter.counts.total };
+		}
+		if (this.olderSession) {
+			return { kind: 'reading', what: 'Loading older records…', count: this.olderCount };
+		}
+		if (this.done && !this.stoppedShort && this.kept.length === 0) {
+			const { total, matched } = this.counter.counts;
+			const hidden = LOG_LEVELS.filter((l) => !this.filter.levels.includes(l) && this.counter.counts.levels[l] > 0);
+			const onlyLevels = this.filter.text === '' && this.filter.fields.length === 0;
+			if (total === 0 || (matched === 0 && onlyLevels && hidden.length > 0)) {
+				return {
+					kind: 'noRecords',
+					pipeline: this.mask(source, source.pipelineName ?? source.title),
+					range: this.mask(source, rangeText(this.range)),
+					hiddenLevels: total === 0 ? [] : hidden,
+				};
+			}
+		}
+		return NO_PANEL_STATE;
+	}
+
+	/** The cluster's name as the states say it. */
+	private clusterOf(source: LogSource): string {
+		return this.mask(source, source.clusterName ?? source.title);
 	}
 
 	/**
@@ -346,6 +434,22 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 					case 'copyRequested':
 						void this.copyJson(m.id);
 						break;
+					case 'stopReading':
+						this.stopReading();
+						break;
+					case 'retryNow':
+						this.retry();
+						break;
+					case 'setUpAccess':
+					case 'useAnotherUser':
+						void this.setUpAccess();
+						break;
+					case 'showEveryLevel':
+						this.setFilter({ ...this.filter, levels: LOG_LEVELS });
+						break;
+					case 'last24h':
+						void this.chooseRange({ kind: 'day' });
+						break;
 				}
 			}),
 			view.onDidChangeVisibility(() => {
@@ -394,7 +498,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.reset({ kind: 'day', from: now - ERROR_SEARCH_MS, to: now }, now);
 			this.pendingRange = false;
 			this.pendingAround = true;
-			this.status = SEARCHING_ERROR_STATUS;
+			if (this.failure.kind === 'none') {
+				this.status = SEARCHING_ERROR_STATUS;
+			}
 			this.options.log(this.mask(source, `Pipeline logs: showing ${source.title} around its newest ERROR record.`));
 		} else {
 			this.reset(rangeFor({ kind: 'recent' }, now, undefined, this.windowMs)!, now);
@@ -471,7 +577,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			// A bounded range whose Live was turned on follows again once read.
 			this.live = live;
 		}
-		this.status = this.readingStatus();
+		if (this.failure.kind === 'none') {
+			this.status = this.readingStatus();
+		}
 		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} again, ${rangeText(this.range)}, with ${filterActive(filter) ? 'a filter' : 'no filter'}.`));
 		this.postShow();
 		this.changed.fire();
@@ -523,6 +631,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.counted = new Map();
 		this.oldestTs = undefined;
 		this.leftOutEver = false;
+		this.rangeReached = undefined;
 	}
 
 	/** Every row, count and reading of the last range dropped; `range` is the one to read now. */
@@ -542,7 +651,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.older = 'more';
 		this.olderError = null;
 		this.olderNote = null;
-		this.status = this.readingStatus();
+		this.stoppedShort = false;
+		this.cancelRetry();
+		this.retryAttempt = 0;
+		const source = this.source;
+		this.failure = source?.noAccess ? { kind: 'noAccess', cluster: this.clusterOf(source), topic: LOGS_TOPIC } : NO_PANEL_STATE;
+		this.status = this.failure.kind === 'none' ? this.readingStatus() : panelStateTexts(this.failure)!.title;
 	}
 
 	private readingStatus(): string {
@@ -564,6 +678,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.live = false;
 			if (this.session?.kind === 'tail') {
 				this.stop();
+			}
+			if (this.failure.kind === 'connectionLost' && !this.pendingRange && !this.pendingAround) {
+				// Only the tail was being tried again: nothing is to be read now.
+				this.cancelRetry();
+				this.retryAttempt = 0;
+				this.failure = NO_PANEL_STATE;
 			}
 			this.setStatus(LIVE_OFF_STATUS);
 			this.postState();
@@ -617,13 +737,96 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		if (!this.source || this.session || !this.view?.visible) {
 			return;
 		}
-		if (this.pendingAround) {
-			void this.findError(this.source);
-		} else if (this.pendingRange) {
-			this.readRange(this.source);
-		} else if (this.live) {
-			this.tail(this.source);
+		switch (this.failure.kind) {
+			case 'noAccess':
+			case 'signIn':
+			case 'notAllowed':
+				// Never tried again by itself (Retry, or a new access, does).
+				return;
+			case 'connectionLost':
+				if (!this.retryTimer && this.failure.retryAt === null && this.wantsRead()) {
+					this.scheduleRetry();
+				}
+				return;
 		}
+		this.read(this.source);
+	}
+
+	/** Whether the range has something to read (a search, a bounded range, or Live on). */
+	private wantsRead(): boolean {
+		return this.pendingAround || this.pendingRange || this.live;
+	}
+
+	private read(source: LogSource): void {
+		if (this.pendingAround) {
+			void this.findError(source);
+		} else if (this.pendingRange) {
+			this.readRange(source);
+		} else if (this.live) {
+			this.tail(source);
+		}
+	}
+
+	/**
+	 * Retry (a refused sign-in or read) and Retry now (a lost connection), and the retry timer: reads
+	 * again at once, when the tab is visible and nothing reads. A lost connection's state stays ("Trying
+	 * again…") until a read delivers.
+	 */
+	retry(): boolean {
+		this.cancelRetry();
+		const source = this.source;
+		if (!source || source.noAccess || this.session || !this.view?.visible || this.failure.kind === 'none' || this.failure.kind === 'noAccess') {
+			return false;
+		}
+		if (this.failure.kind === 'connectionLost') {
+			this.failure = { ...this.failure, retryAt: null };
+			this.setStatus(panelStateTexts(this.failure)!.title);
+		} else {
+			this.failure = NO_PANEL_STATE;
+			this.setStatus(this.readingStatus());
+		}
+		this.options.log(this.mask(source, `Pipeline logs: trying to read ${source.title} again.`));
+		this.postState();
+		this.read(source);
+		return true;
+	}
+
+	/** A lost connection: the next try after its wait (5, 10, 20, 30, then 60 s), only while the tab is visible. */
+	private scheduleRetry(): void {
+		this.cancelRetry();
+		if (this.failure.kind !== 'connectionLost' || !this.view?.visible) {
+			return;
+		}
+		const ms = retryDelayMs(this.retryAttempt, this.retryDelaysMs);
+		this.failure = { ...this.failure, retryInS: Math.round(retryDelayMs(this.retryAttempt) / 1000), retryAt: Date.now() + ms };
+		this.retryTimer = setTimeout(() => {
+			this.retryTimer = undefined;
+			this.retry();
+		}, ms);
+		this.postState();
+	}
+
+	/** The retry timer stopped; a lost connection then waits for the tab (its countdown gone). */
+	private cancelRetry(): void {
+		if (this.retryTimer) {
+			clearTimeout(this.retryTimer);
+			this.retryTimer = undefined;
+		}
+		if (this.failure.kind === 'connectionLost' && this.failure.retryAt !== null) {
+			this.failure = { ...this.failure, retryAt: null };
+		}
+	}
+
+	/** A read delivered: a lost connection's state goes and its tries start again from the first wait. */
+	private recovered(source: LogSource): void {
+		if (this.failure.kind !== 'connectionLost') {
+			return;
+		}
+		this.cancelRetry();
+		this.retryAttempt = 0;
+		this.failure = NO_PANEL_STATE;
+		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} again.`));
+		this.postState();
 	}
 
 	/** Makes a reader for one session; a failure is the status line. */
@@ -655,6 +858,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				return;
 			}
 			this.positions = next;
+			this.recovered(source);
 			this.receive(source, records);
 			this.setStatus(FOLLOWING_STATUS);
 		}, abort.signal, this.positions).then(undefined, (err: unknown) => {
@@ -662,6 +866,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				this.failed(source, err);
 			}
 		}).finally(() => {
+			// Ended (a failure included): its client is closed, so a retry's reader is the only one open.
+			abort.abort();
 			if (this.session?.abort === abort) {
 				this.session = undefined;
 				this.changed.fire();
@@ -676,7 +882,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		const generation = this.generation;
 		const range = this.range;
 		this.session = { abort, kind: 'range' };
-		if (this.kept.length > 0 || this.counter.counts.total > 0) {
+		// A retry after a lost connection goes on from where the read had reached: the rows stay, and a
+		// record read again is neither counted nor kept twice (`take`).
+		const resumeAt = this.failure.kind === 'connectionLost' ? this.rangeReached : undefined;
+		if (resumeAt === undefined && (this.kept.length > 0 || this.counter.counts.total > 0)) {
 			// An earlier read of this range was stopped (the tab hidden): read it again from its start.
 			this.clearRead();
 			this.older = 'more';
@@ -684,22 +893,32 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.olderNote = null;
 			this.postShow();
 		}
-		this.setStatus(this.readingStatus());
+		if (this.failure.kind === 'none') {
+			this.setStatus(this.readingStatus());
+		}
 		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title}, ${rangeText(range)}.`));
 		const reader = this.newReader(source);
 		if (!reader) {
 			this.session = undefined;
+			this.postState();
 			return;
 		}
+		// Reading (ticket 6.6): the state shows the count so far and Stop reading.
+		this.postState();
 		const current = () => !abort.signal.aborted && generation === this.generation;
-		reader.range(source.pipelineId, range.from, range.to ?? this.readUntil ?? this.chosenAt, (records) => {
+		reader.range(source.pipelineId, resumeAt ?? range.from, range.to ?? this.readUntil ?? this.chosenAt, (records) => {
 			if (current()) {
+				for (const r of records) {
+					this.rangeReached = this.rangeReached === undefined ? r.timestamp : Math.max(this.rangeReached, r.timestamp);
+				}
+				this.recovered(source);
 				this.receive(source, records);
 			}
 		}, abort.signal).then((end) => {
 			if (!current()) {
 				return;
 			}
+			this.recovered(source);
 			this.pendingRange = false;
 			this.done = true;
 			this.positions = end.next;
@@ -724,6 +943,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			// Closes the reader's client.
 			abort.abort();
 			if (mine) {
+				if (generation === this.generation) {
+					// The reading state ends.
+					this.postState();
+				}
 				this.changed.fire();
 				if (generation === this.generation && !this.pendingRange && this.live) {
 					// Live was turned on while the range was read: follow from its end.
@@ -742,16 +965,31 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 */
 	async loadOlder(): Promise<void> {
 		const source = this.source;
-		if (!source || this.older !== 'more' || !this.view?.visible || this.pendingRange || this.pendingAround) {
+		if (!source || source.noAccess || this.older !== 'more' || !this.view?.visible || this.pendingRange || this.pendingAround) {
 			return;
 		}
 		this.olderError = null;
 		this.olderNote = null;
 		const abort = new AbortController();
 		const generation = this.generation;
-		const current = () => !abort.signal.aborted && generation === this.generation && source === this.source;
+		const mine = () => generation === this.generation && source === this.source;
+		const current = () => !abort.signal.aborted && mine();
+		/** Stop reading (ticket 6.6): the window being read is kept, then the walk ends. */
+		let stopped = false;
+		let got: LogRecord[] = [];
+		const keepStopped = () => {
+			const { matching } = this.take(source, got);
+			if (matching.length > 0) {
+				this.prepend(matching);
+			}
+		};
 		const filtered = filterActive(this.filter);
 		this.olderSession = abort;
+		this.olderStop = () => {
+			stopped = true;
+			abort.abort();
+		};
+		this.olderCount = 0;
 		this.older = 'reading';
 		this.postState();
 		const length = olderWindowMs(this.range, this.chosenAt, this.windowMs);
@@ -764,8 +1002,19 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			const first = await reader.logStart(abort.signal);
 			while (current()) {
 				const from = to - length;
-				const got: LogRecord[] = [];
-				const end = await reader.range(source.pipelineId, from, to, (records) => got.push(...records), abort.signal);
+				got = [];
+				const end = await reader.range(source.pipelineId, from, to, (records) => {
+					got.push(...records);
+					const counted = records.filter((r) => isPipelineRecord(r, source.pipelineId)).length;
+					if (counted > 0 && current()) {
+						this.olderCount += counted;
+						this.postState();
+					}
+				}, abort.signal);
+				if (stopped && mine()) {
+					keepStopped();
+					break;
+				}
 				if (!current()) {
 					return;
 				}
@@ -804,7 +1053,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				to = Math.min(before, from);
 			}
 		} catch (err) {
-			if (current()) {
+			if (stopped && mine()) {
+				keepStopped();
+			} else if (current()) {
 				const message = this.mask(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
 				this.options.log(`Pipeline logs: loading older records of ${this.mask(source, source.title)} failed: ${message}`);
 				// Shown in the Load older row (the status line is the tail's), until the next action.
@@ -813,6 +1064,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		} finally {
 			if (this.olderSession === abort) {
 				this.olderSession = undefined;
+				this.olderStop = undefined;
 				if (generation === this.generation) {
 					this.older = current() ? older : 'more';
 				}
@@ -867,6 +1119,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			}
 			if (current()) {
 				outcome = { found };
+				this.recovered(source);
 			}
 		} catch (err) {
 			if (current()) {
@@ -934,7 +1187,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	/** The menu opened: the topic's retention, read once per pipeline shown. */
 	requestRetention(): void {
 		const source = this.source;
-		if (!source || this.retention !== null || this.retentionSession || !this.view?.visible) {
+		if (!source || source.noAccess || this.retention !== null || this.retentionSession || !this.view?.visible) {
 			return;
 		}
 		const abort = new AbortController();
@@ -963,10 +1216,109 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		s?.abort();
 	}
 
+	/**
+	 * A read failed (ticket 6.6): its state by AD-24's kind. A refused sign-in or read waits for Retry or
+	 * a new access; anything else is a lost connection, tried again after its wait while the tab is
+	 * visible. The reason goes to the output channel only (masked), not into the panel.
+	 */
 	private failed(source: LogSource, err: unknown): void {
 		const message = this.mask(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
-		this.options.log(`Pipeline logs: reading ${this.mask(source, source.title)} stopped: ${message}`);
-		this.setStatus(`${STOPPED_PREFIX}${message}`);
+		const kind = isLogReadError(err) ? err.kind : 'connection';
+		const user = this.mask(source, source.username ?? 'The user');
+		if (kind === 'signIn') {
+			this.cancelRetry();
+			this.retryAttempt = 0;
+			this.failure = { kind: 'signIn', user, cluster: this.clusterOf(source) };
+		} else if (kind === 'notAllowed') {
+			this.cancelRetry();
+			this.retryAttempt = 0;
+			this.failure = { kind: 'notAllowed', user, topic: LOGS_TOPIC };
+		} else {
+			this.retryAttempt++;
+			this.failure = { kind: 'connectionLost', cluster: this.clusterOf(source), live: this.live && !this.pendingRange && !this.pendingAround, retryInS: 0, retryAt: null };
+		}
+		this.options.log(`Pipeline logs: reading ${this.mask(source, source.title)} stopped: ${message}${kind === 'connection' ? ` (try ${this.retryAttempt})` : ''}`);
+		this.setStatus(panelStateTexts(this.failure)!.title);
+		if (this.failure.kind === 'connectionLost') {
+			// Posts the state with its countdown (not while the tab is hidden).
+			this.scheduleRetry();
+		}
+		if (!this.retryTimer) {
+			this.postState();
+		}
+	}
+
+	/**
+	 * Stop reading (ticket 6.6): a bounded range's read ends where it is, its rows kept, Live off; Load
+	 * older keeps the window it was reading and ends. `false` when neither reads.
+	 */
+	stopReading(): boolean {
+		const source = this.source;
+		if (!source) {
+			return false;
+		}
+		if (this.olderStop) {
+			this.olderStop();
+			return true;
+		}
+		if (this.session?.kind !== 'range' || !this.pendingRange) {
+			return false;
+		}
+		this.stop();
+		this.pendingRange = false;
+		this.done = true;
+		this.stoppedShort = true;
+		this.live = false;
+		this.setStatus(stoppedReadingStatus(rangeText(this.range), this.counter.counts.total));
+		this.postState();
+		return true;
+	}
+
+	/**
+	 * Set up log access…, Set up log access again… and Use another user… (ticket 6.6): 6.2's flow for the
+	 * shown pipeline's cluster; once stored, the same range is read again with the new access (around the
+	 * error: searched again). Cancelled or failed: the state stays. `false` then.
+	 */
+	async setUpAccess(): Promise<boolean> {
+		const source = this.source;
+		if (!source?.setUpAccess || this.settingUp) {
+			return false;
+		}
+		this.settingUp = true;
+		this.postState();
+		let next: LogSource | undefined;
+		try {
+			next = await source.setUpAccess();
+		} finally {
+			this.settingUp = false;
+			this.postState();
+		}
+		if (!next || source !== this.source) {
+			return false;
+		}
+		const around = this.pendingAround;
+		const live = this.live;
+		this.choices++;
+		this.stopAll();
+		this.source = next;
+		this.reset(this.range, this.chosenAt);
+		if (around) {
+			this.pendingRange = false;
+			this.pendingAround = true;
+			this.status = SEARCHING_ERROR_STATUS;
+		} else if (isLiveRange(this.range.kind) && !live && this.failure.kind === 'none') {
+			// Live stays off: the range is read up to now.
+			this.live = false;
+			this.pendingRange = true;
+			this.readUntil = Date.now();
+			this.status = this.readingStatus();
+		}
+		this.options.log(this.mask(next, `Pipeline logs: reading ${next.title} again with the new log access, ${rangeText(this.range)}.`));
+		this.updateDescription();
+		this.postShow();
+		this.changed.fire();
+		this.start();
+		return true;
 	}
 
 	/** Stops the tail or the range read (Live off, the tab hidden or closed, another range or pipeline, the window closing). */
@@ -985,9 +1337,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	/** Stops every read: the tail or the range, Load older, the retention. */
 	private stopAll(): void {
 		this.stop();
+		this.cancelRetry();
 		const older = this.olderSession;
 		if (older) {
 			this.olderSession = undefined;
+			this.olderStop = undefined;
 			older.abort();
 			this.older = 'more';
 			this.postState();

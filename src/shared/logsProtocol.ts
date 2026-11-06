@@ -1,7 +1,8 @@
-// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4, 6.5): every
+// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4, 6.5, 6.6): every
 // message of the third webview, as discriminated unions on `type`, plus the validators each side uses on
 // what it receives, and the pure rules both share (the range menu's choices, local date-times, the gap
-// notes; ticket 6.4: the levels, the filter and its search pattern). The panel adapter (`src/adapters/vscode/logsPanel.ts`), the record shaping
+// notes; ticket 6.4: the levels, the filter and its search pattern; ticket 6.6: the panel's states and
+// their texts). The panel adapter (`src/adapters/vscode/logsPanel.ts`), the record shaping
 // (`src/adapters/logs/records.ts`) and `webview/src/logs` import it. Imports nothing (AD-15).
 
 /** At most this many records are kept (the oldest dropped first), by the host and the webview alike. */
@@ -212,6 +213,83 @@ export interface LogsRange {
 	readonly to: number | null;
 }
 
+/**
+ * Ticket 6.6 (board 6): the state that fills the panel's list area (the toolbar stays). Every name in it
+ * is masked by the host. `none`: the records (or 6.4's "No records match"). `noAccess`: the cluster has no
+ * log access set. `signIn`: the stored user could not sign in (Kafka 58). `notAllowed`: the user may not
+ * read the topic. `noRecords`: a range read to its end with none of the pipeline's records, or only
+ * records of hidden levels (`hiddenLevels`, for Show every level). `reading`: a bounded range or Load
+ * older reads (`count`: the pipeline's records read so far; Stop reading). `connectionLost`: retried after
+ * `retryInS` (at `retryAt`, ms since the epoch; `null` while it tries, or while the tab is hidden).
+ */
+export type LogsPanelState =
+	| { readonly kind: 'none' }
+	| { readonly kind: 'noAccess'; readonly cluster: string; readonly topic: string }
+	| { readonly kind: 'signIn'; readonly user: string; readonly cluster: string }
+	| { readonly kind: 'notAllowed'; readonly user: string; readonly topic: string }
+	| { readonly kind: 'noRecords'; readonly pipeline: string; readonly range: string; readonly hiddenLevels: readonly LogLevel[] }
+	| { readonly kind: 'reading'; readonly what: string; readonly count: number }
+	| { readonly kind: 'connectionLost'; readonly cluster: string; readonly live: boolean; readonly retryInS: number; readonly retryAt: number | null };
+
+export const NO_PANEL_STATE: LogsPanelState = { kind: 'none' };
+
+/** A lost connection is tried again after these waits, then every last one (ticket 6.6, the user's decision of 2026-11-06). */
+export const RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 30_000, 60_000];
+
+/** The wait before try `attempt` (1 for the first after the loss). */
+export function retryDelayMs(attempt: number, delays: readonly number[] = RETRY_DELAYS_MS): number {
+	return delays[Math.min(Math.max(attempt, 1), delays.length) - 1];
+}
+
+/** "Trying again in 5 s.", "Trying again…" (`null`: trying now). */
+export function retryText(seconds: number | null): string {
+	return seconds === null ? 'Trying again…' : `Trying again in ${seconds} s.`;
+}
+
+/** "2,140 records so far". */
+export function soFarText(count: number): string {
+	return `${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} so far`;
+}
+
+/** A state's small label, title and text, as board 6 has them (the countdown: `retrySeconds`, else the state's wait). */
+export function panelStateTexts(state: LogsPanelState, retrySeconds?: number | null): { readonly label: string; readonly title: string; readonly body: string } | undefined {
+	switch (state.kind) {
+		case 'none':
+			return undefined;
+		case 'noAccess':
+			return {
+				label: 'No log access', title: `${state.cluster} has no log access set`,
+				body: `Logs are read from the cluster's ${state.topic} topic, with a Redpanda user that may read it.`,
+			};
+		case 'signIn':
+			return {
+				label: 'Sign-in refused', title: `${state.user} could not sign in to ${state.cluster}`,
+				body: 'The cluster refused the sign-in (SASL authentication failed). The username, password or mechanism is wrong.',
+			};
+		case 'notAllowed':
+			return {
+				label: 'Not allowed', title: `${state.user} may not read the logs topic`,
+				body: `The cluster refused reading ${state.topic}. An admin can grant Read on it in the Cloud UI's ACLs.`,
+			};
+		case 'noRecords':
+			return {
+				label: 'No records', title: `No records for ${state.pipeline} in ${state.range}`,
+				body: state.hiddenLevels.length > 0
+					? `It wrote only levels that are hidden (${state.hiddenLevels.map((l) => LEVEL_LABELS[l]).join(', ')}).`
+					: 'It may not have started yet, or it wrote nothing in this range.',
+			};
+		case 'reading':
+			return { label: 'Reading', title: state.what, body: 'The list fills as the records come.' };
+		case 'connectionLost': {
+			const seconds = retrySeconds === undefined ? (state.retryAt === null ? null : state.retryInS) : retrySeconds;
+			return {
+				label: 'Connection lost', title: `Lost the connection to ${state.cluster}`,
+				body: `${state.live ? 'Live is paused' : 'Reading is paused'}; the records already shown stay. ${retryText(seconds)}`,
+			};
+		}
+	}
+}
+
 /** The panel's reading state beside its rows (ticket 6.3). */
 export interface LogsViewState {
 	readonly range: LogsRange;
@@ -246,6 +324,12 @@ export interface LogsViewState {
 	readonly focusId: string | null;
 	/** Ticket 6.5: a note above the records ("No ERROR record in the last 24 hours"), until the next range; else `null`. */
 	readonly note: string | null;
+	/** Ticket 6.6: the state that fills the list area. */
+	readonly panelState: LogsPanelState;
+	/** Ticket 6.6: Stop reading ended the range's read early (an empty list is not "No records"). */
+	readonly stoppedShort: boolean;
+	/** Ticket 6.6: Set up log access runs for the shown pipeline's cluster (its buttons are disabled). */
+	readonly settingUp: boolean;
 }
 
 export type LogsHostMessage =
@@ -284,7 +368,19 @@ export type LogsWebviewMessage =
 	/** Show records around this one: 5 minutes before and after the row's time, the filter cleared, Live off. */
 	| { readonly type: 'aroundRequested'; readonly id: string }
 	/** Copy JSON where the webview cannot write the clipboard itself: the host copies the row's JSON. */
-	| { readonly type: 'copyRequested'; readonly id: string };
+	| { readonly type: 'copyRequested'; readonly id: string }
+	/** Ticket 6.6: Stop reading (a bounded range or Load older): the records read stay, the read ends. */
+	| { readonly type: 'stopReading' }
+	/** Ticket 6.6: Retry (a refused sign-in, a missing permission) and Retry now (a lost connection). */
+	| { readonly type: 'retryNow' }
+	/** Ticket 6.6: Set up log access…, Set up log access again… (6.2's flow for the shown pipeline's cluster). */
+	| { readonly type: 'setUpAccess' }
+	/** Ticket 6.6: Use another user… (the same flow). */
+	| { readonly type: 'useAnotherUser' }
+	/** Ticket 6.6: No records' Show every level: the level filter cleared. */
+	| { readonly type: 'showEveryLevel' }
+	/** Ticket 6.6: No records' Last 24 hours. */
+	| { readonly type: 'last24h' };
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -322,6 +418,32 @@ const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isI
 const isTime = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isKind = (v: unknown): v is RangeKind => typeof v === 'string' && (RANGE_KINDS as readonly string[]).includes(v);
 
+const isText = (v: unknown): v is string => typeof v === 'string';
+
+function isPanelState(v: unknown): v is LogsPanelState {
+	if (!isObject(v)) {
+		return false;
+	}
+	switch (v.kind) {
+		case 'none':
+			return true;
+		case 'noAccess':
+			return isText(v.cluster) && isText(v.topic);
+		case 'signIn':
+			return isText(v.user) && isText(v.cluster);
+		case 'notAllowed':
+			return isText(v.user) && isText(v.topic);
+		case 'noRecords':
+			return isText(v.pipeline) && isText(v.range) && Array.isArray(v.hiddenLevels) && v.hiddenLevels.every(isLevel);
+		case 'reading':
+			return isText(v.what) && isCount(v.count);
+		case 'connectionLost':
+			return isText(v.cluster) && typeof v.live === 'boolean' && isCount(v.retryInS) && (v.retryAt === null || isTime(v.retryAt));
+		default:
+			return false;
+	}
+}
+
 function isState(v: unknown): v is LogsViewState {
 	if (!isObject(v) || !isObject(v.range)) {
 		return false;
@@ -331,7 +453,8 @@ function isState(v: unknown): v is LogsViewState {
 		&& typeof v.live === 'boolean' && typeof v.done === 'boolean' && (v.older === 'more' || v.older === 'reading' || v.older === 'none')
 		&& (v.olderError === null || typeof v.olderError === 'string') && (v.olderNote === null || typeof v.olderNote === 'string') && isCount(v.newerDropped) && (v.retention === null || typeof v.retention === 'string') && (v.deployedAt === null || isTime(v.deployedAt))
 		&& isTime(v.olderBefore) && parseLogFilter(v.filter) !== undefined && isCounts(v.counts)
-		&& typeof v.highlightErrors === 'boolean' && (v.focusId === null || typeof v.focusId === 'string') && (v.note === null || typeof v.note === 'string');
+		&& typeof v.highlightErrors === 'boolean' && (v.focusId === null || typeof v.focusId === 'string') && (v.note === null || typeof v.note === 'string')
+		&& isPanelState(v.panelState) && typeof v.stoppedShort === 'boolean' && typeof v.settingUp === 'boolean';
 }
 
 /** A host message, or `undefined` for anything malformed. */
@@ -365,6 +488,12 @@ export function parseLogsWebviewMessage(v: unknown): LogsWebviewMessage | undefi
 		case 'ready':
 		case 'olderRequested':
 		case 'retentionRequested':
+		case 'stopReading':
+		case 'retryNow':
+		case 'setUpAccess':
+		case 'useAnotherUser':
+		case 'showEveryLevel':
+		case 'last24h':
 			return { type: v.type };
 		case 'liveToggled':
 			return typeof v.live === 'boolean' ? { type: 'liveToggled', live: v.live } : undefined;

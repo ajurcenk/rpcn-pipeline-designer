@@ -413,3 +413,69 @@ button.rpcn-logs-value:hover {
 	margin: 4px 8px;
 	color: var(--vscode-descriptionForeground);
 }
+
+/* Ticket 6.6 (board 6): the states that fill the list area (the toolbar stays above them). */
+.rpcn-logs-state {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 8px;
+	padding: 12px 16px;
+	max-width: 60em;
+	background: var(--vscode-editorWidget-background, transparent);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	border-radius: 4px;
+	line-height: 1.5;
+}
+.rpcn-logs-state-label {
+	font-size: 0.85em;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-state-signIn .rpcn-logs-state-label,
+.rpcn-logs-state-notAllowed .rpcn-logs-state-label {
+	color: var(--vscode-errorForeground);
+}
+.rpcn-logs-state-connectionLost .rpcn-logs-state-label {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+}
+.rpcn-logs-state-title {
+	font-weight: 600;
+	font-size: 1.1em;
+}
+.rpcn-logs-state-count {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-state-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.rpcn-logs-primary {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+}
+.rpcn-logs-primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+.rpcn-logs-progress {
+	position: relative;
+	height: 2px;
+	overflow: hidden;
+	background: var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-progress-bar {
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: 30%;
+	background: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+	animation: rpcn-logs-progress 1.5s linear infinite;
+}
+@keyframes rpcn-logs-progress {
+	from { left: -30%; }
+	to { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.rpcn-logs-progress-bar { animation: none; width: 100%; }
+}
