@@ -116,3 +116,5 @@ context:
 | 5 | AFTER_SETUP's successful Use another user… and the countdown value after re-showing are untested | low | 97-logs covers only the failing path and `retryAt !== null` | patch |
 | 6 | Show every level names every hidden level, not those holding the records read | low | `panelState` lists `LOG_LEVELS` minus the filter's | patch (only hidden levels with a count) |
 | 7 | Two Set up log access flows can run at once (the tab's button while the notification's is awaited, or a double click) | low | no in-flight guard in `LogsPanel.setUpAccess()` or `openLogs` | patch |
+
+**Manual check result (user, 2026-11-06):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (the empty and error states as reachable on rpc-vilnius: No log access, Sign-in refused, No records, Reading and Stop reading, Connection lost with the countdown and recovery). Automated: stable 1332, multi-root 10, corpus 156, webview 369; no floor run.
