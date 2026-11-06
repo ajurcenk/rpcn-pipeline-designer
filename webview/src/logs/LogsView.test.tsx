@@ -5,13 +5,22 @@
 // dropped) with the footer's count, and ignores malformed messages. Ticket 6.3: the time-range menu
 // (its choices, Custom range's checks, the retention line asked for once), the Live toggle, Load older
 // records (prepended rows, the newest dropped at the cap, "No older records"), the gap notes and an
-// empty range's note.
+// empty range's note. Ticket 6.4: the level chips and their counts, the search box (debounced, Match
+// case, regular expression, an invalid one refused at the box), highlighted matches, field chips from a
+// record's values, "N of M records match", "No records match", and a record's JSON (Copy JSON, Show
+// records around this one).
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { customRangeError, gapsIn, localMinute, parseLocalDateTime, type LogRow, type LogsHostMessage, type LogsViewState, type LogsWebviewMessage } from '../../../src/shared/logsProtocol';
-import { footerText, LOADING_OLDER_TEXT, localTime, LogsView, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT, rangeButtonText } from './LogsView';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, parseLocalDateTime, parseLogsWebviewMessage, searchError, searchPattern,
+	type LogFilter, type LogRow, type LogsHostMessage, type LogsViewState, type LogsWebviewMessage,
+} from '../../../src/shared/logsProtocol';
+import {
+	chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
+	rangeButtonText, SEARCH_DEBOUNCE_MS,
+} from './LogsView';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -25,7 +34,10 @@ const send = async (message: LogsHostMessage | Record<string, unknown>) => {
 
 const T0 = new Date(2026, 10, 5, 9, 4, 5, 7).getTime();
 const MIN = 60_000;
-const STATE: LogsViewState = { range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, live: true, done: false, older: 'more', olderError: null, newerDropped: 0, retention: null, deployedAt: null };
+const STATE: LogsViewState = {
+	range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
+	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS,
+};
 const state = (extra: Partial<LogsViewState> = {}): LogsViewState => ({ ...STATE, ...extra });
 const row = (n: number, extra: Partial<LogRow> = {}): LogRow => ({
 	id: `0:${n}`, time: T0 + n * 1000, level: 'INFO', message: `message ${n}`, instance: 'inst-1', fields: [], ...extra,
@@ -196,7 +208,7 @@ describe('Pipeline Logs history (ticket 6.3)', () => {
 	});
 
 	it('LOAD_OLDER: the button at the top posts the request; while reading it is disabled; older rows go before the shown ones, at most the cap (the newest dropped); then "No older records"', async () => {
-		await show([row(10), row(11)], {}, { cap: 3 });
+		await show([row(10), row(11)], { olderBefore: T0 + 10_000 }, { cap: 3 });
 		expect(button('rpcn-logs-older-button')?.textContent).toBe(`Load older records (before ${localMinute(T0 + 10_000)})`);
 		await click(button('rpcn-logs-older-button'));
 		expect(posted.at(-1)).toEqual({ type: 'olderRequested' });
@@ -242,5 +254,162 @@ describe('Pipeline Logs history (ticket 6.3)', () => {
 		expect(customRangeError('2026-11-05 13:00', '2026-11-05 14:00', now)).toBe('From is in the future.');
 		expect(customRangeError('2026-11-05 10:00', '2026-11-05 14:00', now)).toBeUndefined();
 		expect(customRangeError('x', '2026-11-05 14:00', now)).toBe('From is not a date and time (YYYY-MM-DD HH:MM).');
+	});
+});
+
+describe('Pipeline Logs filter and search (ticket 6.4)', () => {
+	const counts = (levels: Partial<LogsViewState['counts']['levels']>, total: number, matched: number): LogsViewState['counts'] =>
+		({ levels: { ...NO_COUNTS.levels, ...levels }, total, matched });
+	const show = async (rows: LogRow[], extra: Partial<LogsViewState> = {}) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows, dropped: 0, cap: 5000, status: '', state: state(extra) });
+	const chips = () => [...host.querySelectorAll('.rpcn-logs-level-chip')].map((c) => [c.getAttribute('data-level'), c.textContent, c.getAttribute('aria-pressed')]);
+	const filters = () => posted.filter((m): m is Extract<LogsWebviewMessage, { type: 'filterChanged' }> => m.type === 'filterChanged').map((m) => m.filter);
+	const box = () => host.querySelector<HTMLInputElement>('.rpcn-logs-search-input')!;
+	const marks = () => [...host.querySelectorAll('mark')].map((m) => m.textContent);
+
+	it('LEVELS: a chip per level with its count; turning one off posts the filter at once; "N of M records match"; all off: "No records match"', async () => {
+		await show([row(1)], { counts: counts({ error: 2, warn: 3, info: 19_960, other: 1 }, 19_966, 19_966) });
+		expect(chips()).toEqual([
+			['error', 'Error 2', 'true'], ['warn', 'Warn 3', 'true'], ['info', 'Info 19,960', 'true'], ['debug', 'Debug 0', 'true'], ['other', 'Other 1', 'true'],
+		]);
+		expect(host.querySelector('.rpcn-logs-match-count')).toBeNull();
+		await click(host.querySelector('[data-level="info"]'));
+		expect(filters().at(-1)).toEqual({ ...NO_FILTER, levels: ['error', 'warn', 'debug', 'other'] });
+		await send({ type: 'show', title: 'orders · rpc-vilnius', rows: [], dropped: 0, cap: 5000, status: '', state: state({ filter: filters().at(-1)!, counts: counts({ error: 2, warn: 3, info: 19_960, other: 1 }, 19_966, 6) }) });
+		expect(chips()[2]).toEqual(['info', 'Info 19,960', 'false']);
+		expect(host.querySelector('.rpcn-logs-match-count')?.textContent).toBe('6 of 19,966 records match');
+		expect(matchText(40, 20_000)).toBe('40 of 20,000 records match');
+		await send({ type: 'show', title: 'orders · rpc-vilnius', rows: [], dropped: 0, cap: 5000, status: '', state: state({ filter: { ...NO_FILTER, levels: [] }, counts: counts({ info: 4 }, 4, 0), done: true }) });
+		expect(host.querySelector('.rpcn-logs-empty')?.textContent).toBe(NO_MATCH_TEXT);
+	});
+
+	it('SEARCH: posted once typing pauses; the applied search\'s matches highlighted in the message, the level, the instance and fields (case-insensitive)', async () => {
+		vi.useFakeTimers();
+		try {
+			await show([row(1, { message: 'a Secret here', fields: [['note', 'top secret']] }), row(2)]);
+			await type(box(), 's');
+			await type(box(), 'secret');
+			expect(filters()).toEqual([]);
+			await act(async () => {
+				vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+			});
+			expect(filters()).toEqual([{ ...NO_FILTER, text: 'secret' }]);
+			await send({ type: 'state', state: state({ filter: { ...NO_FILTER, text: 'secret' } }) });
+			expect(marks()).toEqual(['Secret', 'secret']);
+			expect(messages()[0]).toBe('a Secret here note=top secret');
+			expect(box().value).toBe('secret');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('CASE_REGEX: Match case and .* post at once; an invalid regular expression is refused at the box with its error and nothing is posted', async () => {
+		await show([row(1, { message: 'job failed' }), row(2, { message: 'will fail' })]);
+		await type(box(), 'fail(ed)?');
+		await click(button('rpcn-logs-regex'));
+		expect(filters().at(-1)).toEqual({ ...NO_FILTER, text: 'fail(ed)?', regex: true });
+		await click(button('rpcn-logs-match-case'));
+		expect(filters().at(-1)).toEqual({ ...NO_FILTER, text: 'fail(ed)?', regex: true, matchCase: true });
+		await send({ type: 'state', state: state({ filter: filters().at(-1)! }) });
+		expect(marks()).toEqual(['failed', 'fail']);
+		const count = filters().length;
+		await type(box(), '(');
+		await new Promise((r) => setTimeout(r, SEARCH_DEBOUNCE_MS + 50));
+		expect(host.querySelector('.rpcn-logs-search-error')?.textContent).toBe(searchError({ text: '(', matchCase: true, regex: true }));
+		expect(box().getAttribute('aria-invalid')).toBe('true');
+		await click(host.querySelector('[data-level="debug"]'));
+		expect(filters().length, 'nothing posted while the search is refused').toBe(count);
+		expect(parseLogsWebviewMessage({ type: 'filterChanged', filter: { ...NO_FILTER, text: '(', regex: true } })).toBeUndefined();
+	});
+
+	it('FIELD_FILTER: clicking an instance or a field\'s value makes a chip ("instance …c1gjg"); × removes it', async () => {
+		await show([row(1, { instance: 'd3ugjmtpsedhm3e7c1gjg', fields: [['path', '/config/connect.yaml']] })]);
+		await click(host.querySelector('.rpcn-logs-instance .rpcn-logs-value'));
+		expect(filters().at(-1)).toEqual({ ...NO_FILTER, fields: [['instance_id', 'd3ugjmtpsedhm3e7c1gjg']] });
+		expect(host.querySelector('.rpcn-logs-field-chip')?.textContent).toBe('instance …c1gjg×');
+		await click(host.querySelector('.rpcn-logs-message .rpcn-logs-value'));
+		expect(filters().at(-1)?.fields).toEqual([['instance_id', 'd3ugjmtpsedhm3e7c1gjg'], ['path', '/config/connect.yaml']]);
+		await click(host.querySelector('.rpcn-logs-message .rpcn-logs-value'));
+		expect(filters().at(-1)?.fields, 'a chip once').toHaveLength(2);
+		await click(host.querySelector('.rpcn-logs-chip-remove'));
+		expect(filters().at(-1)?.fields).toEqual([['path', '/config/connect.yaml']]);
+		expect(chipText('path', 'x'.repeat(30))).toBe(`path=${'x'.repeat(23)}…`);
+		expect(chipText('instance_id', 'inst-1')).toBe('instance inst-1');
+	});
+
+	it('SWITCH: a show with another filter than the one posted (cleared by the host) replaces the box and the chips', async () => {
+		const filter: LogFilter = { ...NO_FILTER, text: 'x', fields: [['path', 'p']] };
+		await show([row(1)], { filter });
+		expect(box().value).toBe('x');
+		expect(host.querySelectorAll('.rpcn-logs-field-chip')).toHaveLength(1);
+		await show([row(9)]);
+		expect(box().value).toBe('');
+		expect(host.querySelectorAll('.rpcn-logs-field-chip')).toHaveLength(0);
+	});
+
+	it('SWITCH: a search still waiting on its timer is dropped when another pipeline is shown, never posted to it', async () => {
+		vi.useFakeTimers();
+		try {
+			await show([row(1)]);
+			await type(box(), 'pending');
+			await send({ type: 'show', title: 'clicks · rpc-vilnius', rows: [], dropped: 0, cap: 5000, status: '', state: STATE });
+			await act(async () => {
+				vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS * 2);
+			});
+			expect(filters()).toEqual([]);
+			expect(box().value).toBe('');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('LEVELS: the chip\'s name is its own element (a hidden level strikes it through, not the count); LOAD_OLDER: how far a filtered Load older searched', async () => {
+		await show([row(1)], { filter: { ...NO_FILTER, levels: ['error'] }, olderNote: 'No matches back to 2026-11-04 09:00; Load older to search further' });
+		const info = host.querySelector('[data-level="info"]')!;
+		expect(info.querySelector('.rpcn-logs-level-label')?.textContent).toBe('Info');
+		expect(info.querySelector('.rpcn-logs-count')?.textContent).toBe('0');
+		expect(host.querySelector('.rpcn-logs-older-note')?.textContent).toBe('No matches back to 2026-11-04 09:00; Load older to search further');
+	});
+
+	it('JSON: ▸ expands a record in place with its whole JSON; Copy JSON writes it to the clipboard, else asks the host; Show records around this one posts its id', async () => {
+		const json = JSON.stringify({ level: 'INFO', message: 'message 1', n: 7 }, null, 2);
+		await show([row(1, { json }), row(2, { raw: true, level: '', message: 'plain' })]);
+		const expand = host.querySelector<HTMLButtonElement>('tbody tr[data-id="0:1"] .rpcn-logs-expand')!;
+		expect(expand.getAttribute('aria-expanded')).toBe('false');
+		await click(expand);
+		expect(host.querySelector('.rpcn-logs-json')?.textContent).toBe(json);
+		expect(cells()[0][0], 'the time cell keeps its text').toBe('2026-11-05 09:04:06.007');
+		const written: string[] = [];
+		const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (t: string) => { written.push(t); } } });
+		try {
+			await click(button('rpcn-logs-copy'));
+			expect(written).toEqual([json]);
+			expect(host.querySelector('.rpcn-logs-copied')?.textContent).toBe('Copied.');
+			Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+			await click(button('rpcn-logs-copy'));
+			expect(posted.at(-1)).toEqual({ type: 'copyRequested', id: '0:1' });
+		} finally {
+			if (clipboard) {
+				Object.defineProperty(navigator, 'clipboard', clipboard);
+			} else {
+				delete (navigator as { clipboard?: unknown }).clipboard;
+			}
+		}
+		await click(button('rpcn-logs-around'));
+		expect(posted.at(-1)).toEqual({ type: 'aroundRequested', id: '0:1' });
+		expect(host.querySelector('.rpcn-logs-json')).toBeNull();
+		await click(host.querySelector('tbody tr[data-id="0:2"] .rpcn-logs-expand'));
+		expect(host.querySelector('.rpcn-logs-json')?.textContent, 'a non-JSON value: its text').toBe('plain');
+	});
+
+	it('highlightParts and searchPattern: plain text escaped, case-insensitive unless Match case; empty matches skipped', () => {
+		const re = searchPattern('a.b', false, false, true) as RegExp;
+		expect(highlightParts('xA.Bya.bz aXb', re)).toEqual([{ text: 'x', match: false }, { text: 'A.B', match: true }, { text: 'y', match: false }, { text: 'a.b', match: true }, { text: 'z aXb', match: false }]);
+		expect(highlightParts('abc', searchPattern('.*', true, true, true) as RegExp)).toEqual([{ text: 'abc', match: true }]);
+		expect(highlightParts('abc', searchPattern('x*', true, true, true) as RegExp)).toEqual([{ text: 'abc', match: false }]);
+		expect(searchPattern('', false, false)).toBeUndefined();
+		expect(searchError({ text: '(', matchCase: false, regex: false })).toBeUndefined();
+		expect(searchError({ text: '(', matchCase: false, regex: true })).toMatch(/Invalid regular expression/);
 	});
 });

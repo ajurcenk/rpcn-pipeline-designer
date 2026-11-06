@@ -107,7 +107,7 @@ export interface ExtensionApi {
 	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions; and the bundled Kafka client's check
 	 * (no native module). Only in `ExtensionMode.Test`.
 	 */
-	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention'>
+	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention' | 'setFilter' | 'around' | 'copyJson'>
 		& { checkClient: typeof checkClient };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];

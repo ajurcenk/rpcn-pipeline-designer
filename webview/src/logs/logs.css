@@ -231,3 +231,171 @@ body {
 .rpcn-logs-older-error {
 	color: var(--vscode-errorForeground);
 }
+/* Ticket 6.4 (board 4): the level chips, the search box, the field chips, the highlighted matches and a
+   record's JSON expanded in place. */
+.rpcn-logs-filters {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-levels {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.rpcn-logs-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font: inherit;
+	color: var(--vscode-foreground);
+	background: transparent;
+	border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+	border-radius: 10px;
+	padding: 0 8px;
+}
+.rpcn-logs-level-chip {
+	cursor: pointer;
+}
+.rpcn-logs-level-chip[aria-pressed="true"] {
+	color: var(--vscode-badge-foreground, var(--vscode-foreground));
+	background: var(--vscode-badge-background, var(--vscode-list-hoverBackground));
+	border-color: transparent;
+}
+.rpcn-logs-level-chip[aria-pressed="false"] {
+	color: var(--vscode-descriptionForeground);
+}
+/* A hidden level: its name struck through, its count not. */
+.rpcn-logs-level-chip[aria-pressed="false"] .rpcn-logs-level-label {
+	text-decoration: line-through;
+}
+.rpcn-logs-chip:focus-visible, .rpcn-logs-toggle:focus-visible, .rpcn-logs-chip-remove:focus-visible, .rpcn-logs-value:focus-visible, .rpcn-logs-expand:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.rpcn-logs-count {
+	font-variant-numeric: tabular-nums;
+	opacity: 0.85;
+}
+.rpcn-logs-search {
+	display: inline-flex;
+	align-items: center;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	min-width: 180px;
+	flex: 0 1 320px;
+}
+.rpcn-logs-search:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+.rpcn-logs-search-input {
+	flex: 1;
+	min-width: 0;
+	font: inherit;
+	color: inherit;
+	background: transparent;
+	border: 0;
+	padding: 2px 4px;
+	outline: none;
+}
+.rpcn-logs-search-input[aria-invalid="true"] {
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+}
+.rpcn-logs-toggle {
+	font-family: var(--vscode-editor-font-family);
+	color: inherit;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	margin: 1px;
+	padding: 0 4px;
+	cursor: pointer;
+}
+.rpcn-logs-toggle[aria-pressed="true"] {
+	color: var(--vscode-inputOption-activeForeground, inherit);
+	background: var(--vscode-inputOption-activeBackground, var(--vscode-list-hoverBackground));
+	border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
+}
+.rpcn-logs-search-error {
+	flex-basis: 100%;
+	margin: 0;
+	color: var(--vscode-errorForeground);
+}
+.rpcn-logs-field-chip {
+	padding-right: 2px;
+	font-family: var(--vscode-editor-font-family);
+}
+.rpcn-logs-chip-remove {
+	font: inherit;
+	color: inherit;
+	background: transparent;
+	border: 0;
+	padding: 0 4px;
+	cursor: pointer;
+}
+.rpcn-logs-match-count {
+	margin-left: auto;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-mark {
+	color: inherit;
+	background: var(--vscode-editor-findMatchHighlightBackground, var(--vscode-editor-selectionHighlightBackground));
+	outline: 1px solid var(--vscode-editor-findMatchHighlightBorder, transparent);
+}
+button.rpcn-logs-value {
+	font: inherit;
+	color: inherit;
+	background: transparent;
+	border: 0;
+	padding: 0;
+	text-align: left;
+	cursor: pointer;
+}
+button.rpcn-logs-value:hover {
+	text-decoration: underline;
+}
+.rpcn-logs-expand {
+	width: 14px;
+	height: 14px;
+	margin-right: 4px;
+	padding: 0;
+	font: inherit;
+	line-height: 1;
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	border: 0;
+	cursor: pointer;
+}
+.rpcn-logs-expand::before {
+	content: "▸";
+}
+.rpcn-logs-expand[aria-expanded="true"]::before {
+	content: "▾";
+}
+.rpcn-logs-detail > td {
+	padding: 2px 8px 6px 26px;
+}
+.rpcn-logs-json {
+	margin: 0 0 4px;
+	padding: 4px 8px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--vscode-editor-font-family);
+	background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background));
+	border-radius: 2px;
+}
+.rpcn-logs-detail-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.rpcn-logs-older-note {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-logs-copied {
+	color: var(--vscode-descriptionForeground);
+}

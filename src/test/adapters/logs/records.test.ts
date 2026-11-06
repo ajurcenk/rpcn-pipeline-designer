@@ -17,11 +17,12 @@ suite('Pipeline log records (ticket 6.2)', () => {
 		assert.strictEqual(isPipelineRecord(record({ pipeline_id: PIPELINE }, { key: null }), PIPELINE), false, 'by the key, not the value');
 	});
 
-	test('RECORD: time, level, message, instance; the further fields after them in order; pipeline_id left out', () => {
-		const row = toLogRow(record({
+	test('RECORD: time, level, message, instance; the further fields after them in order; pipeline_id left out; the whole value as JSON', () => {
+		const value = {
 			benthos_version: '4.116.0', instance_id: 'inst-1', level: 'info', message: 'Running main config from specified file',
 			path: '/config/connect.yaml', pipeline_id: PIPELINE, time: '2026-11-05T16:49:15.510619696Z', label: 'gen', n: 3, ok: true, nested: { a: [1] },
-		}));
+		};
+		const row = toLogRow(record(value));
 		assert.deepStrictEqual(row, {
 			id: '0:4703',
 			time: Date.UTC(2026, 10, 5, 16, 49, 15, 510),
@@ -29,6 +30,7 @@ suite('Pipeline log records (ticket 6.2)', () => {
 			message: 'Running main config from specified file',
 			instance: 'inst-1',
 			fields: [['benthos_version', '4.116.0'], ['path', '/config/connect.yaml'], ['label', 'gen'], ['n', '3'], ['ok', 'true'], ['nested', '{"a":[1]}']],
+			json: JSON.stringify(value, null, 2),
 		});
 	});
 
@@ -39,6 +41,24 @@ suite('Pipeline log records (ticket 6.2)', () => {
 		assert.ok(!row.fields.some(([k]) => k === 'license_org'));
 		assert.deepStrictEqual(row.fields, [['license_type', 'enterprise'], ['expires_at', '2027-01-01T00:00:00Z'], ['note', CREDENTIAL_MASK]]);
 		assert.strictEqual(row.message, `Successfully loaded Redpanda license for ${CREDENTIAL_MASK}`);
+		// Ticket 6.4: the whole JSON as shown: license_org left out, its value masked elsewhere, the types kept.
+		assert.deepStrictEqual(JSON.parse(row.json!), { level: 'INFO', message: `Successfully loaded Redpanda license for ${CREDENTIAL_MASK}`, license_type: 'enterprise', expires_at: '2027-01-01T00:00:00Z', note: CREDENTIAL_MASK });
+	});
+
+	test('JSON: a password and a license_org with `"` and `\\` in them are masked in the JSON too, not only in the escaped text', () => {
+		const password = 'pa"ss\\word\n1';
+		const org = 'org"with\\slash';
+		const mask = (t: string) => t.split(password).join(CREDENTIAL_MASK);
+		const row = toLogRow(record({ level: 'INFO', message: `quoting ${password}`, license_org: org, nested: { [password]: [password, `licensed to ${org}`] }, note: org }), mask);
+		const escaped = (v: string) => JSON.stringify(v).slice(1, -1);
+		for (const secret of [password, org]) {
+			assert.ok(!row.json!.includes(secret) && !row.json!.includes(escaped(secret)), `${secret} in ${row.json}`);
+			assert.ok(!JSON.stringify(row.fields).includes(escaped(secret)) && !row.fields.some(([k, v]) => k.includes(secret) || v.includes(secret) || v.includes(escaped(secret))), `${secret} in a field's text`);
+		}
+		assert.deepStrictEqual(row.fields.find(([k]) => k === 'nested'), ['nested', JSON.stringify({ [CREDENTIAL_MASK]: [CREDENTIAL_MASK, `licensed to ${CREDENTIAL_MASK}`] })]);
+		assert.deepStrictEqual(JSON.parse(row.json!), {
+			level: 'INFO', message: `quoting ${CREDENTIAL_MASK}`, nested: { [CREDENTIAL_MASK]: [CREDENTIAL_MASK, `licensed to ${CREDENTIAL_MASK}`] }, note: CREDENTIAL_MASK,
+		});
 	});
 
 	test('RECORD: a license_org seen once is masked in every later record that quotes it without the field, and in other text', () => {

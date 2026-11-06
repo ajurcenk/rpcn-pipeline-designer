@@ -11,6 +11,10 @@
 // Ticket 6.3 (history): every matrix row of its plan (RANGE … SWITCH) drives the panel's time-range
 // menu, Live toggle and Load older through the test seam, as the webview's messages do; HISTORY_3_DAYS
 // is its acceptance check (a pipeline's records over 3 days, Last 24 hours, then Load older twice).
+// Ticket 6.4 (filter and search): every matrix row of its plan (LEVELS … SWITCH) sets the filter, asks
+// for a record's JSON or the records around it through the test seam, as the webview's messages do;
+// SEVEN_DAYS_MATCHES is its acceptance check (20,000 records over 7 days, 40 of them WARN with
+// "secret" in a field, Last 7 days with Warn only and the search "secret").
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -19,8 +23,8 @@ import {
 	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, noLogAccessMessage, SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND,
 	SHOW_LOGS_COMMAND, signInRefusedMessage,
 } from '../../../adapters/vscode/cloudView';
-import { FOLLOWING_STATUS, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, STOPPED_PREFIX } from '../../../adapters/vscode/logsPanel';
-import { gapsIn, MAX_LOG_ROWS } from '../../../shared/logsProtocol';
+import { AROUND_MS, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, STOPPED_PREFIX } from '../../../adapters/vscode/logsPanel';
+import { gapsIn, MAX_LOG_ROWS, NO_FILTER, type LogFilter } from '../../../shared/logsProtocol';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
@@ -736,6 +740,240 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(texts(), []);
 	});
 
+	// --- ticket 6.4: filter and search ---
+
+	/** Sets the filter on a live range and waits until the range read again follows. */
+	async function filterLive(filter: Partial<LogFilter>): Promise<void> {
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, ...filter }), true);
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+	}
+	const counts = () => logs().viewState.counts;
+
+	test('LEVELS: Info off hides its records, its chip still counts them; "N of M"; all levels off: nothing kept, the counts stay', async () => {
+		topic.write(
+			rec(ORDERS, 'i1', 9 * MINUTE), rec(ORDERS, 'w1', 8 * MINUTE, { level: 'WARN' }), rec(ORDERS, 'i2', 7 * MINUTE),
+			rec(ORDERS, 'e1', 6 * MINUTE, { level: 'ERROR' }), rec(ORDERS, 'd1', 5 * MINUTE, { level: 'DEBUG' }), { key: ORDERS, value: 'raw text', timestamp: Date.now() - 4 * MINUTE },
+		);
+		await showOrders();
+		assert.deepStrictEqual(counts(), { levels: { error: 1, warn: 1, info: 2, debug: 1, other: 1 }, total: 6, matched: 6 });
+		const tails = topic.tails.length;
+		await filterLive({ levels: ['error', 'warn', 'debug', 'other'] });
+		assert.strictEqual(topic.tails.length, tails + 1, 'the range read again');
+		assert.deepStrictEqual(logs().rows().map((r) => r.message.slice(r.message.indexOf(':') + 1)), ['w1', 'e1', 'd1', 'raw text']);
+		assert.deepStrictEqual(counts(), { levels: { error: 1, warn: 1, info: 2, debug: 1, other: 1 }, total: 6, matched: 4 }, 'Info still counts 2');
+		const last = logs().posted.filter((m) => m.type === 'state' || m.type === 'show').at(-1);
+		assert.ok(last && (last.type === 'state' || last.type === 'show') && last.state.counts.matched === 4 && last.state.filter.levels.length === 4, 'the webview gets the counts and the filter');
+		await filterLive({ levels: [] });
+		assert.deepStrictEqual(texts(), []);
+		assert.deepStrictEqual(counts(), { levels: { error: 1, warn: 1, info: 2, debug: 1, other: 1 }, total: 6, matched: 0 });
+		// Match case without a search keeps the same rows: no read.
+		const reads = topic.tails.length;
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, levels: [], matchCase: true }), true);
+		assert.strictEqual(topic.tails.length, reads, 'nothing read again');
+		assert.strictEqual(logs().viewState.filter.matchCase, true);
+	});
+
+	test('SEARCH: "secret" in the message or any field\'s name or value, case-insensitive; license_org never matched', async () => {
+		topic.write(
+			rec(ORDERS, 'a Secret in the message', 9 * MINUTE),
+			rec(ORDERS, 'in a value', 8 * MINUTE, { note: 'top SECRET' }),
+			rec(ORDERS, 'in a name', 7 * MINUTE, { secret_name: 'x' }),
+			rec(ORDERS, 'only in license_org', 6 * MINUTE, { license_org: 'secret-org' }),
+			rec(ORDERS, 'none', 5 * MINUTE),
+		);
+		await showOrders();
+		await filterLive({ text: 'secret' });
+		assert.deepStrictEqual(texts(), ['a Secret in the message', 'in a value', 'in a name']);
+		assert.deepStrictEqual([counts().matched, counts().total], [3, 5]);
+	});
+
+	test('CASE_REGEX: Match case; a regular expression; an invalid one is refused and nothing is read', async () => {
+		topic.write(rec(ORDERS, 'job failed', 9 * MINUTE), rec(ORDERS, 'will FAIL', 8 * MINUTE), rec(ORDERS, 'fine', 7 * MINUTE));
+		await showOrders();
+		await filterLive({ text: 'fail', matchCase: true });
+		assert.deepStrictEqual(texts(), ['job failed']);
+		await filterLive({ text: 'fail(ed)?$', regex: true });
+		assert.deepStrictEqual(texts(), ['job failed', 'will FAIL']);
+		const reads = topic.tails.length + topic.ranges.length;
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: '(', regex: true }), false);
+		assert.strictEqual(topic.tails.length + topic.ranges.length, reads, 'nothing read');
+		assert.deepStrictEqual(logs().viewState.filter, { ...NO_FILTER, text: 'fail(ed)?$', regex: true }, 'the filter stays');
+		assert.deepStrictEqual(texts(), ['job failed', 'will FAIL']);
+	});
+
+	test('FIELD_FILTER and COMBINED: an instance chip keeps that instance\'s records; with a level and a search, the records matching all', async () => {
+		topic.write(
+			rec(ORDERS, 'one', 9 * MINUTE, { instance_id: 'inst-a' }), rec(ORDERS, 'two', 8 * MINUTE, { instance_id: 'inst-b' }),
+			rec(ORDERS, 'secret b warn', 7 * MINUTE, { instance_id: 'inst-b', level: 'WARN' }), rec(ORDERS, 'secret b info', 6 * MINUTE, { instance_id: 'inst-b' }),
+			rec(ORDERS, 'secret a warn', 5 * MINUTE, { instance_id: 'inst-a', level: 'WARN' }),
+		);
+		await showOrders();
+		await filterLive({ fields: [['instance_id', 'inst-b']] });
+		assert.deepStrictEqual(texts(), ['two', 'secret b warn', 'secret b info']);
+		await filterLive({ fields: [['instance_id', 'inst-b']], levels: ['warn'], text: 'secret' });
+		assert.deepStrictEqual(texts(), ['secret b warn']);
+		await filterLive({ fields: [['path', '/config/connect.yaml'], ['instance_id', 'inst-a']] });
+		assert.deepStrictEqual(texts(), ['one', 'secret a warn'], 'a field chip');
+		await filterLive({});
+		assert.strictEqual(texts().length, 5, '× on every chip: all again');
+	});
+
+	test('SEVEN_DAYS_MATCHES (OVER_CAP_MATCHES): 20,000 records over 7 days, 40 WARN with "secret" in a field: Warn only and "secret" on Last 7 days shows all 40, "40 of 20,000", Info still counted', async () => {
+		const t0 = Date.now();
+		const secret = new Set(Array.from({ length: 40 }, (_, k) => 250 + k * 487));
+		const warnOnly = new Set(Array.from({ length: 60 }, (_, k) => 100 + k * 331));
+		const infoSecret = new Set(Array.from({ length: 100 }, (_, k) => 50 + k * 197));
+		topic.write(...Array.from({ length: 20_000 }, (_, i) => {
+			const r = recAt(ORDERS, `r${i}`, t0 - 7 * DAY + MINUTE + i * 29_000);
+			const value = secret.has(i) ? { ...r.value, level: 'WARN', detail: `rotated the secret ${i}` }
+				: warnOnly.has(i) && !secret.has(i) ? { ...r.value, level: 'WARN' }
+					: infoSecret.has(i) ? { ...r.value, detail: 'secret' } : r.value;
+			return { ...r, value };
+		}));
+		const warns = new Set([...secret, ...warnOnly]).size;
+		await showOrders();
+		assert.strictEqual(logs().cap, MAX_LOG_ROWS);
+		await filterLive({ levels: ['warn'], text: 'secret' });
+		// The filter stays when the range changes.
+		assert.strictEqual(await logs().chooseRange({ kind: 'week' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 30_000), logs().statusText);
+		assert.deepStrictEqual(logs().viewState.filter, { ...NO_FILTER, levels: ['warn'], text: 'secret' });
+		assert.deepStrictEqual(texts(), [...secret].sort((a, b) => a - b).map((i) => `r${i}`), 'all 40, oldest first');
+		assert.deepStrictEqual(counts(), { levels: { error: 0, warn: warns, info: 20_000 - warns, debug: 0, other: 0 }, total: 20_000, matched: 40 });
+		assert.strictEqual(logs().droppedCount, 0, 'the cap counts matches: none left out');
+		assert.strictEqual(logs().statusText, 'Read 20,000 records of the last 7 days; 40 match. Live is off.');
+		assert.ok(logs().rows().every((r) => r.level === 'WARN' && r.fields.some(([, v]) => v.includes('secret'))));
+	});
+
+	test('LIVE: a filter on while Live follows: only matching new records appended; the counts go up', async () => {
+		topic.write(rec(ORDERS, 'keep old', 5 * MINUTE), rec(ORDERS, 'drop old', 4 * MINUTE));
+		await showOrders();
+		await filterLive({ text: 'keep' });
+		assert.deepStrictEqual(texts(), ['keep old']);
+		topic.write(rec(ORDERS, 'drop new'), rec(ORDERS, 'keep new'), rec(CLICKS, 'keep other pipeline'));
+		assert.ok(await waitFor(() => counts().total === 4, 10_000), JSON.stringify(counts()));
+		assert.deepStrictEqual(texts(), ['keep old', 'keep new']);
+		assert.deepStrictEqual([counts().matched, counts().total], [2, 4]);
+		assert.strictEqual(topic.activeTails().length, 1, 'one reader');
+		// Live off, then a filter change: the live range read up to now; Live stays off.
+		await logs().setLive(false);
+		const tails = topic.tails.length;
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'drop' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['drop old', 'drop new']);
+		assert.strictEqual(topic.tails.length, tails, 'no tail');
+		assert.strictEqual(logs().viewState.live, false);
+		assert.strictEqual(logs().statusText, 'Read 4 records of the last 15 minutes; 2 match. Live is off.');
+	});
+
+	test('LOAD_OLDER: with a filter on, older matching records only; a record read again is not counted twice', async () => {
+		topic.write(rec(ORDERS, 'keep older', 20 * MINUTE), rec(ORDERS, 'drop older', 18 * MINUTE), rec(ORDERS, 'drop new', 6 * MINUTE), rec(ORDERS, 'keep new', 5 * MINUTE));
+		await showOrders();
+		await filterLive({ text: 'keep' });
+		assert.deepStrictEqual(texts(), ['keep new']);
+		assert.strictEqual(logs().viewState.olderBefore, topic.partitions[0][2].timestamp, 'from the oldest record read, not the oldest kept');
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['keep older', 'keep new']);
+		assert.deepStrictEqual([counts().matched, counts().total], [2, 4], 'the records read again in the window counted once');
+		assert.strictEqual(logs().viewState.older, 'none');
+	});
+
+	test('LEFT_OUT: a live range past the cap, Load older twice: the records left out are read back first, none skipped', async () => {
+		// r0 … r6, 2 minutes apart; the cap keeps 3 (r4 … r6), r0 … r3 left out.
+		topic.write(...[14, 12, 10, 8, 6, 4, 2].map((m, i) => rec(ORDERS, `r${i}`, m * MINUTE)));
+		logs().cap = 3;
+		const windowMs = logs().windowMs;
+		await showOrders();
+		try {
+			assert.deepStrictEqual(texts(), ['r4', 'r5', 'r6']);
+			// Load older windows of 3 minutes: shorter than what was left out.
+			logs().windowMs = 3 * MINUTE;
+			await logs().loadOlder();
+			assert.deepStrictEqual(texts(), ['r3', 'r4', 'r5'], 'the newest left out read back; the newest dropped');
+			assert.strictEqual(logs().droppedCount, 0);
+			await logs().loadOlder();
+			assert.deepStrictEqual(texts(), ['r2', 'r3', 'r4'], 'from the oldest shown, not the oldest counted: nothing skipped');
+			await logs().loadOlder();
+			await logs().loadOlder();
+			assert.deepStrictEqual(texts(), ['r0', 'r1', 'r2']);
+		} finally {
+			logs().windowMs = windowMs;
+		}
+	});
+
+	test('LOAD_OLDER with a filter: reads back past windows with no match, at most 24 hours per click ("No matches back to …"); the next click goes on', async () => {
+		topic.write(
+			rec(ORDERS, 'keep ancient', 30 * HOUR),
+			...Array.from({ length: 28 }, (_, k) => rec(ORDERS, `drop ${28 - k}h`, (28 - k) * HOUR)),
+			rec(ORDERS, 'keep new', 5 * MINUTE),
+		);
+		await showOrders();
+		await filterLive({ text: 'keep' });
+		assert.deepStrictEqual(texts(), ['keep new']);
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['keep new'], 'no match within 24 hours');
+		const note = logs().viewState.olderNote ?? '';
+		assert.match(note, /^No matches back to .+; Load older to search further$/);
+		assert.strictEqual(logs().viewState.older, 'more');
+		assert.ok(counts().total > 20 && counts().total < 30, `the records searched counted: ${counts().total}`);
+		assert.strictEqual(note, noMatchesBackText(topic.ranges.at(-1)!.fromTime), 'says how far it searched');
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['keep ancient', 'keep new']);
+		assert.strictEqual(logs().viewState.olderNote, null);
+		assert.deepStrictEqual([counts().matched, counts().total], [2, 30]);
+		assert.strictEqual(logs().viewState.older, 'none');
+	});
+
+	test('JSON: a record\'s whole JSON as shown (masked, license_org left out); Copy JSON copies it, pretty-printed', async () => {
+		topic.write(rec(ORDERS, `quoting ${PASSWORD}`, MINUTE, { license_org: LICENSE_ORG, probe_n: 7, nested: { ok: true } }));
+		await showOrders();
+		const [row] = logs().rows();
+		const json = JSON.parse(row.json!) as Record<string, unknown>;
+		assert.strictEqual(json.probe_n, 7, 'the value\'s types kept');
+		assert.deepStrictEqual(json.nested, { ok: true });
+		assert.strictEqual(json.pipeline_id, ORDERS);
+		assert.ok(!('license_org' in json));
+		assert.ok(!row.json!.includes(LICENSE_ORG) && !row.json!.includes(PASSWORD), 'masked');
+		await vscode.env.clipboard.writeText('');
+		assert.strictEqual(await logs().copyJson(row.id), true);
+		assert.strictEqual(await vscode.env.clipboard.readText(), row.json);
+		assert.ok(row.json!.includes('\n  "probe_n": 7'), 'pretty-printed');
+		assert.strictEqual(await logs().copyJson('0:999'), false);
+	});
+
+	test('AROUND: Show records around this one: the 5 minutes before and after it, the filter cleared, Live off', async () => {
+		topic.write(
+			rec(ORDERS, '40m', 40 * MINUTE), rec(ORDERS, '34m', 34 * MINUTE), rec(ORDERS, '30m target', 30 * MINUTE),
+			rec(ORDERS, '27m', 27 * MINUTE), rec(ORDERS, '20m', 20 * MINUTE), rec(ORDERS, '5m', 5 * MINUTE),
+		);
+		await showOrders();
+		await logs().chooseRange({ kind: 'hour' });
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'target' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1, 10_000), logs().statusText);
+		const target = logs().rows()[0];
+		await logs().setLive(true);
+		assert.strictEqual(logs().around(target.id), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['34m', '30m target', '27m']);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: target.time - AROUND_MS, to: target.time + AROUND_MS });
+		assert.deepStrictEqual(logs().viewState.filter, NO_FILTER, 'the filter cleared');
+		assert.strictEqual(logs().viewState.live, false, 'Live off');
+		assert.deepStrictEqual(topic.activeTails(), []);
+		assert.strictEqual(logs().around('0:999'), false);
+	});
+
+	test('SWITCH (6.4): another pipeline clears the filter', async () => {
+		topic.write(rec(ORDERS, 'o', MINUTE), rec(CLICKS, 'c', MINUTE));
+		await showOrders();
+		await filterLive({ text: 'nothing like it', levels: ['error'] });
+		assert.deepStrictEqual(texts(), []);
+		await showLogs(CLICKS);
+		assert.deepStrictEqual(logs().viewState.filter, NO_FILTER);
+		assert.ok(await waitFor(() => texts().length === 1, 10_000), logs().statusText);
+		assert.deepStrictEqual(counts(), { levels: { error: 0, warn: 0, info: 1, debug: 0, other: 0 }, total: 1, matched: 1 });
+	});
+
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {
 		const [major, minor] = process.versions.node.split('.').map(Number);
 		if (major < 22 || (major === 22 && minor < 22)) {
@@ -763,10 +1001,17 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 			const text = fs.readFileSync(file, 'utf8');
 			assert.ok(!text.includes(PASSWORD) && !text.includes(WRONG_PASSWORD), `${file} holds a password`);
 		}
-		topic.write(rec(ORDERS, `a message quoting ${PASSWORD}`, MINUTE));
+		// Ticket 6.4: a license_org with `"` and `\` in it, and the password in a nested value: not in the JSON either, escaped or not.
+		const quotedOrg = 'org "quoted" \\ back';
+		topic.write(rec(ORDERS, `a message quoting ${PASSWORD}`, MINUTE, { license_org: quotedOrg, nested: { said: [PASSWORD, `for ${quotedOrg}`] } }));
 		await showLogs();
 		assert.ok(await waitFor(() => messages(ORDERS).length === 1, 10_000));
 		assert.ok(!logs().rows()[0].message.includes(PASSWORD), 'masked in the panel too');
+		const json = logs().rows()[0].json!;
+		for (const value of [PASSWORD, quotedOrg]) {
+			assert.ok(!json.includes(value) && !json.includes(JSON.stringify(value).slice(1, -1)), `${value} in the record's JSON`);
+			assert.ok(!JSON.stringify(logs().posted).includes(JSON.stringify(JSON.stringify(value).slice(1, -1)).slice(1, -1)), `${value} posted`);
+		}
 		items();
 		const shown = JSON.stringify({
 			shown: allShown, output: api().outputLines(), items: seenItems, settings: vscode.workspace.getConfiguration('redpandaConnect'),

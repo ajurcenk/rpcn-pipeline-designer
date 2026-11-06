@@ -5,7 +5,8 @@
 // shown as text. `license_org` is never shown (ticket 38's rule): not as a field, and its value is
 // masked wherever else it appears, in its record and, through the caller's `orgs` (every value seen in
 // the session, `licenseOrgOf`), in every later record and the panel's other text. Every text passes the caller's `mask` (the Cloud
-// view's: the client secret, the tokens, the log access passwords). No `vscode` import.
+// view's: the client secret, the tokens, the log access passwords). Ticket 6.4: the row also carries
+// the whole value as shown (`json`: pretty-printed, masked, `license_org` left out). No `vscode` import.
 
 import type { LogRow } from '../../shared/logsProtocol';
 import type { LogRecord } from './logReader';
@@ -81,18 +82,31 @@ export function toLogRow(record: LogRecord, mask: (text: string) => string = (t)
 	if (!isObject(value)) {
 		return { id, time: record.timestamp, level: '', message: shown(record.value ?? ''), instance: '', fields: [], raw: true };
 	}
+	// Masked value by value before anything is written as JSON (a nested field, the whole record): in
+	// JSON text a secret's `"`, `\` or control characters are escaped, so masking the text would miss it.
+	const maskDeep = (v: unknown): unknown => typeof v === 'string' ? shown(v)
+		: Array.isArray(v) ? v.map(maskDeep)
+			: isObject(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [shown(k), maskDeep(x)])) : v;
+	const text = (v: unknown) => shown(fieldText(maskDeep(v)));
 	const fields: [string, string][] = [];
 	for (const [key, v] of Object.entries(value)) {
 		if (!COLUMN_FIELDS.has(key) && !HIDDEN_FIELDS.has(key)) {
-			fields.push([shown(key), shown(fieldText(v))]);
+			fields.push([shown(key), text(v)]);
+		}
+	}
+	const whole: Record<string, unknown> = {};
+	for (const [key, v] of Object.entries(value)) {
+		if (key !== 'license_org') {
+			whole[shown(key)] = maskDeep(v);
 		}
 	}
 	return {
 		id,
 		time: parseLogTime(value.time) ?? record.timestamp,
-		level: shown(typeof value.level === 'string' ? value.level.toUpperCase() : value.level === undefined ? '' : fieldText(value.level)),
-		message: shown(value.message === undefined ? '' : fieldText(value.message)),
-		instance: shown(value.instance_id === undefined ? '' : fieldText(value.instance_id)),
+		level: typeof value.level === 'string' ? shown(value.level.toUpperCase()) : value.level === undefined ? '' : text(value.level),
+		message: value.message === undefined ? '' : text(value.message),
+		instance: value.instance_id === undefined ? '' : text(value.instance_id),
 		fields,
+		json: JSON.stringify(whole, null, 2),
 	};
 }

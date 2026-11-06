@@ -1,4 +1,4 @@
-// The Pipeline Logs tab (tickets 6.2, 6.3, AD-24): a webview view in its own container in the bottom
+// The Pipeline Logs tab (tickets 6.2, 6.3, 6.4, AD-24): a webview view in its own container in the bottom
 // panel, next to Output. It shows one pipeline at a time, named in the view's description and the
 // webview's header ("<pipeline> · <cluster>"); Show logs on another pipeline (the Cloud view's
 // `LogSource`) switches to it, and the first one is no longer read.
@@ -20,14 +20,26 @@
 // oldest (they are "left out", and Load older reads them back); Load older at the cap drops the
 // newest and pauses Live. The webview posts `ready` whenever it loads (it is not retained while
 // hidden) and gets the whole state (`show`); then `append`, `prepend`, `status` and `state`. Requests
-// go out only on the user's action (Show logs, a range, Load older, Live, the menu's retention) and
-// while the tab follows.
+// go out only on the user's action (Show logs, a range, Load older, Live, the menu's retention, the
+// filter) and while the tab follows.
+//
+// Ticket 6.4 (board 4): the filter (levels, a search, field chips; `filter.ts`) is applied here as the
+// records are read, so only matching rows are kept and the cap counts matches. Every record of the
+// pipeline read is counted once per level (matching or not; by its offset, so a window read again is
+// not counted twice), for the level chips and "N of M records match". A filter change reads the
+// range again (a live range whose Live is off is read up to now, and Live stays off); the filter stays
+// when the range changes and is cleared by Show logs. Show records around this one reads the 5 minutes
+// before and after a row (a custom range), the filter cleared; Copy JSON copies a row's JSON.
 
 import * as vscode from 'vscode';
-import { isLiveRange, localMinute, MAX_LOG_ROWS, parseLogsWebviewMessage, RANGE_LABELS, type LogRow, type LogsHostMessage, type LogsRange, type LogsViewState, type RangeChoice } from '../../shared/logsProtocol';
+import {
+	filterActive, isLiveRange, localMinute, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, parseLogsWebviewMessage, RANGE_LABELS,
+	type LogFilter, type LogRow, type LogsHostMessage, type LogsRange, type LogsViewState, type RangeChoice,
+} from '../../shared/logsProtocol';
 import { isLogReadError, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';
 import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText } from '../logs/history';
+import { compileFilter, Counter, matches, sameFilter, type CompiledFilter } from '../logs/filter';
 import { webviewHtml } from '../graphPanel/html';
 
 export const LOGS_VIEW_ID = 'redpandaConnect.pipelineLogs';
@@ -48,6 +60,14 @@ export function livePausedStatus(cap: number): string {
 	return `Live is paused: the newest records were dropped to keep at most ${cap.toLocaleString('en-US')}. Turn Live on to read the last 15 minutes again.`;
 }
 export const OLDER_FAILED_PREFIX = 'Could not load older records: ';
+/** Show records around this one: this long before and after the record. */
+export const AROUND_MS = 5 * MINUTE_MS;
+/** With a filter on, one Load older searches back at most this far for a match. */
+export const OLDER_SEARCH_MS = 24 * 60 * MINUTE_MS;
+/** One Load older with a filter on found no match within `OLDER_SEARCH_MS`. */
+export function noMatchesBackText(time: number): string {
+	return `No matches back to ${localMinute(time)}; Load older to search further`;
+}
 
 /** What Show logs hands the panel: one pipeline, the way to read its cluster's logs, the mask. */
 export interface LogSource {
@@ -105,6 +125,7 @@ function rangeText(range: LogsRange): string {
 }
 
 const recordsText = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
+const NO_FILTER_COMPILED = compileFilter(NO_FILTER)!;
 
 export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable {
 	/** The most rows kept (the test seam lowers it). */
@@ -136,6 +157,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private older: LogsViewState['older'] = 'more';
 	/** Why the last Load older failed; kept until the next action. */
 	private olderError: string | null = null;
+	/** How far the last Load older searched without a match (a filter on); kept until the next action. */
+	private olderNote: string | null = null;
+	/** Records were left out for the cap at some point in this range: Load older reads back from the oldest shown. */
+	private leftOutEver = false;
 	/** Bumped on every choice of a range or pipeline, so a slow Since the last deploy gives way to a later choice. */
 	private choices = 0;
 	private retention: string | null = null;
@@ -143,6 +168,17 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private session: Session | undefined;
 	private olderSession: AbortController | undefined;
 	private retentionSession: AbortController | undefined;
+	/** The filter (ticket 6.4) and its compiled search. */
+	private filter: LogFilter = NO_FILTER;
+	private compiled: CompiledFilter = NO_FILTER_COMPILED;
+	/** Every record of the pipeline read in the range, per level, and those matching. */
+	private counter = new Counter();
+	/** The offsets counted on each partition (read contiguously), so a record read again is not counted twice. */
+	private counted = new Map<number, { lo: number; hi: number }>();
+	/** The oldest record of the pipeline read (its timestamp): where Load older goes on when nothing was left out. */
+	private oldestTs: number | undefined;
+	/** A live range read again with Live off is read up to this time (the filter changed). */
+	private readUntil: number | undefined;
 	/** Bumped on every Show logs and range, so an older read's records are not kept. */
 	private generation = 0;
 	private ready = false;
@@ -203,10 +239,26 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			done: this.done,
 			older: this.older,
 			olderError: this.olderError,
+			olderNote: this.olderNote,
 			newerDropped: this.newerDropped,
 			retention: this.retention,
 			deployedAt: this.deployedAt,
+			olderBefore: this.olderAnchor(),
+			filter: this.filter,
+			counts: this.counter.counts,
 		};
+	}
+
+	/**
+	 * Where Load older reads back from: the oldest kept row when matching ones were left out for the cap
+	 * at any time in this range (they are read back first), else the oldest record of the pipeline read,
+	 * else the range's start.
+	 */
+	private olderAnchor(): number {
+		if (this.leftOutEver && this.kept[0]) {
+			return this.kept[0].ts;
+		}
+		return this.oldestTs ?? this.kept[0]?.ts ?? this.range.from;
 	}
 
 	resolveWebviewView(view: vscode.WebviewView): void {
@@ -234,6 +286,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 						break;
 					case 'retentionRequested':
 						this.requestRetention();
+						break;
+					case 'filterChanged':
+						this.setFilter(m.filter);
+						break;
+					case 'aroundRequested':
+						this.around(m.id);
+						break;
+					case 'copyRequested':
+						void this.copyJson(m.id);
 						break;
 				}
 			}),
@@ -268,6 +329,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.stopAll();
 		this.stopRetention();
 		this.source = source;
+		this.filter = NO_FILTER;
+		this.compiled = NO_FILTER_COMPILED;
 		this.retention = null;
 		this.deployedAt = source.deployedAt ?? null;
 		const now = Date.now();
@@ -314,13 +377,95 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		return true;
 	}
 
-	/** Every row, count and reading of the last range dropped; `range` is the one to read now. */
-	private reset(range: LogsRange, now: number): void {
-		this.generation++;
+	/**
+	 * The filter (ticket 6.4): kept, and the range read again with it (unless it keeps the same rows).
+	 * `false` for a search that is not a valid regular expression (nothing changes).
+	 */
+	setFilter(filter: LogFilter): boolean {
+		const compiled = compileFilter(filter);
+		if (!compiled) {
+			return false;
+		}
+		const same = sameFilter(filter, this.filter);
+		this.filter = filter;
+		this.compiled = compiled;
+		const source = this.source;
+		if (same || !source) {
+			this.postState();
+			return true;
+		}
+		const live = this.live;
+		this.choices++;
+		this.stopAll();
+		this.reset(this.range, this.chosenAt);
+		if (isLiveRange(this.range.kind) && !live) {
+			// Live stays off: the range is read up to now.
+			this.live = false;
+			this.pendingRange = true;
+			this.readUntil = Date.now();
+		} else if (!isLiveRange(this.range.kind)) {
+			// A bounded range whose Live was turned on follows again once read.
+			this.live = live;
+		}
+		this.status = this.readingStatus();
+		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} again, ${rangeText(this.range)}, with ${filterActive(filter) ? 'a filter' : 'no filter'}.`));
+		this.postShow();
+		this.changed.fire();
+		this.start();
+		return true;
+	}
+
+	/**
+	 * Show records around this one: the 5 minutes before and after the row's time (a custom range,
+	 * Live off), the filter cleared. `false` when the row is not shown.
+	 */
+	around(id: string): boolean {
+		const source = this.source;
+		const kept = this.kept.find((k) => k.row.id === id);
+		if (!source || !kept) {
+			return false;
+		}
+		const now = Date.now();
+		const t = kept.row.time;
+		this.choices++;
+		this.filter = NO_FILTER;
+		this.compiled = NO_FILTER_COMPILED;
+		this.stopAll();
+		this.reset({ kind: 'custom', from: Math.min(t - AROUND_MS, now), to: t + AROUND_MS }, now);
+		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} around ${new Date(t).toISOString()}.`));
+		this.postShow();
+		this.changed.fire();
+		this.start();
+		return true;
+	}
+
+	/** Copy JSON (when the webview cannot write the clipboard): the row's JSON as shown, else its text. */
+	async copyJson(id: string): Promise<boolean> {
+		const kept = this.kept.find((k) => k.row.id === id);
+		if (!kept) {
+			return false;
+		}
+		await vscode.env.clipboard.writeText(kept.row.json ?? kept.row.message);
+		return true;
+	}
+
+	/** Every row and count read so far dropped. */
+	private clearRead(): void {
 		this.kept = [];
 		this.keptIds = new Set();
 		this.dropped = 0;
 		this.newerDropped = 0;
+		this.counter = new Counter();
+		this.counted = new Map();
+		this.oldestTs = undefined;
+		this.leftOutEver = false;
+	}
+
+	/** Every row, count and reading of the last range dropped; `range` is the one to read now. */
+	private reset(range: LogsRange, now: number): void {
+		this.generation++;
+		this.clearRead();
+		this.readUntil = undefined;
 		this.positions = undefined;
 		this.range = range;
 		this.chosenAt = now;
@@ -329,6 +474,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.done = false;
 		this.older = 'more';
 		this.olderError = null;
+		this.olderNote = null;
 		this.status = this.readingStatus();
 	}
 
@@ -346,6 +492,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			return;
 		}
 		this.olderError = null;
+		this.olderNote = null;
 		if (!on) {
 			this.live = false;
 			if (this.session?.kind === 'tail') {
@@ -460,14 +607,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		const generation = this.generation;
 		const range = this.range;
 		this.session = { abort, kind: 'range' };
-		if (this.kept.length > 0) {
+		if (this.kept.length > 0 || this.counter.counts.total > 0) {
 			// An earlier read of this range was stopped (the tab hidden): read it again from its start.
-			this.kept = [];
-			this.keptIds = new Set();
-			this.dropped = 0;
-			this.newerDropped = 0;
+			this.clearRead();
 			this.older = 'more';
 			this.olderError = null;
+			this.olderNote = null;
 			this.postShow();
 		}
 		this.setStatus(this.readingStatus());
@@ -478,7 +623,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			return;
 		}
 		const current = () => !abort.signal.aborted && generation === this.generation;
-		reader.range(source.pipelineId, range.from, range.to ?? this.chosenAt, (records) => {
+		reader.range(source.pipelineId, range.from, range.to ?? this.readUntil ?? this.chosenAt, (records) => {
 			if (current()) {
 				this.receive(source, records);
 			}
@@ -490,7 +635,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.done = true;
 			this.positions = end.next;
 			const stalled = end.stalled?.length ? ` Partition ${end.stalled.join(', ')} kept answering no records, so the read stopped short there.` : '';
-			const read = `Read ${recordsText(this.kept.length + this.dropped)} of ${rangeText(range)}.${stalled}`;
+			const { total, matched } = this.counter.counts;
+			const read = filterActive(this.filter)
+				? `Read ${recordsText(total)} of ${rangeText(range)}; ${matched.toLocaleString('en-US')} ${matched === 1 ? 'matches' : 'match'}.${stalled}`
+				: `Read ${recordsText(total)} of ${rangeText(range)}.${stalled}`;
 			this.setStatus(this.live ? read : `${read} ${LIVE_OFF_STATUS}`);
 			this.postState();
 		}, (err: unknown) => {
@@ -527,14 +675,17 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			return;
 		}
 		this.olderError = null;
+		this.olderNote = null;
 		const abort = new AbortController();
 		const generation = this.generation;
 		const current = () => !abort.signal.aborted && generation === this.generation && source === this.source;
+		const filtered = filterActive(this.filter);
 		this.olderSession = abort;
 		this.older = 'reading';
 		this.postState();
 		const length = olderWindowMs(this.range, this.chosenAt, this.windowMs);
-		let to = this.kept[0]?.ts ?? this.range.from;
+		let to = this.olderAnchor();
+		const searchFrom = to;
 		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} before ${new Date(to).toISOString()}.`));
 		let older: LogsViewState['older'] = 'more';
 		try {
@@ -547,15 +698,27 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				if (!current()) {
 					return;
 				}
-				const rows = this.toKept(source, got);
+				const { matching, counted } = this.take(source, got);
 				const reachedStart = atLogStart(end.start, first);
-				if (rows.length > 0) {
-					this.prepend(rows);
+				// A match ends the walk back; without a filter, so does any of the pipeline's records.
+				if (matching.length > 0 || (counted > 0 && !filtered)) {
+					if (matching.length > 0) {
+						this.prepend(matching);
+					}
 					older = reachedStart ? 'none' : 'more';
 					break;
 				}
 				if (reachedStart) {
 					older = 'none';
+					break;
+				}
+				if (counted > 0) {
+					// Records but no match: shown in the counts.
+					this.postState();
+				}
+				if (filtered && searchFrom - from >= OLDER_SEARCH_MS) {
+					// One click searches back at most 24 hours with a filter on.
+					this.olderNote = noMatchesBackText(from);
 					break;
 				}
 				// None of the pipeline's records here: the next window ends at the record just before this one.
@@ -655,8 +818,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.stopRetention();
 	}
 
-	/** The pipeline's rows of `records`, oldest first, not yet kept; every org of the batch is noted first. */
-	private toKept(source: LogSource, records: readonly LogRecord[]): Kept[] {
+	/**
+	 * The pipeline's rows of `records`, oldest first: each counted once (`counted`: how many were new),
+	 * and those matching the filter not yet kept (`matching`). Every org of the batch is noted first.
+	 */
+	private take(source: LogSource, records: readonly LogRecord[]): { readonly matching: Kept[]; readonly counted: number } {
 		// Every org of the batch first, so a record before the one that carries it is masked too.
 		for (const r of records) {
 			const org = licenseOrgOf(r);
@@ -665,17 +831,46 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			}
 		}
 		const seen = new Set<string>();
-		return records.filter((r) => isPipelineRecord(r, source.pipelineId))
+		const matching: Kept[] = [];
+		let counted = 0;
+		const mine = records.filter((r) => isPipelineRecord(r, source.pipelineId))
 			.map((r, i) => ({ r, i }))
-			.sort((a, b) => a.r.timestamp - b.r.timestamp || a.i - b.i)
-			.map(({ r }) => ({ row: toLogRow(r, source.mask, this.orgs), ts: r.timestamp }))
-			.filter((k) => !this.keptIds.has(k.row.id) && !seen.has(k.row.id) && (seen.add(k.row.id), true));
+			.sort((a, b) => a.r.timestamp - b.r.timestamp || a.i - b.i);
+		// What was counted before this batch (a batch read back extends it only once it is counted).
+		const before = new Map([...this.counted].map(([p, span]) => [p, { ...span }]));
+		const countedIds = new Set<string>();
+		for (const { r } of mine) {
+			const row = toLogRow(r, source.mask, this.orgs);
+			const keep = matches(row, this.compiled);
+			const span = before.get(r.partition);
+			if ((!span || r.offset < span.lo || r.offset > span.hi) && !countedIds.has(row.id)) {
+				countedIds.add(row.id);
+				this.counter.add(row, keep);
+				counted++;
+				this.oldestTs = this.oldestTs === undefined ? r.timestamp : Math.min(this.oldestTs, r.timestamp);
+			}
+			const now = this.counted.get(r.partition);
+			if (now) {
+				now.lo = Math.min(now.lo, r.offset);
+				now.hi = Math.max(now.hi, r.offset);
+			} else {
+				this.counted.set(r.partition, { lo: r.offset, hi: r.offset });
+			}
+			if (keep && !this.keptIds.has(row.id) && !seen.has(row.id)) {
+				seen.add(row.id);
+				matching.push({ row, ts: r.timestamp });
+			}
+		}
+		return { matching, counted };
 	}
 
-	/** Newer records read forward: appended; over the cap the oldest are left out. */
+	/** Newer records read forward: the matching ones appended; over the cap the oldest are left out. */
 	private receive(source: LogSource, records: readonly LogRecord[]): void {
-		const mine = this.toKept(source, records);
+		const { matching: mine, counted } = this.take(source, records);
 		if (mine.length === 0) {
+			if (counted > 0) {
+				this.postState();
+			}
 			return;
 		}
 		for (const k of mine) {
@@ -688,9 +883,14 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				this.keptIds.delete(k.row.id);
 			}
 			this.dropped += over;
+			this.leftOutEver = true;
 		}
 		this.post({ type: 'append', rows: mine.slice(-this.cap).map((k) => k.row), dropped: this.dropped });
-		this.changed.fire();
+		if (counted > 0) {
+			this.postState();
+		} else {
+			this.changed.fire();
+		}
 	}
 
 	/** Older records (Load older): before the kept ones; over the cap the newest are dropped and Live pauses. */
@@ -707,6 +907,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 		this.kept = merged.rows;
 		this.dropped = merged.leftOut;
+		if (merged.leftOut > 0) {
+			this.leftOutEver = true;
+		}
 		this.post({ type: 'prepend', rows: taken.map((k) => k.row), dropped: this.dropped });
 		if (merged.newerDropped > 0) {
 			this.newerDropped += merged.newerDropped;

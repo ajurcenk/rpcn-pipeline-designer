@@ -1,4 +1,4 @@
-// The Pipeline Logs tab's view (tickets 6.2, 6.3, AD-24): the header names the pipeline ("<pipeline> ·
+// The Pipeline Logs tab's view (tickets 6.2, 6.3, 6.4, AD-24): the header names the pipeline ("<pipeline> ·
 // <cluster>"), says how reading goes, and holds the Live toggle and the time-range menu (board 5: Live,
 // Last 15 minutes then live, Last hour, Last 24 hours, Last 7 days, Since the last deploy, Custom
 // range… with From and To in local time, and the topic's retention). The table shows each kept record,
@@ -9,17 +9,31 @@
 // record is shown). The footer says how many records are kept, and how many older ones were left out
 // or newer ones dropped for the cap. While the table is scrolled to the bottom it stays there as records
 // arrive. The host masks every text before it is posted.
+//
+// Ticket 6.4 (board 4): under the header, the level chips (Error, Warn, Info, Debug, Other, each with
+// its count of the records read), the search box (Match case `Aa`, regular expression `.*`; an invalid
+// one is refused at the box with its error and nothing is posted; posted once typing pauses), the field
+// chips made by clicking a field's value or an instance in a record (× removes one) and "N of M records
+// match". The host applies the filter while it reads; the view highlights the search's matches. A
+// record's ▸ expands it in place: its whole JSON, **Copy JSON** (the webview's clipboard, else the
+// host's) and **Show records around this one**.
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-	customRangeError, gapsIn, localMinute, MAX_LOG_ROWS, noRecordsText, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS,
-	type LogRow, type LogsViewState, type LogsWebviewMessage, type RangeKind,
+	customRangeError, filterActive, gapsIn, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER,
+	noRecordsText, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, searchError, searchPattern,
+	type LogFilter, type LogLevel, type LogRow, type LogsViewState, type LogsWebviewMessage, type RangeKind,
 } from '../../../src/shared/logsProtocol';
 
 export const NO_PIPELINE_TITLE = 'No pipeline';
 export const NO_RECORDS_TEXT = 'No records of this pipeline yet.';
 export const NO_OLDER_TEXT = 'No older records';
 export const LOADING_OLDER_TEXT = 'Loading older records…';
+export const NO_MATCH_TEXT = 'No records match';
+/** The search is posted once typing pauses this long. */
+export const SEARCH_DEBOUNCE_MS = 300;
+/** The field chip that stands for the instance column (as the host's `filter.ts`). */
+const INSTANCE_FIELD = 'instance_id';
 
 const pad = (n: number, width = 2) => String(n).padStart(width, '0');
 
@@ -53,6 +67,52 @@ export function rangeButtonText(state: LogsViewState): string {
 	return range.kind === 'deploy' ? `Since the last deploy (${localMinute(range.from)})` : RANGE_LABELS[range.kind];
 }
 
+/** "40 of 20,000 records match". */
+export function matchText(matched: number, total: number): string {
+	return `${matched.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${total === 1 ? 'record matches' : 'records match'}`;
+}
+
+/** A field chip's text: "instance …c1gjg", "path=/config/connect.yaml" (long values cut). */
+export function chipText(key: string, value: string): string {
+	if (key === INSTANCE_FIELD) {
+		return `instance ${value.length > 8 ? `…${value.slice(-5)}` : value}`;
+	}
+	return `${key}=${value.length > 24 ? `${value.slice(0, 23)}…` : value}`;
+}
+
+/** `text` split at the matches of `re` (a global pattern; empty matches skipped). */
+export function highlightParts(text: string, re: RegExp | undefined): { readonly text: string; readonly match: boolean }[] {
+	if (!re || text === '') {
+		return [{ text, match: false }];
+	}
+	const parts: { text: string; match: boolean }[] = [];
+	let at = 0;
+	re.lastIndex = 0;
+	for (let m = re.exec(text); m; m = re.exec(text)) {
+		if (m[0].length === 0) {
+			re.lastIndex++;
+			continue;
+		}
+		if (m.index > at) {
+			parts.push({ text: text.slice(at, m.index), match: false });
+		}
+		parts.push({ text: m[0], match: true });
+		at = m.index + m[0].length;
+	}
+	if (at < text.length) {
+		parts.push({ text: text.slice(at), match: false });
+	}
+	return parts.length > 0 ? parts : [{ text, match: false }];
+}
+
+function Highlighted({ text, re }: { readonly text: string; readonly re: RegExp | undefined }): ReactNode {
+	const parts = highlightParts(text, re);
+	if (parts.length === 1 && !parts[0].match) {
+		return text;
+	}
+	return parts.map((p, i) => (p.match ? <mark key={i} className="rpcn-logs-mark">{p.text}</mark> : <Fragment key={i}>{p.text}</Fragment>));
+}
+
 /** A menu entry's text: Since the last deploy names its time when it is known. */
 function optionText(kind: RangeKind, state: LogsViewState): string {
 	return kind === 'deploy' && state.deployedAt !== null ? `${RANGE_LABELS.deploy} (${localMinute(state.deployedAt)})` : RANGE_LABELS[kind];
@@ -67,12 +127,88 @@ interface State {
 	readonly view: LogsViewState;
 }
 
-const INITIAL_VIEW: LogsViewState = { range: { kind: 'recent', from: 0, to: null }, live: true, done: false, older: 'more', olderError: null, newerDropped: 0, retention: null, deployedAt: null };
+const INITIAL_VIEW: LogsViewState = {
+	range: { kind: 'recent', from: 0, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
+	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS,
+};
 const INITIAL: State = { title: null, rows: [], dropped: 0, cap: MAX_LOG_ROWS, status: '', view: INITIAL_VIEW };
 
 function levelClass(level: string): string {
-	const l = level.toUpperCase();
-	return l === 'ERROR' || l === 'FATAL' ? 'rpcn-logs-level rpcn-logs-error' : l === 'WARN' || l === 'WARNING' ? 'rpcn-logs-level rpcn-logs-warn' : 'rpcn-logs-level';
+	const l = levelOfText(level);
+	return l === 'error' ? 'rpcn-logs-level rpcn-logs-error' : l === 'warn' ? 'rpcn-logs-level rpcn-logs-warn' : 'rpcn-logs-level';
+}
+
+/** Board 4's bar: the level chips with their counts, the search box and its toggles, the field chips, "N of M records match". */
+function FilterBar({ draft, view, change }: {
+	readonly draft: LogFilter;
+	readonly view: LogsViewState;
+	readonly change: (filter: LogFilter, debounce?: boolean) => void;
+}) {
+	const error = searchError(draft);
+	const toggleLevel = (level: LogLevel) => {
+		const on = draft.levels.includes(level);
+		change({ ...draft, levels: LOG_LEVELS.filter((l) => (l === level ? !on : draft.levels.includes(l))) });
+	};
+	return (
+		<div className="rpcn-logs-filters">
+			<div className="rpcn-logs-levels" role="group" aria-label="Levels">
+				{LOG_LEVELS.map((level) => (
+					<button key={level} type="button" data-level={level} aria-pressed={draft.levels.includes(level)}
+						className={`rpcn-logs-chip rpcn-logs-level-chip rpcn-logs-level-${level}`} onClick={() => toggleLevel(level)}>
+						<span className="rpcn-logs-level-label">{LEVEL_LABELS[level]}</span> <span className="rpcn-logs-count">{view.counts.levels[level].toLocaleString('en-US')}</span>
+					</button>
+				))}
+			</div>
+			<div className="rpcn-logs-search">
+				<input type="text" className="rpcn-logs-search-input" aria-label="Search the message and every field" placeholder="Search"
+					value={draft.text} aria-invalid={error !== undefined} onChange={(e) => change({ ...draft, text: e.target.value }, true)} />
+				<button type="button" className="rpcn-logs-toggle rpcn-logs-match-case" title="Match case" aria-label="Match case" aria-pressed={draft.matchCase}
+					onClick={() => change({ ...draft, matchCase: !draft.matchCase })}>Aa</button>
+				<button type="button" className="rpcn-logs-toggle rpcn-logs-regex" title="Use regular expression" aria-label="Use regular expression" aria-pressed={draft.regex}
+					onClick={() => change({ ...draft, regex: !draft.regex })}>.*</button>
+			</div>
+			{draft.fields.map(([key, value], i) => (
+				<span key={`${key}=${value}`} className="rpcn-logs-chip rpcn-logs-field-chip" title={`${key}=${value}`}>
+					{chipText(key, value)}
+					<button type="button" className="rpcn-logs-chip-remove" aria-label={`Remove the filter ${key}=${value}`}
+						onClick={() => change({ ...draft, fields: draft.fields.filter((_f, j) => j !== i) })}>×</button>
+				</span>
+			))}
+			{filterActive(view.filter) ? <span className="rpcn-logs-match-count">{matchText(view.counts.matched, view.counts.total)}</span> : null}
+			{error ? <p className="rpcn-logs-search-error" role="alert">{error}</p> : null}
+		</div>
+	);
+}
+
+/** A record expanded in place: its whole JSON, Copy JSON, Show records around this one. */
+function RecordDetail({ row, post, collapse }: { readonly row: LogRow; readonly post: (m: LogsWebviewMessage) => void; readonly collapse: () => void }) {
+	const [copied, setCopied] = useState(false);
+	const text = row.json ?? row.message;
+	const copy = () => {
+		const viaHost = () => post({ type: 'copyRequested', id: row.id });
+		const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+		if (!clipboard?.writeText) {
+			viaHost();
+			setCopied(true);
+			return;
+		}
+		clipboard.writeText(text).then(() => setCopied(true), () => {
+			viaHost();
+			setCopied(true);
+		});
+	};
+	return (
+		<div className="rpcn-logs-detail-body">
+			<pre className="rpcn-logs-json">{text}</pre>
+			<div className="rpcn-logs-detail-actions">
+				<button type="button" className="rpcn-logs-button rpcn-logs-copy" onClick={copy}>Copy JSON</button>
+				<button type="button" className="rpcn-logs-button rpcn-logs-around" onClick={() => { collapse(); post({ type: 'aroundRequested', id: row.id }); }}>
+					Show records around this one
+				</button>
+				{copied ? <span className="rpcn-logs-copied" role="status">Copied.</span> : null}
+			</div>
+		</div>
+	);
 }
 
 /** The time-range menu: the choices, Custom range's From and To (checked here first), the retention line. */
@@ -134,6 +270,15 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const atBottom = useRef(true);
 	/** Rows were put before the shown ones: keep the view where it was, not at the bottom. */
 	const prepended = useRef<{ readonly height: number; readonly top: number } | undefined>(undefined);
+	/** The filter as edited here; posted at once, or once typing pauses for the search. */
+	const [draft, setDraft] = useState<LogFilter>(NO_FILTER);
+	/** The last filter posted: a `show` with another one (cleared by the host) replaces the draft. */
+	const lastPosted = useRef<LogFilter>(NO_FILTER);
+	/** The pipeline shown ("<pipeline> · <cluster>"): another one drops the draft and its timer. */
+	const shownTitle = useRef<string | null>(null);
+	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	/** The records expanded in place. */
+	const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
 	useEffect(() => {
 		const onMessage = (event: MessageEvent) => {
@@ -143,6 +288,19 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 			}
 			if (m.type === 'prepend' && scroller.current) {
 				prepended.current = { height: scroller.current.scrollHeight, top: scroller.current.scrollTop };
+			}
+			if (m.type === 'show') {
+				setExpanded(new Set());
+				const switched = m.title !== shownTitle.current;
+				shownTitle.current = m.title;
+				if (switched || JSON.stringify(m.state.filter) !== JSON.stringify(lastPosted.current)) {
+					// Another pipeline, or the host's filter is not the one posted last (cleared, or the page loaded
+					// again): a search still waiting on its timer is not posted.
+					clearTimeout(timer.current);
+					timer.current = undefined;
+					lastPosted.current = m.state.filter;
+					setDraft(m.state.filter);
+				}
 			}
 			setState((s) => {
 				switch (m.type) {
@@ -163,8 +321,49 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 		};
 		window.addEventListener('message', onMessage);
 		post({ type: 'ready' });
-		return () => window.removeEventListener('message', onMessage);
+		return () => {
+			window.removeEventListener('message', onMessage);
+			clearTimeout(timer.current);
+		};
 	}, [post]);
+
+	const sendFilter = (filter: LogFilter) => {
+		clearTimeout(timer.current);
+		timer.current = undefined;
+		if (searchError(filter) !== undefined) {
+			// Refused at the box (its error shows): nothing is read.
+			return;
+		}
+		lastPosted.current = filter;
+		post({ type: 'filterChanged', filter });
+	};
+	const changeFilter = (filter: LogFilter, debounce = false) => {
+		setDraft(filter);
+		if (debounce) {
+			clearTimeout(timer.current);
+			timer.current = setTimeout(() => sendFilter(filter), SEARCH_DEBOUNCE_MS);
+		} else {
+			sendFilter(filter);
+		}
+	};
+	const addChip = (key: string, value: string) => {
+		if (draft.fields.length >= MAX_FIELD_FILTERS || draft.fields.some(([k, v]) => k === key && v === value)) {
+			return;
+		}
+		changeFilter({ ...draft, fields: [...draft.fields, [key, value]] });
+	};
+	const toggleExpanded = (id: string) => setExpanded((e) => {
+		const next = new Set(e);
+		if (!next.delete(id)) {
+			next.add(id);
+		}
+		return next;
+	});
+	const applied = state.view.filter;
+	const marks = useMemo(() => {
+		const p = searchPattern(applied.text, applied.matchCase, applied.regex, true);
+		return p instanceof RegExp ? p : undefined;
+	}, [applied.text, applied.matchCase, applied.regex]);
 
 	useLayoutEffect(() => {
 		const el = scroller.current;
@@ -195,8 +394,9 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const { view } = state;
 	const shown = state.title !== null;
 	const gaps = new Map(gapsIn(state.rows).map((g) => [g.before, g]));
-	const emptyText = view.range.to !== null && view.done ? noRecordsText(view.range.from, view.range.to) : NO_RECORDS_TEXT;
-	const oldest = state.rows[0]?.time ?? view.range.from;
+	const emptyText = filterActive(view.filter) && view.counts.total > 0 ? NO_MATCH_TEXT
+		: view.range.to !== null && view.done ? noRecordsText(view.range.from, view.range.to) : NO_RECORDS_TEXT;
+	const oldest = view.olderBefore;
 	/** A bounded range still being read: Load older waits until it is read (the host refuses it too). */
 	const rangeReading = view.range.to !== null && !view.done;
 
@@ -219,6 +419,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 					</div>
 				) : null}
 			</div>
+			{shown ? <FilterBar draft={draft} view={view} change={changeFilter} /> : null}
 			<div className="rpcn-logs-scroll" ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Log records">
 				{shown ? (
 					<div className="rpcn-logs-older">
@@ -230,6 +431,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 								</button>
 							)}
 						{view.olderError ? <span className="rpcn-logs-older-error" role="alert">{view.olderError}</span> : null}
+						{view.olderNote ? <span className="rpcn-logs-older-note" role="status">{view.olderNote}</span> : null}
 					</div>
 				) : null}
 				{shown && state.rows.length === 0 ? <p className="rpcn-logs-empty rpcn-logs-gap">{emptyText}</p> : null}
@@ -241,20 +443,39 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 						<tbody>
 							{state.rows.map((row, i) => {
 								const gap = gaps.get(i);
+								const open = expanded.has(row.id);
 								return (
 									<Fragment key={row.id}>
 										{gap ? <tr className="rpcn-logs-gap-row"><td colSpan={4} className="rpcn-logs-gap">{noRecordsText(gap.from, gap.to)}</td></tr> : null}
-										<tr data-id={row.id}>
-											<td className="rpcn-logs-time">{localTime(row.time)}</td>
-											<td className={levelClass(row.level)}>{row.level}</td>
+										<tr data-id={row.id} className={open ? 'rpcn-logs-open' : undefined}>
+											<td className="rpcn-logs-time">
+												<button type="button" className="rpcn-logs-expand" aria-expanded={open} aria-label={open ? 'Hide the whole record' : 'Show the whole record'}
+													onClick={() => toggleExpanded(row.id)} />
+												{localTime(row.time)}
+											</td>
+											<td className={levelClass(row.level)}><Highlighted text={row.level} re={marks} /></td>
 											<td className={row.raw ? 'rpcn-logs-message rpcn-logs-raw' : 'rpcn-logs-message'}>
-												{row.message}
+												<Highlighted text={row.message} re={marks} />
 												{row.fields.map(([key, value]) => (
-													<span key={key} className="rpcn-logs-field"> <span className="rpcn-logs-key">{key}</span>=<span className="rpcn-logs-value">{value}</span></span>
+													<span key={key} className="rpcn-logs-field"> <span className="rpcn-logs-key"><Highlighted text={key} re={marks} /></span>=<button
+														type="button" className="rpcn-logs-value" title={`Show only records with ${key}=${value}`} onClick={() => addChip(key, value)}>
+														<Highlighted text={value} re={marks} />
+													</button></span>
 												))}
 											</td>
-											<td className="rpcn-logs-instance">{row.instance}</td>
+											<td className="rpcn-logs-instance">
+												{row.instance ? (
+													<button type="button" className="rpcn-logs-value" title={`Show only records of instance ${row.instance}`} onClick={() => addChip(INSTANCE_FIELD, row.instance)}>
+														<Highlighted text={row.instance} re={marks} />
+													</button>
+												) : null}
+											</td>
 										</tr>
+										{open ? (
+											<tr className="rpcn-logs-detail">
+												<td colSpan={4}><RecordDetail row={row} post={post} collapse={() => toggleExpanded(row.id)} /></td>
+											</tr>
+										) : null}
 									</Fragment>
 								);
 							})}
