@@ -112,3 +112,5 @@ context:
 | 6 | `logsTarget()` duplicates `actionTarget()`'s palette path (connect, mapping, gone handling, the pick) | low | two copies already differ | defer (to 6.9, the refactor sweep) |
 | 7 | The palette path with no logs panel does the whole connect-and-pick, then opens nothing and says nothing | low | `openLogs` returns `LOGS_NOT_STARTED` when `!this.options.logs` | patch (check first, as the row path does) |
 | 8 | An invalid or unreadable `.cloud.json` falls through to the pick with no message | low | only `read.kind === 'ok'` handled | patch (name the file and why, then the pick) |
+
+**Manual check result (user, 2026-11-06):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (errors.yaml logging INFO, and ERROR every fifth message; Show pipeline logs from the palette with the mapped config and with the pick; the row menu labels; Show logs around the error and the Error notification as available). Automated: stable 1322, multi-root 10, corpus 156, webview 358; no floor run.
