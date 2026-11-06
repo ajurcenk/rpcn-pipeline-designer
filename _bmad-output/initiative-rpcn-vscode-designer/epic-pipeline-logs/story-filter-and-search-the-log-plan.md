@@ -119,3 +119,5 @@ context:
 | 4 | A search still waiting on its 300 ms timer can be posted to the next pipeline after Show logs | low | `LogsView.tsx` `show` handler clears the draft and timer only when the filter differs from `lastPosted` | patch |
 | 5 | A hidden level's count is still struck through | low | `logs.css`: a child's `text-decoration: none` cannot undo the parent's | patch |
 | 6 | (triage) With a filter on, Load older stops at the first window holding any of the pipeline's records even if none match, so an older match may take many clicks (the implementer's note) | medium | `loadOlder` with a filter | patch (keep reading back until a window has a match, the log start, or 24 h of windows per click, saying how far it searched) |
+
+**Manual check result (user, 2026-11-06):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (vscode-tracer.yaml logging INFO every 5 s; level chips, search, the regular expression `message 5[123]:`, field chips, a record's JSON and Copy JSON, records around one, a long range, switching pipelines). Automated: stable 1312, multi-root 10, corpus 156, webview 354; no floor run.
