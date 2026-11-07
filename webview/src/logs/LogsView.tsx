@@ -35,6 +35,9 @@
 // error and warning colours, and with a filter on the matching part drawn darker; its accessible name
 // says the slot and its counts. The axis under it, "Records per <size>" over it. A bar's click (or Enter)
 // reads that slot; the arrow keys, Home and End move between the bars (one tab stop).
+//
+// Ticket 6.8 (board 3): **Export…** at the end of the toolbar asks the host to save the rows it shows
+// (`exportRequested`); disabled while no row is shown. The host has the save dialog and the messages.
 
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -53,6 +56,9 @@ export const NO_MATCH_TEXT = 'No records match';
 export const STOPPED_EMPTY_TEXT = 'Reading stopped before any record';
 /** The search is posted once typing pauses this long. */
 export const SEARCH_DEBOUNCE_MS = 300;
+/** Ticket 6.8: the toolbar's Export… button and its accessible name. */
+export const EXPORT_TEXT = 'Export…';
+export const EXPORT_LABEL = 'Export the shown records';
 /** The field chip that stands for the instance column (as the host's `filter.ts`). */
 const INSTANCE_FIELD = 'instance_id';
 
@@ -598,6 +604,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 							</button>
 							{menuOpen ? <RangeMenu state={view} post={post} close={() => setMenuOpen(false)} /> : null}
 						</div>
+						<button type="button" className="rpcn-logs-button rpcn-logs-export" aria-label={EXPORT_LABEL} title={EXPORT_LABEL}
+							disabled={state.rows.length === 0} onClick={() => post({ type: 'exportRequested' })}>{EXPORT_TEXT}</button>
 					</div>
 				) : null}
 			</div>

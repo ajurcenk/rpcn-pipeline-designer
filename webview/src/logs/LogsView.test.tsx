@@ -14,7 +14,8 @@
 // posts), the lost connection's countdown, the rows kept under Reading and Connection lost, "No records
 // match" kept apart, and the new messages' validation. Ticket 6.7: the records-per-time strip (its bars'
 // heights, the error and warning marks, the darker matching part, the accessible names, the axis and
-// "Records per <size>", the click and the keys), hidden without a strip, and its validation.
+// "Records per <size>", the click and the keys), hidden without a strip, and its validation. Ticket 6.8:
+// Export… at the end of the toolbar, disabled with no row shown, posts `exportRequested`.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -25,7 +26,7 @@ import {
 } from '../../../src/shared/logsProtocol';
 import {
 	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
-	rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT,
+	rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT, EXPORT_LABEL, EXPORT_TEXT,
 } from './LogsView';
 
 let host: HTMLDivElement;
@@ -762,5 +763,40 @@ describe('Pipeline Logs records-per-time strip (ticket 6.7)', () => {
 		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0, to: T0 - MIN })).toBeUndefined();
 		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: 'x', to: T0 })).toBeUndefined();
 		expect(parseLogsWebviewMessage({ type: 'slotChosen', index: 3 })).toBeUndefined();
+	});
+});
+
+describe('Pipeline Logs export (ticket 6.8)', () => {
+	const exportButton = () => host.querySelector<HTMLButtonElement>('.rpcn-logs-export');
+	const show = async (rows: LogRow[], extra: Partial<LogsViewState> = {}) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows, dropped: 0, cap: 5000, status: '', state: state(extra) });
+
+	it('Export… at the end of the toolbar, after the range menu; its accessible name; posts exportRequested', async () => {
+		expect(exportButton(), 'no toolbar before a pipeline is shown').toBeNull();
+		await show([row(1), row(2)]);
+		const tools = [...host.querySelector('.rpcn-logs-tools')!.children];
+		expect(tools.at(-1)).toBe(exportButton());
+		expect(tools.at(-2)?.className).toBe('rpcn-logs-range');
+		expect(exportButton()!.textContent).toBe(EXPORT_TEXT);
+		expect(exportButton()!.getAttribute('aria-label')).toBe(EXPORT_LABEL);
+		expect(exportButton()!.disabled).toBe(false);
+		await click(exportButton());
+		expect(posted.at(-1)).toEqual({ type: 'exportRequested' });
+	});
+
+	it('NONE: disabled while no row is shown (also under a state, or no match); enabled once rows arrive', async () => {
+		await show([]);
+		expect(exportButton()!.disabled).toBe(true);
+		await click(exportButton());
+		expect(posted.some((m) => m.type === 'exportRequested')).toBe(false);
+		await show([], { filter: { ...NO_FILTER, text: 'x' }, counts: { ...NO_COUNTS, total: 3 }, done: true });
+		expect(exportButton()!.disabled).toBe(true);
+		await send({ type: 'append', rows: [row(1)], dropped: 0 });
+		expect(exportButton()!.disabled).toBe(false);
+	});
+
+	it('the message\'s validation', () => {
+		expect(parseLogsWebviewMessage({ type: 'exportRequested' })).toEqual({ type: 'exportRequested' });
+		expect(parseLogsWebviewMessage({ type: 'exportRequested', path: '/etc/passwd' })).toEqual({ type: 'exportRequested' });
 	});
 });

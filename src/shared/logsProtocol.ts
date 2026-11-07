@@ -513,7 +513,9 @@ export type LogsWebviewMessage =
 	/** Ticket 6.6: No records' Last 24 hours. */
 	| { readonly type: 'last24h' }
 	/** Ticket 6.7: a bar of the strip: its slot's times as drawn (inclusive), read as a custom range, the filter kept. */
-	| { readonly type: 'slotChosen'; readonly from: number; readonly to: number };
+	| { readonly type: 'slotChosen'; readonly from: number; readonly to: number }
+	/** Ticket 6.8: Export…: the host saves the rows it shows (a snapshot) as JSON lines, through the save dialog. */
+	| { readonly type: 'exportRequested' };
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -643,6 +645,7 @@ export function parseLogsWebviewMessage(v: unknown): LogsWebviewMessage | undefi
 		case 'useAnotherUser':
 		case 'showEveryLevel':
 		case 'last24h':
+		case 'exportRequested':
 			return { type: v.type };
 		case 'liveToggled':
 			return typeof v.live === 'boolean' ? { type: 'liveToggled', live: v.live } : undefined;

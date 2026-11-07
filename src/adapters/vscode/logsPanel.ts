@@ -59,7 +59,16 @@
 // slotted from those for the span read: the range, extended back by each window Load older reads (so the
 // slots grow when the span does). A bar's click (`slotChosen`) reads its slot as a custom range, the
 // filter kept; the strip is then slotted for that range.
+//
+// Ticket 6.8 (board 3): **Export…** saves the rows kept at the click (those the list shows, after the
+// filter, at most the cap; oldest first) as JSON lines (`export.ts`), at a place picked in the save
+// dialog (`<pipeline>-<yyyymmdd-hhmm>.jsonl` in the first workspace folder by default). The rows are
+// already masked; rows that arrive while the dialog is open are not added, and nothing is read again.
+// Then "Exported N records to <file name>." with Open (and how many were left out for the cap), or
+// "Could not export the records: <reason>" (masked). The dialog and the messages go through `ui`.
 
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	filterActive, isLiveRange, localMinute, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
@@ -70,6 +79,7 @@ import { isLogReadError, LOGS_TOPIC, type LogPositions, type LogReader, type Log
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';
 import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText, stripSpan } from '../logs/history';
 import { compileFilter, Counter, levelOf, matches, sameFilter, SlotCounter, type CompiledFilter } from '../logs/filter';
+import { EXPORT_FAILED_PREFIX, exportedMessage, exportFileName, exportText } from '../logs/export';
 import { webviewHtml } from '../graphPanel/html';
 
 export const LOGS_VIEW_ID = 'redpandaConnect.pipelineLogs';
@@ -112,6 +122,23 @@ export const NO_ERROR_NOTE = 'No ERROR record in the last 24 hours';
 export function focusNotShownText(time: number): string {
 	return `The ERROR record of ${localMinute(time)} could not be shown.`;
 }
+
+/** Export…'s action after the save: opens the file. */
+export const OPEN_EXPORT_ACTION = 'Open';
+
+/** What Export… (ticket 6.8) asks and says: the save dialog and the messages (the tests replace it). */
+export interface LogsExportUi {
+	readonly save: (options: vscode.SaveDialogOptions) => Thenable<vscode.Uri | undefined>;
+	readonly info: (message: string, ...actions: string[]) => Thenable<string | undefined>;
+	readonly error: (message: string) => Thenable<unknown>;
+}
+
+/** What Export… did: nothing shown (ignored), the dialog cancelled, the file written, or the write failed. */
+export type LogsExportResult =
+	| { readonly kind: 'nothing' }
+	| { readonly kind: 'cancelled' }
+	| { readonly kind: 'exported'; readonly uri: vscode.Uri; readonly count: number; readonly message: string }
+	| { readonly kind: 'failed'; readonly message: string };
 
 /** How an entry point opens the log (ticket 6.5). */
 export interface LogsShowOptions {
@@ -208,6 +235,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	errorWindowMs = ERROR_SEARCH_WINDOW_MS;
 	/** Ticket 6.6: the waits before each try after a lost connection, the last one repeated (test seam). */
 	retryDelaysMs: readonly number[] = RETRY_DELAYS_MS;
+	/** Export…'s save dialog and messages (test seam). */
+	ui: LogsExportUi = {
+		save: (options) => vscode.window.showSaveDialog(options),
+		info: (message, ...actions) => vscode.window.showInformationMessage(message, ...actions),
+		error: (message) => vscode.window.showErrorMessage(message),
+	};
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: LogsHostMessage[] = [];
 	private view: vscode.WebviewView | undefined;
@@ -483,6 +516,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 					case 'slotChosen':
 						void this.chooseSlot(m.from, m.to);
 						break;
+					case 'exportRequested':
+						void this.exportShown();
+						break;
 				}
 			}),
 			view.onDidChangeVisibility(() => {
@@ -665,6 +701,58 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 		await vscode.env.clipboard.writeText(kept.row.json ?? kept.row.message);
 		return true;
+	}
+
+	/**
+	 * Export… (ticket 6.8): the rows kept now (shown, oldest first; a snapshot, so rows arriving while
+	 * the dialog is open are not added) saved as JSON lines where the save dialog says, then the message
+	 * with Open. Ignored when no row is shown; Escape in the dialog writes nothing. Every text is masked.
+	 */
+	async exportShown(): Promise<LogsExportResult> {
+		const source = this.source;
+		if (!source || this.kept.length === 0) {
+			return { kind: 'nothing' };
+		}
+		const failed = (err: unknown): LogsExportResult => {
+			const reason = this.mask(source, err instanceof Error ? err.message : String(err));
+			const message = `${EXPORT_FAILED_PREFIX}${reason}`;
+			this.options.log(`Pipeline logs: exporting the records of ${this.mask(source, source.title)} failed: ${reason}`);
+			void this.ui.error(message);
+			return { kind: 'failed', message };
+		};
+		let uri: vscode.Uri | undefined;
+		let count: number;
+		let message: string;
+		try {
+			count = this.kept.length;
+			const text = exportText(this.kept.map((k) => k.row));
+			const leftOut = this.dropped;
+			const newerDropped = this.newerDropped;
+			const cap = this.cap;
+			const name = exportFileName(this.mask(source, source.pipelineName ?? source.pipelineId), Date.now());
+			const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+			const defaultUri = folder ? vscode.Uri.joinPath(folder, name) : vscode.Uri.file(path.join(os.homedir(), name));
+			uri = await this.ui.save({ defaultUri, filters: { 'JSON lines': ['jsonl'] }, saveLabel: 'Export', title: 'Export the shown records' });
+			if (!uri) {
+				return { kind: 'cancelled' };
+			}
+			const fileName = this.mask(source, path.posix.basename(uri.path));
+			await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
+			this.options.log(this.mask(source, `Pipeline logs: exported ${recordsText(count)} of ${source.title} to ${uri.scheme === 'file' ? uri.fsPath : uri.toString()}.`));
+			message = exportedMessage(count, fileName, leftOut, newerDropped, cap);
+		} catch (err) {
+			return failed(err);
+		}
+		try {
+			const action = await this.ui.info(message, OPEN_EXPORT_ACTION);
+			if (action === OPEN_EXPORT_ACTION) {
+				await vscode.commands.executeCommand('vscode.open', uri);
+			}
+		} catch (err) {
+			// The file is written: the failure to open it is said, the export stands.
+			failed(err);
+		}
+		return { kind: 'exported', uri, count, message };
 	}
 
 	/** Every row and count read so far dropped. */

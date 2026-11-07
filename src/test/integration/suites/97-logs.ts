@@ -24,8 +24,13 @@
 // Ticket 6.7 (the records-per-time strip): every matrix row of its plan (SLOTS … OVER_CAP) reads the
 // strip through `viewState.strip` and clicks a bar through `chooseSlot`, as the webview's `slotChosen`
 // does; STRIP_7_DAYS is its acceptance check (20,000 records over 7 days, 30 ERROR in one afternoon).
+// Ticket 6.8 (export): every matrix row of its plan (HAPPY … LIVE) calls `exportShown`, as the webview's
+// `exportRequested` does, with the panel's `ui` seam answering the save dialog with a file in the suite's
+// directory (read back) and recording the messages; EXPORT_ACCEPTANCE is its acceptance check (400
+// records in the last hour, 7 WARN with "secret" and a secret value in a field, Warn only and "secret").
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -33,8 +38,10 @@ import {
 	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND,
 } from '../../../adapters/vscode/cloudView';
 import {
-	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, stoppedReadingStatus,
+	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, OPEN_EXPORT_ACTION,
+	stoppedReadingStatus, type LogsExportUi,
 } from '../../../adapters/vscode/logsPanel';
+import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { gapsIn, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
@@ -1872,6 +1879,235 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
 		assert.strictEqual(texts().length, 5);
 		assert.strictEqual(sum(strip().total), 8);
+	});
+
+	// --- ticket 6.8: export ---
+
+	/** What Export… asked and said in a test. */
+	interface ExportSeen {
+		readonly dialogs: vscode.SaveDialogOptions[];
+		readonly infos: { readonly message: string; readonly actions: string[] }[];
+		readonly errors: string[];
+	}
+	/**
+	 * The panel's `ui` replaced for one test: the save dialog answers `answer` (after `during`, run while it
+	 * is open), the info answers `action`; restored after the test.
+	 */
+	function exportUi(answer: vscode.Uri | undefined, options: { readonly during?: () => Promise<void>; readonly action?: string } = {}): ExportSeen {
+		const seen: ExportSeen = { dialogs: [], infos: [], errors: [] };
+		const original = logs().ui;
+		const ui: LogsExportUi = {
+			save: async (o) => {
+				seen.dialogs.push(o);
+				await options.during?.();
+				return answer;
+			},
+			info: async (message, ...actions) => {
+				seen.infos.push({ message, actions });
+				allShown.push(message);
+				return options.action;
+			},
+			error: async (message) => {
+				seen.errors.push(message);
+				allShown.push(message);
+				return undefined;
+			},
+		};
+		logs().ui = ui;
+		teardowns.push(() => {
+			logs().ui = original;
+		});
+		return seen;
+	}
+	/** A new file's place in the suite's directory (not written yet). */
+	const exportFile = (name: string) => {
+		const folder = path.join(dir, 'exports');
+		fs.mkdirSync(folder, { recursive: true });
+		const file = path.join(folder, name);
+		fs.rmSync(file, { force: true, recursive: true });
+		return vscode.Uri.file(file);
+	};
+	/** The file's lines (the last line break ends the last line). */
+	const linesOf = (uri: vscode.Uri) => {
+		const text = fs.readFileSync(uri.fsPath, 'utf8');
+		assert.ok(text === '' || text.endsWith('\n'), 'each line ends in a line break');
+		return text.split('\n').slice(0, -1);
+	};
+	/** The shown rows as the export should write them. */
+	const shownValues = () => logs().rows().map((r) => (r.json !== undefined ? JSON.parse(r.json) as unknown : { time: new Date(r.time).toISOString(), message: r.message }));
+	/** Reads ORDERS' last hour and waits until it is read. */
+	async function lastHour(): Promise<void> {
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 30_000), logs().statusText);
+	}
+
+	test('EXPORT_ACCEPTANCE (FILTERED, MASKED): 400 records in the last hour, 7 WARN with "secret" and a secret value in a field: Warn only and "secret", Export… saves those 7, in order, with no secret value and no license_org', async () => {
+		const secret = new Set([12, 70, 133, 201, 260, 333, 391]);
+		const warnOnly = new Set([5, 50, 150, 250, 350]);
+		const infoSecret = new Set([20, 220, 320]);
+		topic.write(...Array.from({ length: 400 }, (_, i) => {
+			const r = rec(ORDERS, `r${i}`, 58 * MINUTE - i * 8_000, { license_org: LICENSE_ORG });
+			const value = secret.has(i) ? { ...r.value, level: 'WARN', detail: `rotated the secret ${i}`, token: PASSWORD }
+				: warnOnly.has(i) ? { ...r.value, level: 'WARN' }
+					: infoSecret.has(i) ? { ...r.value, detail: 'secret', token: PASSWORD } : r.value;
+			return { ...r, value };
+		}));
+		await showOrders();
+		await lastHour();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, levels: ['warn'], text: 'secret' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 7, 30_000), logs().statusText);
+		assert.deepStrictEqual([logs().viewState.counts.matched, logs().viewState.counts.total], [7, 400]);
+		const file = exportFile('acceptance.jsonl');
+		const seen = exportUi(file);
+		const result = await logs().exportShown();
+		assert.strictEqual(result.kind, 'exported');
+		const lines = linesOf(file);
+		assert.strictEqual(lines.length, 7);
+		assert.deepStrictEqual(lines.map((l) => JSON.parse(l) as unknown), shownValues(), 'the shown rows\' values, in order');
+		assert.deepStrictEqual(lines.map((l) => (JSON.parse(l) as { message: string }).message), [...secret].map((i) => `${ORDERS}:r${i}`));
+		const text = fs.readFileSync(file.fsPath, 'utf8');
+		for (const value of [PASSWORD, LICENSE_ORG, 'license_org', CLIENT_SECRET]) {
+			assert.ok(!text.includes(value), `${value} in the file`);
+		}
+		assert.ok(lines.every((l) => (JSON.parse(l) as { token: string; pipeline_id: string }).token === CREDENTIAL_MASK), 'the secret value masked');
+		assert.ok(lines.every((l) => (JSON.parse(l) as { pipeline_id: string }).pipeline_id === ORDERS), 'pipeline_id kept');
+		assert.ok(lines.every((l) => !/"(partition|offset|timestamp)"/.test(l)), 'no Kafka partition, offset or timestamp added');
+		assert.deepStrictEqual(seen.infos, [{ message: 'Exported 7 records to acceptance.jsonl.', actions: [OPEN_EXPORT_ACTION] }]);
+		assert.deepStrictEqual(seen.errors, []);
+		const output = api().outputLines().filter((l) => l.includes('export')).join('\n');
+		assert.ok(output.includes('exported 7 records of orders · rpc-vilnius to '), 'said in the output channel');
+		assert.ok(!output.includes(PASSWORD) && !output.includes(LICENSE_ORG) && !output.includes(SEEDS[0]), 'no secret or broker in the output channel');
+	});
+
+	test('HAPPY: Last hour, 120 rows: the dialog offers <pipeline>-<yyyymmdd-hhmm>.jsonl in the first workspace folder (JSON lines); 120 lines, oldest first; "Exported 120 records to …" with Open, which opens the file', async () => {
+		topic.write(...Array.from({ length: 120 }, (_, i) => rec(ORDERS, `h${i}`, 50 * MINUTE - i * 20_000)));
+		await showOrders();
+		await lastHour();
+		assert.strictEqual(texts().length, 120);
+		const file = exportFile('happy.jsonl');
+		const before = Date.now();
+		const seen = exportUi(file, { action: OPEN_EXPORT_ACTION });
+		const result = await logs().exportShown();
+		assert.strictEqual(result.kind, 'exported');
+		const [dialog] = seen.dialogs;
+		assert.ok(dialog?.defaultUri, 'a default place');
+		const name = path.basename(dialog.defaultUri.fsPath);
+		const d = new Date(before);
+		const p2 = (n: number) => String(n).padStart(2, '0');
+		const stamp = (t: Date) => `${t.getFullYear()}${p2(t.getMonth() + 1)}${p2(t.getDate())}-${p2(t.getHours())}${p2(t.getMinutes())}`;
+		assert.ok([`orders-${stamp(d)}.jsonl`, `orders-${stamp(new Date())}.jsonl`].includes(name), name);
+		const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
+		assert.strictEqual(path.dirname(dialog.defaultUri.fsPath), folder, 'the first workspace folder (else the home folder)');
+		assert.deepStrictEqual(dialog.filters, { 'JSON lines': ['jsonl'] });
+		const lines = linesOf(file);
+		assert.deepStrictEqual(lines.map((l) => (JSON.parse(l) as { message: string }).message), Array.from({ length: 120 }, (_, i) => `${ORDERS}:h${i}`), 'oldest first');
+		assert.deepStrictEqual(lines.map((l) => JSON.parse(l) as unknown), shownValues());
+		assert.deepStrictEqual(seen.infos, [{ message: 'Exported 120 records to happy.jsonl.', actions: [OPEN_EXPORT_ACTION] }]);
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === file.fsPath, 10_000), 'Open shows the file');
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+	});
+
+	test('RAW: a value that is not a JSON object is {"time","message"} (masked)', async () => {
+		const ts = Date.now() - 3 * MINUTE;
+		topic.write(rec(ORDERS, 'json', 4 * MINUTE), { key: ORDERS, value: `plain text quoting ${PASSWORD}`, timestamp: ts });
+		await showOrders();
+		assert.strictEqual(texts().length, 2);
+		const file = exportFile('raw.jsonl');
+		exportUi(file);
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		const lines = linesOf(file);
+		assert.strictEqual(lines[1], JSON.stringify({ time: new Date(ts).toISOString(), message: `plain text quoting ${CREDENTIAL_MASK}` }));
+		assert.ok(!fs.readFileSync(file.fsPath, 'utf8').includes(PASSWORD));
+	});
+
+	test('OVER_CAP: 6,000 records read, 5,000 kept: 5,000 lines (the newest); the message says 1,000 older records were left out', async () => {
+		topic.write(...Array.from({ length: 6_000 }, (_, i) => rec(ORDERS, `c${i}`, 55 * MINUTE - i * 500)));
+		await showOrders();
+		assert.strictEqual(logs().cap, MAX_LOG_ROWS);
+		await lastHour();
+		assert.strictEqual(logs().droppedCount, 1_000);
+		const file = exportFile('over-cap.jsonl');
+		const seen = exportUi(file);
+		const reads = topic.ranges.length + topic.tails.length;
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		assert.strictEqual(topic.ranges.length + topic.tails.length, reads, 'nothing read again');
+		const lines = linesOf(file);
+		assert.strictEqual(lines.length, 5_000);
+		assert.strictEqual((JSON.parse(lines[0]) as { message: string }).message, `${ORDERS}:c1000`);
+		assert.strictEqual((JSON.parse(lines.at(-1)!) as { message: string }).message, `${ORDERS}:c5999`);
+		assert.deepStrictEqual(seen.infos.map((i) => i.message), ['Exported 5,000 records to over-cap.jsonl. 1,000 older records were left out for the 5,000-record limit.']);
+	});
+
+	test('NONE: no row shown (none read, or none matching): ignored, no dialog; CANCEL: Escape in the dialog writes nothing and says nothing', async () => {
+		await showOrders();
+		const seen = exportUi(exportFile('none.jsonl'));
+		assert.deepStrictEqual(await logs().exportShown(), { kind: 'nothing' });
+		topic.write(rec(ORDERS, 'one'));
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		await filterLive({ text: 'nothing like it' });
+		assert.deepStrictEqual(texts(), []);
+		assert.deepStrictEqual(await logs().exportShown(), { kind: 'nothing' });
+		assert.deepStrictEqual(seen.dialogs, [], 'no dialog');
+		await filterLive({});
+		assert.strictEqual(texts().length, 1);
+		const cancelled = exportUi(undefined);
+		const files = fs.readdirSync(path.join(dir, 'exports'));
+		assert.deepStrictEqual(await logs().exportShown(), { kind: 'cancelled' });
+		assert.strictEqual(cancelled.dialogs.length, 1);
+		assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'exports')), files, 'no file');
+		assert.deepStrictEqual([cancelled.infos, cancelled.errors], [[], []]);
+	});
+
+	test('WRITE_FAIL: the write fails: "Could not export the records: <reason>" (masked); nothing written, nothing else changed', async () => {
+		topic.write(rec(ORDERS, 'one', MINUTE), rec(ORDERS, 'two', 30_000));
+		await showOrders();
+		// A directory where the file should go (its name holds the password, which the reason must not show).
+		const target = exportFile(`taken-${PASSWORD}`);
+		fs.mkdirSync(target.fsPath);
+		const seen = exportUi(target);
+		const rows = logs().rows();
+		const result = await logs().exportShown();
+		assert.strictEqual(result.kind, 'failed');
+		assert.strictEqual(seen.errors.length, 1);
+		assert.match(seen.errors[0], /^Could not export the records: ./);
+		assert.ok(!seen.errors[0].includes(PASSWORD), seen.errors[0]);
+		assert.ok(seen.errors[0].includes(CREDENTIAL_MASK), 'the password masked in the reason');
+		assert.ok(!api().outputLines().join('\n').includes(PASSWORD), 'masked in the output channel');
+		assert.deepStrictEqual(seen.infos, []);
+		assert.ok(fs.statSync(target.fsPath).isDirectory() && fs.readdirSync(target.fsPath).length === 0, 'nothing written');
+		assert.deepStrictEqual(logs().rows(), rows, 'the rows unchanged');
+		assert.strictEqual(logs().statusText, FOLLOWING_STATUS);
+		// The save dialog itself throws: the same masked message, nothing written.
+		const original = logs().ui;
+		logs().ui = { ...original, save: async () => { throw new Error(`dialog broke for ${PASSWORD}`); }, error: async (m) => { seen.errors.push(m); } };
+		const broken = await logs().exportShown();
+		assert.strictEqual(broken.kind, 'failed');
+		assert.strictEqual(seen.errors.at(-1), `Could not export the records: dialog broke for ${CREDENTIAL_MASK}`);
+		// After the write, a failure (the message, or Open) is said; the export stands.
+		const file = exportFile('after-write.jsonl');
+		logs().ui = { save: async () => file, info: async () => { throw new Error(`open broke for ${PASSWORD}`); }, error: async (m) => { seen.errors.push(m); } };
+		const after = await logs().exportShown();
+		assert.strictEqual(after.kind, 'exported');
+		assert.strictEqual(linesOf(file).length, 2);
+		assert.strictEqual(seen.errors.at(-1), `Could not export the records: open broke for ${CREDENTIAL_MASK}`);
+		assert.ok(!api().outputLines().join('\n').includes(PASSWORD), 'masked in the output channel');
+	});
+
+	test('LIVE: Live on, records arriving while the dialog is open: the file has the rows at the click only', async () => {
+		topic.write(rec(ORDERS, 'before 1', 2 * MINUTE), rec(ORDERS, 'before 2', MINUTE));
+		await showOrders();
+		assert.deepStrictEqual(texts(), ['before 1', 'before 2']);
+		const file = exportFile('live.jsonl');
+		const seen = exportUi(file, {
+			during: async () => {
+				topic.write(rec(ORDERS, 'during the dialog'));
+				assert.ok(await waitFor(() => texts().length === 3, 10_000), 'the new record is shown meanwhile');
+			},
+		});
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		assert.deepStrictEqual(linesOf(file).map((l) => (JSON.parse(l) as { message: string }).message), [`${ORDERS}:before 1`, `${ORDERS}:before 2`]);
+		assert.deepStrictEqual(seen.infos.map((i) => i.message), ['Exported 2 records to live.jsonl.']);
+		assert.strictEqual(logs().viewState.live, true, 'Live goes on');
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {
