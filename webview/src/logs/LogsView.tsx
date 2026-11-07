@@ -1,4 +1,4 @@
-// The Pipeline Logs tab's view (tickets 6.2, 6.3, 6.4, AD-24): the header names the pipeline ("<pipeline> ·
+// The Pipeline Logs tab's view (tickets 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, AD-24): the header names the pipeline ("<pipeline> ·
 // <cluster>"), says how reading goes, and holds the Live toggle and the time-range menu (board 5: Live,
 // Last 15 minutes then live, Last hour, Last 24 hours, Last 7 days, Since the last deploy, Custom
 // range… with From and To in local time, and the topic's retention). The table shows each kept record,
@@ -28,12 +28,20 @@
 // levels are hidden), Reading (the count so far, Stop reading) and Connection lost (the wait counted
 // down, Retry now). The rows already shown stay below Reading and Connection lost. 6.4's "No records
 // match" stays its own line.
+//
+// Ticket 6.7 (board 5): above the list, for a bounded range (and Since the last deploy), the host's
+// records-per-time strip: a bar per slot (a button in a flex row, no chart library), its height the
+// slot's records against the largest slot's, its ERROR and WARN records marked on top in the theme's
+// error and warning colours, and with a filter on the matching part drawn darker; its accessible name
+// says the slot and its counts. The axis under it, "Records per <size>" over it. A bar's click (or Enter)
+// reads that slot; the arrow keys, Home and End move between the bars (one tab stop).
 
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
 	customRangeError, filterActive, gapsIn, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
-	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, soFarText,
-	type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogsViewState, type LogsWebviewMessage, type RangeKind,
+	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, shortTime, slotBounds,
+	slotLabel, slotSizeText, soFarText, type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogStrip, type LogsViewState, type LogsWebviewMessage,
+	type RangeKind,
 } from '../../../src/shared/logsProtocol';
 
 export const NO_PIPELINE_TITLE = 'No pipeline';
@@ -143,7 +151,7 @@ interface State {
 const INITIAL_VIEW: LogsViewState = {
 	range: { kind: 'recent', from: 0, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
 	olderBefore: 0, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null, panelState: NO_PANEL_STATE,
-	stoppedShort: false, settingUp: false,
+	stoppedShort: false, settingUp: false, strip: null,
 };
 const INITIAL: State = { title: null, rows: [], dropped: 0, cap: MAX_LOG_ROWS, status: '', view: INITIAL_VIEW };
 
@@ -266,6 +274,75 @@ function StatePanel({ state, post, settingUp }: { readonly state: LogsPanelState
 				))}
 			</div>
 		</section>
+	);
+}
+
+/** The strip's hint beside its title (board 5). */
+export const STRIP_HINT = 'Click a bar to show its records';
+
+/** "Records per 30 minutes". */
+export function stripTitle(size: number): string {
+	return `Records ${slotSizeText(size)}`;
+}
+
+/** The axis under the strip: four times, from its start to its end. */
+export function stripAxis(strip: Pick<LogStrip, 'start' | 'end'>): string[] {
+	return [0, 1, 2, 3].map((k) => shortTime(strip.start + ((strip.end - strip.start) * k) / 3));
+}
+
+/**
+ * Board 5's strip: a bar per slot, its height the slot's records against the largest slot's, its errors
+ * and warnings marked on top, the matching part darker with a filter on; each bar a button (its name the
+ * slot and its counts) that reads its slot. One tab stop: the arrow keys, Home and End move between bars.
+ */
+function Strip({ strip, filtered, post }: { readonly strip: LogStrip; readonly filtered: boolean; readonly post: (m: LogsWebviewMessage) => void }) {
+	const count = strip.total.length;
+	const [current, setCurrent] = useState(count - 1);
+	const bars = useRef<(HTMLButtonElement | null)[]>([]);
+	const at = Math.min(current, count - 1);
+	const max = Math.max(1, ...strip.total);
+	const title = stripTitle(strip.size);
+	const move = (to: number) => {
+		const next = Math.max(0, Math.min(count - 1, to));
+		setCurrent(next);
+		bars.current[next]?.focus();
+	};
+	const onKeyDown = (e: KeyboardEvent, i: number) => {
+		const to = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? count - 1 : undefined;
+		if (to !== undefined) {
+			e.preventDefault();
+			move(to);
+		}
+	};
+	return (
+		<div className="rpcn-logs-strip">
+			<div className="rpcn-logs-strip-head"><span className="rpcn-logs-strip-title">{title}</span><span className="rpcn-logs-strip-hint">{STRIP_HINT}</span></div>
+			<div className="rpcn-logs-strip-bars" role="group" aria-label={title}>
+				{strip.total.map((total, i) => {
+					const { from, to } = slotBounds(strip, count, i);
+					const counts = { total, errors: strip.errors[i], warns: strip.warns[i], matched: strip.matched[i] };
+					const label = slotLabel(from, to + 1, counts, filtered);
+					return (
+						<button key={i} type="button" ref={(el) => { bars.current[i] = el; }} className="rpcn-logs-slot" data-slot={i} aria-label={label} title={label}
+							tabIndex={i === at ? 0 : -1} onFocus={() => setCurrent(i)} onKeyDown={(e) => onKeyDown(e, i)} onClick={() => post({ type: 'slotChosen', from, to })}>
+							{total > 0 ? (
+								// The marks are drawn inside the bar's height, at its top: every bar is as high as its records.
+								<span className={filtered ? 'rpcn-logs-slot-bar rpcn-logs-slot-filtered' : 'rpcn-logs-slot-bar'} style={{ height: `${(total / max) * 100}%` }} aria-hidden="true">
+									{filtered && counts.matched > 0 ? <span className="rpcn-logs-slot-matched" style={{ height: `${(counts.matched / total) * 100}%` }} /> : null}
+									{counts.errors > 0 || counts.warns > 0 ? (
+										<span className="rpcn-logs-slot-marks">
+											{counts.errors > 0 ? <span className="rpcn-logs-slot-error" /> : null}
+											{counts.warns > 0 ? <span className="rpcn-logs-slot-warn" /> : null}
+										</span>
+									) : null}
+								</span>
+							) : null}
+						</button>
+					);
+				})}
+			</div>
+			<div className="rpcn-logs-strip-axis" aria-hidden="true">{stripAxis(strip).map((t, i) => <span key={i}>{t}</span>)}</div>
+		</div>
 	);
 }
 
@@ -525,6 +602,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 				) : null}
 			</div>
 			{shown ? <FilterBar draft={draft} view={view} change={changeFilter} /> : null}
+			{shown && view.strip ? <Strip strip={view.strip} filtered={filterActive(view.filter)} post={post} /> : null}
 			<div className="rpcn-logs-scroll" ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Log records">
 				{shown && panel.kind !== 'noAccess' ? (
 					<div className="rpcn-logs-older">

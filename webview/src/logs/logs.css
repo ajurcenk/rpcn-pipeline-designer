@@ -479,3 +479,87 @@ button.rpcn-logs-value:hover {
 @media (prefers-reduced-motion: reduce) {
 	.rpcn-logs-progress-bar { animation: none; width: 100%; }
 }
+
+/* Ticket 6.7 (board 5): the records-per-time strip above the list. A bar per slot (a button), its height
+   the slot's records; ERROR and WARN records marked on top in the theme's error and warning colours; with
+   a filter on, the bar is light and its matching part drawn in the full (darker) colour. */
+.rpcn-logs-strip {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 6px 8px 4px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-logs-strip-head, .rpcn-logs-strip-axis {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+}
+.rpcn-logs-strip-title {
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.rpcn-logs-strip-bars {
+	display: flex;
+	align-items: stretch;
+	gap: 2px;
+	height: 48px;
+}
+.rpcn-logs-slot {
+	flex: 1 1 0;
+	min-width: 2px;
+	height: 100%;
+	padding: 0;
+	margin: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+}
+.rpcn-logs-slot:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.rpcn-logs-slot:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+/* The marks sit over the top of the bar, inside its height (a bar's height stays proportional to its
+   records); a bar shorter than the marks shows them above it. */
+.rpcn-logs-slot-marks {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	display: flex;
+	flex-direction: column;
+}
+.rpcn-logs-slot-error, .rpcn-logs-slot-warn {
+	flex: 0 0 3px;
+}
+.rpcn-logs-slot-error {
+	background: var(--vscode-errorForeground);
+}
+.rpcn-logs-slot-warn {
+	background: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+}
+.rpcn-logs-slot-bar {
+	position: relative;
+	flex: 0 0 auto;
+	min-height: 1px;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	background: var(--vscode-charts-blue, var(--vscode-focusBorder));
+}
+.rpcn-logs-slot-filtered {
+	background: color-mix(in srgb, var(--vscode-charts-blue, var(--vscode-focusBorder)) 30%, transparent);
+}
+.rpcn-logs-slot-matched {
+	flex: 0 0 auto;
+	min-height: 1px;
+	background: var(--vscode-charts-blue, var(--vscode-focusBorder));
+}

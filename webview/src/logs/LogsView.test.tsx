@@ -12,17 +12,19 @@
 // scrolled to once and marked, the "No ERROR record in the last 24 hours" note, and a state without
 // those fields refused. Ticket 6.6: board 6's six states (their texts and buttons, what each button
 // posts), the lost connection's countdown, the rows kept under Reading and Connection lost, "No records
-// match" kept apart, and the new messages' validation.
+// match" kept apart, and the new messages' validation. Ticket 6.7: the records-per-time strip (its bars'
+// heights, the error and warning marks, the darker matching part, the accessible names, the axis and
+// "Records per <size>", the click and the keys), hidden without a strip, and its validation.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage, retryDelayMs,
-	searchError, searchPattern, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
+	searchError, searchPattern, shortTime, slotLabel, slotSize, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
 } from '../../../src/shared/logsProtocol';
 import {
-	chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
+	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
 	rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT,
 } from './LogsView';
 
@@ -41,7 +43,7 @@ const MIN = 60_000;
 const STATE: LogsViewState = {
 	range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, live: true, done: false, older: 'more', olderError: null, olderNote: null, newerDropped: 0, retention: null, deployedAt: null,
 	olderBefore: T0 - 15 * MIN, filter: NO_FILTER, counts: NO_COUNTS, highlightErrors: false, focusId: null, note: null, panelState: NO_PANEL_STATE,
-	stoppedShort: false, settingUp: false,
+	stoppedShort: false, settingUp: false, strip: null,
 };
 const state = (extra: Partial<LogsViewState> = {}): LogsViewState => ({ ...STATE, ...extra });
 const row = (n: number, extra: Partial<LogRow> = {}): LogRow => ({
@@ -635,5 +637,130 @@ describe('Pipeline Logs states after review (ticket 6.6)', () => {
 		const { settingUp: _u, ...noSettingUp } = state();
 		expect(parseLogsHostMessage({ type: 'state', state: noStopped })).toBeUndefined();
 		expect(parseLogsHostMessage({ type: 'state', state: noSettingUp })).toBeUndefined();
+	});
+});
+
+describe('Pipeline Logs records-per-time strip (ticket 6.7)', () => {
+	const HOUR = 60 * MIN;
+	const DAY = 24 * HOUR;
+	const from = T0 - DAY;
+	/** A 24-hour strip (48 slots of 30 minutes) with `counts[i]` records in slot i. */
+	const strip24 = (counts: Record<number, { total: number; errors?: number; warns?: number; matched?: number }>): LogStrip => {
+		const layout = stripLayout(from, T0);
+		const at = (key: 'total' | 'errors' | 'warns' | 'matched') => Array.from({ length: layout.count }, (_, i) => counts[i]?.[key] ?? (key === 'matched' ? counts[i]?.total ?? 0 : 0));
+		return { start: layout.start, from: layout.from, size: layout.size, end: layout.end, total: at('total'), errors: at('errors'), warns: at('warns'), matched: at('matched') };
+	};
+	const day = { kind: 'day', from, to: T0 } as const;
+	const show = async (extra: Partial<LogsViewState>) =>
+		send({ type: 'show', title: 'orders · rpc-vilnius', rows: [row(1)], dropped: 0, cap: 5000, status: '', state: state({ range: day, done: true, ...extra }) });
+	const bars = () => [...host.querySelectorAll<HTMLButtonElement>('.rpcn-logs-slot')];
+	const heightOf = (b: HTMLButtonElement) => b.querySelector<HTMLElement>('.rpcn-logs-slot-bar')?.style.height ?? null;
+
+	it('SLOTS: a bar per slot, heights against the largest; "Records per 30 minutes", the hint and the axis; EMPTY_SLOTS: a slot without records is a bar with no height', async () => {
+		const strip = strip24({ 0: { total: 50 }, 10: { total: 100 }, 47: { total: 25 } });
+		await show({ strip });
+		expect(bars()).toHaveLength(48);
+		expect(host.querySelector('.rpcn-logs-strip-title')?.textContent).toBe('Records per 30 minutes');
+		expect(host.querySelector('.rpcn-logs-strip-hint')?.textContent).toBe(STRIP_HINT);
+		expect(host.querySelector('.rpcn-logs-strip-bars')?.getAttribute('aria-label')).toBe('Records per 30 minutes');
+		expect([heightOf(bars()[0]), heightOf(bars()[10]), heightOf(bars()[47])]).toEqual(['50%', '100%', '25%']);
+		expect(heightOf(bars()[5]), 'a gap').toBeNull();
+		expect(bars()[5].getAttribute('aria-label')).toMatch(/: no records$/);
+		expect([...host.querySelectorAll('.rpcn-logs-strip-axis span')].map((s) => s.textContent)).toEqual(stripAxis(strip));
+		expect(stripAxis(strip)[0]).toBe(shortTime(strip.start));
+		expect(stripAxis(strip)[3]).toBe(shortTime(T0));
+	});
+
+	it('MARKS: a slot with errors and warnings is marked on top; its accessible name says the slot and its counts', async () => {
+		await show({ strip: strip24({ 3: { total: 120, errors: 3, warns: 1 }, 4: { total: 7, warns: 2 } }) });
+		const b = bars()[3];
+		expect(b.querySelector('.rpcn-logs-slot-bar .rpcn-logs-slot-error'), 'inside the bar\'s height').not.toBeNull();
+		expect(heightOf(b), 'as high as its records, the marks included').toBe('100%');
+		expect(b.querySelector('.rpcn-logs-slot-warn')).not.toBeNull();
+		expect(bars()[4].querySelector('.rpcn-logs-slot-error')).toBeNull();
+		expect(bars()[4].querySelector('.rpcn-logs-slot-warn')).not.toBeNull();
+		const layout = stripLayout(from, T0);
+		const start = layout.start + 3 * layout.size;
+		expect(b.getAttribute('aria-label')).toBe(slotLabel(start, start + layout.size, { total: 120, errors: 3, warns: 1, matched: 120 }, false));
+		expect(b.getAttribute('aria-label')).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}–\d{2}:\d{2}: 120 records, 3 errors, 1 warning$/);
+		expect(b.title).toBe(b.getAttribute('aria-label'));
+	});
+
+	it('FILTERED: with a filter on, every bar keeps its full height and its matching part is drawn darker; the name says how many match', async () => {
+		await show({ strip: strip24({ 1: { total: 100, matched: 40 }, 2: { total: 50, matched: 0 } }), filter: { ...NO_FILTER, text: 'secret' } });
+		expect(heightOf(bars()[1])).toBe('100%');
+		expect(bars()[1].querySelector('.rpcn-logs-slot-filtered')).not.toBeNull();
+		expect(bars()[1].querySelector<HTMLElement>('.rpcn-logs-slot-matched')?.style.height).toBe('40%');
+		expect(bars()[2].querySelector('.rpcn-logs-slot-matched')).toBeNull();
+		expect(heightOf(bars()[2])).toBe('50%');
+		expect(bars()[1].getAttribute('aria-label')).toMatch(/: 100 records, 40 match$/);
+		// No filter: no darker part.
+		await show({ strip: strip24({ 1: { total: 100, matched: 100 } }) });
+		expect(bars()[1].querySelector('.rpcn-logs-slot-matched')).toBeNull();
+		expect(bars()[1].querySelector('.rpcn-logs-slot-filtered')).toBeNull();
+	});
+
+	it('CLICK: a bar posts its slot; the arrow keys, Home and End move the one tab stop between the bars', async () => {
+		await show({ strip: strip24({ 3: { total: 1 } }) });
+		posted = [];
+		await click(bars()[3]);
+		const layout = stripLayout(from, T0);
+		expect(posted).toEqual([{ type: 'slotChosen', from: layout.start + 3 * layout.size, to: layout.start + 4 * layout.size - 1 }]);
+		// The first and the last bar post the range read, not the minute before it or past its end.
+		posted = [];
+		await click(bars()[0]);
+		await click(bars()[47]);
+		expect(posted).toEqual([
+			{ type: 'slotChosen', from, to: layout.start + layout.size - 1 },
+			{ type: 'slotChosen', from: layout.start + 47 * layout.size, to: T0 },
+		]);
+		expect(bars().filter((b) => b.tabIndex === 0)).toHaveLength(1);
+		const key = async (el: HTMLElement, k: string) => {
+			await act(async () => {
+				el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+			});
+		};
+		await act(async () => bars()[3].focus());
+		await key(bars()[3], 'ArrowRight');
+		expect(document.activeElement).toBe(bars()[4]);
+		expect(bars()[4].tabIndex).toBe(0);
+		await key(bars()[4], 'Home');
+		expect(document.activeElement).toBe(bars()[0]);
+		await key(bars()[0], 'ArrowLeft');
+		expect(document.activeElement).toBe(bars()[0]);
+		await key(bars()[0], 'End');
+		expect(document.activeElement).toBe(bars()[47]);
+	});
+
+	it('LIVE_HIDDEN: no strip without one (the live ranges), nor before a pipeline is shown', async () => {
+		await show({ range: { kind: 'recent', from: T0 - 15 * MIN, to: null }, strip: null });
+		expect(host.querySelector('.rpcn-logs-strip')).toBeNull();
+		await send({ type: 'show', title: null, rows: [], dropped: 0, cap: 5000, status: '', state: state({ strip: strip24({}) }) });
+		expect(host.querySelector('.rpcn-logs-strip')).toBeNull();
+	});
+
+	it('the slot sizes, the titles and the validation of the strip and slotChosen', () => {
+		expect(slotSize(DAY)).toBe(30 * MIN);
+		expect(slotSize(HOUR)).toBe(MIN);
+		expect(slotSize(7 * DAY)).toBe(4 * HOUR);
+		expect(stripTitle(MIN)).toBe('Records per minute');
+		expect(stripTitle(4 * HOUR)).toBe('Records per 4 hours');
+		expect(stripTitle(DAY)).toBe('Records per day');
+		const good = strip24({ 1: { total: 2 } });
+		expect(parseLogsHostMessage({ type: 'state', state: state({ strip: good }) })).toBeDefined();
+		const { strip: _s, ...noStrip } = state();
+		expect(parseLogsHostMessage({ type: 'state', state: noStrip })).toBeUndefined();
+		for (const bad of [
+			{ ...good, total: good.total.slice(1) }, { ...good, size: 1_000 }, { ...good, errors: good.errors.map(() => -1) }, { ...good, end: good.start - 1 },
+			{ ...good, total: [], errors: [], warns: [], matched: [] }, { ...good, from: good.start - 1 },
+			{ ...good, matched: good.total.map((n) => n + 1) }, { ...good, errors: good.total.map((n, i) => (i === 1 ? n + 1 : 0)) }, { ...good, warns: good.total.map((n, i) => (i === 1 ? n + 1 : 0)) },
+		]) {
+			expect(parseLogsHostMessage({ type: 'state', state: state({ strip: bad }) })).toBeUndefined();
+		}
+		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0 - MIN, to: T0, index: 3 })).toEqual({ type: 'slotChosen', from: T0 - MIN, to: T0 });
+		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0, to: T0 })).toBeUndefined();
+		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0, to: T0 - MIN })).toBeUndefined();
+		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: 'x', to: T0 })).toBeUndefined();
+		expect(parseLogsWebviewMessage({ type: 'slotChosen', index: 3 })).toBeUndefined();
 	});
 });

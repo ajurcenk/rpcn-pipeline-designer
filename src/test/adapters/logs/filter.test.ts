@@ -1,6 +1,6 @@
 import * as assert from 'assert';
-import { compileFilter, Counter, INSTANCE_FIELD, levelOf, matches, sameFilter } from '../../../adapters/logs/filter';
-import { filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
+import { compileFilter, Counter, INSTANCE_FIELD, levelOf, matches, sameFilter, SlotCounter } from '../../../adapters/logs/filter';
+import { DAY_MS, HOUR_MS, MINUTE_MS, filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
 
 // The Pipeline Logs panel's filter (ticket 6.4): the level a row counts under, the levels, the search
 // (plain or a regular expression, Match case) over the message, the level, the instance and every
@@ -111,5 +111,35 @@ suite('Pipeline logs filter (ticket 6.4)', () => {
 		c.add(row({ level: 'WARN' }), false);
 		c.add(row({ level: '' }), false);
 		assert.deepStrictEqual(c.counts, { levels: { error: 0, warn: 1, info: 1, debug: 0, other: 1 }, total: 3, matched: 1 });
+	});
+
+	test('SlotCounter (ticket 6.7): per slot every record, its errors and warnings, those matching; slotted again for a wider span; empty slots stay', () => {
+		const t0 = Date.UTC(2026, 10, 5, 0, 0);
+		const c = new SlotCounter();
+		c.add(t0 + 5 * MINUTE_MS, 'info', true);
+		c.add(t0 + 29 * MINUTE_MS + 59_999, 'error', false);
+		c.add(t0 + 30 * MINUTE_MS, 'warn', true);
+		c.add(t0 + 23 * HOUR_MS, 'debug', false);
+		const day = c.strip(t0, t0 + DAY_MS);
+		assert.strictEqual(day.size, 30 * MINUTE_MS);
+		assert.strictEqual(day.total.length, 48);
+		assert.deepStrictEqual([day.total[0], day.errors[0], day.warns[0], day.matched[0]], [2, 1, 0, 1]);
+		assert.deepStrictEqual([day.total[1], day.errors[1], day.warns[1], day.matched[1]], [1, 0, 1, 1]);
+		assert.strictEqual(day.total[46], 1);
+		assert.strictEqual(day.total.filter((n) => n === 0).length, 45, 'EMPTY_SLOTS: still slots');
+		assert.strictEqual(day.total.reduce((a, b) => a + b, 0), 4);
+		// LOAD_OLDER: the span grows to 7 days; re-slotted per 4 hours, none lost.
+		c.add(t0 - 6 * DAY_MS, 'info', true);
+		const week = c.strip(t0 - 6 * DAY_MS, t0 + DAY_MS);
+		assert.deepStrictEqual([week.size, week.total.length], [4 * HOUR_MS, 42]);
+		assert.strictEqual(week.total.reduce((a, b) => a + b, 0), 5);
+		assert.strictEqual(week.total[0], 1);
+		assert.strictEqual(week.total[36], 3, 'the first 4 hours of t0');
+		// A record outside the span counts in the nearest slot.
+		const hour = c.strip(t0, t0 + HOUR_MS);
+		assert.strictEqual(hour.total.reduce((a, b) => a + b, 0), 5);
+		assert.strictEqual(hour.total[0], 1, 'the record 6 days before');
+		assert.strictEqual(hour.total[5], 1);
+		assert.strictEqual(hour.total[59], 1);
 	});
 });

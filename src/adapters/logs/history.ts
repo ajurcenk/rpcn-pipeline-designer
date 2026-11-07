@@ -1,6 +1,8 @@
 // The history rules of the Pipeline Logs panel (ticket 6.3, AD-24): pure. Which times a range of the
 // menu reads, how long the window of Load older records is, how older rows join the kept ones under the
-// cap, when the log's first record has been reached, and the menu's retention line. No `vscode` import.
+// cap, when the log's first record has been reached, and the menu's retention line. Ticket 6.7: the
+// span of the records-per-time strip (the slots themselves are in `logsProtocol.ts`, which the webview
+// shares). No `vscode` import.
 
 import { DAY_MS, HOUR_MS, type LogsRange, MINUTE_MS, type RangeChoice } from '../../shared/logsProtocol';
 import type { LogPositions } from './logReader';
@@ -100,4 +102,19 @@ export function retentionText(ms: number | undefined): string {
 		return 'The topic keeps its records with no time limit.';
 	}
 	return `Records older than ${durationText(ms)} are gone (the topic's retention).`;
+}
+
+/**
+ * Ticket 6.7: the times the strip spans, or `undefined` for a range without one (Live; the last
+ * 15 minutes, then live). From the range's start, or the oldest window Load older read (`olderFrom`), to
+ * the range's end; Since the last deploy, which goes on live, ends at the latest of when it was chosen,
+ * the time it was read up to (`readUntil`) and the newest record counted (`newest`).
+ */
+export function stripSpan(range: LogsRange, chosenAt: number, olderFrom?: number, readUntil?: number, newest?: number): { readonly from: number; readonly end: number } | undefined {
+	if (range.kind === 'live' || range.kind === 'recent') {
+		return undefined;
+	}
+	const from = Math.min(range.from, olderFrom ?? range.from);
+	const end = range.to ?? Math.max(chosenAt, readUntil ?? chosenAt, newest ?? chosenAt);
+	return { from, end: Math.max(from, end) };
 }

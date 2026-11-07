@@ -2,9 +2,12 @@
 // of the levels shown, the search is found in its message, its level, its instance or one of its
 // further fields' names or values (as shown: masked, `license_org` never there), and every field chip
 // holds (`instance_id` is the instance column). The search is compiled once per filter. The host
-// applies it to the records as a range is read, so the cap counts matches. No `vscode` import.
+// applies it to the records as a range is read, so the cap counts matches. Ticket 6.7: `SlotCounter`
+// keeps the strip's counts per minute beside the level counts. No `vscode` import.
 
-import { LOG_LEVELS, levelOfText, MAX_MATCH_CHARS, type LogCounts, type LogFilter, type LogLevel, type LogRow, searchPattern } from '../../shared/logsProtocol';
+import {
+	LOG_LEVELS, levelOfText, MAX_MATCH_CHARS, MINUTE_MS, type LogCounts, type LogFilter, type LogLevel, type LogRow, type LogStrip, searchPattern, slotOf, stripLayout,
+} from '../../shared/logsProtocol';
 
 /** The field chip that stands for the instance column. */
 export const INSTANCE_FIELD = 'instance_id';
@@ -61,6 +64,59 @@ export function sameFilter(a: LogFilter, b: LogFilter): boolean {
 		return false;
 	}
 	return a.text === '' || (a.matchCase === b.matchCase && a.regex === b.regex);
+}
+
+/** One minute's counts (ticket 6.7): every record, its ERROR and WARN ones, those matching. */
+interface MinuteCounts {
+	total: number;
+	errors: number;
+	warns: number;
+	matched: number;
+}
+
+/**
+ * The strip's counts (ticket 6.7): every record of the pipeline counted once (as `Counter`), kept per
+ * minute of its timestamp, so the strip can be slotted again for any span (every slot size is whole
+ * minutes, and the slots start on a minute) without keeping the records.
+ */
+export class SlotCounter {
+	private readonly minutes = new Map<number, MinuteCounts>();
+
+	add(time: number, level: LogLevel, matching: boolean): void {
+		const minute = Math.floor(time / MINUTE_MS);
+		let m = this.minutes.get(minute);
+		if (!m) {
+			m = { total: 0, errors: 0, warns: 0, matched: 0 };
+			this.minutes.set(minute, m);
+		}
+		m.total++;
+		if (level === 'error') {
+			m.errors++;
+		} else if (level === 'warn') {
+			m.warns++;
+		}
+		if (matching) {
+			m.matched++;
+		}
+	}
+
+	/** The strip from `from` to `end`: the counts per slot of `stripLayout(from, end)`; a record outside it counts in the nearest slot. */
+	strip(from: number, end: number): LogStrip {
+		const layout = stripLayout(from, end);
+		const zero = () => new Array<number>(layout.count).fill(0);
+		const total = zero();
+		const errors = zero();
+		const warns = zero();
+		const matched = zero();
+		for (const [minute, m] of this.minutes) {
+			const i = Math.min(layout.count - 1, Math.max(0, slotOf(minute * MINUTE_MS, layout.start, layout.size)));
+			total[i] += m.total;
+			errors[i] += m.errors;
+			warns[i] += m.warns;
+			matched[i] += m.matched;
+		}
+		return { start: layout.start, from: layout.from, size: layout.size, end: layout.end, total, errors, warns, matched };
+	}
 }
 
 /** Counts that go up as records are read: per level, every record, those matching. */

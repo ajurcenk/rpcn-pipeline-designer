@@ -1,9 +1,10 @@
-// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4, 6.5, 6.6): every
+// The host<->webview contract of the Pipeline Logs panel (AD-5, AD-24, tickets 6.2, 6.3, 6.4, 6.5, 6.6, 6.7): every
 // message of the third webview, as discriminated unions on `type`, plus the validators each side uses on
 // what it receives, and the pure rules both share (the range menu's choices, local date-times, the gap
 // notes; ticket 6.4: the levels, the filter and its search pattern; ticket 6.6: the panel's states and
-// their texts). The panel adapter (`src/adapters/vscode/logsPanel.ts`), the record shaping
-// (`src/adapters/logs/records.ts`) and `webview/src/logs` import it. Imports nothing (AD-15).
+// their texts; ticket 6.7: the records-per-time strip's slots, labels and state). The panel adapter
+// (`src/adapters/vscode/logsPanel.ts`), the record shaping (`src/adapters/logs/records.ts`) and
+// `webview/src/logs` import it. Imports nothing (AD-15).
 
 /** At most this many records are kept (the oldest dropped first), by the host and the webview alike. */
 export const MAX_LOG_ROWS = 5_000;
@@ -290,6 +291,134 @@ export function panelStateTexts(state: LogsPanelState, retrySeconds?: number | n
 	}
 }
 
+/**
+ * Ticket 6.7 (board 5): the slot sizes of the records-per-time strip, smallest first. A range gets the
+ * smallest that gives it at most `MAX_STRIP_SLOTS` slots (about 30 to 60 bars).
+ */
+export const SLOT_SIZES_MS: readonly number[] = [
+	MINUTE_MS, 5 * MINUTE_MS, 10 * MINUTE_MS, 15 * MINUTE_MS, 30 * MINUTE_MS,
+	HOUR_MS, 2 * HOUR_MS, 4 * HOUR_MS, 6 * HOUR_MS, 12 * HOUR_MS, DAY_MS,
+];
+export const MAX_STRIP_SLOTS = 60;
+
+/**
+ * The slot size for a strip spanning `spanMs`: the smallest of `SLOT_SIZES_MS` with at most
+ * `MAX_STRIP_SLOTS` slots; past 60 days (beyond the list), whole days so that it stays at 60.
+ */
+export function slotSize(spanMs: number): number {
+	const span = Math.max(0, spanMs);
+	for (const size of SLOT_SIZES_MS) {
+		if (Math.ceil(span / size) <= MAX_STRIP_SLOTS) {
+			return size;
+		}
+	}
+	return Math.ceil(span / (MAX_STRIP_SLOTS * DAY_MS)) * DAY_MS;
+}
+
+/**
+ * Where a strip's slots lie: `start` (a whole minute), `size`, `count`; the first slot begins at `from`
+ * (the range read), the last ends at `end`.
+ */
+export interface StripLayout {
+	readonly start: number;
+	readonly from: number;
+	readonly size: number;
+	readonly count: number;
+	readonly end: number;
+}
+
+/**
+ * The slots of a strip from `from` to `end`: the size from the span, the start floored to the minute
+ * (so the host's per-minute counts fall in whole slots), as many slots as the span needs.
+ */
+export function stripLayout(from: number, end: number): StripLayout {
+	const to = Math.max(from, end);
+	const size = slotSize(to - from);
+	return { start: Math.floor(from / MINUTE_MS) * MINUTE_MS, from, size, count: Math.max(1, Math.ceil((to - from) / size)), end: to };
+}
+
+/** The slot `time` falls in, counted from `start` (may be out of the strip: the caller clamps). */
+export function slotOf(time: number, start: number, size: number): number {
+	return Math.floor((time - start) / size);
+}
+
+/**
+ * Slot `index`'s times within the span read: `from` and `to` inclusive (a custom range); the first one
+ * begins at the strip's `from`, the last ends at its `end` (never past what was read).
+ */
+export function slotBounds(layout: Pick<StripLayout, 'start' | 'from' | 'size' | 'end'>, count: number, index: number): { readonly from: number; readonly to: number } {
+	const begin = layout.start + index * layout.size;
+	const from = index === 0 ? Math.max(begin, layout.from) : begin;
+	return { from, to: index === count - 1 ? layout.end : Math.min(layout.end, begin + layout.size - 1) };
+}
+
+/** "per minute", "per 30 minutes", "per 4 hours", "per day", "per 2 days". */
+export function slotSizeText(size: number): string {
+	const unit = (n: number, one: string) => (n === 1 ? `per ${one}` : `per ${n.toLocaleString('en-US')} ${one}s`);
+	if (size % DAY_MS === 0) {
+		return unit(size / DAY_MS, 'day');
+	}
+	if (size % HOUR_MS === 0) {
+		return unit(size / HOUR_MS, 'hour');
+	}
+	return unit(Math.round(size / MINUTE_MS), 'minute');
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Nov 5 14:00", in local time: the strip's axis and its bars' names. */
+export function shortTime(ms: number): string {
+	const d = new Date(ms);
+	return `${MONTHS[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** "Nov 5 14:00–14:30", or "Nov 5 20:00–Nov 6 00:00" across midnight (`end` exclusive). */
+export function slotTimeText(from: number, end: number): string {
+	const a = new Date(from);
+	const b = new Date(end);
+	const sameDay = a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+	return `${shortTime(from)}–${sameDay ? shortTime(end).slice(shortTime(end).lastIndexOf(' ') + 1) : shortTime(end)}`;
+}
+
+/**
+ * A bar's accessible name: "Nov 5 14:00–14:30: 120 records, 3 errors, 1 warning" (the errors and
+ * warnings when there are some; with a filter on, how many match).
+ */
+export function slotLabel(from: number, end: number, counts: { readonly total: number; readonly errors: number; readonly warns: number; readonly matched: number }, filtered: boolean): string {
+	const n = (v: number, one: string) => `${v.toLocaleString('en-US')} ${one}${v === 1 ? '' : 's'}`;
+	const parts = [counts.total === 0 ? 'no records' : n(counts.total, 'record')];
+	if (counts.errors > 0) {
+		parts.push(n(counts.errors, 'error'));
+	}
+	if (counts.warns > 0) {
+		parts.push(n(counts.warns, 'warning'));
+	}
+	if (filtered && counts.total > 0) {
+		parts.push(`${counts.matched.toLocaleString('en-US')} ${counts.matched === 1 ? 'matches' : 'match'}`);
+	}
+	return `${slotTimeText(from, end)}: ${parts.join(', ')}`;
+}
+
+/** At most this many slots in a posted strip (the validator's bound). */
+export const MAX_POSTED_SLOTS = 10_000;
+
+/**
+ * Ticket 6.7: the records-per-time strip of a bounded range (board 5): its layout (`start`, `size`, the
+ * last slot to `end`) and per slot every record of the pipeline read (`total`), its ERROR and WARN ones
+ * (the level chips' levels) and those matching the filter. `null` for the live ranges.
+ */
+export interface LogStrip {
+	readonly start: number;
+	/** Where the span read begins (the first slot's start). */
+	readonly from: number;
+	readonly size: number;
+	readonly end: number;
+	readonly total: readonly number[];
+	readonly errors: readonly number[];
+	readonly warns: readonly number[];
+	readonly matched: readonly number[];
+}
+
 /** The panel's reading state beside its rows (ticket 6.3). */
 export interface LogsViewState {
 	readonly range: LogsRange;
@@ -330,6 +459,8 @@ export interface LogsViewState {
 	readonly stoppedShort: boolean;
 	/** Ticket 6.6: Set up log access runs for the shown pipeline's cluster (its buttons are disabled). */
 	readonly settingUp: boolean;
+	/** Ticket 6.7: the records-per-time strip, for a bounded range (and Since the last deploy); else `null`. */
+	readonly strip: LogStrip | null;
 }
 
 export type LogsHostMessage =
@@ -380,7 +511,9 @@ export type LogsWebviewMessage =
 	/** Ticket 6.6: No records' Show every level: the level filter cleared. */
 	| { readonly type: 'showEveryLevel' }
 	/** Ticket 6.6: No records' Last 24 hours. */
-	| { readonly type: 'last24h' };
+	| { readonly type: 'last24h' }
+	/** Ticket 6.7: a bar of the strip: its slot's times as drawn (inclusive), read as a custom range, the filter kept. */
+	| { readonly type: 'slotChosen'; readonly from: number; readonly to: number };
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -444,6 +577,21 @@ function isPanelState(v: unknown): v is LogsPanelState {
 	}
 }
 
+function isStrip(v: unknown): v is LogStrip {
+	if (!isObject(v) || !isTime(v.start) || !isTime(v.from) || !isTime(v.end) || v.from < v.start || v.end < v.from
+		|| !isCount(v.size) || v.size <= 0 || v.size % MINUTE_MS !== 0) {
+		return false;
+	}
+	const counts = [v.total, v.errors, v.warns, v.matched];
+	if (!counts.every((c) => Array.isArray(c) && c.every(isCount))) {
+		return false;
+	}
+	const total = v.total as number[];
+	const n = total.length;
+	// A slot's errors, warnings and matches are each among its records.
+	return n > 0 && n <= MAX_POSTED_SLOTS && counts.every((c) => (c as number[]).length === n && (c as number[]).every((x, i) => x <= total[i]));
+}
+
 function isState(v: unknown): v is LogsViewState {
 	if (!isObject(v) || !isObject(v.range)) {
 		return false;
@@ -454,7 +602,8 @@ function isState(v: unknown): v is LogsViewState {
 		&& (v.olderError === null || typeof v.olderError === 'string') && (v.olderNote === null || typeof v.olderNote === 'string') && isCount(v.newerDropped) && (v.retention === null || typeof v.retention === 'string') && (v.deployedAt === null || isTime(v.deployedAt))
 		&& isTime(v.olderBefore) && parseLogFilter(v.filter) !== undefined && isCounts(v.counts)
 		&& typeof v.highlightErrors === 'boolean' && (v.focusId === null || typeof v.focusId === 'string') && (v.note === null || typeof v.note === 'string')
-		&& isPanelState(v.panelState) && typeof v.stoppedShort === 'boolean' && typeof v.settingUp === 'boolean';
+		&& isPanelState(v.panelState) && typeof v.stoppedShort === 'boolean' && typeof v.settingUp === 'boolean'
+		&& (v.strip === null || isStrip(v.strip));
 }
 
 /** A host message, or `undefined` for anything malformed. */
@@ -497,6 +646,8 @@ export function parseLogsWebviewMessage(v: unknown): LogsWebviewMessage | undefi
 			return { type: v.type };
 		case 'liveToggled':
 			return typeof v.live === 'boolean' ? { type: 'liveToggled', live: v.live } : undefined;
+		case 'slotChosen':
+			return isTime(v.from) && isTime(v.to) && v.from < v.to ? { type: 'slotChosen', from: v.from, to: v.to } : undefined;
 		case 'filterChanged': {
 			const filter = parseLogFilter(v.filter);
 			return filter ? { type: 'filterChanged', filter } : undefined;

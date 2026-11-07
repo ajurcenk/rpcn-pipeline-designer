@@ -21,6 +21,9 @@
 // actions on a deploy and an update are checked in 96-cloud.ts; here a start's, through to the log.
 // Ticket 6.6 (states): every matrix row of its plan (NO_ACCESS … AFTER_SETUP), the retries' waits
 // shortened through the panel's `retryDelaysMs` seam (the states still say the real waits).
+// Ticket 6.7 (the records-per-time strip): every matrix row of its plan (SLOTS … OVER_CAP) reads the
+// strip through `viewState.strip` and clicks a bar through `chooseSlot`, as the webview's `slotChosen`
+// does; STRIP_7_DAYS is its acceptance check (20,000 records over 7 days, 30 ERROR in one afternoon).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -34,7 +37,7 @@ import {
 } from '../../../adapters/vscode/logsPanel';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
-import { gapsIn, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
+import { gapsIn, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
@@ -1623,6 +1626,252 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		topic.connectionFailures = 0;
 		assert.strictEqual(logs().retry(), true);
 		assert.ok(await waitFor(() => stateKind() === 'none' && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+	});
+
+	// --- ticket 6.7: the records-per-time strip ---
+
+	const strip = () => {
+		const s = logs().viewState.strip;
+		assert.ok(s, 'a strip');
+		return s;
+	};
+	const sum = (a: readonly number[]) => a.reduce((x, y) => x + y, 0);
+	/** The strip's slot of each of `timestamps`, as its bars count them (clamped to the strip). */
+	const slotted = (s: { start: number; size: number; total: readonly number[] }, timestamps: readonly number[]) => {
+		const out = s.total.map(() => 0);
+		for (const t of timestamps) {
+			out[Math.min(out.length - 1, Math.max(0, slotOf(t, s.start, s.size)))]++;
+		}
+		return out;
+	};
+	/** The timestamps of ORDERS' records in the topic. */
+	const ordersTimes = () => topic.partitions[0].filter((r) => r.key === ORDERS).map((r) => r.timestamp);
+
+	test('STRIP_7_DAYS (acceptance, MARKS, OVER_CAP): 20,000 records over 7 days, 30 ERROR in one afternoon: Last 7 days has 42 bars per 4 hours summing to 20,000, the afternoon\'s bars marked; a bar\'s click shows its slot\'s records', async () => {
+		const t0 = Date.now();
+		const errors = new Set(Array.from({ length: 30 }, (_, k) => 12_000 + k * 10));
+		topic.write(...Array.from({ length: 20_000 }, (_, i) => {
+			const r = recAt(ORDERS, `r${i}`, t0 - 7 * DAY + MINUTE + i * 29_000);
+			return errors.has(i) ? { ...r, value: { ...r.value, level: 'ERROR' } } : r;
+		}), recAt(CLICKS, 'another pipeline', t0 - DAY));
+		await showOrders();
+		assert.strictEqual(logs().viewState.strip, null, 'LIVE_HIDDEN: none on the default range');
+		assert.strictEqual(await logs().chooseRange({ kind: 'week' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 30_000), logs().statusText);
+		const s = strip();
+		assert.strictEqual(s.size, 4 * HOUR, 'per 4 hours');
+		assert.strictEqual(s.total.length, 42);
+		assert.strictEqual(sum(s.total), 20_000, 'every record of the pipeline, not only the 5,000 kept');
+		assert.strictEqual(logs().rows().length, MAX_LOG_ROWS);
+		assert.deepStrictEqual(s.total, slotted(s, ordersTimes()), 'each bar the pipeline\'s records of its slot');
+		assert.strictEqual(sum(s.errors), 30);
+		const errorTimes = topic.partitions[0].filter((r) => r.key === ORDERS && errors.has(Number(/r(\d+)$/.exec(JSON.parse(r.value as string).message as string)![1]))).map((r) => r.timestamp);
+		assert.deepStrictEqual(s.errors, slotted(s, errorTimes), 'the afternoon\'s bars carry the error marks');
+		const marked = s.errors.map((n, i) => (n > 0 ? i : -1)).filter((i) => i >= 0);
+		assert.ok(marked.length >= 1 && marked.length <= 2, `the error marks in one afternoon: bars ${marked.join(', ')}`);
+		assert.strictEqual(sum(s.warns), 0);
+		assert.deepStrictEqual(s.matched, s.total, 'no filter: every record matches');
+		// The click: that slot read as a custom range, re-slotted (4 hours: 48 per 5 minutes).
+		const i = marked[0];
+		const bounds = slotBounds(s, s.total.length, i);
+		assert.strictEqual(await logs().chooseSlot(bounds.from, bounds.to), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 30_000), logs().statusText);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: bounds.from, to: bounds.to });
+		const inSlot = topic.partitions[0].filter((r) => r.key === ORDERS && r.timestamp >= bounds.from && r.timestamp <= bounds.to);
+		assert.strictEqual(logs().rows().length, s.total[i], 'that slot\'s records');
+		assert.deepStrictEqual(logs().rows().map((r) => r.id), inSlot.map((r) => `0:${r.offset}`));
+		assert.ok(logs().rows().some((r) => r.level === 'ERROR'));
+		const again = strip();
+		assert.deepStrictEqual([again.size, again.total.length, sum(again.total), sum(again.errors)], [5 * MINUTE, 48, s.total[i], s.errors[i]]);
+		assert.strictEqual(await logs().chooseSlot(again.from - 1, again.from + MINUTE), false, 'before the strip');
+		assert.strictEqual(await logs().chooseSlot(again.end - MINUTE, again.end + 1), false, 'past the strip');
+		assert.strictEqual(await logs().chooseSlot(again.from + MINUTE, again.from + MINUTE), false, 'from not before to');
+	});
+
+	test('SLOTS, SHORT_LONG and EMPTY_SLOTS: Last 24 hours 48 bars per 30 minutes, Last hour 60 per minute, Last 7 days 42 per 4 hours; heights the pipeline\'s records per slot; quiet hours still slots', async () => {
+		// Two records in one minute (the strip's slots start on a minute): one bar of the last hour.
+		const minute = Math.floor((Date.now() - 50 * MINUTE) / MINUTE) * MINUTE;
+		const agos = [5 * DAY, 30 * HOUR, 20 * HOUR, 19 * HOUR + 50 * MINUTE, 3 * HOUR, 10 * MINUTE, 2 * MINUTE];
+		topic.write(...agos.map((ago) => rec(ORDERS, `${ago}`, ago)), recAt(ORDERS, 'pair 1', minute + 10_000), recAt(ORDERS, 'pair 2', minute + 20_000),
+			rec(CLICKS, 'another pipeline', 2 * MINUTE));
+		await showOrders();
+		const read = async (kind: 'hour' | 'day' | 'week', size: number, count: number, records: number) => {
+			assert.strictEqual(await logs().chooseRange({ kind }), true);
+			assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+			const s = strip();
+			assert.deepStrictEqual([s.size, s.total.length, sum(s.total)], [size, count, records], kind);
+			const range = logs().viewState.range;
+			assert.deepStrictEqual(s.total, slotted(s, ordersTimes().filter((t) => t >= range.from && t <= range.to!)), `${kind}: the records per slot`);
+			assert.ok(s.start <= range.from && s.start > range.from - MINUTE, 'from the range\'s start (on its minute)');
+			assert.strictEqual(s.end, range.to);
+			return s;
+		};
+		const day = await read('day', 30 * MINUTE, 48, 7);
+		assert.strictEqual(sum(day.total), 7, 'the records of the last 24 hours, not the older ones nor another pipeline\'s');
+		assert.ok(day.total.filter((n) => n === 0).length >= 40, 'EMPTY_SLOTS: the quiet hours are slots with no records');
+		const hour = await read('hour', MINUTE, 60, 4);
+		assert.strictEqual(hour.total.filter((n) => n > 0).length, 3, 'two records in one minute share a bar');
+		await read('week', 4 * HOUR, 42, 9);
+		const posted = logs().posted.filter((m) => m.type === 'state' || m.type === 'show').at(-1);
+		assert.ok(posted && (posted.type === 'state' || posted.type === 'show') && posted.state.strip?.total.length === 42, 'the webview gets the strip');
+	});
+
+	test('FILTERED: with a search on, every bar keeps its full height; the matching part per bar; CLICK: a bar\'s click keeps the search', async () => {
+		// A custom range from a whole half hour, 6 hours long: 36 slots of 10 minutes from its start.
+		const a = Math.floor(Date.now() / (30 * MINUTE)) * 30 * MINUTE - 6 * HOUR;
+		topic.write(
+			recAt(ORDERS, 'secret one', a + 11 * MINUTE), recAt(ORDERS, 'plain', a + 12 * MINUTE), recAt(ORDERS, 'plain', a + 3 * HOUR + MINUTE),
+			recAt(ORDERS, 'secret two', a + 3 * HOUR + 2 * MINUTE), recAt(ORDERS, 'secret three', a + 3 * HOUR + 3 * MINUTE), recAt(ORDERS, 'plain', a + 5 * HOUR),
+		);
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: a, to: a + 6 * HOUR }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		const unfiltered = strip();
+		assert.deepStrictEqual([unfiltered.start, unfiltered.size, unfiltered.total.length, sum(unfiltered.total)], [a, 10 * MINUTE, 36, 6]);
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'secret' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 3, 10_000), logs().statusText);
+		const filtered = strip();
+		assert.deepStrictEqual(filtered.total, unfiltered.total, 'every bar\'s full height unchanged');
+		assert.strictEqual(sum(filtered.matched), 3);
+		assert.ok(filtered.matched.every((m, i) => m <= filtered.total[i]));
+		const secretTimes = topic.partitions[0].filter((r) => (JSON.parse(r.value as string) as { message: string }).message.includes('secret')).map((r) => r.timestamp);
+		assert.deepStrictEqual(filtered.matched, slotted(filtered, secretTimes));
+		// CLICK with the search on: the slot read, the search kept, only its matches shown.
+		const i = filtered.matched.findIndex((m) => m === 2);
+		assert.deepStrictEqual([i, filtered.total[i]], [18, 3], 'the slot with two matches of its three records');
+		const bounds = slotBounds(filtered, filtered.total.length, i);
+		assert.strictEqual(await logs().chooseSlot(bounds.from, bounds.to), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.range.kind, 'custom');
+		assert.deepStrictEqual(logs().viewState.filter, { ...NO_FILTER, text: 'secret' }, 'filters kept');
+		assert.deepStrictEqual(texts(), ['secret two', 'secret three']);
+		assert.deepStrictEqual([sum(strip().total), sum(strip().matched)], [filtered.total[i], 2], 'the slot\'s strip');
+		assert.deepStrictEqual([strip().size, strip().total.length], [MINUTE, 10], '10 minutes: per minute');
+	});
+
+	test('LOAD_OLDER: Load older on a bounded range extends the strip to the older window, re-slotted when the span grows', async () => {
+		topic.write(rec(ORDERS, 'older 1', 100 * MINUTE), rec(ORDERS, 'older 2', 70 * MINUTE), rec(ORDERS, 'recent', 20 * MINUTE));
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual([strip().size, strip().total.length, sum(strip().total)], [MINUTE, 60, 1]);
+		const end = strip().end;
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['older 2', 'recent'], 'the hour before the oldest shown');
+		const s = strip();
+		const windowFrom = topic.ranges.at(-1)!.fromTime;
+		assert.ok(s.start <= windowFrom && s.start > windowFrom - MINUTE, 'from the older window\'s start');
+		assert.strictEqual(s.end, end, 'to the range\'s end');
+		assert.strictEqual(s.size, 5 * MINUTE, 'over an hour: re-slotted per 5 minutes');
+		assert.strictEqual(sum(s.total), 2);
+		assert.deepStrictEqual(s.total, slotted(s, ordersTimes().filter((t) => t >= windowFrom)));
+		await logs().loadOlder();
+		assert.deepStrictEqual(texts(), ['older 1', 'older 2', 'recent']);
+		assert.strictEqual(sum(strip().total), 3, 'and further back');
+		assert.ok(strip().start < s.start);
+	});
+
+	test('LIVE_HIDDEN: no strip for Live or the last 15 minutes then live; Since the last deploy and a custom range have one', async () => {
+		const deployed = Date.now() - 2 * HOUR;
+		fake.cluster(VILNIUS).pipelines.find((p) => p.id === ORDERS)!.update_time = new Date(deployed).toISOString().replace('Z', '123456Z');
+		topic.write(rec(ORDERS, 'after the deploy', HOUR), rec(ORDERS, 'recent', MINUTE));
+		await showOrders();
+		assert.strictEqual(logs().viewState.strip, null, 'the default');
+		assert.strictEqual(await logs().chooseRange({ kind: 'live' }), true);
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.strip, null, 'Live');
+		const last = logs().posted.filter((m) => m.type === 'state' || m.type === 'show').at(-1);
+		assert.ok(last && (last.type === 'state' || last.type === 'show') && last.state.strip === null, 'the webview gets none');
+		assert.strictEqual(await logs().chooseRange({ kind: 'deploy' }), true);
+		assert.ok(await waitFor(() => texts().length === 2 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual([strip().size, sum(strip().total)], [5 * MINUTE, 2], 'Since the last deploy: from its time to now');
+		topic.write(rec(ORDERS, 'live'));
+		assert.ok(await waitFor(() => (logs().viewState.strip ? sum(logs().viewState.strip!.total) : 0) === 3, 10_000), 'a live record counted in the strip');
+		const now = Date.now();
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: now - 3 * HOUR, to: now }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual([strip().size, strip().total.length, sum(strip().total)], [5 * MINUTE, 36, 3]);
+		assert.strictEqual(await logs().chooseRange({ kind: 'recent' }), true);
+		assert.strictEqual(logs().viewState.strip, null);
+		assert.strictEqual(await logs().chooseSlot(now - HOUR, now), false, 'no strip, no slot');
+	});
+
+	test('STRIP_STATES: no strip under Sign-in refused, Not allowed, or a connection lost before any record was read; kept under a connection lost once records were read', async () => {
+		logs().retryDelaysMs = [200];
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 1500 }, (_, i) => recAt(ORDERS, `r${i}`, t0 - 50 * MINUTE + i * 1_000)));
+		await showOrders();
+		topic.password = 'rotated-logs-password-6-7-Zt2';
+		assert.strictEqual(await logs().chooseRange({ kind: 'day' }), true);
+		assert.ok(await waitFor(() => stateKind() === 'signIn', 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.strip, null, 'Sign-in refused');
+		topic.password = PASSWORD;
+		topic.refuseRead = true;
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => stateKind() === 'notAllowed', 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.strip, null, 'Not allowed');
+		topic.refuseRead = false;
+		topic.connectionFailures = 1_000;
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => stateKind() === 'connectionLost', 10_000), logs().statusText);
+		assert.strictEqual(logs().viewState.strip, null, 'Connection lost before anything was read');
+		topic.connectionFailures = 0;
+		assert.ok(await waitFor(() => logs().viewState.done && stateKind() === 'none', 10_000), logs().statusText);
+		assert.strictEqual(sum(strip().total), 1500);
+		// Lost mid-way: the strip of what was read stays.
+		topic.rangeDelayMs = 50;
+		topic.dropRangeAfter = 1;
+		let lostStrip: number | null | undefined;
+		const sub = logs().onDidChange(() => {
+			if (stateKind() === 'connectionLost' && lostStrip === undefined) {
+				const s = logs().viewState.strip;
+				lostStrip = s ? sum(s.total) : null;
+			}
+		});
+		teardowns.push(() => sub.dispose());
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => lostStrip !== undefined, 10_000), logs().statusText);
+		assert.strictEqual(lostStrip, 500, 'the 500 records read before the loss');
+		assert.ok(await waitFor(() => logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(sum(strip().total), 1500);
+	});
+
+	test('LOAD_OLDER stopped or failed: the strip extends only over what was read', async () => {
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 1200 }, (_, i) => recAt(ORDERS, `old${i}`, t0 - 75 * MINUTE + i * 100)), rec(ORDERS, 'recent', 20 * MINUTE));
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		const before = strip();
+		// Failed: nothing read, the strip as it was.
+		topic.dropRangeAfter = 0;
+		await logs().loadOlder();
+		assert.ok(logs().viewState.olderError, 'the failure is shown');
+		assert.deepStrictEqual(strip(), before, 'not extended over the window that failed');
+		// Stopped after the first batch: extended back only to the oldest record read.
+		topic.rangeDelayMs = 300;
+		const loading = logs().loadOlder();
+		assert.ok(await waitFor(() => { const p = logs().panelState; return p.kind === 'reading' && p.count > 0; }, 10_000), stateKind());
+		assert.strictEqual(logs().stopReading(), true);
+		await loading;
+		const window = topic.ranges.at(-1)!;
+		const read = window.delivered.filter((r) => r.key === ORDERS).map((r) => r.timestamp);
+		assert.ok(read.length > 0 && read.length < 1200, `${read.length} read`);
+		const s = strip();
+		assert.strictEqual(s.from, Math.min(...read), 'from the oldest record read');
+		assert.ok(s.from > window.fromTime, 'not from the window\'s start');
+		assert.strictEqual(sum(s.total), logs().viewState.counts.total);
+		assert.strictEqual(sum(s.total), 1 + read.length);
+	});
+
+	test('OVER_CAP (6.7): a range past the cap: the strip counts every record, not only those kept', async () => {
+		topic.write(...Array.from({ length: 8 }, (_, i) => rec(ORDERS, `r${i}`, (8 - i) * MINUTE + 30 * MINUTE)));
+		await showOrders();
+		logs().cap = 5;
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(texts().length, 5);
+		assert.strictEqual(sum(strip().total), 8);
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

@@ -1,4 +1,4 @@
-// The Pipeline Logs tab (tickets 6.2, 6.3, 6.4, 6.5, AD-24): a webview view in its own container in the bottom
+// The Pipeline Logs tab (tickets 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, AD-24): a webview view in its own container in the bottom
 // panel, next to Output. It shows one pipeline at a time, named in the view's description and the
 // webview's header ("<pipeline> · <cluster>"); Show logs on another pipeline (the Cloud view's
 // `LogSource`) switches to it, and the first one is no longer read.
@@ -52,16 +52,24 @@
 // range read to its end with none of the pipeline's records, or only records of levels the filter hides
 // (Show every level, Last 24 hours). **Reading**: a bounded range or Load older being read, with the
 // count so far and **Stop reading** (the rows read stay, the read ends, Live off).
+//
+// Ticket 6.7 (board 5): the records-per-time strip of a bounded range (and Since the last deploy; not
+// the two live ones). Every record of the pipeline counted (as for the level chips, including those left
+// out for the cap) is counted per minute of its timestamp (`SlotCounter`), and the strip in the state is
+// slotted from those for the span read: the range, extended back by each window Load older reads (so the
+// slots grow when the span does). A bar's click (`slotChosen`) reads its slot as a custom range, the
+// filter kept; the strip is then slotted for that range.
 
 import * as vscode from 'vscode';
 import {
 	filterActive, isLiveRange, localMinute, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
-	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogsViewState, type RangeChoice,
+	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogStrip, type LogsViewState,
+	type RangeChoice,
 } from '../../shared/logsProtocol';
 import { isLogReadError, LOGS_TOPIC, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';
-import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText } from '../logs/history';
-import { compileFilter, Counter, levelOf, matches, sameFilter, type CompiledFilter } from '../logs/filter';
+import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionText, stripSpan } from '../logs/history';
+import { compileFilter, Counter, levelOf, matches, sameFilter, SlotCounter, type CompiledFilter } from '../logs/filter';
 import { webviewHtml } from '../graphPanel/html';
 
 export const LOGS_VIEW_ID = 'redpandaConnect.pipelineLogs';
@@ -256,6 +264,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private counted = new Map<number, { lo: number; hi: number }>();
 	/** The oldest record of the pipeline read (its timestamp): where Load older goes on when nothing was left out. */
 	private oldestTs: number | undefined;
+	/** Ticket 6.7: every record counted, per minute of its timestamp (the strip's bars). */
+	private slots = new SlotCounter();
+	/** Ticket 6.7: the start of the oldest window Load older read (the strip extends back to it). */
+	private olderFrom: number | undefined;
+	/** Ticket 6.7: the newest record counted (its timestamp): where Since the last deploy's strip ends. */
+	private newestTs: number | undefined;
 	/** A live range read again with Live off is read up to this time (the filter changed). */
 	private readUntil: number | undefined;
 	/** Bumped on every Show logs and range, so an older read's records are not kept. */
@@ -344,7 +358,23 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			panelState: this.panelState,
 			stoppedShort: this.stoppedShort,
 			settingUp: this.settingUp,
+			strip: this.strip,
 		};
+	}
+
+	/**
+	 * Ticket 6.7: the records-per-time strip, or `null`: no pipeline, the live ranges, no log access, a
+	 * refused sign-in or read, a lost connection before any record was read, or around the error's search
+	 * still to be made.
+	 */
+	get strip(): LogStrip | null {
+		const failed = this.failure.kind;
+		if (!this.source || failed === 'noAccess' || failed === 'signIn' || failed === 'notAllowed' || this.pendingAround
+			|| (failed === 'connectionLost' && this.counter.counts.total === 0)) {
+			return null;
+		}
+		const span = stripSpan(this.range, this.chosenAt, this.olderFrom, this.readUntil, this.newestTs);
+		return span ? this.slots.strip(span.from, span.end) : null;
 	}
 
 	/**
@@ -450,6 +480,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 					case 'last24h':
 						void this.chooseRange({ kind: 'day' });
 						break;
+					case 'slotChosen':
+						void this.chooseSlot(m.from, m.to);
+						break;
 				}
 			}),
 			view.onDidChangeVisibility(() => {
@@ -548,6 +581,19 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	}
 
 	/**
+	 * A bar of the strip (ticket 6.7): its slot's times as the webview drew them (`to` inclusive), read as a
+	 * custom range, the filter kept (the strip is then that range's). `false` without a strip, for times
+	 * not inside the strip's span or not in order, or when the range is refused.
+	 */
+	async chooseSlot(from: number, to: number): Promise<boolean> {
+		const strip = this.strip;
+		if (!strip || !Number.isFinite(from) || !Number.isFinite(to) || from >= to || from < strip.from || to > strip.end) {
+			return false;
+		}
+		return this.chooseRange({ kind: 'custom', from, to });
+	}
+
+	/**
 	 * The filter (ticket 6.4): kept, and the range read again with it (unless it keeps the same rows).
 	 * `false` for a search that is not a valid regular expression (nothing changes).
 	 */
@@ -630,6 +676,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.counter = new Counter();
 		this.counted = new Map();
 		this.oldestTs = undefined;
+		this.slots = new SlotCounter();
+		this.olderFrom = undefined;
+		this.newestTs = undefined;
 		this.leftOutEver = false;
 		this.rangeReached = undefined;
 	}
@@ -978,6 +1027,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		let stopped = false;
 		let got: LogRecord[] = [];
 		const keepStopped = () => {
+			// Ticket 6.7: the strip extends only over what was read of the window (from its oldest record).
+			for (const r of got) {
+				if (isPipelineRecord(r, source.pipelineId)) {
+					this.olderFrom = Math.min(this.olderFrom ?? r.timestamp, r.timestamp);
+				}
+			}
 			const { matching } = this.take(source, got);
 			if (matching.length > 0) {
 				this.prepend(matching);
@@ -1018,6 +1073,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				if (!current()) {
 					return;
 				}
+				// Ticket 6.7: the window is read: the strip extends back to it.
+				this.olderFrom = Math.min(this.olderFrom ?? from, from);
 				const { matching, counted } = this.take(source, got);
 				const reachedStart = atLogStart(end.start, first);
 				// A match ends the walk back; without a filter, so does any of the pipeline's records.
@@ -1371,8 +1428,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			if ((!span || r.offset < span.lo || r.offset > span.hi) && !countedIds.has(row.id)) {
 				countedIds.add(row.id);
 				this.counter.add(row, keep);
+				this.slots.add(r.timestamp, levelOf(row), keep);
 				counted++;
 				this.oldestTs = this.oldestTs === undefined ? r.timestamp : Math.min(this.oldestTs, r.timestamp);
+				this.newestTs = this.newestTs === undefined ? r.timestamp : Math.max(this.newestTs, r.timestamp);
 			}
 			const now = this.counted.get(r.partition);
 			if (now) {
