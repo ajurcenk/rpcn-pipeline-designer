@@ -132,3 +132,6 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-the-log-panel-s-empty-and-error-states-plan.md`
   summary: A full stable run can stall indefinitely in "Live Bloblang diagnostics (integration, 4.5)".
   evidence: 2026-11-06, VS Code 1.145.2 (newly downloaded): 6.6's implementer's stable run ran 44 minutes stuck in that suite, before the logs suite started; it was stopped by PID and left a `binaryPath` in the test settings; the rerun of the same tree passed in 9 minutes. 6.6 does not touch the Bloblang diagnostics. Cap full runs with `timeout` until it is understood.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-export-the-shown-records-plan.md`
+  summary: The Bloblang test panel test "RENAME (4.17): the same panel under the new name, its snapshot names the new files, the samples file moved and still shown" fails intermittently with "the old samples file is gone".
+  evidence: CI run 42334757404 (6.8's push, stable, 1356 passing, 2 failing with the known HELD graph-markers flake); the rerun of the failed job passed; the same tree passed locally (stable 1358); 6.8 does not touch the test panel or samples files.
