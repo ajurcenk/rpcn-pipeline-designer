@@ -109,7 +109,9 @@ context:
 
 - After review (2026-11-06), superseding the notes above where they differ: a slot's bounds stay within the span read (the first from the range's start, not the minute before it; the last to the strip's end, never past it), so its name and its click match what its bar counts; the strip carries that `from`. Load older extends the strip only once a window is read (stopped: back to the oldest record read; failed: not at all). The strip is hidden under Sign-in refused, Not allowed, and a lost connection before any record was read. The marks are drawn inside the bar's height. The validator refuses a slot whose errors, warnings or matches exceed its records. `slotChosen` carries the slot's `from` and `to` as drawn (checked on the host: inside the strip, `from < to`), not its index; the seam is `chooseSlot(from, to)`.
 
-**Verification (2026-11-06):** compile, corpus 156, webview 375, multiroot 10, stable 1343 passing (1 pending: the older-VS Code suite, skipped on stable); no floor run. Manual check on the dev host: not yet done.
+**Verification (2026-11-06):** compile, corpus 156, webview 375, multiroot 10, stable 1343 passing (1 pending: the older-VS Code suite, skipped on stable); no floor run.
+
+**Manual check result (user, 2026-11-06):** passed on the 1.143.1 dev host against the real organization: "tested, no issues" (`errors.yaml` on rpc-vilnius: the strip on Last hour, Last 24 hours and Last 7 days with its slot size, the error marks and the bars' names, a search darkening the matching parts, a bar click reading its slot, Load older, Live and Last 15 minutes then live hiding it). Automated: stable 1345, multi-root 10, corpus 156, webview 375; no floor run.
 
 ## Review Triage Log
 
