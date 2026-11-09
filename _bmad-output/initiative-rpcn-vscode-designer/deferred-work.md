@@ -114,12 +114,15 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
   summary: Deploy includes the `redpandaConnect.resourceFiles` resources in the config sent to the Cloud, or refuses with the reason (epic 5 R7, ticket 5.6's second part).
   evidence: The user split ticket 5.6 on 2026-11-03 ("Split: variables first"); 5.6 now translates variables only, so a config that relies on resource files deploys without them.
+  resolution: moved to backlog story 42 "Deploy includes the resource files or refuses with the reason" (5.9, user decision 2026-11-09): `_bmad-output/backlog/story-deploy-includes-the-resource-files-or-refuses-with-the-reason.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
   summary: Deploy reports a config's local-only parts (stdin, stdout, local files and programs, `http_server`) as warnings in the Problems panel (epic 5 R7, ticket 5.6's third part).
   evidence: The user split ticket 5.6 on 2026-11-03 ("Split: variables first"); until this is built, such a config deploys with no warning.
+  resolution: moved to backlog story 43 "Deploy warns about a config's local-only parts" (5.9, user decision 2026-11-09): `_bmad-output/backlog/story-deploy-warns-about-a-configs-local-only-parts.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-translate-the-config-for-the-cloud-plan.md`
   summary: Undo steps in the full stable run fail intermittently: Lint on save FIX_ALL ("one undo step reverts all three") and the Bloblang test panel's DELETED + UNDO, UNDO_RELINK (each with and without WITH_GRAPH) and DIRTY_RECORD.
   evidence: 2026-11-03, VS Code 1.144.1: 6 failures in one full run and 7 (undo / `applyEdit`) in another, on ticket 5.6's code; the next full run passed (1189), and the Bloblang panel suite alone passed twice. The suites run before 96-cloud, and 5.6 touches none of their code. Not reproduced on the commit before 5.6 (not tried); a full run's earlier suites, or machine load, are the likely cause.
+  resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (5.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-check-the-config-against-the-cluster-before-deploying-plan.md`
   summary: The graph-markers test "HELD (story 13): a Red Hat marker stays on its node when a node is inserted above it before Red Hat republishes" fails intermittently.
   evidence: It failed in the 5.5 implementer's full run (passed when its suite was rerun alone) and on CI run 42058471336 for 0357b6d (VS Code 1.145.0, 1230 passing, 1 failing); the re-run of that job passed. Neither change touches the graph markers code.
