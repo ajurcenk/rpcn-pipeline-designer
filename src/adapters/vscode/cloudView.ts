@@ -427,6 +427,32 @@ interface ActionTarget {
 	readonly config?: vscode.Uri;
 }
 
+/** A palette command's pipeline (`dp`: the cluster's Data Plane, when it still has one). */
+type PaletteTarget =
+	| { readonly kind: 'target'; readonly cluster: CloudCluster; readonly dp: string | undefined; readonly pipeline: CloudPipeline }
+	/** Nothing chosen or nothing to choose (said so where needed). */
+	| { readonly kind: 'none' }
+	/** The mapped pipeline could not be read (not a 404). */
+	| { readonly kind: 'failed'; readonly message: string };
+
+/** How a palette command's target path differs between its callers. */
+interface PaletteTargetHow {
+	/** Said after a gone or unreadable mapping, then the pick; absent: a gone mapping stops there, an unreadable one goes to the pick unsaid. */
+	readonly pickAfterGone?: string;
+	/** The pick sorted by cluster, then pipeline name; else as listed. */
+	readonly byName?: boolean;
+	/** "No pipeline on the clusters to <nothingTo>." */
+	readonly nothingTo: string;
+	readonly title: string;
+	/** A choice's description, before masking. */
+	readonly describe: (cluster: CloudCluster, pipeline: CloudPipeline) => string;
+}
+
+/** Case-insensitive name order (then exact, for a stable order). */
+function byName(a: string, b: string): number {
+	return a.localeCompare(b, 'en', { sensitivity: 'base' }) || a.localeCompare(b);
+}
+
 /** Where a deploy goes: a new pipeline on a cluster, or an existing one replaced. */
 type Target =
 	| { readonly kind: 'create'; readonly cluster: CloudCluster; readonly dp: string; readonly name: string }
@@ -1900,15 +1926,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	 * config's `.cloud.json` maps to (read now), else one picked from every cluster's pipelines.
 	 */
 	private async actionTarget(action: PipelineAction, node: Extract<CloudNode, { kind: 'pipeline' }> | undefined): Promise<ActionTarget | PipelineActionResult> {
-		await this.ready;
-		if (!this.account) {
-			const choice = await this.showInfo('No Redpanda Cloud service account is connected.', CONNECT_ACTION);
-			if (choice !== CONNECT_ACTION || !(await this.connect())) {
-				return NOT_STARTED;
-			}
+		if (!(await this.connectedFirst())) {
+			return NOT_STARTED;
 		}
-		const doc = vscode.window.activeTextEditor?.document;
-		const config = doc && !doc.isUntitled && doc.uri.scheme === 'file' && this.options.isDetected(doc.uri) ? doc.uri : undefined;
+		const config = this.activeConfig();
 		if (node) {
 			const cluster = this.clusterById(node.clusterId);
 			const dp = cluster && this.dataplaneUrlOf(cluster);
@@ -1919,37 +1940,89 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			}
 			return { cluster, dp, pipeline, ...(config ? { config } : {}) };
 		}
+		const target = await this.paletteTarget(() => config, {
+			nothingTo: action,
+			title: `${ACTION_TEXT[action].title}: the pipeline`,
+			describe: (c, pipeline) => `${c.name} · ${pipelineStateDescription(pipeline)}`,
+		});
+		if (target.kind === 'failed') {
+			return { kind: 'failed', message: target.message };
+		}
+		if (target.kind === 'none' || !target.dp) {
+			return NOT_STARTED;
+		}
+		return { cluster: target.cluster, dp: target.dp, pipeline: target.pipeline, ...(config ? { config } : {}) };
+	}
+
+	/** Connected (after `ready`), else Connect offered: `false` when it was not chosen or did not connect. */
+	private async connectedFirst(): Promise<boolean> {
+		await this.ready;
+		if (!this.account) {
+			const choice = await this.showInfo('No Redpanda Cloud service account is connected.', CONNECT_ACTION);
+			if (choice !== CONNECT_ACTION || !(await this.connect())) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** The active editor's config, when it is a detected file on disk. */
+	private activeConfig(): vscode.Uri | undefined {
+		const doc = vscode.window.activeTextEditor?.document;
+		return doc && !doc.isUntitled && doc.uri.scheme === 'file' && this.options.isDetected(doc.uri) ? doc.uri : undefined;
+	}
+
+	/**
+	 * A palette command's pipeline (Start, Stop, Delete; Show pipeline logs): the clusters read, then the
+	 * one the config `configOf` gives (called once the clusters are read) maps to by its `.cloud.json`
+	 * (read now), else one picked from every cluster's pipelines.
+	 * `how` gives each caller's differences: whether a gone mapping stops there or falls through to the
+	 * pick, the pick's order and descriptions. `failed`: the mapped pipeline could not be read.
+	 */
+	private async paletteTarget(configOf: () => vscode.Uri | undefined, how: PaletteTargetHow): Promise<PaletteTarget> {
 		this.requested = true;
 		await this.loadClusters(false);
 		if (this.clusters?.kind !== 'ok') {
 			if (this.clusters?.kind === 'error') {
 				void this.showError(`Could not list the Redpanda Cloud clusters: ${this.clusters.message}`);
 			}
-			return NOT_STARTED;
+			return { kind: 'none' };
 		}
+		const config = configOf();
 		if (config) {
 			const file = path.basename(config.fsPath);
 			const mappingName = path.basename(sidecarPath(config.fsPath));
+			// With `pickAfterGone`, a message is followed by it and the pick; else a gone cluster or pipeline stops there.
+			const then = (message: string) => (how.pickAfterGone ? `${message} ${how.pickAfterGone}` : message);
 			const read = await readMapping(sidecarPath(config.fsPath));
-			if (read.kind === 'ok') {
+			if (read.kind === 'bad' && how.pickAfterGone) {
+				this.log(`Redpanda Cloud: ${sidecarPath(config.fsPath)} is not a deploy mapping: ${read.reason}`);
+				void this.showInfo(then(`${mappingName} could not be read: ${read.reason}.`));
+			} else if (read.kind === 'ok') {
 				const m = read.mapping;
 				const cluster = this.clusterById(m.clusterId);
 				const dp = cluster && this.dataplaneUrlOf(cluster);
+				const shown = m.pipelineName ?? m.pipelineId;
 				if (!cluster || !dp) {
 					const named = cluster?.name ?? m.clusterName ?? m.clusterId;
-					void this.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`);
-					return NOT_STARTED;
-				}
-				const got = await this.readPipeline(cluster, dp, m.pipelineId, m.pipelineName ?? m.pipelineId);
-				if (got.kind === 'ok') {
-					return { cluster, dp, pipeline: got.value, config };
-				}
-				if (got.status === 404) {
+					void this.showInfo(then(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`));
+					if (!how.pickAfterGone) {
+						return { kind: 'none' };
+					}
+				} else {
+					const got = await this.readPipeline(cluster, dp, m.pipelineId, shown);
+					if (got.kind === 'ok') {
+						return { kind: 'target', cluster, dp, pipeline: got.value };
+					}
+					if (got.status !== 404) {
+						return { kind: 'failed', message: got.message };
+					}
 					this.removePipeline(cluster.id, m.pipelineId);
-					void this.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}.`);
-					return NOT_STARTED;
+					void this.showInfo(then(`Pipeline ${shown}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}.`));
+					if (!how.pickAfterGone) {
+						return { kind: 'none' };
+					}
 				}
-				return { kind: 'failed', message: got.message };
 			}
 		}
 		const clusters = this.clusters.value.filter((c) => this.dataplaneUrlOf(c));
@@ -1957,26 +2030,23 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.fire();
 		const choices: PipelineChoice[] = [];
 		const unread: string[] = [];
-		for (const c of clusters) {
+		for (const c of how.byName ? [...clusters].sort((a, b) => byName(a.name, b.name)) : clusters) {
 			const listed = this.pipelines.get(c.id);
-			if (listed?.kind === 'ok') {
-				choices.push(...listed.value.map((pipeline) => ({
-					cluster: c, pipeline, label: this.mask(pipeline.displayName), description: this.mask(`${c.name} · ${pipelineStateDescription(pipeline)}`),
-				})));
-			} else {
+			if (listed?.kind !== 'ok') {
 				unread.push(`${c.name} (${listed?.kind === 'error' ? listed.message : 'not read'})`);
+				continue;
 			}
+			const pipelines = how.byName ? [...listed.value].sort((a, b) => byName(a.displayName, b.displayName)) : listed.value;
+			choices.push(...pipelines.map((pipeline) => ({
+				cluster: c, pipeline, label: this.mask(pipeline.displayName), description: this.mask(how.describe(c, pipeline)),
+			})));
 		}
 		if (choices.length === 0) {
-			void this.showInfo(`No pipeline on the clusters to ${action}.${unread.length > 0 ? ` Could not list the pipelines of ${unread.join(', ')}.` : ''}`);
-			return NOT_STARTED;
+			void this.showInfo(`No pipeline on the clusters to ${how.nothingTo}.${unread.length > 0 ? ` Could not list the pipelines of ${unread.join(', ')}.` : ''}`);
+			return { kind: 'none' };
 		}
-		const picked = await this.ui.pickPipeline(choices, `${ACTION_TEXT[action].title}: the pipeline`);
-		if (!picked) {
-			return NOT_STARTED;
-		}
-		const dp = this.dataplaneUrlOf(picked.cluster);
-		return dp ? { cluster: picked.cluster, dp, pipeline: picked.pipeline, ...(config ? { config } : {}) } : NOT_STARTED;
+		const picked = await this.ui.pickPipeline(choices, how.title);
+		return picked ? { kind: 'target', cluster: picked.cluster, dp: this.dataplaneUrlOf(picked.cluster), pipeline: picked.pipeline } : { kind: 'none' };
 	}
 
 	/** The target, when its state offers the action; else said so and nothing is sent. */
@@ -2647,77 +2717,21 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	 * every cluster's pipelines (sorted by cluster, then name). `undefined`: nothing to show (said so).
 	 */
 	private async logsTarget(): Promise<{ readonly cluster: CloudCluster; readonly pipeline: CloudPipeline } | undefined> {
-		await this.ready;
-		if (!this.account) {
-			const choice = await this.showInfo('No Redpanda Cloud service account is connected.', CONNECT_ACTION);
-			if (choice !== CONNECT_ACTION || !(await this.connect())) {
-				return undefined;
-			}
-		}
-		this.requested = true;
-		await this.loadClusters(false);
-		if (this.clusters?.kind !== 'ok') {
-			if (this.clusters?.kind === 'error') {
-				void this.showError(`Could not list the Redpanda Cloud clusters: ${this.clusters.message}`);
-			}
+		if (!(await this.connectedFirst())) {
 			return undefined;
 		}
-		const doc = vscode.window.activeTextEditor?.document;
-		const config = doc && !doc.isUntitled && doc.uri.scheme === 'file' && this.options.isDetected(doc.uri) ? doc.uri : undefined;
-		if (config) {
-			const file = path.basename(config.fsPath);
-			const mappingName = path.basename(sidecarPath(config.fsPath));
-			const read = await readMapping(sidecarPath(config.fsPath));
-			if (read.kind === 'bad') {
-				this.log(`Redpanda Cloud: ${sidecarPath(config.fsPath)} is not a deploy mapping: ${read.reason}`);
-				void this.showInfo(`${mappingName} could not be read: ${read.reason}. Choose the pipeline whose logs to show.`);
-			} else if (read.kind === 'ok') {
-				const m = read.mapping;
-				const cluster = this.clusterById(m.clusterId);
-				const dp = cluster && this.dataplaneUrlOf(cluster);
-				const shown = m.pipelineName ?? m.pipelineId;
-				if (!cluster || !dp) {
-					const named = cluster?.name ?? m.clusterName ?? m.clusterId;
-					void this.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Choose the pipeline whose logs to show.`);
-				} else {
-					const got = await this.readPipeline(cluster, dp, m.pipelineId, shown);
-					if (got.kind === 'ok') {
-						return { cluster, pipeline: got.value };
-					}
-					if (got.status !== 404) {
-						return undefined;
-					}
-					this.removePipeline(cluster.id, m.pipelineId);
-					void this.showInfo(`Pipeline ${shown}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Choose the pipeline whose logs to show.`);
-				}
-			}
-		}
-		const clusters = this.clusters.value.filter((c) => this.dataplaneUrlOf(c));
-		await Promise.all(clusters.map((c) => this.loadPipelines(c.id, true)));
-		this.fire();
-		const choices: PipelineChoice[] = [];
-		const unread: string[] = [];
-		const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' }) || a.localeCompare(b);
-		for (const c of [...clusters].sort((a, b) => byName(a.name, b.name))) {
-			const listed = this.pipelines.get(c.id);
-			if (listed?.kind !== 'ok') {
-				unread.push(`${c.name} (${listed?.kind === 'error' ? listed.message : 'not read'})`);
-				continue;
-			}
-			const access = this.logUsers.has(c.id);
-			for (const pipeline of [...listed.value].sort((a, b) => byName(a.displayName, b.displayName))) {
+		const target = await this.paletteTarget(() => this.activeConfig(), {
+			pickAfterGone: 'Choose the pipeline whose logs to show.',
+			byName: true,
+			nothingTo: 'show the logs of',
+			title: 'Show pipeline logs: the pipeline',
+			describe: (c, pipeline) => {
 				const local = this.localFileOf(pipeline);
 				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE : undefined;
-				const parts = [c.name, pipelineStateDescription(pipeline), ...(from ? [from] : []), ...(access ? [] : [NO_LOG_ACCESS_SET])];
-				choices.push({ cluster: c, pipeline, label: this.mask(pipeline.displayName), description: this.mask(parts.join(' · ')) });
-			}
-		}
-		if (choices.length === 0) {
-			void this.showInfo(`No pipeline on the clusters to show the logs of.${unread.length > 0 ? ` Could not list the pipelines of ${unread.join(', ')}.` : ''}`);
-			return undefined;
-		}
-		const picked = await this.ui.pickPipeline(choices, 'Show pipeline logs: the pipeline');
-		return picked ? { cluster: picked.cluster, pipeline: picked.pipeline } : undefined;
+				return [c.name, pipelineStateDescription(pipeline), ...(from ? [from] : []), ...(this.logUsers.has(c.id) ? [] : [NO_LOG_ACCESS_SET])].join(' · ');
+			},
+		});
+		return target.kind === 'target' ? { cluster: target.cluster, pipeline: target.pipeline } : undefined;
 	}
 
 	/**

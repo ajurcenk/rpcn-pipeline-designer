@@ -123,15 +123,20 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/story-check-the-config-against-the-cluster-before-deploying-plan.md`
   summary: The graph-markers test "HELD (story 13): a Red Hat marker stays on its node when a node is inserted above it before Red Hat republishes" fails intermittently.
   evidence: It failed in the 5.5 implementer's full run (passed when its suite was rerun alone) and on CI run 42058471336 for 0357b6d (VS Code 1.145.0, 1230 passing, 1 failing); the re-run of that job passed. Neither change touches the graph markers code.
+  resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (6.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-open-the-log-from-the-command-the-row-menu-and-an-error-plan.md`
   summary: Merge `cloudView.ts`'s two palette target paths, `logsTarget()` (6.5) and `actionTarget()` (5.4): the connect check, the active config's `.cloud.json` (mapping, gone, invalid), loading every cluster's pipelines and the pick.
   evidence: 6.5's review found them duplicated and already different (logsTarget falls through to the pick after "gone" and sorts; actionTarget stops and does not sort); for epic 6's refactor sweep (6.9).
+  resolution: fixed by 6.9 (refactor sweep, 2026-11-09): `actionTarget()` and `logsTarget()` share `connectedFirst()`, `activeConfig()` and `paletteTarget()`, each caller passing its differences (`PaletteTargetHow`: falling through to the pick after a gone or unreadable mapping, the sorted pick, the descriptions, the texts).
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-open-the-log-from-the-command-the-row-menu-and-an-error-plan.md`
   summary: The Environment view test "ticket 39 VALUE_DEFAULT … its record goes too" fails intermittently in a full run.
   evidence: It failed in 6.3's floor run and 6.5's stable run (VS Code 1.145.0, 1319 passing, 1 failing); the suite alone passed 34/34 both times; neither story touches the Environment view.
+  resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (6.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-the-log-panel-s-empty-and-error-states-plan.md`
   summary: A full stable run can stall indefinitely in "Live Bloblang diagnostics (integration, 4.5)".
   evidence: 2026-11-06, VS Code 1.145.2 (newly downloaded): 6.6's implementer's stable run ran 44 minutes stuck in that suite, before the logs suite started; it was stopped by PID and left a `binaryPath` in the test settings; the rerun of the same tree passed in 9 minutes. 6.6 does not touch the Bloblang diagnostics. Cap full runs with `timeout` until it is understood.
+  resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (6.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/story-export-the-shown-records-plan.md`
   summary: The Bloblang test panel test "RENAME (4.17): the same panel under the new name, its snapshot names the new files, the samples file moved and still shown" fails intermittently with "the old samples file is gone".
   evidence: CI run 42334757404 (6.8's push, stable, 1356 passing, 2 failing with the known HELD graph-markers flake); the rerun of the failed job passed; the same tree passed locally (stable 1358); 6.8 does not touch the test panel or samples files.
+  resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (6.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
