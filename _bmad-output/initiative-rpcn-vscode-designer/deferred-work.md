@@ -143,3 +143,7 @@
   summary: The Bloblang test panel test "RENAME (4.17): the same panel under the new name, its snapshot names the new files, the samples file moved and still shown" fails intermittently with "the old samples file is gone".
   evidence: CI run 42334757404 (6.8's push, stable, 1356 passing, 2 failing with the known HELD graph-markers flake); the rerun of the failed job passed; the same tree passed locally (stable 1358); 6.8 does not touch the test panel or samples files.
   resolution: moved to backlog bug 41 "CI timing flakes in the integration suites (epic 6 findings)" (6.9, user decision 2026-11-09): `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings.md`.
+
+- source_plan: none
+  summary: The deploy-flow cases of the epic 5 retrospective other than the masking (C1, C3–C10, V1–V3, V5, V6).
+  evidence: split from bug 44 at the build's scope check (user, 2026-11-09, "commit, split"); tracked as backlog bug 45, _bmad-output/backlog/bug-deploy-flow-edge-cases-epic-5-retrospective.md
