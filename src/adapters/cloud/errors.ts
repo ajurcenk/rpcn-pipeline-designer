@@ -123,14 +123,15 @@ export function describeCloudError(err: CloudError): string {
 }
 
 /**
- * `text` with every credential masked: each of `values` (the client secret, the token; empty and
- * very short values are skipped, as masking them would hide ordinary text), any `Bearer …` value
- * and any `authorization: …` header value.
+ * `text` with every credential masked: each of `values` (the client secret, the token; empty values,
+ * and values shorter than `minLength`, are skipped, as masking very short values would hide ordinary
+ * text), any `Bearer …` value and any `authorization: …` header value. Bug 44: `minLength` 1 masks
+ * short sent secret values, used only on the Cloud API's error text (http.ts).
  */
-export function maskCredentials(text: string, values: readonly (string | undefined)[] = []): string {
+export function maskCredentials(text: string, values: readonly (string | undefined)[] = [], minLength = 4): string {
 	let out = text;
 	for (const value of values) {
-		if (value && value.length >= 4) {
+		if (value && value.length >= Math.max(1, minLength)) {
 			out = out.split(value).join(CREDENTIAL_MASK);
 		}
 	}

@@ -365,9 +365,14 @@ export class CloudDeploy {
 		return { kind: 'checkStopped', findings: messages.map((m) => this.ctx.mask(m)), ...(listMessage !== undefined ? { listError: this.ctx.mask(listMessage) } : {}) };
 	}
 
-	/** Masks `value` (and its base64 form, as sent) from now on. */
+	/**
+	 * Masks `value` (and its base64 form, as sent) from now on; called just before it is sent, so a
+	 * value not sent is never masked (bug 44). A value under 4 characters is masked in Cloud API error
+	 * text only (`sentSecrets`, http.ts).
+	 */
 	private maskValue(value: string): void {
 		if (value) {
+			this.ctx.sentSecrets.add(value);
 			this.ctx.seenSecrets.add(value);
 			this.ctx.seenSecrets.add(Buffer.from(value, 'utf8').toString('base64'));
 		}
@@ -407,12 +412,6 @@ export class CloudDeploy {
 			this.ctx.log(`Redpanda Cloud: could not read the local values of ${file}: ${reasonOf(err)}`);
 			local = new Map<string, LocalValue>();
 		}
-		for (const s of missing) {
-			const v = local.get(s.name);
-			if (v) {
-				this.maskValue(v.value);
-			}
-		}
 		const stopped = (name: string): DeployResult => {
 			this.ctx.log(`Redpanda Cloud: the deploy of ${file} stopped at the secret ${name}; nothing more was sent.`);
 			return NOT_STARTED;
@@ -448,6 +447,7 @@ export class CloudDeploy {
 				return { stopped: stopped(s.name), created };
 			}
 			const secret = value;
+			this.maskValue(secret);
 			try {
 				const answer = await this.ctx.ui.progress(`Creating the secret ${s.name} on ${cluster.name}`, (report) => {
 					report('creating the secret…');
@@ -469,7 +469,7 @@ export class CloudDeploy {
 		return { created };
 	}
 
-	/** A missing secret's value, typed in a password box (masked at once); `undefined`: cancelled. */
+	/** A missing secret's value, typed in a password box (masked once it is sent); `undefined`: cancelled. */
 	private async askSecretValue(name: string, cluster: CloudCluster, file: string): Promise<string | undefined> {
 		const value = await this.ctx.ui.input({
 			title: `Deploy ${file} to ${cluster.name}: the secret ${name}`,
@@ -478,9 +478,6 @@ export class CloudDeploy {
 			ignoreFocusOut: true,
 			validateInput: (text) => (text ? undefined : `Enter the value of ${name}.`),
 		});
-		if (value) {
-			this.maskValue(value);
-		}
 		return value || undefined;
 	}
 

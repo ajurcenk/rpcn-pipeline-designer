@@ -30,6 +30,7 @@ import type { LintResult } from '../../../adapters/redpandaConnect/lint';
 import { componentCatalogue } from '../../../core/catalogue';
 import { servedSchema } from '../../helpers/schemas';
 import type { CloudCluster } from '../../../adapters/cloud/controlPlane';
+import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { type ExtensionApi } from '../../../extension';
 import { FAKE_LINT_MARKER, FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
@@ -50,6 +51,9 @@ const SECRET_VALUES = {
 	topicLocal: 'tok-57-topic-local-Hs5k',
 	topicTyped: 'tok-57-topic-typed-Wn6c',
 	declineTyped: 'tok-57-decline-typed-Rf9t',
+	/** Bug 44: kept from secret storage, then typed; each echoed by a failing API answer. */
+	keptLocal44: 'tok-44-kept-local-Ue7n',
+	typed44: 'tok-44-typed-Gy3v',
 };
 const CONFIG = [
 	'input:',
@@ -1359,6 +1363,73 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.ok(api().outputLines().slice(outputBefore).some((l) => l.includes('the secret BROKER already exists on rpc-vilnius')));
 		assert.strictEqual(posts().length, 1);
 	});
+
+	test('MASK_SENT (bug 44): only sent values are masked: NOT_SENT shows as is; KEPT and TYPED masked with their base64 once sent, when an API error echoes them (ECHO); a short sent value masked in the API\'s text only (SHORT)', () => withLocal(async () => {
+		const notSent = 'kafka-topic-44';
+		const short = 'Q9Z';
+		const { keptLocal44: kept, typed44: typed } = SECRET_VALUES;
+		const mask = CREDENTIAL_MASK;
+		vilnius().secrets = new Map();
+		await rc().update('env', { A_44: notSent }, vscode.ConfigurationTarget.Global);
+		assert.ok(await api().secrets!.set(undefined, 'B_44', kept));
+		const doc = await openForSecrets(usingSecrets('A_44:dflt', 'B_44', 'C_44'));
+		const keepStorage = 'Keep the value from secret storage';
+		const deploy = async () => (await vscode.commands.executeCommand<{ kind: string; message?: string }>(DEPLOY_COMMAND, doc.uri))!;
+		/** The errors, the messages and questions since `messagesAt`, the output lines since `outputAt` and the result, as one text. */
+		const shownSince = (outputAt: number, messagesAt: number, result: { message?: string }) => JSON.stringify({
+			errors, messages: allMessages.slice(messagesAt), output: api().outputLines().slice(outputAt), message: result.message,
+		});
+		const secretCreate = (r: { method: string; url: string }) => r.method === 'POST' && /\/v1\/secrets$/.test(r.url);
+
+		// ECHO on the secret's create: B_44 kept (A_44 not created), the error body echoes its value and base64.
+		fake.failures = [{ when: secretCreate, status: 400, body: { code: 'INVALID_ARGUMENT', message: `secret_data ${b64(kept)} (${kept}) is not allowed`, details: [] } }];
+		let outputAt = api().outputLines().length;
+		let messagesAt = allMessages.length;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: [notSent], choices: [USE_DEFAULT_ACTION, keepStorage] });
+		let result = await deploy();
+		assert.strictEqual(result.kind, 'failed', errors.join('\n'));
+		let shown = shownSince(outputAt, messagesAt, result);
+		assert.ok(!shown.includes(kept) && !shown.includes(b64(kept)), shown);
+		assert.ok(errors.some((e) => e.startsWith('Could not create the secret B_44 on rpc-vilnius: ') && e.includes(`secret_data ${mask} (${mask}) is not allowed`)), errors.join('\n'));
+		assert.ok(api().outputLines().slice(outputAt).some((l) => l.includes(`could not create the secret B_44 on rpc-vilnius: secret_data ${mask} (${mask})`)), 'the output channel masked');
+		assert.ok(result.message?.includes(`secret_data ${mask} (${mask})`), result.message);
+		assert.strictEqual(posts().length, 0, 'the deploy stops');
+
+		// ECHO on the pipeline's create, after B_44 (kept) and C_44 (typed) were created; NOT_SENT: A_44's local value is the pipeline name, shown as is.
+		fake.failures = [{
+			when: (r) => r.method === 'POST' && r.url.endsWith('/v1/redpanda-connect/pipelines'), status: 500,
+			body: { code: 'INTERNAL', message: `boom ${kept} ${b64(kept)} ${typed} ${b64(typed)}`, details: [] },
+		}];
+		outputAt = api().outputLines().length;
+		messagesAt = allMessages.length;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: [notSent, typed], choices: [USE_DEFAULT_ACTION, keepStorage, ADD_NOW_ACTION] });
+		result = await deploy();
+		assert.strictEqual(result.kind, 'failed', errors.join('\n'));
+		assert.deepStrictEqual([...vilnius().secrets!], [['B_44', kept], ['C_44', typed]], 'A_44 not created');
+		shown = shownSince(outputAt, messagesAt, result);
+		for (const v of [kept, typed]) {
+			assert.ok(!shown.includes(v) && !shown.includes(b64(v)), shown);
+		}
+		const failed = `Deploying orders.yaml as ${notSent} on rpc-vilnius failed: boom ${mask} ${mask} ${mask} ${mask}`;
+		assert.ok(errors.includes(failed), errors.join('\n'));
+		assert.ok(api().outputLines().slice(outputAt).includes(`Redpanda Cloud: ${failed}`), 'the output channel: the name as is, the values masked');
+		assert.strictEqual(result.message, `boom ${mask} ${mask} ${mask} ${mask}`);
+
+		// SHORT: a 3-character typed value echoed by the API: masked in the API's text; the secret's name, holding the same characters, as is.
+		await editConfig(doc, usingSecrets('Q9Z_44'));
+		fake.failures = [{ when: secretCreate, status: 400, body: { code: 'INVALID_ARGUMENT', message: `value ${short} is too short`, details: [] } }];
+		outputAt = api().outputLines().length;
+		errors.length = 0;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', short], choices: [ADD_NOW_ACTION] });
+		result = await deploy();
+		assert.strictEqual(result.kind, 'failed', errors.join('\n'));
+		assert.ok(errors.includes(`Could not create the secret Q9Z_44 on rpc-vilnius: value ${mask} is too short. The pipeline was not sent.`), errors.join('\n'));
+		assert.ok(api().outputLines().slice(outputAt).includes(`Redpanda Cloud: could not create the secret Q9Z_44 on rpc-vilnius: value ${mask} is too short`), 'the output channel');
+		assert.strictEqual(result.message, `could not create the secret Q9Z_44: value ${mask} is too short`);
+		assert.ok(!vilnius().secrets!.has('Q9Z_44'));
+	}));
 
 	// --- ticket 5.4: start, stop and delete a pipeline ---
 

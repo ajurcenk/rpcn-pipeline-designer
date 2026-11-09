@@ -21,6 +21,11 @@ export interface HttpOptions {
 	readonly log?: (line: string) => void;
 	/** The credentials to mask in every logged line and error message. */
 	readonly secrets?: () => readonly (string | undefined)[];
+	/**
+	 * Secret values this session sent (bug 44): masked with no minimum length in an error status's
+	 * message and hints only, the Cloud API's own text, which may echo a short value.
+	 */
+	readonly sentValues?: () => readonly string[];
 	readonly timeoutMs?: number;
 }
 
@@ -70,7 +75,9 @@ export async function requestJson<T>(
 	options.log?.(`Redpanda Cloud: ${method} ${shownUrl} → ${status} (${Date.now() - started} ms)`);
 	if (status < 200 || status >= 300) {
 		const error = cloudErrorFrom(status, text, init.tokenEndpoint);
-		throw new CloudError(error.kind, mask(error.message), error.status, error.code, error.hints.map((h) => ({ ...h, hint: mask(h.hint) })));
+		const sent = options.sentValues?.() ?? [];
+		const maskApi = (t: string) => maskCredentials(mask(t), sent, 1);
+		throw new CloudError(error.kind, maskApi(error.message), error.status, error.code, error.hints.map((h) => ({ ...h, hint: maskApi(h.hint) })));
 	}
 	if (!text.trim()) {
 		return {} as T;

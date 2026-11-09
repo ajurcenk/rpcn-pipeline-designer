@@ -377,6 +377,8 @@ export interface CloudContext {
 	requested: boolean;
 	writing: number;
 	readonly seenSecrets: Set<string>;
+	/** Secret values a deploy sent, raw (bug 44): also masked when shorter than 4 in Cloud API error text. */
+	readonly sentSecrets: Set<string>;
 	readonly clusters: Loaded<CloudCluster[]> | undefined;
 	readonly pipelines: ReadonlyMap<string, Loaded<CloudPipeline[]>>;
 	readonly checkDiagnostics: vscode.DiagnosticCollection;
@@ -492,6 +494,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	private account: { readonly clientId: string; name?: string } | undefined;
 	/** Every client secret this window has seen (the stored one, one being tested), in memory, for masking. */
 	private readonly seenSecrets = new Set<string>();
+	/** Secret values a deploy sent (bug 44), raw; also in `seenSecrets`. */
+	private readonly sentSecrets = new Set<string>();
 	/** Bumped when the account changes (connect starting, disconnect, another window's change). */
 	private accountGeneration = 0;
 	/** This window's own secret storage writes in progress: their change events are not another window's. */
@@ -583,6 +587,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			get writing() { return view.writing; },
 			set writing(value) { view.writing = value; },
 			seenSecrets: this.seenSecrets,
+			sentSecrets: this.sentSecrets,
 			get clusters() { return view.clusters; },
 			pipelines: this.pipelines,
 			checkDiagnostics: this.checkDiagnostics,
@@ -758,7 +763,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	/** A call with the stored account's token (requested once, then cached). */
 	private call(): CloudCall {
 		return {
-			http: { fetch: this.options.fetch ?? defaultFetch, log: (line) => this.log(line), secrets: () => this.secrets() },
+			http: { fetch: this.options.fetch ?? defaultFetch, log: (line) => this.log(line), secrets: () => this.secrets(), sentValues: () => [...this.sentSecrets] },
 			invalidate: (token) => this.tokens.invalidate(token),
 			token: async () => {
 				const account = await this.storedAccount();

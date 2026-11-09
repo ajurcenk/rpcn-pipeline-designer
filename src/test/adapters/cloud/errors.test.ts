@@ -57,6 +57,30 @@ suite('Cloud errors (ticket 5.2, AD-23)', () => {
 		assert.ok(masked.includes(`a ${CREDENTIAL_MASK} b`), masked);
 		assert.ok(masked.includes(`Bearer ${CREDENTIAL_MASK}`), masked);
 		assert.strictEqual(maskCredentials('short ab', ['ab']), 'short ab', 'very short values are not masked');
+		assert.strictEqual(maskCredentials('short ab', ['ab'], 1), `short ${CREDENTIAL_MASK}`, 'bug 44: minLength 1 masks a short value');
+	});
+
+	test('bug 44: requestJson masks a short sent value in an error\'s message and hints only, with the longer secrets as before', async () => {
+		const lines: string[] = [];
+		const body = {
+			code: 'INVALID_ARGUMENT', message: 'value ab and sekret-value refused',
+			details: [{ '@type': 'type.googleapis.com/redpanda.api.common.v1.LintHint', line: 2, column: 3, hint: 'ab is not allowed' }],
+		};
+		const fetch: FetchLike = async () => ({ status: 400, ok: false, text: async () => JSON.stringify(body) });
+		const options = { fetch, log: (l: string) => lines.push(l), secrets: () => ['sekret-value', 'xy'], sentValues: () => ['ab'] };
+		await assert.rejects(
+			requestJson(options, 'POST', 'https://dp.example/v1/ab', { token: 'tok-abc-123', json: {} }),
+			(err: unknown) => err instanceof CloudError
+				&& err.message === `value ${CREDENTIAL_MASK} and ${CREDENTIAL_MASK} refused`
+				&& err.hints.length === 1 && err.hints[0].hint === `${CREDENTIAL_MASK} is not allowed`,
+		);
+		assert.ok(lines.every((l) => l.includes('https://dp.example/v1/ab')), 'the log line (the extension\'s text) keeps the short value');
+		const fetchShortSecret: FetchLike = async () => ({ status: 400, ok: false, text: async () => JSON.stringify({ code: 'INVALID_ARGUMENT', message: 'xy refused' }) });
+		await assert.rejects(
+			requestJson({ ...options, fetch: fetchShortSecret }, 'GET', 'https://dp.example/v1/x', { token: 'tok-abc-123' }),
+			(err: unknown) => err instanceof CloudError && err.message === 'xy refused',
+			'a short value that was not sent (only in `secrets`) keeps the minimum of 4',
+		);
 	});
 
 	test('requestJson masks the secrets in its error messages and log lines and never logs a header or body', async () => {
