@@ -8,8 +8,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CloudCluster } from '../cloud/controlPlane';
 import {
-	CONFIG_TAG, type CloudPipeline, type PipelineState, type CreatePipeline, createPipeline, FINAL_STATES,
-	createSecret, getComponents, getPipeline, isRunning, listSecretNames, pipelineStateText, resourcesText, sameResources,
+	CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, FINAL_STATES,
+	createSecret, getComponents, getPipeline, isKnownState, isRunning, listSecretNames, pipelineStateText, resourcesText, sameResources,
 	type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, describeCloudError, hintLines } from '../cloud/errors';
@@ -84,6 +84,9 @@ type Target =
 
 /** Deploy to Redpanda Cloud and the state it follows (also for Start and Stop, through the context). */
 export class CloudDeploy {
+	/** Bug 45: the files (their URIs) whose deploy is running; another Deploy of one is refused. */
+	private readonly deploying = new Set<string>();
+
 	constructor(private readonly ctx: CloudContext) {}
 
 	/** Shows `pipeline`'s deployed config beside the text that would be sent (deployed ↔ as sent, both read-only). */
@@ -121,6 +124,23 @@ export class CloudDeploy {
 			void this.ctx.showInfo('Open a Redpanda Connect config to deploy it.');
 			return NOT_STARTED;
 		}
+		// Bug 45: one deploy per file at a time (title button, palette and row alike), released however it ends.
+		const key = doc.uri.toString();
+		if (this.deploying.has(key)) {
+			const file = path.basename(doc.uri.fsPath);
+			this.ctx.log(`Redpanda Cloud: a deploy of ${file} is already running; this request was ignored.`);
+			void this.ctx.showInfo(`A deploy of ${file} is already running; this request was ignored. Nothing was sent.`);
+			return NOT_STARTED;
+		}
+		this.deploying.add(key);
+		try {
+			return await this.deployDoc(doc, only);
+		} finally {
+			this.deploying.delete(key);
+		}
+	}
+
+	private async deployDoc(doc: vscode.TextDocument, only?: OnlyPipeline): Promise<DeployResult> {
 		if (doc.isUntitled) {
 			void this.ctx.showInfo(DEPLOY_UNTITLED_MESSAGE);
 			return NOT_STARTED;
@@ -148,6 +168,9 @@ export class CloudDeploy {
 				return NOT_STARTED;
 			}
 		}
+		// Bug 45: the account this deploy runs with; another one (or none) during its prompts stops it before the next send.
+		const clientId = this.ctx.account?.clientId;
+		const accountChanged = () => this.ctx.account?.clientId !== clientId;
 		this.ctx.requested = true;
 		await this.ctx.loadClusters(false);
 		if (this.ctx.clusters?.kind !== 'ok') {
@@ -190,6 +213,9 @@ export class CloudDeploy {
 		if (!resources) {
 			return NOT_STARTED;
 		}
+		if (accountChanged()) {
+			return this.stoppedByAccount(file, cluster, []);
+		}
 		const translated = await this.savedAndTranslated(doc, file);
 		if (translated === undefined) {
 			return NOT_STARTED;
@@ -200,54 +226,99 @@ export class CloudDeploy {
 		if (checked) {
 			return checked;
 		}
-		const { stopped: secretsStopped, created: createdSecrets } = await this.ensureSecrets(doc.uri, file, cluster, dp, translated.secrets);
+		if (accountChanged()) {
+			return this.stoppedByAccount(file, cluster, []);
+		}
+		const { stopped: secretsStopped, created: createdSecrets } = await this.ensureSecrets(doc.uri, file, cluster, dp, translated.secrets, accountChanged);
 		if (secretsStopped) {
 			return secretsStopped;
 		}
+		const created = createdSecrets.length > 0 ? { createdSecrets: [...createdSecrets] } : {};
 		// A valid mapping naming these ids is never rewritten.
 		const mapTo = async (p: CloudPipeline) => {
 			if (existing?.clusterId !== cluster.id || existing.pipelineId !== p.id) {
 				await this.writeMapping(mappingFile, { clusterId: cluster.id, pipelineId: p.id, clusterName: cluster.name, pipelineName: p.displayName });
 			}
 		};
-
-		if (target.kind === 'create') {
-			const name = target.name;
-			const result = await this.ctx.ui.progress(`Deploying ${name} to ${cluster.name}`, (report) =>
-				this.createAndFollow(cluster, dp, { displayName: name, configYaml, resources, tags: { [CONFIG_TAG]: rel } }, report, mapTo));
+		/** The update not sent: the created secrets (if any) stay, said so. */
+		const declined = (): DeployResult => {
+			this.keptSecrets(createdSecrets, cluster, 'The pipeline was not updated.');
+			return { kind: 'notStarted', ...created };
+		};
+		const sendCreate = async (name: string): Promise<DeployResult> => {
+			if (accountChanged()) {
+				return this.stoppedByAccount(file, cluster, createdSecrets);
+			}
+			const result = this.withCreated(await this.ctx.ui.progress(`Deploying ${name} to ${cluster.name}`, (report) =>
+				this.createAndFollow(cluster, dp, { displayName: name, configYaml, resources, tags: { [CONFIG_TAG]: rel } }, report, mapTo)), createdSecrets);
 			this.report(file, name, cluster, result, 'create');
 			return result;
+		};
+
+		if (target.kind === 'create') {
+			return sendCreate(target.name);
 		}
 
-		const deployed = target.pipeline;
-		const name = deployed.displayName;
-		const sameConfig = deployed.configYaml === configYaml;
-		const sameSize = sameResources(deployed.resources, resources);
-		if (sameConfig && sameSize) {
-			await mapTo(deployed);
-			this.ctx.log(`Redpanda Cloud: pipeline ${name} (${deployed.id}) on ${cluster.name} already has ${file} as saved and translated (${stateWord(deployed.state)}), with ${resourcesText(resources)}; nothing was sent.`);
-			void this.ctx.showInfo(`Pipeline ${name} on ${cluster.name} is already deployed from ${file}, nothing changed.`);
-			return { kind: 'unchanged', pipelineId: deployed.id };
+		const same = (p: CloudPipeline) => p.configYaml === configYaml && sameResources(p.resources, resources);
+		const unchanged = async (p: CloudPipeline): Promise<DeployResult> => {
+			await mapTo(p);
+			const list = createdSecrets.join(', ');
+			const sent = createdSecrets.length > 0 ? `created ${list} on ${cluster.name}, nothing else was sent` : 'nothing was sent';
+			this.ctx.log(`Redpanda Cloud: pipeline ${p.displayName} (${p.id}) on ${cluster.name} already has ${file} as saved and translated (${stateWord(p.state)}), with ${resourcesText(resources)}; ${sent}.`);
+			void this.ctx.showInfo(createdSecrets.length > 0
+				? `Pipeline ${p.displayName} on ${cluster.name} is already deployed from ${file}, so it was not updated; created ${list} on ${cluster.name}.`
+				: `Pipeline ${p.displayName} on ${cluster.name} is already deployed from ${file}, nothing changed.`);
+			return { kind: 'unchanged', pipelineId: p.id, ...created };
+		};
+
+		const first = target.pipeline;
+		// A running pipeline that would change is confirmed as it was read; the pipeline is read again just
+		// before the update (bug 45), and only that read decides whether it is unchanged.
+		let confirmedRestart = false;
+		if (!same(first) && isRunning(first.state)) {
+			if (!(await this.confirmReplace(cluster, first, file, configYaml, resources))) {
+				return declined();
+			}
+			confirmedRestart = true;
+		}
+		if (accountChanged()) {
+			return this.stoppedByAccount(file, cluster, createdSecrets);
+		}
+		const reread = await this.ctx.readPipeline(cluster, dp, first.id, first.displayName);
+		if (reread.kind !== 'ok') {
+			if (reread.status !== 404) {
+				// The read's failure was shown.
+				this.keptSecrets(createdSecrets, cluster, 'The pipeline was not updated.');
+				return { kind: 'failed', message: reread.message, pipelineId: first.id, ...created };
+			}
+			// Deleted while the deploy waited: as a mapped pipeline found gone.
+			this.ctx.removePipeline(cluster.id, first.id);
+			const gone = existing?.clusterId === cluster.id && existing.pipelineId === first.id
+				? await this.goneTarget(file, mappingName, existing, cluster, dp, only !== undefined, createdSecrets)
+				: this.goneUnmapped(file, first, cluster, createdSecrets);
+			if (gone.kind === 'create') {
+				return sendCreate(gone.name);
+			}
+			if (gone.kind === 'update') {
+				return NOT_STARTED; // never: a gone pipeline is only offered to be created anew
+			}
+			return createdSecrets.length > 0 && gone.kind === 'notStarted' ? { ...gone, ...created } : gone;
+		}
+		const deployed = reread.value;
+		if (same(deployed)) {
+			return unchanged(deployed);
 		}
 		const wasRunning = isRunning(deployed.state);
-		if (wasRunning) {
-			if (!sameConfig) {
-				await this.showDiff(cluster, deployed, configYaml, file);
+		if (wasRunning && !confirmedRestart) {
+			// Started elsewhere while the deploy waited.
+			if (!(await this.confirmReplace(cluster, deployed, file, configYaml, resources))) {
+				return declined();
 			}
-			const size = sameSize ? '' : `Its size changes from ${resourcesText(deployed.resources)} to ${resourcesText(resources)}.`;
-			const what = sameConfig
-				? `Changing its size restarts it. ${size}`
-				: `Replacing its config with ${file} (the diff shows the changes) restarts it.${size ? ` ${size}` : ''}`;
-			const choice = await this.ctx.ui.confirm(this.ctx.mask(`Pipeline ${name} on ${cluster.name} is ${stateWord(deployed.state)}. ${what}`), REPLACE_ACTION);
-			if (choice !== REPLACE_ACTION) {
-				if (createdSecrets.length > 0) {
-					const kept = `Created ${createdSecrets.join(', ')} on ${cluster.name}; they stay. The pipeline was not updated.`;
-					this.ctx.log(`Redpanda Cloud: ${kept}`);
-					void this.ctx.showInfo(kept);
-				}
-				return NOT_STARTED;
+			if (accountChanged()) {
+				return this.stoppedByAccount(file, cluster, createdSecrets);
 			}
 		}
+		const name = deployed.displayName;
 		const update: UpdatePipeline = {
 			displayName: name,
 			description: deployed.description,
@@ -255,10 +326,59 @@ export class CloudDeploy {
 			resources,
 			tags: { ...deployed.tags, [CONFIG_TAG]: rel },
 		};
-		const result = await this.ctx.ui.progress(`Updating ${name} on ${cluster.name}`, (report) =>
-			this.updateAndFollow(cluster, dp, deployed.id, update, wasRunning, report, mapTo));
+		const change = wasRunning
+			? { from: 'STATE_RUNNING', waiting: 'waiting for the restart…' }
+			// Bug 45: the answer to an update of a pipeline in Error may still carry its old error.
+			: deployed.state === 'STATE_ERROR' ? { from: 'STATE_ERROR', waiting: 'waiting for the update…' } : undefined;
+		const result = this.withCreated(await this.ctx.ui.progress(`Updating ${name} on ${cluster.name}`, (report) =>
+			this.updateAndFollow(cluster, dp, deployed.id, update, change, report, mapTo)), createdSecrets);
 		this.report(file, name, cluster, result, 'update');
 		return result;
+	}
+
+	/** The diff (a config change) and "Replace and restart" for a running `deployed`; whether it was chosen. */
+	private async confirmReplace(cluster: CloudCluster, deployed: CloudPipeline, file: string, configYaml: string, resources: PipelineResources): Promise<boolean> {
+		const sameConfig = deployed.configYaml === configYaml;
+		const sameSize = sameResources(deployed.resources, resources);
+		if (!sameConfig) {
+			await this.showDiff(cluster, deployed, configYaml, file);
+		}
+		const size = sameSize ? '' : `Its size changes from ${resourcesText(deployed.resources)} to ${resourcesText(resources)}.`;
+		const what = sameConfig
+			? `Changing its size restarts it. ${size}`
+			: `Replacing its config with ${file} (the diff shows the changes) restarts it.${size ? ` ${size}` : ''}`;
+		const choice = await this.ctx.ui.confirm(this.ctx.mask(`Pipeline ${deployed.displayName} on ${cluster.name} is ${stateWord(deployed.state)}. ${what}`), REPLACE_ACTION);
+		return choice === REPLACE_ACTION;
+	}
+
+	/** The secrets this deploy created stay although it sent nothing more (`after`: what was not done); said once. */
+	private keptSecrets(created: readonly string[], cluster: CloudCluster, after: string): void {
+		if (created.length > 0) {
+			const kept = `Created ${created.join(', ')} on ${cluster.name}; they stay. ${after}`;
+			this.ctx.log(`Redpanda Cloud: ${kept}`);
+			void this.ctx.showInfo(kept);
+		}
+	}
+
+	/** Bug 45: the account changed during the deploy's prompts: stopped before the next send, said so. */
+	private stoppedByAccount(file: string, cluster: CloudCluster, created: readonly string[]): DeployResult {
+		const kept = created.length > 0 ? ` Created ${created.join(', ')} on ${cluster.name} before that; they stay.` : '';
+		const text = `The Redpanda Cloud service account changed during the deploy of ${file}, so the deploy stopped.${kept} Nothing ${created.length > 0 ? 'more ' : ''}was sent.`;
+		this.ctx.log(`Redpanda Cloud: ${text}`);
+		void this.ctx.showInfo(text);
+		return { kind: 'notStarted', ...(created.length > 0 ? { createdSecrets: [...created] } : {}) };
+	}
+
+	/** A rejected or failed send carries the secrets created before it (bug 45). */
+	private withCreated(result: DeployResult, created: readonly string[]): DeployResult {
+		return created.length > 0 && (result.kind === 'rejected' || result.kind === 'failed') ? { ...result, createdSecrets: [...created] } : result;
+	}
+
+	/** A pipeline offered by its tag (no mapping) deleted while the deploy waited: said so, nothing sent. */
+	private goneUnmapped(file: string, p: CloudPipeline, cluster: CloudCluster, created: readonly string[]): DeployResult {
+		this.ctx.log(`Redpanda Cloud: pipeline ${p.displayName} (${p.id}) is gone from ${cluster.name}; ${file} was not deployed.`);
+		void this.ctx.showInfo(`Pipeline ${p.displayName} is no longer on ${cluster.name}. ${nothingSent(created, cluster)}`);
+		return NOT_STARTED;
 	}
 
 	/**
@@ -383,7 +503,7 @@ export class CloudDeploy {
 	 * created from the answers. `stopped`: how the deploy ended (nothing more sent), none: it goes on;
 	 * `created`: the secrets this deploy created.
 	 */
-	private async ensureSecrets(uri: vscode.Uri, file: string, cluster: CloudCluster, dp: string, secrets: readonly CloudSecretUse[])
+	private async ensureSecrets(uri: vscode.Uri, file: string, cluster: CloudCluster, dp: string, secrets: readonly CloudSecretUse[], accountChanged: () => boolean)
 		: Promise<{ readonly stopped?: DeployResult; readonly created: string[] }> {
 		const created: string[] = [];
 		if (secrets.length === 0) {
@@ -414,7 +534,8 @@ export class CloudDeploy {
 		}
 		const stopped = (name: string): DeployResult => {
 			this.ctx.log(`Redpanda Cloud: the deploy of ${file} stopped at the secret ${name}; nothing more was sent.`);
-			return NOT_STARTED;
+			this.keptSecrets(created, cluster, 'The pipeline was not sent.');
+			return created.length > 0 ? { kind: 'notStarted', createdSecrets: [...created] } : NOT_STARTED;
 		};
 		const title = (name: string) => `Deploy ${file} to ${cluster.name}: the secret ${name}`;
 		for (const s of missing) {
@@ -446,6 +567,9 @@ export class CloudDeploy {
 			if (value === undefined) {
 				return { stopped: stopped(s.name), created };
 			}
+			if (accountChanged()) {
+				return { stopped: this.stoppedByAccount(file, cluster, created), created };
+			}
 			const secret = value;
 			this.maskValue(secret);
 			try {
@@ -461,9 +585,13 @@ export class CloudDeploy {
 					: `Redpanda Cloud: the secret ${s.name} already exists on ${cluster.name} (created meanwhile); it was not changed.`);
 			} catch (err) {
 				const message = asCloudError(err).message;
-				this.ctx.log(`Redpanda Cloud: could not create the secret ${s.name} on ${cluster.name}: ${message}`);
-				this.ctx.showErrorOfferingConnect(`Could not create the secret ${s.name} on ${cluster.name}: ${message}. The pipeline was not sent.`, err);
-				return { stopped: { kind: 'failed', message: this.ctx.mask(`could not create the secret ${s.name}: ${message}`) }, created };
+				const kept = created.length > 0 ? ` Created ${created.join(', ')} on ${cluster.name} before that; they stay.` : '';
+				this.ctx.log(`Redpanda Cloud: could not create the secret ${s.name} on ${cluster.name}: ${message}${kept}`);
+				this.ctx.showErrorOfferingConnect(`Could not create the secret ${s.name} on ${cluster.name}: ${message}.${kept} The pipeline was not sent.`, err);
+				return {
+					stopped: { kind: 'failed', message: this.ctx.mask(`could not create the secret ${s.name}: ${message}`), ...(created.length > 0 ? { createdSecrets: [...created] } : {}) },
+					created,
+				};
 			}
 		}
 		return { created };
@@ -578,18 +706,26 @@ export class CloudDeploy {
 			return { kind: 'failed', message: read.message };
 		}
 		this.ctx.removePipeline(cluster.id, m.pipelineId);
+		return this.goneTarget(file, mappingName, m, cluster, dp, strict);
+	}
+
+	/** The mapped pipeline is gone from `cluster`: offered to be created anew, or (`strict`) explained, nothing sent. */
+	private async goneTarget(
+		file: string, mappingName: string, m: DeployMapping, cluster: CloudCluster, dp: string, strict: boolean, created: readonly string[] = [],
+	): Promise<Target | DeployResult> {
 		if (strict) {
 			this.ctx.log(`Redpanda Cloud: pipeline ${m.pipelineName ?? m.pipelineId} (${m.pipelineId}) is gone from ${cluster.name}; ${file} was not deployed again.`);
-			void this.ctx.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Nothing was sent.`);
+			void this.ctx.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. ${nothingSent(created, cluster)}`);
 			return NOT_STARTED;
 		}
 		const choice = await this.ctx.showInfo(
 			`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Create a new pipeline?`, CREATE_NEW_PIPELINE_ACTION);
-		if (choice !== CREATE_NEW_PIPELINE_ACTION) {
+		const name = choice === CREATE_NEW_PIPELINE_ACTION ? await this.askName(file, cluster, m.pipelineName) : undefined;
+		if (!name) {
+			this.keptSecrets(created, cluster, 'The pipeline was not sent.');
 			return NOT_STARTED;
 		}
-		const name = await this.askName(file, cluster, m.pipelineName);
-		return name ? { kind: 'create', cluster, dp, name } : NOT_STARTED;
+		return { kind: 'create', cluster, dp, name };
 	}
 	/** Writes the mapping when it differs from the file's (only after a create or update succeeded). */
 	private async writeMapping(file: string, m: DeployMapping): Promise<void> {
@@ -628,8 +764,8 @@ export class CloudDeploy {
 	}
 
 	private async updateAndFollow(
-		cluster: CloudCluster, dp: string, id: string, update: UpdatePipeline, restart: boolean, report: (message: string) => void,
-		updated: (p: CloudPipeline) => Promise<void>,
+		cluster: CloudCluster, dp: string, id: string, update: UpdatePipeline, change: { readonly from: PipelineState; readonly waiting: string } | undefined,
+		report: (message: string) => void, updated: (p: CloudPipeline) => Promise<void>,
 	): Promise<DeployResult> {
 		report('updating the pipeline…');
 		let current: CloudPipeline;
@@ -640,7 +776,7 @@ export class CloudDeploy {
 		}
 		await updated(current);
 		this.ctx.upsertPipeline(cluster.id, current);
-		return this.follow(cluster, dp, current, update.displayName, report, restart ? { from: 'STATE_RUNNING', waiting: 'waiting for the restart…' } : undefined);
+		return this.follow(cluster, dp, current, update.displayName, report, change);
 	}
 
 	/** A failed create or update: a config the cluster rejected, or another failure. */
@@ -656,7 +792,9 @@ export class CloudDeploy {
 	 * Follows the pipeline's state until a final one. With `change` the answer may still be in the
 	 * state it was in (`from`: `RUNNING` after an update of a running pipeline, the old state after a
 	 * start or stop): then another state must be seen before a final one counts, unless
-	 * `restartGraceMs` pass with no change (it is then reported in that state).
+	 * `restartGraceMs` pass with no change (it is then reported in that state; still in Error:
+	 * `errorFromBefore`). A state the extension does not know ends it at once (bug 45); a timeout names
+	 * the last state seen.
 	 */
 	async follow(
 		cluster: CloudCluster, dp: string, first: CloudPipeline, name: string, report: (message: string) => void,
@@ -669,15 +807,20 @@ export class CloudDeploy {
 		let lastChange = Date.now();
 		let changed = !change || current.state !== change.from;
 		let failures = 0;
+		let graceOver = false;
 		for (;;) {
+			if (!isKnownState(current.state)) {
+				break;
+			}
 			if (changed && FINAL_STATES.includes(current.state)) {
 				break;
 			}
 			if (!changed && Date.now() - lastChange >= this.ctx.restartGraceMs) {
+				graceOver = true;
 				break;
 			}
 			if (Date.now() >= deadline) {
-				return { kind: 'timedOut', pipelineId: current.id };
+				return { kind: 'timedOut', pipelineId: current.id, state: current.state };
 			}
 			report(changed || !change ? `${pipelineStateText(current.state)}…` : change.waiting);
 			await sleep(this.ctx.pollMs);
@@ -701,33 +844,49 @@ export class CloudDeploy {
 				}
 			}
 		}
-		return { kind: 'final', state: current.state, pipelineId: current.id, ...(current.error ? { error: current.error } : {}) };
+		return {
+			kind: 'final', state: current.state, pipelineId: current.id, ...(current.error ? { error: current.error } : {}),
+			...(graceOver && current.state === 'STATE_ERROR' ? { errorFromBefore: true as const } : {}),
+		};
 	}
 
 	/** The deploy's outcome as a message and a log line. */
 	private report(file: string, name: string, cluster: CloudCluster, result: DeployResult, operation: 'create' | 'update'): void {
 		const on = `on ${cluster.name}`;
 		const updated = operation === 'update';
+		// Bug 45: the secrets created before a send that failed stay; the message names them.
+		const kept = (result.kind === 'rejected' || result.kind === 'failed') && result.createdSecrets && result.createdSecrets.length > 0
+			? ` Created ${result.createdSecrets.join(', ')} on ${cluster.name}; they stay.` : '';
 		switch (result.kind) {
 			case 'rejected': {
 				const hints = result.hints.length > 0 ? `: ${result.hints.join('; ')}` : '';
-				this.ctx.log(`Redpanda Cloud: ${cluster.name} rejected ${file}: ${result.message}`);
+				this.ctx.log(`Redpanda Cloud: ${cluster.name} rejected ${file}: ${result.message}${kept}`);
 				result.hints.forEach((h) => this.ctx.log(`  ${file}: ${h}`));
-				void this.ctx.showError(`${cluster.name} rejected ${file} (${result.message})${hints}. ${updated ? `Pipeline ${name} was not updated.` : 'No pipeline was created.'}`);
+				void this.ctx.showError(`${cluster.name} rejected ${file} (${result.message})${hints}. ${updated ? `Pipeline ${name} was not updated.` : 'No pipeline was created.'}${kept}`);
 				return;
 			}
 			case 'failed': {
 				const what = updated ? `Updating pipeline ${name} ${on} with ${file}` : `Deploying ${file} as ${name} ${on}`;
-				this.ctx.log(`Redpanda Cloud: ${what} failed: ${result.message}`);
-				void this.ctx.showError(`${what} failed: ${result.message}`);
+				const text = kept ? `${what} failed: ${result.message}.${kept}` : `${what} failed: ${result.message}`;
+				this.ctx.log(`Redpanda Cloud: ${text}`);
+				void this.ctx.showError(text);
 				return;
 			}
-			case 'timedOut':
-				this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still starting after ${Math.round(this.ctx.timeoutMs / 1000)} s.`);
-				void this.ctx.showInfo(`Pipeline ${name} is still starting ${on}; the Cloud view shows its state.`);
+			case 'timedOut': {
+				// Bug 45: the last state seen (Stopping is not "starting").
+				const still = result.state ? stateWord(result.state) : 'starting';
+				this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still ${still} after ${Math.round(this.ctx.timeoutMs / 1000)} s.`);
+				void this.ctx.showInfo(`Pipeline ${name} is still ${still} ${on}; the Cloud view shows its state.`);
 				return;
+			}
 			case 'final': {
 				const state = pipelineStateText(result.state);
+				if (result.state === 'STATE_ERROR' && result.errorFromBefore) {
+					const reason = result.error ?? NO_REASON;
+					this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still in Error after the update: ${reason} (this error may be from before this deploy)`);
+					this.ctx.showErrorWithLogs(`Pipeline ${name} ${on} is still in Error: ${reason}. The error shown may be from before this deploy.`, cluster, result.pipelineId, name);
+					return;
+				}
 				if (result.state === 'STATE_ERROR') {
 					const reason = result.error ?? NO_REASON;
 					this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is in Error: ${reason}`);
@@ -743,6 +902,11 @@ export class CloudDeploy {
 				return;
 		}
 	}
+}
+
+/** "Nothing was sent.", or, after this deploy created secrets, they are named and nothing more was sent (bug 45). */
+function nothingSent(created: readonly string[], cluster: CloudCluster): string {
+	return created.length > 0 ? `Created ${created.join(', ')} on ${cluster.name}; they stay. Nothing more was sent.` : 'Nothing was sent.';
 }
 
 /** The range `[start, end)` of `text` (UTF-16 offsets) as a `Range` of the same text. */

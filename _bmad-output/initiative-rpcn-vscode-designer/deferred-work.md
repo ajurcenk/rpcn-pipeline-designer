@@ -151,3 +151,15 @@
 - source_plan: `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings-plan.md`
   summary: The 4.5 test "BURST / UNCHANGED" (91-bloblang-diagnostics.ts :326) failed once in a full stable run: `parsed` was `[]` after `quiet()` (unverified medium).
   evidence: bug 41's implementer run 4 (2026-11-09/10), a run that took 15 min against 9.5 and logged "No ptyHost heartbeat after 6 seconds"; the bug 41 change does not touch it. Settled by reading BURST's wait (`quiet()`, 700 ms without a parse) against the debounced update and the binary state, and by whether it fails again in repeated full runs or CI.
+
+- source_plan: none
+  summary: Bug 45 group B, names: the pipeline tag names the file without local paths and with its workspace folder, and each file keeps its own mapping (criteria 2 and 6, findings C3 and C7).
+  evidence: split from bug 45 at the build's scope check (user, 2026-11-10, "Split, build A first"); it changes the tag format that Compare and Deploy again resolve, so it ships with its own decision on existing tags.
+
+- source_plan: none
+  summary: Bug 45 group C, translation and Compare: `${secrets.NAME}` checked as a missing secret, Compare on the translated text, and the smaller cases (corrupt mapping offers the tagged pipeline, palette Delete names an unreadable mapping, nested `${A:${B}}`, `env(` in a comment) (criteria 4, 5 and 9, findings C5, C6 and C10).
+  evidence: split from bug 45 at the build's scope check (user, 2026-11-10); touches the deploy flow after group A.
+
+- source_plan: none
+  summary: Bug 45 group D, the tests the epic 5 retrospective found missing: V1, V2, V3, V5 and V6 (criterion 10).
+  evidence: split from bug 45 at the build's scope check (user, 2026-11-10); cleaner once groups A–C have settled the behavior.

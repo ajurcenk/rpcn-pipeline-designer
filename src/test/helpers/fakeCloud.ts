@@ -134,6 +134,8 @@ export class FakeCloud {
 	readonly tokens: string[] = [];
 	/** Tokens it no longer accepts (revoked mid-session). */
 	readonly revoked = new Set<string>();
+	/** Bug 45: other service accounts it accepts (client ID → secret), besides the options' one. */
+	readonly otherClients = new Map<string, string>();
 	/** When true, the APIs refuse every token, also new ones (a service account without access). */
 	refuseTokens = false;
 	/** The Control Plane's list page size. */
@@ -144,6 +146,11 @@ export class FakeCloud {
 	createSequence: FakeState[] = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 	/** The states a running or starting pipeline walks through after an update (its GETs); the `PUT` answers the first. */
 	restartSequence: FakeState[] = [{ state: 'STATE_RUNNING' }, { state: 'STATE_RUNNING' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+	/**
+	 * Bug 45: the states a pipeline in Error walks through after an update (its GETs); the `PUT`
+	 * answers the first. None: it stays in Error with its old error.
+	 */
+	errorUpdateSequence: FakeState[] | undefined;
 	/** The states a pipeline walks through after `PUT …/stop`; the `PUT` answers the first. */
 	stopSequence: FakeState[] = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
 	/** The states a pipeline walks through after `PUT …/start`; the `PUT` answers the first. */
@@ -240,7 +247,9 @@ export class FakeCloud {
 			if (form.get('grant_type') !== 'client_credentials' || form.get('audience') !== 'cloudv2-production.redpanda.cloud') {
 				return [400, { error: 'invalid_request', error_description: 'bad grant' }];
 			}
-			if (form.get('client_id') !== this.options.clientId || form.get('client_secret') !== this.options.clientSecret) {
+			const id = form.get('client_id') ?? '';
+			const known = id === this.options.clientId ? this.options.clientSecret : this.otherClients.get(id);
+			if (known === undefined || form.get('client_secret') !== known) {
 				return [401, { error: 'access_denied', error_description: 'Unauthorized' }];
 			}
 			return [200, { access_token: this.issueToken(), scope: 'read:organization-info', expires_in: 86400, token_type: 'Bearer' }];
@@ -494,6 +503,17 @@ export class FakeCloud {
 				const [first, ...rest] = this.restartSequence;
 				p.state = first?.state ?? p.state;
 				p.sequence = rest.length > 0 ? rest : [{ state: p.state }];
+			} else if (p.state === 'STATE_ERROR' && this.errorUpdateSequence) {
+				const [first, ...rest] = this.errorUpdateSequence;
+				if (first) {
+					p.state = first.state;
+					if (first.error) {
+						p.status = { error: first.error };
+					} else {
+						delete p.status;
+					}
+				}
+				p.sequence = rest.length > 0 ? rest : [{ state: p.state, ...(p.status ? { error: p.status.error } : {}) }];
 			} else {
 				p.sequence = [{ state: p.state, ...(p.status ? { error: p.status.error } : {}) }];
 			}

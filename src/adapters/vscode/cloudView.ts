@@ -308,13 +308,16 @@ export interface CloudItem {
 
 /** How a deploy ended (the command's result, for tests). */
 export type DeployResult =
-	| { readonly kind: 'notStarted' }
-	| { readonly kind: 'rejected'; readonly message: string; readonly hints: readonly string[] }
-	| { readonly kind: 'failed'; readonly message: string; readonly pipelineId?: string }
-	| { readonly kind: 'final'; readonly state: string; readonly pipelineId: string; readonly error?: string }
-	| { readonly kind: 'timedOut'; readonly pipelineId: string }
-	/** The mapped pipeline already runs this config at this size: nothing was sent. */
-	| { readonly kind: 'unchanged'; readonly pipelineId: string }
+	/** `createdSecrets` (bug 45): the secrets the deploy created before it stopped; they stay. */
+	| { readonly kind: 'notStarted'; readonly createdSecrets?: readonly string[] }
+	| { readonly kind: 'rejected'; readonly message: string; readonly hints: readonly string[]; readonly createdSecrets?: readonly string[] }
+	| { readonly kind: 'failed'; readonly message: string; readonly pipelineId?: string; readonly createdSecrets?: readonly string[] }
+	/** `errorFromBefore` (bug 45): still in Error after the grace period, so `error` may be from before the request. */
+	| { readonly kind: 'final'; readonly state: string; readonly pipelineId: string; readonly error?: string; readonly errorFromBefore?: true }
+	/** `state`: the last state seen. */
+	| { readonly kind: 'timedOut'; readonly pipelineId: string; readonly state?: string }
+	/** The mapped pipeline already runs this config at this size: no pipeline change was sent (`createdSecrets`: only those). */
+	| { readonly kind: 'unchanged'; readonly pipelineId: string; readonly createdSecrets?: readonly string[] }
 	/**
 	 * Ticket 8: the pre-deploy check found problems (`findings`, as listed) or could not read the
 	 * cluster's components (`listError`), and Deploy anyway was not chosen: nothing was sent.

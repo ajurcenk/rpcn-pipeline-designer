@@ -54,6 +54,15 @@ const SECRET_VALUES = {
 	/** Bug 44: kept from secret storage, then typed; each echoed by a failing API answer. */
 	keptLocal44: 'tok-44-kept-local-Ue7n',
 	typed44: 'tok-44-typed-Gy3v',
+	/** Bug 45: created before an unchanged, rejected, failed, declined or stopped deploy. */
+	unchanged45a: 'tok-45-unchanged-first-Kc2p',
+	unchanged45b: 'tok-45-unchanged-again-Tz8m',
+	rejected45: 'tok-45-rejected-Na4x',
+	failed45: 'tok-45-failed-Bq6h',
+	meanwhile45: 'tok-45-meanwhile-Yr1d',
+	account45: 'tok-45-account-Pf5s',
+	/** Bug 45: another service account's secret (switched to during a deploy's prompts). */
+	otherClient45: 'tok-45-other-client-secret-Hm3e',
 };
 const CONFIG = [
 	'input:',
@@ -294,6 +303,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fake.startSequence = [{ state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
 		fake.stopSequence = [{ state: 'STATE_STOPPING' }, { state: 'STATE_STOPPED' }];
 		fake.failures = [];
+		fake.errorUpdateSequence = undefined;
 		fake.secretsPageSize = 100;
 		for (const c of fake.options.clusters) {
 			c.pipelines = [];
@@ -1412,7 +1422,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		for (const v of [kept, typed]) {
 			assert.ok(!shown.includes(v) && !shown.includes(b64(v)), shown);
 		}
-		const failed = `Deploying orders.yaml as ${notSent} on rpc-vilnius failed: boom ${mask} ${mask} ${mask} ${mask}`;
+		// Bug 45: the secrets created before the failed create are named.
+		const failed = `Deploying orders.yaml as ${notSent} on rpc-vilnius failed: boom ${mask} ${mask} ${mask} ${mask}. Created B_44, C_44 on rpc-vilnius; they stay.`;
 		assert.ok(errors.includes(failed), errors.join('\n'));
 		assert.ok(api().outputLines().slice(outputAt).includes(`Redpanda Cloud: ${failed}`), 'the output channel: the name as is, the values masked');
 		assert.strictEqual(result.message, `boom ${mask} ${mask} ${mask} ${mask}`);
@@ -2180,6 +2191,359 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(errors, []);
 		assert.deepStrictEqual(checkEntries(doc), []);
 		assert.strictEqual(componentReads().length, 1);
+	});
+
+	// --- bug 45 (group A): a second deploy, a stale target, old states, what was sent ---
+
+	const vilniusPipeline = () => fake.cluster(VILNIUS_ID).pipelines[0];
+	/** Runs `body` once, while the next size pick is open. */
+	const onceDuringUnits = (body: () => Promise<void>) => {
+		duringUnits = async () => {
+			duringUnits = undefined;
+			await body();
+		};
+	};
+	/** Stops the mapped pipeline in the fake (its GETs then keep the state). */
+	const stopInFake = () => {
+		const p = vilniusPipeline();
+		p.state = 'STATE_STOPPED';
+		p.sequence = [];
+		return p;
+	};
+
+	test('DOUBLE 45: a second Deploy of the same file while one waits (by URI, from the active editor and the row\'s Deploy again) is refused, nothing sent by it; the first ends alone; after a result, Escape or a thrown error the file deploys again', async () => {
+		inWorkspace();
+		await connect();
+		const doc = await openConfig(configFile);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		const seconds: ({ kind: string } | undefined)[] = [];
+		let requestsDuring = -1;
+		onceDuringUnits(async () => {
+			const at = fake.requests.length;
+			seconds.push(await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri));
+			seconds.push(await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND));
+			requestsDuring = fake.requests.length - at;
+		});
+		const first = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(first?.kind, 'final', errors.join('\n'));
+		assert.deepStrictEqual(seconds.map((r) => r?.kind), ['notStarted', 'notStarted']);
+		assert.strictEqual(requestsDuring, 0, 'nothing sent or read by the second');
+		const refused = 'A deploy of orders.yaml is already running; this request was ignored. Nothing was sent.';
+		assert.strictEqual(infos.filter((m) => m === refused).length, 2, infos.join('\n'));
+		assert.strictEqual(posts().length, 1, 'one pipeline created');
+		assert.strictEqual(fake.cluster(VILNIUS_ID).pipelines.length, 1);
+		assert.strictEqual(unitsAsked, 1, 'the second asked nothing');
+
+		// After a result: deployed again (unchanged); the row's Deploy again meanwhile is refused the same way.
+		script({});
+		let fromRow: { kind: string } | undefined;
+		onceDuringUnits(async () => {
+			fromRow = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		});
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		assert.strictEqual(fromRow?.kind, 'notStarted');
+		assert.strictEqual(infos.filter((m) => m === refused).length, 3, infos.join('\n'));
+		assert.strictEqual(unitsAsked, 1, 'the row\'s deploy asked nothing');
+		// After Escape.
+		script({ units: [undefined] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		script({});
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		// After a thrown error.
+		script({});
+		onceDuringUnits(async () => {
+			throw new Error('a prompt broke');
+		});
+		assert.strictEqual(await deployNow(doc), 'failed');
+		script({});
+		assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+		assert.strictEqual(infos.filter((m) => m === refused).length, 3, 'never refused after it ended');
+	});
+
+	test('OTHER_FILE 45: a deploy of another file while one waits runs as today', async () => {
+		const otherFile = path.join(dir, 'other.yaml');
+		try {
+			await connect();
+			const other = await openConfig(otherFile);
+			const doc = await openConfig(configFile);
+			script({ picks: ['rpc-vilnius', 'rpc-vilnius'], inputs: ['orders', 'other'] });
+			let second: { kind: string } | undefined;
+			onceDuringUnits(async () => {
+				second = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, other.uri);
+			});
+			const first = await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(first?.kind, 'final', errors.join('\n'));
+			assert.strictEqual(second?.kind, 'final', errors.join('\n'));
+			assert.deepStrictEqual(fake.cluster(VILNIUS_ID).pipelines.map((p) => p.display_name).sort(), ['orders', 'other']);
+			assert.ok(!infos.some((m) => m.includes('is already running')), infos.join('\n'));
+		} finally {
+			fs.rmSync(otherFile, { force: true });
+		}
+	});
+
+	test('SENT_UNCHANGED 45: the config unchanged, a missing secret created: the log and message name it, never "nothing was sent"', async () => {
+		const doc = await openForSecrets(usingSecrets('NEWSEC_45'));
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.unchanged45a], choices: [ADD_NOW_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		vilnius().secrets!.delete('NEWSEC_45');
+		const outputBefore = api().outputLines().length;
+		script({ inputs: [SECRET_VALUES.unchanged45b], choices: [ADD_NOW_ACTION] });
+		const result = await vscode.commands.executeCommand<{ kind: string; createdSecrets?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'unchanged', errors.join('\n'));
+		assert.deepStrictEqual(result?.createdSecrets, ['NEWSEC_45']);
+		assert.strictEqual(vilnius().secrets!.get('NEWSEC_45'), SECRET_VALUES.unchanged45b);
+		assert.strictEqual(puts().length, 0);
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders on rpc-vilnius is already deployed from orders.yaml, so it was not updated; created NEWSEC_45 on rpc-vilnius.']);
+		const lines = api().outputLines().slice(outputBefore);
+		assert.ok(lines.some((l) => l.endsWith('; created NEWSEC_45 on rpc-vilnius, nothing else was sent.')), lines.join('\n'));
+		assert.ok(!lines.some((l) => l.includes('nothing was sent')), lines.join('\n'));
+	});
+
+	test('SENT_FAILED 45: secrets created, then the create rejected or failing: the message names the secrets created, with the API\'s message', async () => {
+		const doc = await openForSecrets(usingSecrets('FAILSEC_45').replace('  generate:', `  ${FAKE_LINT_MARKER}: {}\n  generate:`));
+		const outputBefore = api().outputLines().length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.rejected45], choices: [ADD_NOW_ACTION] });
+		const rejected = await vscode.commands.executeCommand<{ kind: string; createdSecrets?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(rejected?.kind, 'rejected', errors.join('\n'));
+		assert.deepStrictEqual(rejected?.createdSecrets, ['FAILSEC_45']);
+		assert.match(errors[errors.length - 1], new RegExp(`unable to infer component type: ${FAKE_LINT_MARKER}.*No pipeline was created\\. Created FAILSEC_45 on rpc-vilnius; they stay\\.$`));
+		assert.ok(api().outputLines().slice(outputBefore).some((l) => l.includes('rejected orders.yaml') && l.endsWith('Created FAILSEC_45 on rpc-vilnius; they stay.')));
+
+		await editConfig(doc, usingSecrets('FAILSEC2_45'));
+		fake.failures = [{
+			when: (r) => r.method === 'POST' && r.url.endsWith('/v1/redpanda-connect/pipelines'),
+			status: 503, body: { code: 'UNAVAILABLE', message: 'the data plane is down', details: [] }, times: 5,
+		}];
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.failed45], choices: [ADD_NOW_ACTION] });
+		const failed = await vscode.commands.executeCommand<{ kind: string; createdSecrets?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(failed?.kind, 'failed', errors.join('\n'));
+		assert.deepStrictEqual(failed?.createdSecrets, ['FAILSEC2_45']);
+		const last = errors[errors.length - 1];
+		assert.ok(last.startsWith('Deploying orders.yaml as orders on rpc-vilnius failed: ') && last.includes('the data plane is down'), last);
+		assert.ok(last.endsWith('Created FAILSEC2_45 on rpc-vilnius; they stay.'), last);
+		assert.strictEqual(fake.cluster(VILNIUS_ID).pipelines.length, 0);
+	});
+
+	test('STARTED_MEANWHILE 45: a stopped mapped pipeline started elsewhere while Deploy waits: read again, the restart confirmed; declined keeps the secrets created; confirmed restarts it', async () => {
+		const { doc } = await deployOnce();
+		const p = stopInFake();
+		const startMeanwhile = () => onceDuringUnits(async () => {
+			p.state = 'STATE_RUNNING';
+		});
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 6s'));
+		script({ confirms: [undefined] });
+		startMeanwhile();
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.strictEqual(confirmed.length, 1, 'the restart is asked');
+		assert.deepStrictEqual(confirmed[0].actions, [REPLACE_ACTION]);
+		assert.match(confirmed[0].message, /^Pipeline orders on rpc-vilnius is running\. Replacing its config with orders\.yaml/);
+		assert.strictEqual(puts().length, 0);
+
+		stopInFake();
+		await editConfig(doc, usingSecrets('MEANWHILE_45'));
+		script({ confirms: [undefined], choices: [ADD_NOW_ACTION], inputs: [SECRET_VALUES.meanwhile45] });
+		startMeanwhile();
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.ok(infos.includes('Created MEANWHILE_45 on rpc-vilnius; they stay. The pipeline was not updated.'), infos.join('\n'));
+		assert.strictEqual(vilnius().secrets!.get('MEANWHILE_45'), SECRET_VALUES.meanwhile45);
+		assert.strictEqual(puts().length, 0);
+
+		stopInFake();
+		script({ confirms: [REPLACE_ACTION] });
+		startMeanwhile();
+		const result = await vscode.commands.executeCommand<{ kind: string; state?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(result?.state, 'STATE_RUNNING');
+		assert.strictEqual(confirmed.length, 1);
+		assert.strictEqual(puts().length, 1);
+		assert.ok(progressReports.includes('waiting for the restart…'), progressReports.join(', '));
+	});
+
+	test('RETAGGED 45: description and tags changed elsewhere while Deploy waits: the update keeps the current ones', async () => {
+		const { doc } = await deployOnce();
+		const p = stopInFake();
+		const changed = CONFIG.replace('interval: 5s', 'interval: 8s');
+		await editConfig(doc, changed);
+		script({});
+		onceDuringUnits(async () => {
+			p.description = 'changed meanwhile';
+			p.tags = { ...p.tags, team: 'meanwhile' };
+		});
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.deepStrictEqual(JSON.parse(puts()[0].body), {
+			display_name: 'orders', description: 'changed meanwhile', config_yaml: changed, resources: resourcesOf(1),
+			tags: { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false), team: 'meanwhile' },
+		});
+	});
+
+	test('CHANGED_MEANWHILE 45: as deployed on the first read, changed elsewhere while Deploy waits: read again, not "nothing changed"; the update is sent', async () => {
+		const { doc, id } = await deployOnce();
+		const p = vilniusPipeline();
+		script({ confirms: [REPLACE_ACTION] });
+		onceDuringUnits(async () => {
+			p.config_yaml = CONFIG.replace('interval: 5s', 'interval: 13s');
+		});
+		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(result?.pipelineId, id);
+		assert.ok(!infos.some((m) => m.includes('nothing changed')), infos.join('\n'));
+		assert.strictEqual(confirmed.length, 1, 'running: the restart confirmed');
+		assert.deepStrictEqual(puts().map((r) => JSON.parse(r.body).config_yaml), [CONFIG]);
+	});
+
+	test('GONE 45: the mapped pipeline deleted while Deploy waits: offered to be created anew, as a mapped pipeline found gone', async () => {
+		const { doc, id } = await deployOnce();
+		stopInFake();
+		const changed = CONFIG.replace('interval: 5s', 'interval: 4s');
+		await editConfig(doc, changed);
+		script({ actions: [CREATE_NEW_PIPELINE_ACTION], inputs: [(o) => o.value] });
+		onceDuringUnits(async () => {
+			fake.cluster(VILNIUS_ID).pipelines = [];
+		});
+		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.ok(infos.some((m) => /^Pipeline orders, which orders\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\. Create a new pipeline\?$/.test(m)), infos.join('\n'));
+		assert.strictEqual(asked[asked.length - 1].value, 'orders', 'the old name offered');
+		assert.notStrictEqual(result?.pipelineId, id);
+		assert.strictEqual(puts().length, 0);
+		assert.strictEqual(posts().length, 2, 'deployOnce\'s and the new one');
+		assert.strictEqual(lastCreate()!.config_yaml, changed);
+		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, result?.pipelineId, 'the mapping rewritten');
+	});
+
+	test('ACCOUNT 45: the account changes during the prompts: the deploy stops before sending, said so; after a secret was created: named', async () => {
+		const { doc } = await deployOnce();
+		stopInFake();
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 3s'));
+		script({});
+		onceDuringUnits(async () => {
+			await cloud().disconnect();
+		});
+		let before = fake.requests.length;
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.ok(infos.includes('The Redpanda Cloud service account changed during the deploy of orders.yaml, so the deploy stopped. Nothing was sent.'), infos.join('\n'));
+		assert.ok(nothingSentSince(before), 'nothing sent');
+		assert.deepStrictEqual(errors, [], 'no failed read reported');
+		await settleSecrets();
+
+		await connect();
+		await editConfig(doc, usingSecrets('ACCOUNT_45'));
+		// The account is disconnected while the secret is being created.
+		fake.failures = [{
+			when: (r) => {
+				if (r.method === 'POST' && /\/v1\/secrets$/.test(r.url)) {
+					void cloud().disconnect();
+				}
+				return false;
+			},
+			status: 500, body: {},
+		}];
+		script({ choices: [ADD_NOW_ACTION], inputs: [SECRET_VALUES.account45] });
+		before = fake.requests.length;
+		const result = await vscode.commands.executeCommand<{ kind: string; createdSecrets?: string[] }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'notStarted', errors.join('\n'));
+		assert.deepStrictEqual(result?.createdSecrets, ['ACCOUNT_45']);
+		assert.strictEqual(vilnius().secrets!.get('ACCOUNT_45'), SECRET_VALUES.account45);
+		assert.ok(infos.includes('The Redpanda Cloud service account changed during the deploy of orders.yaml, so the deploy stopped. Created ACCOUNT_45 on rpc-vilnius before that; they stay. Nothing more was sent.'), infos.join('\n'));
+		assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET' || r.url === '/oauth/token' || /\/v1\/secrets$/.test(r.url)), 'only the secret sent');
+		assert.strictEqual(puts().length, 0);
+		fake.failures = [];
+		await settleSecrets();
+
+		// Another service account connected during the prompts: stopped, nothing sent.
+		await connect();
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 14s'));
+		fake.otherClients.set('other-client-45', SECRET_VALUES.otherClient45);
+		try {
+			script({});
+			onceDuringUnits(async () => {
+				inputs.push('other-client-45', SECRET_VALUES.otherClient45);
+				assert.strictEqual(await cloud().connect(), true, errors.join('\n'));
+			});
+			before = fake.requests.length;
+			assert.strictEqual(await deployNow(doc), 'notStarted');
+			assert.ok(infos.includes('The Redpanda Cloud service account changed during the deploy of orders.yaml, so the deploy stopped. Nothing was sent.'), infos.join('\n'));
+			assert.ok(nothingSentSince(before), 'nothing sent');
+			assert.strictEqual(puts().length, 0);
+			await settleSecrets();
+		} finally {
+			fake.otherClients.clear();
+		}
+
+		// A Connect attempt that fails during the prompts leaves the account: the deploy goes on.
+		await connect();
+		const stopsBefore = infos.filter((m) => m.includes('service account changed')).length;
+		script({});
+		onceDuringUnits(async () => {
+			inputs.push(CLIENT_ID, WRONG_SECRET);
+			assert.strictEqual(await cloud().connect(), false);
+		});
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(infos.filter((m) => m.includes('service account changed')).length, stopsBefore, 'not stopped');
+		assert.strictEqual(puts().length, 1, 'the update sent');
+		await settleSecrets();
+	});
+
+	test('FROM_ERROR 45: an update of a pipeline in Error still answering Error: followed through the grace, then "still in Error, may be from before this deploy"; one that leaves Error: reported in its new state', async () => {
+		const { doc } = await deployOnce();
+		const p = vilniusPipeline();
+		const inError = () => {
+			p.state = 'STATE_ERROR';
+			p.status = { error: 'old failure' };
+			p.sequence = [];
+		};
+		inError();
+		cloud().restartGraceMs = 300;
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 2s'));
+		script({});
+		const stale = await vscode.commands.executeCommand<{ kind: string; state?: string; error?: string; errorFromBefore?: boolean }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(stale?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(stale?.state, 'STATE_ERROR');
+		assert.strictEqual(stale?.error, 'old failure');
+		assert.strictEqual(stale?.errorFromBefore, true);
+		assert.ok(progressReports.includes('waiting for the update…'), progressReports.join(', '));
+		assert.deepStrictEqual(errors.slice(-1), ['Pipeline orders on rpc-vilnius is still in Error: old failure. The error shown may be from before this deploy.']);
+
+		inError();
+		fake.errorUpdateSequence = [{ state: 'STATE_ERROR', error: 'old failure' }, { state: 'STATE_STARTING' }, { state: 'STATE_RUNNING' }];
+		cloud().restartGraceMs = 5_000;
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 1s'));
+		script({});
+		const left = await vscode.commands.executeCommand<{ kind: string; state?: string; errorFromBefore?: boolean }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(left?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(left?.state, 'STATE_RUNNING');
+		assert.strictEqual(left?.errorFromBefore, undefined);
+		assert.deepStrictEqual(infos.slice(-1), ['Updated pipeline orders on rpc-vilnius; it is running.']);
+	});
+
+	test('UNKNOWN 45: the follow sees a state the extension does not know: it ends at once, the result naming it', async () => {
+		const { doc, id } = await deployOnce();
+		const p = vilniusPipeline();
+		p.state = 'STATE_PAUSED';
+		p.sequence = [];
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 11s'));
+		script({});
+		const result = await vscode.commands.executeCommand<{ kind: string; state?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(result?.state, 'STATE_PAUSED');
+		const url = `/dp/${VILNIUS_ID}/v1/redpanda-connect/pipelines/${id}`;
+		const afterPut = fake.requests.slice(fake.requests.findIndex((r) => r.method === 'PUT' && r.url === url) + 1);
+		assert.ok(!afterPut.some((r) => r.method === 'GET' && r.url === url), 'not polled');
+		assert.deepStrictEqual(infos.slice(-1), ['Updated pipeline orders on rpc-vilnius; it is STATE_PAUSED.']);
+	});
+
+	test('STOPPING 45: Stopping until the timeout: the message names the last state seen, not "still starting"', async () => {
+		const { doc } = await deployOnce();
+		const p = vilniusPipeline();
+		p.state = 'STATE_STOPPING';
+		p.sequence = [];
+		cloud().timeoutMs = 300;
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 12s'));
+		script({});
+		const result = await vscode.commands.executeCommand<{ kind: string; state?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'timedOut', errors.join('\n'));
+		assert.strictEqual(result?.state, 'STATE_STOPPING');
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders is still stopping on rpc-vilnius; the Cloud view shows its state.']);
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {
