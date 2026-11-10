@@ -96,3 +96,8 @@ Quick review (2026-11-09): 0 high, 0 medium, 3 low patched, 0 rejected, 0 false.
 
 **Manual checks:**
 - Dev host 1.143.1 on the user's cluster: a config with two missing secrets; Don't create it for one whose local value appears in the pipeline name; the name shows unmasked; the other kept, the pipeline runs.
+
+**Manual check result (user, 2026-11-09): tested, no issues.** Dev host 1.143.1 with `e04c18f`, on the user's cluster, config `mask44.yaml` (`${MASK44_TOPIC:demo}` from the `env` setting, `${MASK44_KEY}` from a secret variable):
+- KEPT: `MASK44_KEY` kept and created; its value never shown. A second deploy kept `MASK44_TOPIC` = `mask44` and created it; from then on `mask44` in the pipeline and file names showed as `•••••`, as designed for a sent value.
+- NOT_SENT: after the `MASK44_TOPIC` secret was deleted and the window reloaded, Deploy with Don't create it: `mask44` and `mask44.yaml` shown unmasked in the messages, the output channel and the Cloud view row.
+- Seen on the way, not this bug: "nothing was sent" after a secret was created (bug 45, criterion 3, finding C4). A local Run with an unset `${MASK44_KEY}` failed with no editor warning (new story 46).
