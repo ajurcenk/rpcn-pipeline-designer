@@ -134,8 +134,19 @@ export async function showGraph(doc: vscode.TextDocument): Promise<GraphPanelHan
 	const handle = api().graphPanels.panelFor(doc.uri);
 	assert.ok(handle, 'a graph panel for the file');
 	// The command resolves when the timed lock wait ends; a late lock sequence may still be running (bug 15).
-	await handle.lockSettled;
+	await lockSettled(handle);
 	return handle;
+}
+
+/**
+ * Waits for `handle`'s lock sequence to end (its `lockSettled`), at most 15 s (bug 41), so a slow lock
+ * sequence fails naming `lockSettled` and the file instead of the test's generic timeout. It does not
+ * explain bug 41's 44-minute stall (item 3).
+ */
+export async function lockSettled(handle: GraphPanelHandle): Promise<void> {
+	let done = false;
+	void handle.lockSettled.then(() => { done = true; }, () => { done = true; });
+	assert.ok(await waitFor(() => done, 15_000), `the graph panel's lock sequence (lockSettled) did not end in 15 s: ${handle.uri.toString()}`);
 }
 
 /** A GraphPanels of the test's own, on the extension's binary and schema unless overridden. */
@@ -236,6 +247,6 @@ export async function autoOpened(doc: vscode.TextDocument, panels: GraphPanels =
 	await panels.idle();
 	const handle = panels.panelFor(doc.uri)!;
 	// `idle` resolves when the timed lock wait ends; a late lock sequence may still be running (bug 15).
-	await handle.lockSettled;
+	await lockSettled(handle);
 	return handle;
 }

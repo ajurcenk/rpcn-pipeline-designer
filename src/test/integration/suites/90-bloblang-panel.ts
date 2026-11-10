@@ -52,7 +52,7 @@ import { type ExtensionApi } from '../../../extension';
 import type { BloblangHostMessage } from '../../../shared/bloblangProtocol';
 import { bloblParseBody, connectScript, envCaptureLine, fixtureBodies, makeTempDir, mappingTestRunBody, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { fakeActions, insert, loseBinary, replace, restoreBinary, settle } from '../graphHelpers';
-import { EXTENSION_ID, focusedIn, focusState, runOnEditor, waitFor, waitForAsync } from '../helpers';
+import { EXTENSION_ID, focusedIn, focusState, runOnEditor, untilText, waitFor, waitForAsync } from '../helpers';
 
 const CONFIG = [
 	'input:',
@@ -2028,7 +2028,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				assert.ok(lastRun().config.includes('root.d = 3'), lastRun().config);
 
 				// UNDO
-				await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
+				await untilText(doc, 'undo', FOLLOW_CONFIG, () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
 				assert.ok(await waitFor(() => !deleted.removed, 5_000), 'back');
 				assert.strictEqual(doc.getText(), FOLLOW_CONFIG);
 				assert.ok(await waitFor(() => lastSnapshot(deleted)?.removed === undefined, 5_000));
@@ -2176,7 +2176,7 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 				assert.ok(await doc.save());
 				await samplesRead(file, [bEntry(P(1))]);
 
-				await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
+				await untilText(doc, 'undo', FOLLOW_CONFIG, () => vscode.window.showTextDocument(doc, { viewColumn: editor.viewColumn, preserveFocus: false }));
 				assert.ok(await waitFor(() => !a.removed && a.path === P(1) && b.path === P(2), 5_000), `${a.removed} ${a.path} ${b.path}`);
 				await settle();
 				assert.deepStrictEqual([showing(a), showing(b)], [[], [sample('b', '{"b":1}')]], 'A does not show B\'s samples');
@@ -2364,7 +2364,9 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 		assert.ok(await waitFor(() => lastSnapshot(handle)?.fileName === 'rename-b.yaml', 10_000), JSON.stringify(lastSnapshot(handle)));
 		assert.deepStrictEqual([lastSnapshot(handle)?.samplesFile, lastSnapshot(handle)?.samples, lastSnapshot(handle)?.selected],
 			['rename-b.samples.json', entry.samples, 'one']);
-		assert.ok(!fs.existsSync(samplesFile('rename-a.yaml')), 'the old samples file is gone');
+		// The samples file moves after the snapshot is posted (bug 41): one rename, so the old one gone
+		// means the new one is there.
+		assert.ok(await waitFor(() => !fs.existsSync(samplesFile('rename-a.yaml')), 10_000), 'the old samples file is gone');
 		assert.deepStrictEqual(readSamples(samplesFile('rename-b.yaml')).mappings, [entry]);
 		await settle();
 		assert.ok(!gone(), 'the rename did not close the panel');
@@ -2545,9 +2547,10 @@ suite('Bloblang test panel (integration, 4.2)', function () {
 			assert.ok(await doc.save());
 			assert.ok(await waitFor(() => !panels.hasUnsavedChanges(doc.uri), 5_000), 'saved again');
 			const editor = await vscode.window.showTextDocument(doc);
+			const saved = doc.getText();
 			await insert(doc, 0, '# again\n');
 			assert.ok(await waitFor(() => panels.hasUnsavedChanges(doc.uri), 5_000));
-			await runOnEditor(doc, 'undo', () => vscode.window.showTextDocument(editor.document));
+			await untilText(doc, 'undo', saved, () => vscode.window.showTextDocument(editor.document));
 			assert.ok(await waitFor(() => !doc.isDirty && !panels.hasUnsavedChanges(doc.uri), 5_000), 'undone to the saved text');
 		} finally {
 			panels.dispose();

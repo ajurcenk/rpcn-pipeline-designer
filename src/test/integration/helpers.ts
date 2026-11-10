@@ -42,7 +42,8 @@ export async function waitForAsync(predicate: () => Promise<boolean>, timeoutMs:
 
 /**
  * The focus state now, for a focus-dependent test's failure message (ticket 27): the active editor
- * and its group, the active group and its active tab, and the visible editors.
+ * and its group, the active group and its active tab, the visible editors, and whether the window
+ * has OS focus (bug 41).
  */
 export function focusState(): string {
 	const name = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf('/') + 1);
@@ -51,7 +52,8 @@ export function focusState(): string {
 	const tab = group.activeTab;
 	const visible = vscode.window.visibleTextEditors.map((e) => `${name(e.document.uri)}@${e.viewColumn}`).join(', ');
 	return `editor ${active ? `${name(active.document.uri)}@${active.viewColumn}` : 'none'}, group ${group.viewColumn}`
-		+ ` (tab ${tab ? `${tab.label}${tab.input instanceof vscode.TabInputWebview ? ' [webview]' : ''}` : 'none'}), visible [${visible}]`;
+		+ ` (tab ${tab ? `${tab.label}${tab.input instanceof vscode.TabInputWebview ? ' [webview]' : ''}` : 'none'}), visible [${visible}]`
+		+ `, window ${vscode.window.state.focused ? 'focused' : 'not focused'}`;
 }
 
 /**
@@ -97,6 +99,39 @@ export async function runOnEditor(
 		}
 	}
 	assert.fail(`${doc.uri.path} did not stay the active editor for ${command}`);
+}
+
+/**
+ * Runs `command` (`undo` / `redo`) on `doc` until its text is `text` (ticket 27, shared in bug 41):
+ * VS Code now and then ignores the command on a busy machine (keyboard focus), and the text arrives
+ * after the command resolves. `undo` goes to the focused DOM element, so each try first closes a
+ * quick input left open, shows `doc` (with `show`, else in its visible editor's column) and focuses
+ * the active editor group, then runs the command through `runOnEditor`. Up to three tries, 5 s each
+ * (a command applied that late is not retried, so never applied twice: the document's version
+ * changed); a window without OS focus, and each retry, print the focus state for the log. Returns
+ * the number of tries.
+ */
+export async function untilText(doc: vscode.TextDocument, command: string, text: string, show?: () => Thenable<unknown>): Promise<number> {
+	const reveal = async () => {
+		await (show ? show() : vscode.window.showTextDocument(doc, {
+			viewColumn: vscode.window.visibleTextEditors.find((e) => e.document === doc)?.viewColumn, preserveFocus: false,
+		}));
+		await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+	};
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (attempt > 0) {
+			console.log(`[ticket 27] ${command} did not change ${path.basename(doc.uri.fsPath)}; retrying: ${focusState()}`);
+		} else if (!vscode.window.state.focused) {
+			console.log(`[bug 41] ${command} on ${path.basename(doc.uri.fsPath)} in a window without OS focus: ${focusState()}`);
+		}
+		await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+		const version = doc.version;
+		await runOnEditor(doc, command, reveal);
+		if (await waitFor(() => doc.getText() === text, 5_000) || doc.version !== version) {
+			return attempt + 1;
+		}
+	}
+	return 3;
 }
 
 /**

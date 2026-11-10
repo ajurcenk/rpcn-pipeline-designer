@@ -4,7 +4,7 @@ import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import { LintDiagnostics } from '../../../adapters/vscode/diagnostics';
 import type { NodeStatusById } from '../../../shared/protocol';
 import { waitFor } from '../helpers';
-import { live, settle, SWITCH_ID, withGraph, replace, insert, open, fakeDiagnostics, testPanels, useGraphSuite } from '../graphHelpers';
+import { graphReady, live, settle, SWITCH_ID, withGraph, replace, insert, open, fakeDiagnostics, testPanels, useGraphSuite } from '../graphHelpers';
 import { api } from '../schemaHarness';
 
 suite('Pipeline graph: markers (3.8, integration)', function () {
@@ -96,7 +96,9 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 		try {
 			const handle = (await fake.panels.show(doc.uri))!;
 			assert.ok(handle, 'a graph panel for the file');
-			await handle.receive({ type: 'ready' });
+			// The real webview's readies first (bug 41): a late one answered with a snapshot carrying the
+			// new status leaves no nodeStatus to count (F1_RACE).
+			await graphReady(handle);
 			const at = (needle: string, delta = 0) => {
 				const start = doc.positionAt(doc.getText().indexOf(needle) + delta);
 				return new vscode.Range(start, start.translate(0, 1));
@@ -174,7 +176,9 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 		};
 		try {
 			const handle = (await panels.show(doc.uri))!;
-			await handle.receive({ type: 'ready' });
+			// The real webview's readies first (bug 41): a late one answered with a snapshot carrying the
+			// edit's status leaves no nodeStatus to count (F1_RACE).
+			await graphReady(handle);
 			republish();
 			assert.ok(await waitFor(() => statuses(handle).at(-1)?.[LOG_ID]?.own === 'warning', 10_000), 'marked');
 			const before = statuses(handle).length;

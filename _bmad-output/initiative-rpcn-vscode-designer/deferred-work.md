@@ -147,3 +147,7 @@
 - source_plan: none
   summary: The deploy-flow cases of the epic 5 retrospective other than the masking (C1, C3–C10, V1–V3, V5, V6).
   evidence: split from bug 44 at the build's scope check (user, 2026-11-09, "commit, split"); tracked as backlog bug 45, _bmad-output/backlog/bug-deploy-flow-edge-cases-epic-5-retrospective.md
+
+- source_plan: `_bmad-output/backlog/bug-ci-timing-flakes-in-the-integration-suites-epic-6-findings-plan.md`
+  summary: The 4.5 test "BURST / UNCHANGED" (91-bloblang-diagnostics.ts :326) failed once in a full stable run: `parsed` was `[]` after `quiet()` (unverified medium).
+  evidence: bug 41's implementer run 4 (2026-11-09/10), a run that took 15 min against 9.5 and logged "No ptyHost heartbeat after 6 seconds"; the bug 41 change does not touch it. Settled by reading BURST's wait (`quiet()`, 700 ms without a parse) against the debounced update and the binary state, and by whether it fails again in repeated full runs or CI.

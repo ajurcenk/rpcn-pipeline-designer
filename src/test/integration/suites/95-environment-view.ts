@@ -292,7 +292,8 @@ suite('Environment view (integration, ticket 31)', function () {
 		assert.strictEqual(await vscode.commands.executeCommand(REMOVE_VARIABLE_COMMAND, row('secret', 'BOTH_39')!.node), true);
 		assert.deepStrictEqual(removalsAsked, [['BOTH_39', 'the user settings']]);
 		assert.strictEqual(api().secrets!.values.get(WINDOW_SCOPE, 'BOTH_39'), undefined);
-		assert.ok(!api().secrets!.recordedKeys().some((k) => k.endsWith(':BOTH_39')), 'its record goes too');
+		// The memento's echo of the remove can lag it (bug 41).
+		assert.ok(await waitFor(() => !api().secrets!.recordedKeys().some((k) => k.endsWith(':BOTH_39')), 5_000), 'its record goes too');
 		assert.deepStrictEqual(config().inspect('secretEnv')?.globalValue, ['API_TOKEN']);
 		assert.ok(await waitFor(() => row('secret', 'BOTH_39') === undefined, 5_000));
 		assert.deepStrictEqual(infos, ['Secret variable BOTH_39 is removed: its value, and its name from redpandaConnect.secretEnv in the user settings.']);

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
 import { connectScript, envCaptureLine, fixtureBodies, makeTempDir, readCounter, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
-import { EXTENSION_ID, focusState, runOnEditor, waitFor } from '../helpers';
+import { EXTENSION_ID, focusState, untilText, waitFor } from '../helpers';
 
 suite('Lint on save (integration)', function () {
 	this.timeout(90_000);
@@ -36,26 +36,6 @@ suite('Lint on save (integration)', function () {
 			}
 			await new Promise((r) => setTimeout(r, 100));
 		}
-	}
-
-	/**
-	 * Runs `command` (`undo` / `redo`) on `doc` until its text is `text` (ticket 27): VS Code now and
-	 * then ignores the command on a busy machine (keyboard focus), and the text arrives after the
-	 * command resolves. Up to three tries, 5 s each (a command applied that late is not retried, so
-	 * never applied twice); each retry prints the focus state for the log. The number of tries.
-	 */
-	async function untilText(doc: vscode.TextDocument, command: string, text: string): Promise<number> {
-		for (let attempt = 0; attempt < 3; attempt++) {
-			if (attempt > 0) {
-				console.log(`[ticket 27] ${command} did not change ${path.basename(doc.uri.fsPath)}; retrying: ${focusState()}`);
-			}
-			const version = doc.version;
-			await runOnEditor(doc, command);
-			if (await waitFor(() => doc.getText() === text, 5_000) || doc.version !== version) {
-				return attempt + 1;
-			}
-		}
-		return 3;
 	}
 
 	async function openSaved(name: string, text: string): Promise<vscode.TextDocument> {
