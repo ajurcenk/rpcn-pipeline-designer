@@ -3,7 +3,7 @@ title: 'Deploy is safe against a second deploy, a stale target and old states, a
 type: 'bugfix'
 ticket: '45'
 created: '2026-11-10'
-status: 'built'
+status: 'done'
 baseline_revision: 'e94a81ee6c900648f91169263fe43a63b40c3621'
 route: 'full'
 route_source: 'auto'
@@ -113,6 +113,6 @@ Quick review (2026-11-10): 0 high, 2 medium, 5 low patched, 1 low rejected, 0 fa
 
 **Result (2026-11-10, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 156, webview 378, stable 1372 passing (1 pending; the 12 bug 45 tests, MASK_SENT and NO_LEAK among them), multi-root 10; `git diff --stat e94a81e -- src/extension.ts webview/src` empty; the test settings clean; no floor run.
 
-**Manual checks:** (pending: the user's cluster)
+**Manual checks:** (not run: the user marked 45 done without them, 2026-11-10)
 - Dev host 1.143.1 on the user's cluster: Deploy a file twice quickly (the second refused); start a stopped mapped pipeline in the Cloud UI while Deploy waits at the size pick (the restart is confirmed).
 
