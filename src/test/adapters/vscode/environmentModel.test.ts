@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { readEnvFile } from '../../../core/envFileRead';
 import { envUsage } from '../../../core/envUsage';
-import { type EnvironmentInputs, environmentModel, licenseSource } from '../../../adapters/vscode/environmentModel';
+import { type EnvironmentInputs, environmentModel, licenseSource, unsetNames } from '../../../adapters/vscode/environmentModel';
 
 const base: EnvironmentInputs = { setting: [], secrets: [], processEnv: {}, usage: [] };
 const states = (model: ReturnType<typeof environmentModel>) => Object.fromEntries(model.groups.map((g) => [
@@ -141,5 +141,37 @@ suite('adapters/vscode licenseSource', () => {
 
 	test('the license variables are not in the model\'s Missing (the config does not use them)', () => {
 		assert.deepStrictEqual(environmentModel({ ...base, usage: envUsage('a: 1') }).missing, []);
+	});
+
+	// Ticket 46: the names a local run stops on.
+	suite('unsetNames', () => {
+		const unset = (inputs: Partial<EnvironmentInputs>, names: string[]) => [...unsetNames({ ...base, ...inputs }, names)].sort();
+
+		test('UNSET: a name in no source, once', () => {
+			assert.deepStrictEqual(unset({}, ['A', 'A']), ['A']);
+		});
+
+		test('SET: in any source, an empty value included', () => {
+			assert.deepStrictEqual(unset({ setting: [{ name: 'A', value: '', level: 'user' }] }, ['A']), []);
+			assert.deepStrictEqual(unset({ envFile: { path: '/e', read: readEnvFile('A=\n') } }, ['A']), []);
+			assert.deepStrictEqual(unset({ secrets: [{ name: 'A', value: '' }] }, ['A']), []);
+			assert.deepStrictEqual(unset({ processEnv: { A: '' } }, ['A']), []);
+			assert.deepStrictEqual(unset({}, ['NO_COLOR']), [], 'the extension sets NO_COLOR');
+		});
+
+		test('a declared secret without a value, a rejected or unreadable env file does not set it', () => {
+			assert.deepStrictEqual(unset({ secrets: [{ name: 'A', value: undefined }] }, ['A']), ['A']);
+			assert.deepStrictEqual(unset({ envFile: { path: '/e', read: readEnvFile('A=1\nnot a line\n') } }, ['A']), ['A']);
+			assert.deepStrictEqual(unset({ envFile: { path: '/e', read: { error: 'ENOENT' } } }, ['A']), ['A']);
+		});
+
+		test('SECRETS_REF: secrets.A is never set locally; another name the settings cannot take only by VS Code\'s environment', () => {
+			assert.deepStrictEqual(unset({ processEnv: { 'secrets.A': '1' } }, ['secrets.A']), ['secrets.A']);
+			assert.deepStrictEqual(unset({ processEnv: { 'a.b': '1' } }, ['a.b', '1A']), ['1A']);
+		});
+
+		test('the config\'s own usage is ignored', () => {
+			assert.deepStrictEqual(unset({ usage: envUsage('a: ${B}') }, ['A']), ['A']);
+		});
 	});
 });

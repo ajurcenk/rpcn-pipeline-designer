@@ -158,7 +158,8 @@ suite('Run and Stop (integration)', function () {
 		assert.ok(api().secrets, 'the test seam is there in test mode');
 		const secrets = api().secrets!;
 		try {
-			const doc = await open('secret.yaml', 'input:\n  generate:\n    mapping: root = "${SECRET_30}"\noutput:\n  stdout: {}\n');
+			// Ticket 46: `env()`, not `${SECRET_30}`, so the runs without the secret are not refused before they start.
+			const doc = await open('secret.yaml', 'input:\n  generate:\n    mapping: root = env("SECRET_30")\noutput:\n  stdout: {}\n');
 			/** Runs once and returns what the binary saw. */
 			const runOnce = async (): Promise<string> => {
 				const before = seenLines().length;
@@ -540,6 +541,37 @@ suite('Run and Stop (integration)', function () {
 		assert.strictEqual(api().run.phaseOf(saved.uri), 'running');
 		await vscode.commands.executeCommand('redpandaConnect.stop');
 		assert.ok(await waitFor(() => api().run.phaseOf(saved.uri) === 'exited', 15_000));
+	});
+
+	test('ticket 46 RUN_REFUSED / RESOURCES: unset variables (the resource files\' too) stop Run before the binary starts; once set, Run starts as today', async () => {
+		const resources = path.join(dir, 'res46.yaml');
+		fs.writeFileSync(resources, '# ${RES_46}\ncache_resources:\n  - label: c\n    memory: {}\n');
+		await config().update('resourceFiles', [resources], vscode.ConfigurationTarget.Global);
+		try {
+			const doc = await open('refused46.yaml', 'input:\n  generate:\n    mapping: root = "${RUN_46}"\noutput:\n  stdout: {}\n');
+			// The resource file's names are Run's, not the config's Warnings.
+			assert.ok(await waitFor(() => api().unsetVariables!.diagnosticsFor(doc.uri).length === 1, 10_000));
+			const before = eventLines().length;
+			await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+			const refused = 'Run refused46.yaml: not started; environment variables not set: RUN_46, RES_46.';
+			assert.ok(await waitFor(() => api().outputLines().includes(refused), 5_000), api().outputLines().slice(-3).join('\n'));
+			await new Promise((r) => setTimeout(r, 300));
+			assert.strictEqual(eventLines().length, before, 'the binary was not started');
+			assert.strictEqual(runTerminals('refused46.yaml').length, 0, 'no terminal');
+			assert.strictEqual(api().run.phaseOf(doc.uri), undefined);
+
+			// Once set (an empty value is set), Run starts as today.
+			await config().update('env', { RUN_46: 'x', RES_46: '' }, vscode.ConfigurationTarget.Global);
+			assert.deepStrictEqual(api().unsetVariables!.forRun(doc.uri), []);
+			await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+			assert.ok(await waitFor(() => eventLines().length > before, 15_000), 'the binary was not started');
+			assert.ok(eventLines()[before].includes(`--resources ${resources}`), eventLines()[before]);
+			await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
+			assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
+		} finally {
+			await config().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		}
 	});
 
 	test('NO_BINARY: Run logs one line and opens no terminal', async () => {

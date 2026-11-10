@@ -17,6 +17,7 @@ import {
 	CHECK_LICENSE_COMMAND, OPEN_LICENSE_DOCS_COMMAND,
 } from '../../../adapters/vscode/environmentView';
 import { ENV_HOVER_TITLE, EnvHoverProvider, envHoverMarkdown } from '../../../adapters/vscode/envHover';
+import { UNSET_SOURCE, unsetMessage } from '../../../adapters/vscode/unsetVariables';
 import type { SecretVariables } from '../../../adapters/vscode/secrets';
 import { type ExtensionApi } from '../../../extension';
 import { connectScript, makeTempDir, writeFakeBinary } from '../../helpers/fakeBinary';
@@ -812,5 +813,158 @@ suite('Environment view (integration, ticket 31)', function () {
 			await config().update('binaryPath', fakeBin, vscode.ConfigurationTarget.Global);
 			assert.ok(await waitFor(() => api().redpandaConnect.state.kind === 'ok', 30_000));
 		});
+	});
+});
+
+// Ticket 46: a Warning at each `${NAME}` a local Run stops on, following the sources without a save;
+// its quick fix sets the variable through the Environment view's Set. No folder is open, as above.
+const UNSET_CONFIG = [
+	'# ${UNSET_46} in a comment',
+	'input:',
+	'  generate:',
+	'    interval: 1s',
+	'    mapping: |',
+	'      root.a = "${UNSET_46}"',
+	'      root.b = "${DEFAULT_46:x}"',
+	'      root.c = "${EMPTY_DEFAULT_46:}"',
+	'      root.d = env("CALL_46")',
+	'      root.e = "$${ESC_46}"',
+	'      root.f = "${secrets.CLOUD_46}"',
+	'      root.g = "${NEST_46:${INNER_46}}"',
+	'output:',
+	'  stdout: {}',
+	'',
+].join('\n');
+
+suite('Unset variable Warnings (integration, ticket 46)', function () {
+	this.timeout(60_000);
+	let dir: string;
+	let file: string;
+	let envFile: string;
+	let doc: vscode.TextDocument;
+	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
+	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
+	/** The Warnings shown (as VS Code has them): the text each covers, its line and severity. */
+	const shown = () => vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === UNSET_SOURCE)
+		.map((d) => `${doc.getText(d.range)}@${d.range.start.line}:${d.severity === vscode.DiagnosticSeverity.Warning ? 'W' : d.severity}`);
+	const names = () => vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === UNSET_SOURCE).map((d) => doc.getText(d.range));
+	const ALL = ['${UNSET_46}@0:W', '${UNSET_46}@5:W', '${ESC_46}@9:W', '${secrets.CLOUD_46}@10:W'];
+	let originalUi: EnvironmentUi;
+
+	suiteSetup(async () => {
+		await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
+		dir = makeTempDir('rpcn-unset-46-');
+		file = path.join(dir, 'unset46.yaml');
+		envFile = path.join(dir, '.env');
+		originalUi = api().environment!.ui;
+	});
+
+	setup(async () => {
+		fs.writeFileSync(file, UNSET_CONFIG);
+		doc = await vscode.workspace.openTextDocument(file);
+		await vscode.window.showTextDocument(doc, { preview: false });
+		assert.ok(await waitFor(() => shown().length === ALL.length, 10_000), JSON.stringify(shown()));
+	});
+
+	teardown(async () => {
+		api().environment!.ui = originalUi;
+		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		await api().secrets!.clear(async () => true);
+		await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+	});
+
+	suiteTeardown(() => {
+		if (dir) {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('UNSET / DEFAULT / NOT_REF / COMMENT_ESCAPED / SECRETS_REF: a Warning at each reference the binary stops on, naming it only', () => {
+		assert.deepStrictEqual(shown(), ALL);
+		const messages = vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === UNSET_SOURCE).map((d) => d.message);
+		assert.deepStrictEqual(messages, [unsetMessage('UNSET_46'), unsetMessage('UNSET_46'), unsetMessage('ESC_46'), unsetMessage('secrets.CLOUD_46')]);
+		assert.match(messages[0], /^UNSET_46 is not set: a local Run stops on it\. Deploy reads it from the cluster's secrets\.$/);
+		assert.match(messages[3], /only Redpanda Cloud/);
+		assert.deepStrictEqual(api().unsetVariables!.forRun(doc.uri), ['UNSET_46', 'ESC_46', 'secrets.CLOUD_46']);
+		// AD-17: not lint's, so the graph's markers never read them.
+		assert.ok(!api().lintDiagnostics.diagnosticsFor(doc.uri).some((d) => d.source === UNSET_SOURCE));
+	});
+
+	test('FOLLOWS: a setting (an empty value too), the env file on disk, a secret and an edit; no save, no reopen', async () => {
+		await config().update('env', { UNSET_46: '' }, vscode.ConfigurationTarget.Global);
+		assert.ok(await waitFor(() => !names().includes('${UNSET_46}'), 5_000), JSON.stringify(shown()));
+		await config().update('env', undefined, vscode.ConfigurationTarget.Global);
+		assert.ok(await waitFor(() => names().filter((n) => n === '${UNSET_46}').length === 2, 5_000), JSON.stringify(shown()));
+
+		// The env file: set, then written on disk, then removed.
+		await config().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+		fs.writeFileSync(envFile, 'ESC_46=1\n');
+		assert.ok(await waitFor(() => !names().includes('${ESC_46}'), 10_000), JSON.stringify(shown()));
+		fs.writeFileSync(envFile, 'OTHER=1\n');
+		assert.ok(await waitFor(() => names().includes('${ESC_46}'), 10_000), JSON.stringify(shown()));
+		fs.rmSync(envFile);
+		await config().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+
+		// A secret.
+		assert.ok(await api().secrets!.set(undefined, 'ESC_46', 'tok-46-secret'));
+		assert.ok(await waitFor(() => !names().includes('${ESC_46}'), 5_000), JSON.stringify(shown()));
+		await api().secrets!.clear(async () => true);
+		assert.ok(await waitFor(() => names().includes('${ESC_46}'), 5_000), JSON.stringify(shown()));
+
+		// An edit, unsaved.
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(doc.uri, new vscode.Position(0, 0), '# ${EDIT_46}\n');
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.ok(await waitFor(() => names().includes('${EDIT_46}'), 5_000), JSON.stringify(shown()));
+		assert.strictEqual(doc.isDirty, true);
+		assert.ok(!vscode.languages.getDiagnostics(doc.uri).some((d) => d.source === UNSET_SOURCE && /tok-46/.test(d.message)), 'no value');
+	});
+
+	test('FIX: "Set NAME…" sets it plain or secret for the config through the view; Escape changes nothing; no fix on secrets.NAME', async () => {
+		const at = (needle: string) => {
+			const start = doc.positionAt(doc.getText().indexOf(needle));
+			return new vscode.Range(start, start.translate(0, needle.length));
+		};
+		const fixes = async (needle: string) => ((await vscode.commands.executeCommand<(vscode.CodeAction | vscode.Command)[]>(
+			'vscode.executeCodeActionProvider', doc.uri, at(needle), vscode.CodeActionKind.QuickFix.value)) ?? [])
+			.filter((a): a is vscode.CodeAction => 'kind' in a || 'command' in a).filter((a) => a.title.startsWith('Set '));
+		assert.deepStrictEqual((await fixes('${secrets.CLOUD_46}')).map((a) => a.title), []);
+		const [fix] = await fixes('"${UNSET_46}"');
+		assert.strictEqual(fix?.title, 'Set UNSET_46…');
+		const command = (fix as vscode.CodeAction).command!;
+		assert.strictEqual(command.command, SET_MISSING_COMMAND);
+
+		const kinds: ('plain' | 'secret' | undefined)[] = [undefined, 'plain'];
+		const inputs = ['v-46'];
+		api().environment!.ui = { ...originalUi, pickKind: async () => kinds.shift(), input: async () => inputs.shift(), error: () => undefined, info: () => undefined };
+		// Escape: nothing changes.
+		assert.strictEqual(await vscode.commands.executeCommand(command.command, ...(command.arguments ?? [])), undefined);
+		assert.strictEqual(config().inspect('env')?.globalValue, undefined);
+		assert.strictEqual(names().filter((n) => n === '${UNSET_46}').length, 2);
+		// Plain: written to redpandaConnect.env (no folder: the user settings); both Warnings go.
+		assert.strictEqual(await vscode.commands.executeCommand(command.command, ...(command.arguments ?? [])), 'UNSET_46');
+		assert.deepStrictEqual(config().inspect('env')?.globalValue, { UNSET_46: 'v-46' });
+		assert.ok(await waitFor(() => !names().includes('${UNSET_46}'), 5_000), JSON.stringify(shown()));
+
+		// Secret: the same fix on ESC_46.
+		const [secretFix] = await fixes('${ESC_46}');
+		const secretInputs = ['ESC_46', 'tok-46-fix'];
+		api().environment!.ui = { ...originalUi, pickKind: async () => 'secret', input: async () => secretInputs.shift(), error: () => undefined, info: () => undefined };
+		const c = (secretFix as vscode.CodeAction).command!;
+		assert.strictEqual(await vscode.commands.executeCommand(c.command, ...(c.arguments ?? [])), 'ESC_46');
+		assert.ok(await waitFor(() => !names().includes('${ESC_46}'), 5_000), JSON.stringify(shown()));
+		assert.deepStrictEqual(names(), ['${secrets.CLOUD_46}']);
+	});
+
+	test('a YAML file that is not a config has no Warnings', async () => {
+		const other = path.join(dir, 'plain46.yaml');
+		fs.writeFileSync(other, 'name: ${NOT_A_CONFIG_46}\n');
+		const plain = await vscode.workspace.openTextDocument(other);
+		await vscode.window.showTextDocument(plain, { preview: false });
+		await new Promise((r) => setTimeout(r, 500));
+		assert.deepStrictEqual(vscode.languages.getDiagnostics(plain.uri).filter((d) => d.source === UNSET_SOURCE), []);
 	});
 });

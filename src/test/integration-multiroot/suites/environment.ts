@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type EnvironmentItem, type EnvironmentUi, REMOVE_NAME_COMMAND, SET_MISSING_COMMAND } from '../../../adapters/vscode/environmentView';
+import { UNSET_SOURCE } from '../../../adapters/vscode/unsetVariables';
 import { type ExtensionApi } from '../../../extension';
 import { REPO_ROOT } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../../integration/helpers';
@@ -97,6 +98,37 @@ suite('Environment view in a multi-root workspace (integration, ticket 31)', fun
 		assert.ok(await waitFor(() => view().model()?.missing.join() === 'TOPIC,API_TOKEN,BROKERS,REGION', 5_000), JSON.stringify(view().model()));
 		assert.strictEqual(view().model()?.envFilePath, undefined);
 		assert.ok(!view().items().some((i) => i.node.kind === 'variable' && i.group !== 'process'), 'none of B\'s variables');
+	});
+
+	test('ticket 46 per folder: each config\'s Warnings come from its own folder\'s sources; the quick fix sets the variable for that folder', async () => {
+		await settings('b').update('env', { TOPIC: 'b-topic' }, vscode.ConfigurationTarget.WorkspaceFolder);
+		await settings('b').update('envFile', ENV_NAME, vscode.ConfigurationTarget.WorkspaceFolder);
+		await settings('a').update('env', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+		const unset = (doc: vscode.TextDocument) => vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === UNSET_SOURCE)
+			.map((d) => doc.getText(d.range).slice(2, -1));
+		try {
+			const b = await show('b');
+			assert.ok(await waitFor(() => unset(b).join() === 'REGION', 10_000), JSON.stringify(unset(b)));
+			const a = await show('a');
+			assert.ok(await waitFor(() => unset(a).join() === 'TOPIC,API_TOKEN,BROKERS,REGION', 10_000), JSON.stringify(unset(a)));
+
+			const start = a.positionAt(a.getText().indexOf('${REGION}'));
+			const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', a.uri,
+				new vscode.Range(start, start.translate(0, '${REGION}'.length)), vscode.CodeActionKind.QuickFix.value);
+			const fix = actions.find((x) => x.title === 'Set REGION…');
+			assert.ok(fix?.command, JSON.stringify(actions.map((x) => x.title)));
+			view().ui = { pickKind: async () => 'plain', pickRemoval: async () => 'value', input: async () => 'eu-a', error: (m) => assert.fail(m), info: () => undefined };
+			assert.strictEqual(await vscode.commands.executeCommand(fix.command.command, ...(fix.command.arguments ?? [])), 'REGION');
+			assert.deepStrictEqual(settings('a').inspect('env')?.workspaceFolderValue, { REGION: 'eu-a' }, 'A\'s folder settings');
+			assert.ok(await waitFor(() => unset(a).join() === 'TOPIC,API_TOKEN,BROKERS', 5_000), JSON.stringify(unset(a)));
+			assert.strictEqual(unset(b).join(), 'REGION', 'B is unchanged');
+			assert.deepStrictEqual(api().unsetVariables!.forRun(b.uri), ['REGION']);
+		} finally {
+			view().ui = originalUi;
+			await settings('a').update('env', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+			await settings('b').update('env', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+			await settings('b').update('envFile', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+		}
 	});
 
 	test('ticket 39 STILL_DECLARED: Remove name on B\'s own list says the workspace list now applies to B; on A, without its own list, that the list is shared', async () => {

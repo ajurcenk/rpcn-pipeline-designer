@@ -23,6 +23,8 @@ import { BloblangPanels } from './adapters/bloblangPanel/panels';
 import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import { SecretVariables } from './adapters/vscode/secrets';
 import { EnvHoverProvider } from './adapters/vscode/envHover';
+import { UnsetVariables } from './adapters/vscode/unsetVariables';
+import { commandSettings, defaultArgsEnvironment } from './adapters/redpandaConnect/args';
 import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import { CloudView, PRODUCTION_ENDPOINTS, UNREACHABLE_ENDPOINTS } from './adapters/vscode/cloudView';
@@ -92,6 +94,8 @@ export interface ExtensionApi {
 	 */
 	readonly environment?: Pick<EnvironmentView, 'items' | 'model' | 'modelFor' | 'configUri' | 'visible' | 'message' | 'refresh' | 'onDidRefresh' | 'ui' | 'writeSetting'
 		| 'license' | 'licenseState' | 'licenseDefaultPath' | 'openExternal'>;
+	/** Ticket 46: the unset variable Warnings and Run's check. Only in `ExtensionMode.Test`, as `environment`. */
+	readonly unsetVariables?: Pick<UnsetVariables, 'diagnosticsFor' | 'forRun' | 'onDidUpdate'>;
 	/**
 	 * The Cloud view and deploy (ticket 5.2): its items, its prompts to replace, the three hosts' base
 	 * URLs (production otherwise; unreachable in test mode until a suite sets its fake's), the deploy's
@@ -247,7 +251,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(lintDiagnostics, bloblangDiagnostics);
 	context.subscriptions.push(...registerEditorProviders(() => schemaStore.current?.json, detection));
 
-	const run = new RunController({ binary: redpandaConnect, detection, log });
+	// Ticket 46: Run refuses a config that would stop on unset variables (`unsetVariables`, built below with the Environment view).
+	let unsetVariables: UnsetVariables | undefined;
+	const run = new RunController({ binary: redpandaConnect, detection, log, unsetVariables: (uri) => unsetVariables?.forRun(uri) ?? [] });
 	context.subscriptions.push(run, ...run.registerCommands());
 
 	const graphPanels = new GraphPanels({
@@ -300,6 +306,20 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		licenseReadmeUrl: licenseReadmeUrl(context.extension.packageJSON as { repository?: { url?: unknown } }),
 	});
 	context.subscriptions.push(environment, ...environment.register());
+	// Ticket 46: a Warning at each `${NAME}` a local Run stops on, from the view's sources; its quick fix runs the view's Set.
+	unsetVariables = new UnsetVariables({
+		detection,
+		inputsFor: (uri) => environment.inputsAt(uri),
+		resourceFilesFor: (uri) => {
+			const files = commandSettings(() => defaultArgsEnvironment(uri)).files();
+			return files.kind === 'ok' ? files.resourceFiles : [];
+		},
+		secretsChanged: secrets.onDidChange,
+		log,
+	});
+	context.subscriptions.push(unsetVariables, vscode.languages.registerCodeActionsProvider({ language: 'yaml' }, unsetVariables, {
+		providedCodeActionKinds: UnsetVariables.providedCodeActionKinds,
+	}));
 	// The variable hover (ticket 34), beside the Bloblang and YAML hovers: the view's model for the hovered config, read on each hover.
 	context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'yaml' }, new EnvHoverProvider({
 		isDetected: (uri) => detection.isDetected(uri),
@@ -339,7 +359,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(testMode ? { secrets, environment, cloud, logs: Object.assign(logsPanel, { checkClient }) } : {}),
+		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }) } : {}),
 		outputLines: () => [...lines],
 	};
 }

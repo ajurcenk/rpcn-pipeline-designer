@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import { LintDiagnostics } from '../../../adapters/vscode/diagnostics';
+import { UNSET_SOURCE } from '../../../adapters/vscode/unsetVariables';
 import type { NodeStatusById } from '../../../shared/protocol';
 import { waitFor } from '../helpers';
 import { graphReady, live, settle, SWITCH_ID, withGraph, replace, insert, open, fakeDiagnostics, testPanels, useGraphSuite } from '../graphHelpers';
@@ -227,5 +228,20 @@ suite('Pipeline graph: markers (3.8, integration)', function () {
 		} finally {
 			fake.dispose();
 		}
+	});
+
+	test('ticket 46: an unset variable\'s Warning marks no node (AD-17 unchanged)', async () => {
+		const text = STATUS.replace('message: hi', 'message: "${UNSET_82}"').replace('                nope: 1\n', '').replace('    codec: lines\n', '');
+		const { doc, handle } = await withGraph('unset82.yaml', text);
+		assert.ok(await waitFor(() => vscode.languages.getDiagnostics(doc.uri).some((d) => d.source === UNSET_SOURCE), 10_000), 'the Warning is shown');
+		const edit = new vscode.WorkspaceEdit();
+		edit.insert(doc.uri, doc.positionAt(doc.getText().length), '\n');
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.ok(await doc.save());
+		await settle();
+		await new Promise((r) => setTimeout(r, 1_000));
+		assert.ok(!api().lintDiagnostics.diagnosticsFor(doc.uri).some((d) => d.source === UNSET_SOURCE));
+		const marked = statuses(handle).flatMap((s) => Object.values(s).flatMap((v) => v.messages));
+		assert.ok(!marked.some((m) => m.includes('UNSET_82')), JSON.stringify(statuses(handle)));
 	});
 });

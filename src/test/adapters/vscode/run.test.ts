@@ -5,7 +5,7 @@ import { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import { SpawnOptions, StreamingChild, StreamingExit, StreamingHandlers } from '../../../adapters/redpandaConnect/process';
 import {
 	ACTIVE_DETECTED_KEY, ACTIVE_RUNNING_KEY, DETECTED_PATHS_KEY, exitLine, NOT_DETECTED_MESSAGE, NOT_ON_DISK_MESSAGE, RunController, RunHost,
-	STOP_GRACE_MS, statusText, UNTITLED_MESSAGE,
+	SET_VARIABLES_ACTION, STOP_GRACE_MS, statusText, UNTITLED_MESSAGE, unsetVariablesMessage, unsetVariablesReminder,
 } from '../../../adapters/vscode/run';
 
 const BIN = '/bin/redpanda-connect';
@@ -74,6 +74,14 @@ suite('adapters/vscode RunController', () => {
 	let honoursInt: boolean;
 	let status: { text: string; tooltip?: string; command?: vscode.Command; visible: boolean };
 	let built: (s: BinaryState, p: string) => ArgsResult;
+	/** Ticket 46: what the unset check returns, the prompts shown, their answer and the variables set. */
+	let unset: string[];
+	let prompts: [string, string][];
+	let promptAnswer: string | undefined;
+	/** When set, the refusal stays open until it resolves. */
+	let promptGate: Promise<string | undefined> | undefined;
+	let setCalls: [string, string][];
+	let setAnswer: (name: string) => string | undefined;
 	const activeChange = new vscode.EventEmitter<unknown>();
 	const detectionChange = new vscode.EventEmitter<{ uri: string; detected: boolean }>();
 	let controller: RunController;
@@ -108,6 +116,16 @@ suite('adapters/vscode RunController', () => {
 			showErrorMessage: (m) => { errors.push(m); },
 			setContext: (k, v) => { contexts.set(k, v); },
 			cwdFor: () => '/ws',
+			showErrorPrompt: (m, a) => { prompts.push([m, a]); return promptGate ?? Promise.resolve(promptAnswer); },
+			// A name set (as answered) is no longer unset; another answer (an edited secret name) leaves it unset.
+			setVariable: async (n, u) => {
+				setCalls.push([n, u.toString()]);
+				const answer = setAnswer(n);
+				if (answer === n) {
+					unset = unset.filter((x) => x !== n);
+				}
+				return answer;
+			},
 		};
 		controller = new RunController({
 			binary: {
@@ -128,8 +146,10 @@ suite('adapters/vscode RunController', () => {
 				return child;
 			},
 			graceMs,
+			unsetVariables: (uri) => { unsetChecks.push(uri.toString()); return unset; },
 		});
 	}
+	let unsetChecks: string[];
 	let graceMs: number | undefined;
 
 	setup(() => {
@@ -151,6 +171,13 @@ suite('adapters/vscode RunController', () => {
 		refreshTo = OK;
 		graceMs = 50;
 		status = { text: '', visible: false };
+		unset = [];
+		prompts = [];
+		promptAnswer = undefined;
+		promptGate = undefined;
+		setCalls = [];
+		setAnswer = (n) => n;
+		unsetChecks = [];
 		built = (_s, p) => ({ kind: 'ok', command: BIN, args: ['run', '--set', 'http.enabled=false', p], env: { NO_COLOR: '1', FOO: 'x' } });
 		make();
 	});
@@ -404,5 +431,88 @@ suite('adapters/vscode RunController', () => {
 		detectionChange.fire({ uri: docs[0].uri.toString(), detected: false });
 		assert.strictEqual(contexts.get(ACTIVE_DETECTED_KEY), false);
 		assert.deepStrictEqual(contexts.get(DETECTED_PATHS_KEY), ['/ws/b.yaml']);
+	});
+
+	// Ticket 46: Run refuses before the binary starts when a variable it would stop on is not set.
+	suite('RUN_REFUSED', () => {
+		test('no process starts; one message names every unset variable and offers Set…', async () => {
+			unset = ['A', 'B'];
+			await controller.run();
+			await tick();
+			assert.strictEqual(children.length, 0);
+			assert.strictEqual(terminals.length, 0);
+			assert.deepStrictEqual(unsetChecks, [docs[0].uri.toString()]);
+			assert.deepStrictEqual(prompts, [["Can't run a.yaml: the environment variables A, B are not set.", SET_VARIABLES_ACTION]]);
+			assert.deepStrictEqual(setCalls, [], 'dismissed: nothing is set');
+		});
+
+		test('Set… sets each in turn for the config; Escape on one stops; once set, Run starts as today', async () => {
+			unset = ['A', 'secrets.S', 'B', 'C'];
+			promptAnswer = SET_VARIABLES_ACTION;
+			setAnswer = (n) => (n === 'B' ? undefined : n);
+			await controller.run();
+			await tick();
+			assert.strictEqual(children.length, 0);
+			assert.deepStrictEqual(setCalls, [['A', docs[0].uri.toString()], ['B', docs[0].uri.toString()]], 'secrets.S has no fix; Escape on B stops');
+			unset = [];
+			await controller.run();
+			assert.strictEqual(children.length, 1);
+		});
+
+		test('a secret set under an edited name leaves the variable unset: the chain stops, Run stays refused', async () => {
+			unset = ['A', 'B'];
+			promptAnswer = SET_VARIABLES_ACTION;
+			setAnswer = (n) => (n === 'A' ? 'A_RENAMED' : n);
+			await controller.run();
+			await tick();
+			assert.deepStrictEqual(setCalls.map(([n]) => n), ['A'], 'no prompt for B');
+			assert.deepStrictEqual(unset, ['A', 'B']);
+			await controller.run();
+			await tick();
+			assert.strictEqual(children.length, 0);
+		});
+
+		test('a further Run while the refusal or its Set… chain is open gets a plain message, never a second chain; once it closes, Run refuses again', async () => {
+			unset = ['A', 'B'];
+			let close!: (v: string | undefined) => void;
+			promptGate = new Promise((r) => { close = r; });
+			await controller.run();
+			await controller.run();
+			await tick();
+			assert.strictEqual(prompts.length, 1, 'one refusal with Set…');
+			assert.deepStrictEqual(errors, ["Can't run a.yaml: A, B are not set. Use the open message, or set them from the Environment view."]);
+			assert.strictEqual(unsetVariablesReminder('a.yaml', ['A']), "Can't run a.yaml: A is not set. Use the open message, or set them from the Environment view.");
+			close(undefined);
+			await tick();
+			promptGate = undefined;
+			await controller.run();
+			await tick();
+			assert.strictEqual(prompts.length, 2);
+			assert.strictEqual(children.length, 0);
+		});
+
+		test('only ${secrets.X}: the message says only Redpanda Cloud sets it, with no button', async () => {
+			unset = ['secrets.S'];
+			await controller.run();
+			await tick();
+			assert.strictEqual(children.length, 0);
+			assert.deepStrictEqual(prompts, []);
+			assert.deepStrictEqual(errors, ["Can't run a.yaml: the environment variable secrets.S is not set. Only Redpanda Cloud sets secrets.S: a local Run cannot."]);
+		});
+
+		test('the check comes before a running pipeline is stopped; a re-run that is refused leaves it running', async () => {
+			await controller.run();
+			unset = ['A'];
+			await controller.run();
+			await tick();
+			assert.deepStrictEqual(children[0].stops, []);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running');
+		});
+
+		test('the message has names only', () => {
+			assert.strictEqual(unsetVariablesMessage('x.yaml', ['A']), "Can't run x.yaml: the environment variable A is not set.");
+			assert.strictEqual(unsetVariablesMessage('x.yaml', ['A', 'secrets.B']),
+				"Can't run x.yaml: the environment variables A, secrets.B are not set. Only Redpanda Cloud sets secrets.B: a local Run cannot.");
+		});
 	});
 });

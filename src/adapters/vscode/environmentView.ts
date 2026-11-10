@@ -459,6 +459,14 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	}
 
 	/**
+	 * Ticket 46: the four sources for `uri`'s config, read now (as `modelFor`), for the unset
+	 * variable Warnings and Run's check. Not cached: the view's own model is unaffected.
+	 */
+	inputsAt(uri: vscode.Uri): EnvironmentInputs {
+		return this.inputsFor(uri);
+	}
+
+	/**
 	 * Ticket 5.7: the value the binary would get for each variable `uri`'s config uses, read now (as
 	 * `modelFor`), with its source (and, for `redpandaConnect.env`, the level its value comes from).
 	 * A name no source gives, or whose value is empty, is absent. Deploy offers these as the values of

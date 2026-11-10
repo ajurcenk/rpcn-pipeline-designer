@@ -15,6 +15,9 @@ import { ArgsResult, buildRunCommand, describeArgsFailure } from '../redpandaCon
 import { BinaryState } from '../redpandaConnect/binary';
 import { runStreaming, StreamingChild, StreamingExit } from '../redpandaConnect/process';
 import { activeSecretValues } from '../redpandaConnect/secretEnv';
+import { isCloudSecretName } from '../../core/envUsage';
+import { isEnvName } from '../../shared/bloblangProtocol';
+import { SET_MISSING_COMMAND } from './environmentView';
 
 export const RUN_COMMAND = 'redpandaConnect.run';
 export const STOP_COMMAND = 'redpandaConnect.stop';
@@ -28,6 +31,25 @@ export const DETECTED_PATHS_KEY = 'redpandaConnect.detectedPaths';
 export const UNTITLED_MESSAGE = 'Save the file to run it.';
 export const NOT_DETECTED_MESSAGE = 'This file is not a Redpanda Connect config.';
 export const NOT_ON_DISK_MESSAGE = 'Run needs a file on disk.';
+/** Ticket 46: the refusal's button. */
+export const SET_VARIABLES_ACTION = 'Set…';
+
+/**
+ * Ticket 46: the refusal for a run that would stop on unset variables (names only, never a value).
+ * A `${secrets.NAME}` is said to be set only by Redpanda Cloud.
+ */
+export function unsetVariablesMessage(fileName: string, names: readonly string[]): string {
+	const cloud = names.filter(isCloudSecretName);
+	const list = names.join(', ');
+	const head = names.length === 1
+		? `Can't run ${fileName}: the environment variable ${list} is not set.`
+		: `Can't run ${fileName}: the environment variables ${list} are not set.`;
+	return cloud.length === 0 ? head : `${head} Only Redpanda Cloud sets ${cloud.join(', ')}: a local Run cannot.`;
+}
+/** Ticket 46: a further Run's message while a refusal for the file is open (names only, no button). */
+export function unsetVariablesReminder(fileName: string, names: readonly string[]): string {
+	return `Can't run ${fileName}: ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} not set. Use the open message, or set them from the Environment view.`;
+}
 /** SIGINT, then SIGKILL after this long (user decision 2026-10-07, ticket 2.7). */
 export const STOP_GRACE_MS = 10_000;
 
@@ -96,6 +118,10 @@ export interface RunHost {
 	setContext(key: string, value: boolean | string[]): void;
 	/** Working directory for a run of `uri`: its workspace folder, else its directory. */
 	cwdFor(uri: vscode.Uri): string;
+	/** Ticket 46: an error with one button; resolves with the button chosen (default: VS Code's). */
+	showErrorPrompt?(message: string, action: string): Thenable<string | undefined>;
+	/** Ticket 46: sets one variable for `uri`'s folder; resolves with the name set, `undefined` when none was (default: `SET_MISSING_COMMAND`). */
+	setVariable?(name: string, uri: vscode.Uri): Thenable<string | undefined>;
 }
 
 export interface RunOptions {
@@ -106,6 +132,8 @@ export interface RunOptions {
 	readonly build?: (state: BinaryState, fsPath: string) => ArgsResult;
 	readonly spawn?: typeof runStreaming;
 	readonly graceMs?: number;
+	/** Ticket 46: the variables a run of `uri` would stop on (none: no check). */
+	readonly unsetVariables?: (uri: vscode.Uri) => readonly string[];
 }
 
 /** How much of a run's output `outputOf` keeps (ticket 9). */
@@ -197,6 +225,8 @@ export function defaultRunHost(): RunHost {
 
 export class RunController implements vscode.Disposable {
 	private readonly sessions = new Map<string, Session>();
+	/** Ticket 46: the files whose unset-variables refusal (or its Set… chain) is open. */
+	private readonly refusing = new Set<string>();
 	private readonly host: RunHost;
 	private readonly status: vscode.StatusBarItem;
 	private readonly subscriptions: vscode.Disposable[] = [];
@@ -344,6 +374,20 @@ export class RunController implements vscode.Disposable {
 			this.host.showErrorMessage(`Can't run ${name}: ${message}`);
 			return;
 		}
+		// Ticket 46: a run that would stop on unset variables does not start.
+		const unset = this.options.unsetVariables?.(doc.uri) ?? [];
+		if (unset.length > 0) {
+			this.options.log(`Run ${name}: not started; environment variables not set: ${unset.join(', ')}.`);
+			// One refusal (and Set… chain) per file at a time: a further Run while it is open (it may sit in
+			// the notification center) gets a plain message with no button.
+			if (this.refusing.has(session.key)) {
+				this.host.showErrorMessage(unsetVariablesReminder(name, unset));
+			} else {
+				this.refusing.add(session.key);
+				void this.refuseUnset(doc.uri, name, unset).finally(() => this.refusing.delete(session.key));
+			}
+			return;
+		}
 		// Run while running: stop the current run (same grace), then start again in the same terminal.
 		session.restartCancelled = false;
 		if (session.child && (session.phase === 'running' || session.phase === 'stopping')) {
@@ -380,6 +424,37 @@ export class RunController implements vscode.Disposable {
 			}
 			this.refreshUi();
 		});
+	}
+
+	/** Ticket 46: names the unset variables; "Set…" (when one is a name the settings take) sets each in turn; Escape, or a variable still unset after its set, stops. */
+	private async refuseUnset(uri: vscode.Uri, name: string, unset: readonly string[]): Promise<void> {
+		try {
+			const message = unsetVariablesMessage(name, unset);
+			const settable = unset.filter(isEnvName);
+			if (settable.length === 0) {
+				this.host.showErrorMessage(message);
+				return;
+			}
+			const prompt = this.host.showErrorPrompt?.bind(this.host)
+				?? ((m: string, a: string) => vscode.window.showErrorMessage(m, a));
+			if (await prompt(message, SET_VARIABLES_ACTION) !== SET_VARIABLES_ACTION) {
+				return;
+			}
+			const set = this.host.setVariable?.bind(this.host)
+				?? ((n: string, u: vscode.Uri) => vscode.commands.executeCommand<string | undefined>(SET_MISSING_COMMAND, n, u));
+			const stillUnset = () => this.options.unsetVariables?.(uri) ?? [];
+			for (const variable of settable) {
+				if (!stillUnset().includes(variable)) {
+					continue; // set meanwhile
+				}
+				// A secret's prefilled name can be edited: the chain goes on only once this variable is set.
+				if (await set(variable, uri) === undefined || stillUnset().includes(variable)) {
+					return;
+				}
+			}
+		} catch (err) {
+			this.options.log(`Run ${name}: ${String(err)}`);
+		}
 	}
 
 	/** The session's open terminal, or a new one (also after the user closed it). */

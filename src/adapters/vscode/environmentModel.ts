@@ -11,7 +11,7 @@
 // without a default that no source gives is missing.
 
 import type { EnvFileProblem, EnvFileRead } from '../../core/envFileRead';
-import type { EnvUse } from '../../core/envUsage';
+import { type EnvUse, isCloudSecretName } from '../../core/envUsage';
 
 export type EnvSource = 'setting' | 'envFile' | 'extension' | 'secret' | 'process';
 /** Strongest first. */
@@ -202,4 +202,18 @@ export function licenseSource(inputs: EnvironmentInputs, defaultFile: { readonly
 			: defaultFile.exists ? { kind: 'file', path: defaultFile.path, from: 'default' }
 				: { kind: 'none' };
 	return { source, notRead, values };
+}
+
+// --- Ticket 46: the names a run stops on ---
+
+/**
+ * Which of `names` (`${NAME}`s without a default) no local source sets, by the model's own
+ * precedence; an empty value is set. A `${secrets.NAME}` is never set locally (only Redpanda Cloud
+ * sets it). `inputs.usage` is ignored: `names` are the uses. Pure.
+ */
+export function unsetNames(inputs: EnvironmentInputs, names: readonly string[]): Set<string> {
+	const unique = [...new Set(names)];
+	const local = unique.filter((name) => !isCloudSecretName(name));
+	const model = environmentModel({ ...inputs, usage: local.map((name) => ({ name, required: true })) });
+	return new Set([...model.missing, ...unique.filter(isCloudSecretName)]);
 }

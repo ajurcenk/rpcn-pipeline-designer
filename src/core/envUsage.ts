@@ -94,3 +94,41 @@ export function envReferenceAt(text: string, offset: number): EnvReference | und
 	}
 	return undefined;
 }
+
+// --- Ticket 46: the references a run stops on ---
+
+/** A Cloud secret reference's prefix (`${secrets.NAME}`): only Redpanda Cloud sets it. */
+export const CLOUD_SECRET_PREFIX = 'secrets.';
+
+/** `${secrets.NAME}`'s name: no local source sets it, so a local run always stops on it. */
+export function isCloudSecretName(name: string): boolean {
+	return name.startsWith(CLOUD_SECRET_PREFIX);
+}
+
+/** One `${NAME}` without a default, with its range in the text. */
+export interface RequiredReference {
+	/** As the binary names it (any name its pattern takes: `secrets.A`, `a.b` and `1A` too). */
+	readonly name: string;
+	/** The reference's start offset (inclusive) and end offset (exclusive) in the text. */
+	readonly start: number;
+	readonly end: number;
+}
+
+/**
+ * Every `${NAME}` without a default in `text`, in order, each use once: the references the binary
+ * stops on (`required environment variables were not set`) when nothing sets the name. By the
+ * binary's own rules (rpk connect 4.100.0 and 4.112.0, tested): in YAML comments too, `$${NAME}`
+ * too (not an escape), any name its pattern takes; not `${NAME:}` or `${NAME:x}` (defaults), not
+ * `${A:${B}}` (the default's own `${…}` is not expanded), not `${! … }` and not `env("NAME")`
+ * (Bloblang, read when the mapping runs). Pure.
+ */
+export function requiredReferences(text: string): RequiredReference[] {
+	const out: RequiredReference[] = [];
+	for (const match of text.matchAll(REFERENCE)) {
+		if (match[2] === undefined) {
+			const start = match.index ?? 0;
+			out.push({ name: match[1], start, end: start + match[0].length });
+		}
+	}
+	return out;
+}

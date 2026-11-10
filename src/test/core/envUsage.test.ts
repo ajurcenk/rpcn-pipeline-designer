@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { envReferenceAt, envUsage } from '../../core/envUsage';
+import { envReferenceAt, envUsage, isCloudSecretName, requiredReferences } from '../../core/envUsage';
 
 // Ticket 31: the variables a config uses, for the Environment view's Missing group.
 suite('core/envUsage', () => {
@@ -103,6 +103,38 @@ suite('core/envUsage', () => {
 			assert.strictEqual(at(text, 'A')?.name, 'A');
 			assert.strictEqual(at(text, '${B}')?.name, 'B');
 			assert.strictEqual(at(text, 'C')?.name, 'C');
+		});
+	});
+
+	// Ticket 46: the references the binary stops on, with their ranges.
+	suite('requiredReferences', () => {
+		const names = (text: string) => requiredReferences(text).map((r) => r.name);
+
+		test('UNSET: each ${NAME} without a default, each use, with its range', () => {
+			const text = 'a: "${A}"\nb: ${B} ${A}';
+			assert.deepStrictEqual(requiredReferences(text), [
+				{ name: 'A', start: 4, end: 8 },
+				{ name: 'B', start: 13, end: 17 },
+				{ name: 'A', start: 18, end: 22 },
+			]);
+			for (const r of requiredReferences(text)) {
+				assert.strictEqual(text.slice(r.start, r.end), '${' + r.name + '}');
+			}
+		});
+
+		test('DEFAULT and NOT_REF: ${A:x}, ${A:}, env("A"), ${! A }, ${A:${B}} are not stopped on', () => {
+			assert.deepStrictEqual(names('a: ${A:x}\nb: ${A:}\nc: root = env("A")\nd: ${! A }\ne: ${A:${B}}\nf: ${!this.x}'), []);
+		});
+
+		test('COMMENT_ESCAPED: # ${A} and $${A} are stopped on', () => {
+			assert.deepStrictEqual(names('# ${C}\na: $${E}'), ['C', 'E']);
+		});
+
+		test('SECRETS_REF and the other names the binary takes: secrets.A, a.b, 1A', () => {
+			assert.deepStrictEqual(names('a: ${secrets.A}\nb: ${a.b}\nc: ${1A}\nd: ${secrets.B:x}'), ['secrets.A', 'a.b', '1A']);
+			assert.strictEqual(isCloudSecretName('secrets.A'), true);
+			assert.strictEqual(isCloudSecretName('SECRETS_A'), false);
+			assert.strictEqual(isCloudSecretName('a.b'), false);
 		});
 	});
 });
