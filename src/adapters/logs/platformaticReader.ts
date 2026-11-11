@@ -64,8 +64,12 @@ export interface PlatformaticReaderOptions {
 	readonly retryDelayMs?: number;
 	/** A bounded read's fetch wait once a partition answered no records below its stop (default 500 ms). */
 	readonly emptyWaitMs?: number;
-	/** How long a partition of a bounded read may answer no records before it is given up (default 30 s). */
+	/** How long a partition of a bounded read may answer no records, or have no leader, before it is given up (default 30 s). */
 	readonly stallMs?: number;
+	/** How often the leaders are read again while a partition has none (default 1 s). */
+	readonly leaderWaitMs?: number;
+	/** The output channel (a partition without a leader is named there). */
+	readonly log?: (line: string) => void;
 }
 
 /** Thrown inside the start once the signal aborted: nothing more is sent. */
@@ -120,8 +124,32 @@ function asLogReadError(err: unknown): LogReadError {
 
 interface Partitions {
 	readonly topicId: string;
-	/** Partition index → its leader's node id. */
+	/** Partition id → its leader's node id; a partition without a leader (−1, or missing from the answer) is not in it. */
 	readonly leaders: ReadonlyMap<number, number>;
+	/** Every partition id the answer covers (0 to its last), those without a leader too. */
+	readonly all: readonly number[];
+}
+
+/** A failure worth trying again: a moved leader, or a connection error of the client (not a refusal, not an abort). */
+function retriable(err: unknown): boolean {
+	return err instanceof RetriableFetchError || (!(err instanceof LogReadError) && !(err instanceof Aborted) && classifyKafkaError(err) === 'connection');
+}
+
+/** Waits `ms`, or less once `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal.aborted) {
+			resolve();
+			return;
+		}
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener('abort', done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener('abort', done, { once: true });
+	});
 }
 
 export class PlatformaticReader implements LogReader {
@@ -135,12 +163,22 @@ export class PlatformaticReader implements LogReader {
 	private readonly retryDelayMs: number;
 	private readonly emptyWaitMs: number;
 	private readonly stallMs: number;
+	private readonly leaderWaitMs: number;
+	private readonly log: (line: string) => void;
+	/** The most partitions a metadata answer of this reader named (a later answer missing the last ones has holes). */
+	private partitionCount = 0;
+	/** Each partition without a leader now, since when (kept across the reader's reads, so a later range does not wait again). */
+	private readonly unled = new Map<number, number>();
+	/** The partitions a range gave up for having no leader, said once until they get one. */
+	private readonly givenUp = new Set<number>();
 
 	constructor(private readonly target: LogTarget, private readonly kafka: () => Promise<Kafka> = loadKafka, options: PlatformaticReaderOptions = {}) {
 		this.fetchRetries = options.fetchRetries ?? 3;
 		this.retryDelayMs = options.retryDelayMs ?? 500;
 		this.emptyWaitMs = options.emptyWaitMs ?? 500;
 		this.stallMs = options.stallMs ?? 30_000;
+		this.leaderWaitMs = options.leaderWaitMs ?? 1_000;
+		this.log = options.log ?? (() => undefined);
 	}
 
 	/** The client options both the Consumer and the Admin get: the address, TLS, SCRAM. */
@@ -194,7 +232,32 @@ export class PlatformaticReader implements LogReader {
 		if (!topic) {
 			throw new LogReadError('connection', `the topic ${LOGS_TOPIC} is not on this cluster`);
 		}
-		return { topicId: topic.id, leaders: new Map(topic.partitions.map((p, i) => [i, p.leader])) };
+		// The client keeps each partition at its id (`partitions[partitionIndex]`); one missing from the answer is
+		// a hole, and a leader of −1 is an election in progress: neither is fetched until it has a leader. The
+		// most partitions seen on this reader count, so one missing at the end is a hole too.
+		this.partitionCount = Math.max(this.partitionCount, topic.partitions.length);
+		const leaders = new Map<number, number>();
+		const all: number[] = [];
+		const now = Date.now();
+		for (let id = 0; id < this.partitionCount; id++) {
+			all.push(id);
+			const leader = (topic.partitions[id] as { leader?: unknown } | undefined)?.leader;
+			if (typeof leader === 'number' && leader >= 0) {
+				leaders.set(id, leader);
+				// It has a leader again: a later loss is waited on (and named) afresh.
+				this.unled.delete(id);
+				this.givenUp.delete(id);
+			} else if (!this.unled.has(id)) {
+				this.unled.set(id, now);
+				this.log(`Pipeline logs: partition ${id} of ${LOGS_TOPIC} has no leader now; it is read once it has one.`);
+			}
+		}
+		return { topicId: topic.id, leaders, all };
+	}
+
+	/** Since when partition `p` has had no leader, as this reader saw it (`undefined`: it has one). */
+	private unledSince(p: number): number | undefined {
+		return this.unled.get(p);
 	}
 
 	/** The first offset at or after `time` on each partition (the end when there is none). */
@@ -244,6 +307,12 @@ export class PlatformaticReader implements LogReader {
 				const from = at.get(p.partitionIndex) ?? 0;
 				let next = from;
 				for (const batch of p.records ?? []) {
+					// Past the whole batch, also one with no record at or after the position (compacted away, a
+					// control batch): the next fetch asks after it. The client decodes only whole batches (a batch
+					// cut by the response's size is left out, `readRecordsBatches`), so `lastOffsetDelta` is read.
+					if (typeof batch.lastOffsetDelta === 'number' && batch.lastOffsetDelta >= 0) {
+						next = Math.max(next, Number(batch.firstOffset) + batch.lastOffsetDelta + 1);
+					}
 					for (const rec of batch.records) {
 						const offset = Number(batch.firstOffset + BigInt(rec.offsetDelta));
 						if (offset < from) {
@@ -272,20 +341,26 @@ export class PlatformaticReader implements LogReader {
 	 */
 	private async fetchRound(consumer: Consumer, state: { parts: Partitions }, at: Map<number, number>, maxWaitMs: number, signal: AbortSignal, step: <T>(v: T) => T): Promise<LogRecord[]> {
 		let failures = 0;
+		let reread = false;
 		for (;;) {
 			let fetched: { records: LogRecord[]; outOfRange: number[] }[];
 			try {
+				if (reread) {
+					// A failed read of the leaders is retried as a failed fetch is.
+					state.parts = step(await this.partitions(consumer));
+					reread = false;
+				}
 				const current = state.parts;
-				const leaders = [...new Set([...at.keys()].map((p) => current.leaders.get(p)!))];
+				// A partition without a leader now is left out of this round (it keeps its position).
+				const leaders = [...new Set([...at.keys()].map((p) => current.leaders.get(p)).filter((l): l is number => l !== undefined))];
 				fetched = await Promise.all(leaders.map((leader) => this.fetchFrom(consumer, current, leader, at, maxWaitMs)));
 			} catch (err) {
-				const retriable = err instanceof RetriableFetchError || (!(err instanceof LogReadError) && classifyKafkaError(err) === 'connection');
-				if (signal.aborted || !retriable || ++failures > this.fetchRetries) {
+				if (signal.aborted || !retriable(err) || ++failures > this.fetchRetries) {
 					throw err;
 				}
 				// The leaders may have moved: read them again after a short backoff, then fetch again.
-				await new Promise((r) => setTimeout(r, failures * this.retryDelayMs));
-				state.parts = step(await this.partitions(consumer));
+				await sleep(failures * this.retryDelayMs, signal);
+				reread = true;
 				continue;
 			}
 			// A position below the log's start (retention passed): from its first offset (ListOffsets earliest).
@@ -332,21 +407,42 @@ export class PlatformaticReader implements LogReader {
 		const step = abortStep(signal);
 		try {
 			const consumer = step(await this.open());
-			const parts = step(await this.partitions(consumer));
-			// Every partition (AD-24: until a story proves the placement by key).
-			const all = [...parts.leaders.keys()];
-			const unknown = all.filter((p) => resumeAt?.get(p) === undefined);
-			const at = new Map<number, number>(all.filter((p) => resumeAt?.get(p) !== undefined).map((p) => [p, resumeAt!.get(p)!]));
-			for (const [p, o] of unknown.length > 0 ? step(await this.offsetsAt(consumer, unknown, BigInt(Math.floor(fromTime)))) : []) {
-				at.set(p, o);
-			}
-			const state = { parts };
+			const state = { parts: step(await this.partitions(consumer)) };
+			// Every partition (AD-24: until a story proves the placement by key); one without a leader is
+			// placed (its position found) once it has one.
+			const at = new Map<number, number>();
+			const place = async () => {
+				const led = state.parts.all.filter((p) => !at.has(p) && state.parts.leaders.has(p));
+				for (const p of led.filter((x) => resumeAt?.get(x) !== undefined)) {
+					at.set(p, resumeAt!.get(p)!);
+				}
+				const unknown = led.filter((p) => resumeAt?.get(p) === undefined);
+				if (unknown.length > 0) {
+					for (const [p, o] of step(await this.retried(() => this.offsetsAt(consumer, unknown, BigInt(Math.floor(fromTime))), signal))) {
+						at.set(p, o);
+					}
+				}
+			};
+			await place();
+			let checked = Date.now();
 			while (!signal.aborted) {
+				if (state.parts.all.some((p) => !state.parts.leaders.has(p)) && Date.now() - checked >= this.leaderWaitMs) {
+					// A partition without a leader: its leader read again now and then.
+					state.parts = step(await this.retried(() => this.partitions(consumer), signal));
+					checked = Date.now();
+				}
+				await place();
+				if (![...at.keys()].some((p) => state.parts.leaders.has(p))) {
+					// Nothing has a leader: wait, then read the leaders again.
+					await sleep(this.leaderWaitMs, signal);
+					checked = 0;
+					continue;
+				}
 				const records = await this.fetchRound(consumer, state, at, FETCH_WAIT_MS, signal, step);
 				if (signal.aborted) {
 					break;
 				}
-				onRecords(records, new Map(at));
+				onRecords(records, this.positionsOf(at, resumeAt));
 			}
 		} catch (err) {
 			if (!signal.aborted) {
@@ -358,63 +454,144 @@ export class PlatformaticReader implements LogReader {
 		}
 	}
 
+	/** The positions to resume at: `at`, and `resumeAt`'s for a partition not placed yet (no leader). */
+	private positionsOf(at: ReadonlyMap<number, number>, resumeAt: LogPositions | undefined): Map<number, number> {
+		const out = new Map(at);
+		for (const [p, o] of resumeAt ?? []) {
+			if (!out.has(p)) {
+				out.set(p, o);
+			}
+		}
+		return out;
+	}
+
+	/** `read` retried as a failed fetch is (a connection error: a few times, with a growing backoff). */
+	private async retried<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+		for (let failures = 0; ; ) {
+			try {
+				return await read();
+			} catch (err) {
+				if (signal.aborted || !retriable(err) || ++failures > this.fetchRetries) {
+					throw err;
+				}
+				await sleep(failures * this.retryDelayMs, signal);
+			}
+		}
+	}
+
 	async range(
 		_pipelineId: string,
 		fromTime: number,
 		toTime: number,
-		onRecords: (records: readonly LogRecord[]) => void,
+		onRecords: (records: readonly LogRecord[], next: LogPositions) => void,
 		signal: AbortSignal,
+		resumeAt?: LogPositions,
 	): Promise<LogRangeEnd> {
 		const start = new Map<number, number>();
 		const at = new Map<number, number>();
 		if (signal.aborted) {
-			return { start, next: at };
+			return { start, next: this.positionsOf(at, resumeAt) };
 		}
 		const step = abortStep(signal);
+		// A partition placed late stops where the range would have stopped when it began: never past `toTime`
+		// nor past the time the read started.
+		const stopTime = Math.min(Math.floor(toTime), Date.now());
 		try {
 			const consumer = step(await this.shared(signal));
 			const state = { parts: step(await this.partitions(consumer)) };
-			// Every partition (AD-24: until a story proves the placement by key).
-			const all = [...state.parts.leaders.keys()];
-			for (const [p, o] of step(await this.offsetsAt(consumer, all, BigInt(Math.floor(fromTime))))) {
-				start.set(p, o);
-				at.set(p, o);
-			}
-			const end = step(await this.offsetsAt(consumer, all, -1n));
-			const after = step(await this.offsetsAt(consumer, all, BigInt(Math.floor(toTime) + 1)));
-			const stop = new Map(all.map((p) => [p, Math.min(end.get(p) ?? 0, after.get(p) ?? end.get(p) ?? 0)]));
+			const stop = new Map<number, number>();
+			// Every partition (AD-24: until a story proves the placement by key), each placed (its start and stop
+			// found) once it has a leader; a partition named in `resumeAt` goes on from there.
+			const place = async () => {
+				const led = state.parts.all.filter((p) => !stop.has(p) && state.parts.leaders.has(p));
+				if (led.length === 0) {
+					return;
+				}
+				const late = stop.size > 0;
+				const offsets = (time: bigint) => this.retried(() => this.offsetsAt(consumer, led, time), signal);
+				const from = step(await offsets(BigInt(Math.floor(fromTime))));
+				const end = step(await offsets(-1n));
+				const after = step(await offsets(BigInt((late ? stopTime : Math.floor(toTime)) + 1)));
+				for (const p of led) {
+					const s = from.get(p) ?? end.get(p) ?? 0;
+					start.set(p, s);
+					at.set(p, resumeAt?.get(p) ?? s);
+					stop.set(p, Math.min(end.get(p) ?? 0, after.get(p) ?? end.get(p) ?? 0));
+				}
+			};
+			await place();
 			// Since when each partition has answered no records below its stop (a tiered-storage read can
-			// answer empty for a while): fetched again with a wait, and given up after `stallMs`.
+			// answer empty for a while): fetched again with a wait, given up after `stallMs`. A partition without
+			// a leader is waited on, its leader read again, and given up `stallMs` after it lost it (as this
+			// reader saw: a later range does not wait again for one still without a leader).
 			const emptySince = new Map<number, number>();
 			const stalled: number[] = [];
+			const leaderless: number[] = [];
+			const waiting = () => state.parts.all.filter((p) => !stalled.includes(p) && !leaderless.includes(p) && !state.parts.leaders.has(p)
+				&& (!stop.has(p) || at.get(p)! < stop.get(p)!));
+			let checked = Date.now();
 			for (;;) {
-				const pending = new Map([...at].filter(([p, o]) => o < stop.get(p)! && !stalled.includes(p)));
-				if (pending.size === 0 || signal.aborted) {
+				if (waiting().length > 0 && Date.now() - checked >= this.leaderWaitMs) {
+					// A partition without a leader: its leader read again now and then, and placed once it has one.
+					state.parts = step(await this.retried(() => this.partitions(consumer), signal));
+					checked = Date.now();
+					await place();
+				}
+				const now = Date.now();
+				for (const p of waiting()) {
+					// Without a leader, it is not answering empty: that wait is its own.
+					emptySince.delete(p);
+					if (now - (this.unledSince(p) ?? now) >= this.stallMs) {
+						leaderless.push(p);
+					}
+				}
+				const pending = new Map([...at].filter(([p, o]) => o < stop.get(p)! && !stalled.includes(p) && !leaderless.includes(p) && state.parts.leaders.has(p)));
+				if (signal.aborted || (pending.size === 0 && waiting().length === 0)) {
 					break;
+				}
+				if (pending.size === 0) {
+					// Only partitions without a leader are left: wait, then read the leaders again.
+					await sleep(Math.min(this.leaderWaitMs, this.stallMs), signal);
+					checked = 0;
+					continue;
 				}
 				const wait = [...pending.keys()].some((p) => emptySince.has(p)) ? this.emptyWaitMs : 0;
 				const records = await this.fetchRound(consumer, state, pending, wait, signal, step);
 				if (signal.aborted) {
 					break;
 				}
-				const now = Date.now();
+				const after = Date.now();
 				for (const [p, o] of pending) {
+					if (!state.parts.leaders.has(p)) {
+						// It lost its leader in this round (the fetch's retries read the leaders again): not fetched, not empty.
+						emptySince.delete(p);
+						continue;
+					}
 					const moved = o > at.get(p)!;
 					at.set(p, Math.min(o, stop.get(p)!));
 					if (moved) {
 						emptySince.delete(p);
 					} else if (!emptySince.has(p)) {
-						emptySince.set(p, now);
-					} else if (now - emptySince.get(p)! >= this.stallMs) {
+						emptySince.set(p, after);
+					} else if (after - emptySince.get(p)! >= this.stallMs) {
 						stalled.push(p);
 					}
 				}
-				onRecords(records.filter((r) => r.offset < stop.get(r.partition)!));
+				if (waiting().length > 0) {
+					// A partition may have got a leader meanwhile (the fetch's retries read the leaders again).
+					await place();
+				}
+				onRecords(records.filter((r) => r.offset < stop.get(r.partition)!), this.positionsOf(at, resumeAt));
 			}
-			return { start, next: new Map(at), ...(stalled.length > 0 ? { stalled } : {}) };
+			const told = leaderless.filter((p) => !this.givenUp.has(p));
+			if (told.length > 0) {
+				told.forEach((p) => this.givenUp.add(p));
+				this.log(`Pipeline logs: partition ${told.join(', ')} of ${LOGS_TOPIC} had no leader for ${Math.round(this.stallMs / 1000)} s; reads go on without it until it has one.`);
+			}
+			return { start, next: this.positionsOf(at, resumeAt), ...(stalled.length > 0 ? { stalled } : {}), ...(leaderless.length > 0 ? { leaderless } : {}) };
 		} catch (err) {
 			if (signal.aborted) {
-				return { start, next: new Map(at) };
+				return { start, next: this.positionsOf(at, resumeAt) };
 			}
 			await this.close();
 			throw asLogReadError(err);
@@ -429,7 +606,9 @@ export class PlatformaticReader implements LogReader {
 		try {
 			const consumer = step(await this.shared(signal));
 			const parts = step(await this.partitions(consumer));
-			return step(await this.offsetsAt(consumer, [...parts.leaders.keys()], -2n));
+			const first = step(await this.offsetsAt(consumer, [...parts.leaders.keys()], -2n));
+			// A partition without a leader: its first offset unknown (-1), so no read is "at the log's start" there.
+			return new Map(parts.all.map((p) => [p, first.get(p) ?? -1]));
 		} catch (err) {
 			if (signal.aborted) {
 				return new Map();

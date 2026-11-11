@@ -174,3 +174,15 @@
 - source_plan: `_bmad-output/backlog/bug-pipeline-logs-credentials-and-masking-epic-6-retrospective-plan.md`
   summary: A log access change made in another window while this window is writing to the secret storage (`writing > 0`) is dropped, so the open tab keeps the old access until its next read of the store.
   evidence: bug 52's thorough review, triage row 18 (the store's change handler shares one `writing` counter for every key, `cloudView.ts` ~:581); fix with a per-key set of the keys this window is writing. Rare: needs two windows changing the same cluster's access at once.
+
+- source_plan: none
+  summary: Bug 51 group B, time and strip: one time per record across the row, the strip, Show records around and the around-the-error window, and strip bars that match their rows (criterion 5, findings C6 and C7).
+  evidence: split from bug 51 at the build's scope check (user, 2026-11-11, "Start A"); it touches how rows carry their time and how the strip counts, so it builds on group A.
+
+- source_plan: none
+  summary: Bug 51 group C, search: slow patterns such as `.*.*.*x` refused on the host and in the webview's highlight, which never runs on uncapped text (criterion 6, finding C12).
+  evidence: split from bug 51 at the build's scope check (user, 2026-11-11, "Start A"); independent of groups A and B.
+
+- source_plan: `_bmad-output/backlog/bug-pipeline-logs-reading-and-state-edge-cases-epic-6-retrospective-plan.md`
+  summary: While following the live log, a partition without a leader is named only in the output channel; the tab's status still says Following, and no line says when it has a leader again.
+  evidence: bug 51 group A's thorough review, triage row 32 (blind hunter); the tail waits on it without limit by design. Settled by a status note while a partition is not followed.

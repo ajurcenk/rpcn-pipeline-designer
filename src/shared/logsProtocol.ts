@@ -87,6 +87,27 @@ export function filterActive(filter: LogFilter): boolean {
 	return LOG_LEVELS.some((l) => !filter.levels.includes(l)) || filter.text !== '' || filter.fields.length > 0;
 }
 
+/**
+ * Bug 51: what `filter` keeps, in words (an export's message names it): `levels Error, Warn; search "timeout"
+ * (regular expression, match case); path=/config/connect.yaml`. Empty for no filter.
+ */
+export function filterText(filter: LogFilter): string {
+	const parts: string[] = [];
+	if (LOG_LEVELS.some((l) => !filter.levels.includes(l))) {
+		const shown = LOG_LEVELS.filter((l) => filter.levels.includes(l)).map((l) => LEVEL_LABELS[l]);
+		parts.push(shown.length > 0 ? `levels ${shown.join(', ')}` : 'no level');
+	}
+	if (filter.text !== '') {
+		const how = [...(filter.regex ? ['regular expression'] : []), ...(filter.matchCase ? ['match case'] : [])];
+		// Quoted as a JSON string, so a `"`, `;` or `)` in it cannot be read as the filter's own words.
+		parts.push(`search ${JSON.stringify(filter.text)}${how.length > 0 ? ` (${how.join(', ')})` : ''}`);
+	}
+	for (const [key, value] of filter.fields) {
+		parts.push(`${key}=${value}`);
+	}
+	return parts.join('; ');
+}
+
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Why a regular expression that could backtrack for a very long time is refused. */
@@ -469,6 +490,17 @@ export interface LogsViewState {
 	readonly settingUp: boolean;
 	/** Ticket 6.7: the records-per-time strip, for a bounded range (and Since the last deploy); else `null`. */
 	readonly strip: LogStrip | null;
+	/**
+	 * Bug 51: records left out for the cap between two shown rows (the tail at the cap while Load older
+	 * read): one marker row before the row `before` (its id), "N records left out here". Counted in the
+	 * footer's left-out total. Absent or empty: none.
+	 */
+	readonly leftOutHere?: readonly { readonly before: string; readonly count: number }[];
+}
+
+/** Bug 51: the marker row of records left out for the cap between two shown rows. */
+export function leftOutHereText(count: number): string {
+	return `${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} left out here`;
 }
 
 export type LogsHostMessage =
@@ -615,7 +647,8 @@ function isState(v: unknown): v is LogsViewState {
 		&& isTime(v.olderBefore) && parseLogFilter(v.filter) !== undefined && isCounts(v.counts)
 		&& typeof v.highlightErrors === 'boolean' && (v.focusId === null || typeof v.focusId === 'string') && (v.note === null || typeof v.note === 'string')
 		&& isPanelState(v.panelState) && typeof v.stoppedShort === 'boolean' && typeof v.settingUp === 'boolean'
-		&& (v.strip === null || isStrip(v.strip));
+		&& (v.strip === null || isStrip(v.strip))
+		&& (v.leftOutHere === undefined || (Array.isArray(v.leftOutHere) && v.leftOutHere.every((g) => isObject(g) && typeof g.before === 'string' && isCount(g.count) && g.count > 0)));
 }
 
 /** A host message, or `undefined` for anything malformed. */

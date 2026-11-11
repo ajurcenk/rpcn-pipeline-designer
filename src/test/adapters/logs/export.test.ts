@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import type { LogRecord } from '../../../adapters/logs/logReader';
 import { toLogRow } from '../../../adapters/logs/records';
 import { exportedMessage, exportFileName, exportLine, exportText } from '../../../adapters/logs/export';
+import { filterText, NO_FILTER } from '../../../shared/logsProtocol';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 
 const PIPELINE = 'd3ugjmtpsedhm3e7fp1g';
@@ -55,7 +56,7 @@ suite('Pipeline log export (ticket 6.8)', () => {
 
 	test('exportText: a line per row in the order given, each ending in a line break; none for no rows', () => {
 		const rows = [toLogRow(record({ message: 'a' }, { offset: 1 })), toLogRow(record('b', { offset: 2 }))];
-		assert.strictEqual(exportText(rows), `{"message":"a"}\n{"time":"2026-11-06T09:30:00.250Z","message":"b"}\n`);
+		assert.strictEqual(exportText(rows), `{"time":"2026-11-06T09:30:00.250Z","message":"a"}\n{"time":"2026-11-06T09:30:00.250Z","message":"b"}\n`);
 		assert.strictEqual(exportText([]), '');
 	});
 
@@ -74,5 +75,34 @@ suite('Pipeline log export (ticket 6.8)', () => {
 			'Exported 5,000 records to o.jsonl. 1,000 older records were left out for the 5,000-record limit.');
 		assert.strictEqual(exportedMessage(5000, 'o.jsonl', 1, 2, 5000),
 			'Exported 5,000 records to o.jsonl. 1 older record was left out for the 5,000-record limit. 2 newer records were dropped for the 5,000-record limit.');
+	});
+
+	test('EXPORT_NOTE (bug 51): a JSON record with no `time` field gets its Kafka time (first); one with its own keeps it; exportText takes each row\'s Kafka time', () => {
+		const kafka = Date.UTC(2026, 10, 6, 9, 30, 0, 250);
+		const row = toLogRow(record({ level: 'INFO', message: 'no time here', n: 1 }));
+		assert.strictEqual(exportLine(row, kafka), JSON.stringify({ time: '2026-11-06T09:30:00.250Z', level: 'INFO', message: 'no time here', n: 1 }));
+		const own = toLogRow(record({ time: '2026-11-06T09:29:59Z', message: 'its own' }));
+		assert.strictEqual(exportLine(own, kafka), JSON.stringify({ time: '2026-11-06T09:29:59Z', message: 'its own' }));
+		assert.strictEqual(exportText([row], [kafka + 1_000]), `${JSON.stringify({ time: '2026-11-06T09:30:01.250Z', level: 'INFO', message: 'no time here', n: 1 })}\n`);
+	});
+
+	test('EXPORT_NOTE (bug 51): the message names the filter the rows were kept with; none without one', () => {
+		const filter = { ...NO_FILTER, levels: ['warn', 'error'] as const, text: 'secret', regex: true, fields: [['path', '/a'] as const] };
+		assert.strictEqual(filterText(filter), 'levels Error, Warn; search "secret" (regular expression); path=/a');
+		assert.strictEqual(filterText(NO_FILTER), '');
+		assert.strictEqual(filterText({ ...NO_FILTER, levels: [] }), 'no level');
+		assert.strictEqual(filterText({ ...NO_FILTER, text: 'Abc', matchCase: true }), 'search "Abc" (match case)');
+		assert.strictEqual(exportedMessage(7, 'o.jsonl', 0, 0, 5000, filterText(filter)), 'Exported 7 records matching the filter (levels Error, Warn; search "secret" (regular expression); path=/a) to o.jsonl.');
+		assert.strictEqual(exportedMessage(7, 'o.jsonl', 0, 0, 5000, ''), 'Exported 7 records to o.jsonl.');
+	});
+
+	test('EXPORT_NOTE (bug 51, review): a Kafka time a Date cannot hold leaves `time` out, never throws; the search text is quoted, so `"`, `;` or `)` stay inside it; gaps say "records left out"', () => {
+		const row = toLogRow(record({ message: 'm' }));
+		for (const bad of [NaN, Infinity, 9e15]) {
+			assert.strictEqual(exportLine(row, bad), '{"message":"m"}', String(bad));
+		}
+		assert.strictEqual(filterText({ ...NO_FILTER, text: 'a"b; c) d' }), 'search "a\\"b; c) d"');
+		assert.strictEqual(exportedMessage(3, 'o.jsonl', 2, 0, 3, '', 2), 'Exported 3 records to o.jsonl. 2 records were left out for the 3-record limit.');
+		assert.strictEqual(exportedMessage(3, 'o.jsonl', 2, 0, 3), 'Exported 3 records to o.jsonl. 2 older records were left out for the 3-record limit.');
 	});
 });

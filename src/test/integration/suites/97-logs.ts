@@ -35,17 +35,17 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	ACCOUNT_CHANGED_REASON, accountDisconnectedReason, CloudView, FORGET_LOG_ACCESS_COMMAND, logAccessForgottenMessage, NO_CLUSTER_WITH_LOG_ACCESS,
-	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, NO_LOG_ACCESS_SET, noLogAccessMessage, type PipelineChoice,
-	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND,
+	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_ACTION, CONNECT_COMMAND, DELETE_COMMAND, DEPLOY_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, NO_LOG_ACCESS_SET, noLogAccessMessage, type PipelineChoice,
+	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND, STOP_COMMAND,
 } from '../../../adapters/vscode/cloudView';
 import {
-	AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, OPEN_EXPORT_ACTION,
-	stoppedReadingStatus, type LogsExportUi,
+	AROUND_ENDED_BY_LIVE_NOTE, AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, OPEN_EXPORT_ACTION,
+	setUpRunningText, stoppedReadingStatus, type LogsExportUi,
 } from '../../../adapters/vscode/logsPanel';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
-import { gapsIn, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
+import { gapsIn, leftOutHereText, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
@@ -972,12 +972,15 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 			logs().windowMs = 3 * MINUTE;
 			await logs().loadOlder();
 			assert.deepStrictEqual(texts(), ['r3', 'r4', 'r5'], 'the newest left out read back; the newest dropped');
-			assert.strictEqual(logs().droppedCount, 0);
+			// Bug 51: r0 … r2 are still left out (Load older no longer replaces the count with its last window's).
+			assert.strictEqual(logs().droppedCount, 3);
 			await logs().loadOlder();
 			assert.deepStrictEqual(texts(), ['r2', 'r3', 'r4'], 'from the oldest shown, not the oldest counted: nothing skipped');
+			assert.strictEqual(logs().droppedCount, 2);
 			await logs().loadOlder();
 			await logs().loadOlder();
 			assert.deepStrictEqual(texts(), ['r0', 'r1', 'r2']);
+			assert.strictEqual(logs().droppedCount, 0);
 		} finally {
 			logs().windowMs = windowMs;
 		}
@@ -1526,7 +1529,9 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(texts().slice(0, 2), ['r0', 'r1'], 'in order');
 		assert.strictEqual(logs().viewState.counts.total, 1500, 'none counted twice');
 		const resumed = topic.ranges.at(-1)!;
-		assert.strictEqual(resumed.fromTime, t0 - 50 * MINUTE + 499 * 1_000, 'from the newest record it had reached');
+		// Bug 51: from where it had reached on each partition (the range's own start time, not the newest record's).
+		assert.deepStrictEqual(resumed.resumeAt && [...resumed.resumeAt], [[0, 500]], 'from the record after the last one it had reached');
+		assert.strictEqual(resumed.fromTime, topic.ranges.at(-2)!.fromTime);
 		assert.strictEqual(stateKind(), 'none');
 	});
 
@@ -1974,8 +1979,8 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		}
 		assert.ok(lines.every((l) => (JSON.parse(l) as { token: string; pipeline_id: string }).token === CREDENTIAL_MASK), 'the secret value masked');
 		assert.ok(lines.every((l) => (JSON.parse(l) as { pipeline_id: string }).pipeline_id === ORDERS), 'pipeline_id kept');
-		assert.ok(lines.every((l) => !/"(partition|offset|timestamp)"/.test(l)), 'no Kafka partition, offset or timestamp added');
-		assert.deepStrictEqual(seen.infos, [{ message: 'Exported 7 records to acceptance.jsonl.', actions: [OPEN_EXPORT_ACTION] }]);
+		assert.ok(lines.every((l) => !/"(partition|offset|timestamp)"/.test(l)), 'no Kafka partition or offset added, and the Kafka time only as `time`');
+		assert.deepStrictEqual(seen.infos, [{ message: 'Exported 7 records matching the filter (levels Warn; search "secret") to acceptance.jsonl.', actions: [OPEN_EXPORT_ACTION] }]);
 		assert.deepStrictEqual(seen.errors, []);
 		const output = api().outputLines().filter((l) => l.includes('export')).join('\n');
 		assert.ok(output.includes('exported 7 records of orders · rpc-vilnius to '), 'said in the output channel');
@@ -2502,6 +2507,472 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		await showOrders();
 		assert.ok(await waitFor(() => texts().length === 1, 10_000));
 		assert.deepStrictEqual(texts(), [`quoting ${refused}`], 'not masked in the rows afterwards');
+	});
+
+	// --- Bug 51 (epic 6 retrospective, group A): reading every partition fully, reading what the status says ---
+
+	/** Bug 51 (V3): this test's topic has two partitions (the panel reads every partition). */
+	const twoPartitions = () => {
+		topic = new FakeLogs({ username: USERNAME, password: PASSWORD, partitions: 2 });
+		cloud().logReader = topic.factory;
+	};
+	/** Bug 51: the panel's default look back shortened for one test (restored after it). */
+	const shortWindow = (ms: number) => {
+		const original = logs().windowMs;
+		logs().windowMs = ms;
+		teardowns.push(() => {
+			logs().windowMs = original;
+		});
+	};
+
+	test('RESUME_PARTS (bug 51): a range read on two partitions, one behind the other in time, loses its connection: each partition goes on from its own last record; none skipped, none twice', async () => {
+		twoPartitions();
+		logs().retryDelaysMs = [200];
+		const t0 = Date.now() - 50 * MINUTE;
+		// Interleaved in time: partition 0 at even seconds, partition 1 at odd ones; the fake reads partition 0 first.
+		topic.write(
+			...Array.from({ length: 700 }, (_, i) => ({ ...recAt(ORDERS, `a${i}`, t0 + i * 2_000), partition: 0 })),
+			...Array.from({ length: 700 }, (_, i) => ({ ...recAt(ORDERS, `b${i}`, t0 + i * 2_000 + 1_000), partition: 1 })),
+		);
+		await showOrders();
+		topic.dropRangeAfter = 1;
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => topic.ranges.length >= 2 && logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(texts().length, 1400, 'every record of both partitions');
+		assert.strictEqual(new Set(logs().rows().map((r) => r.id)).size, 1400, 'none twice');
+		assert.strictEqual(logs().viewState.counts.total, 1400);
+		const resumed = topic.ranges.at(-1)!;
+		assert.deepStrictEqual(resumed.resumeAt && [...resumed.resumeAt], [[0, 500], [1, 0]], 'each partition from its own position');
+		assert.strictEqual(texts()[0], 'a0', 'oldest first');
+		assert.strictEqual(stateKind(), 'none');
+	});
+
+	test('LIVE_FILTER (bug 51): the live log followed for a while; a filter change, or new log access, reads the last 15 minutes from then (not from when the panel opened), then follows', async () => {
+		twoPartitions();
+		shortWindow(1_500);
+		await showOrders();
+		topic.write({ ...rec(ORDERS, 'early'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('early'), 10_000), logs().statusText);
+		await new Promise((r) => setTimeout(r, 2_000));
+		topic.write({ ...rec(ORDERS, 'recent'), partition: 0 });
+		assert.ok(await waitFor(() => texts().includes('recent'), 10_000), logs().statusText);
+		const changed = Date.now();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: ORDERS }), true);
+		const range = logs().viewState.range;
+		assert.strictEqual(range.kind, 'recent');
+		assert.ok(range.from >= changed - 1_500 && range.from <= Date.now() - 1_500, 'rebased on the time of the change');
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS && texts().includes('recent'), 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['recent'], 'only the window from then, with the filter');
+		assert.ok(topic.activeTails()[0].fromTime >= changed - 1_500, 'the tail starts there');
+		topic.write({ ...rec(ORDERS, 'then live'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('then live'), 10_000), 'then followed');
+		// New log access, much later: the same.
+		await new Promise((r) => setTimeout(r, 2_000));
+		const again = Date.now();
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(logs().viewState.range.from >= again - 1_500, 'rebased on the new access');
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), [], 'nothing of the last window is that new');
+		assert.deepStrictEqual(logs().viewState.filter.text, ORDERS, 'the filter kept');
+	});
+
+	test('AROUND_FILTER (bug 51, G1): during the around-the-error search a filter change runs the search again with the filter; Live on ends it with a message, then follows', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		topic.write(
+			levelAt(ORDERS, 'debug before', t0 - 31 * MINUTE, 'DEBUG'),
+			errAt(ORDERS, 'the error', t0 - 30 * MINUTE),
+			recAt(ORDERS, 'info after', t0 - 29 * MINUTE),
+		);
+		topic.rangeDelayMs = 300;
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'searching');
+		const noDebug = { ...NO_FILTER, levels: LOG_LEVELS.filter((l) => l !== 'debug') };
+		assert.strictEqual(logs().setFilter(noDebug), true);
+		assert.strictEqual(logs().viewState.range.kind, 'day', 'still searching');
+		assert.strictEqual(logs().statusText, 'Looking for the newest ERROR record in the last 24 hours…');
+		topic.rangeDelayMs = 0;
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 20_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['the error', 'info after'], 'around the error, with the filter');
+		assert.deepStrictEqual(logs().viewState.filter, noDebug, 'the filter kept');
+		assert.strictEqual(logs().rows().find((r) => r.id === logs().viewState.focusId)?.message, `${ORDERS}:the error`);
+		// Live on during the search: it ends, said so, and the last 15 minutes are followed.
+		topic.rangeDelayMs = 300;
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'searching');
+		await logs().setLive(true);
+		topic.rangeDelayMs = 0;
+		assert.strictEqual(logs().viewState.note, AROUND_ENDED_BY_LIVE_NOTE);
+		assert.strictEqual(logs().viewState.range.kind, 'recent');
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.ok(await waitFor(() => topic.activeRanges().length === 0, 10_000), 'the search stopped');
+		assert.strictEqual(logs().viewState.focusId, null);
+	});
+
+	test('AROUND_READING (bug 51): the around-the-error search is Reading with its count and Stop reading; Stop ends it with a message, nothing more read', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		// In time order (as ListOffsets by time assumes): 5 hours, one INFO record every 10 minutes, no ERROR.
+		topic.write(...Array.from({ length: 30 }, (_, i) => recAt(ORDERS, `i${i}`, t0 - (30 - i) * 10 * MINUTE)));
+		topic.rangeDelayMs = 300;
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().panelState.kind === 'reading' && (logs().panelState as { count: number }).count > 0, 20_000), stateKind());
+		const reading = logs().panelState;
+		assert.strictEqual(reading.kind === 'reading' && reading.what, 'Looking for the newest ERROR record in the last 24 hours…');
+		const count = reading.kind === 'reading' ? reading.count : 0;
+		assert.strictEqual(logs().stopReading(), true);
+		assert.strictEqual(stateKind(), 'none', 'the reading state goes');
+		assert.ok(logs().statusText.startsWith('Stopped looking for the newest ERROR record: '), logs().statusText);
+		assert.ok(logs().statusText.endsWith(LIVE_OFF_STATUS));
+		assert.ok(count > 0 && count < 30, `${count} records read`);
+		assert.strictEqual(logs().viewState.live, false);
+		assert.strictEqual(logs().viewState.strip, null, 'no strip for what was not read');
+		assert.ok(await waitFor(() => topic.activeRanges().length === 0, 10_000), 'the search stopped');
+		const ranges = topic.ranges.length;
+		await new Promise((r) => setTimeout(r, 800));
+		assert.strictEqual(topic.ranges.length, ranges, 'nothing more read');
+		assert.strictEqual(logs().viewState.range.kind, 'day');
+		assert.strictEqual(logs().stopReading(), false, 'nothing reads now');
+	});
+
+	test('STOP_THEN_LIVE (bug 51): a bounded range stopped by Stop reading, then Live on: the rows read stay and Live follows on from where the read stopped', async () => {
+		twoPartitions();
+		const t0 = Date.now();
+		topic.write(...Array.from({ length: 3000 }, (_, i) => ({ ...recAt(ORDERS, `w${i}`, t0 - 6 * DAY + i * MINUTE), partition: i % 2 })));
+		await showOrders();
+		topic.rangeDelayMs = 150;
+		await logs().chooseRange({ kind: 'week' });
+		assert.ok(await waitFor(() => logs().panelState.kind === 'reading' && texts().length > 0, 10_000), stateKind());
+		assert.strictEqual(logs().stopReading(), true);
+		const kept = texts().slice();
+		assert.ok(kept.length > 0 && kept.length < 3000, `${kept.length} records kept`);
+		assert.ok(await waitFor(() => topic.activeRanges().length === 0, 10_000));
+		const reached = topic.ranges.at(-1)!.delivered;
+		topic.rangeDelayMs = 0;
+		await logs().setLive(true);
+		assert.ok(await waitFor(() => topic.activeTails().length === 1, 10_000), logs().statusText);
+		const resumeAt = topic.activeTails()[0].resumeAt;
+		const expected = [0, 1].map((p) => [p, Math.max(-1, ...reached.filter((r) => r.partition === p).map((r) => r.offset)) + 1]);
+		assert.deepStrictEqual(resumeAt && [...resumeAt].sort(), expected, 'from where the read stopped on each partition');
+		assert.ok(await waitFor(() => texts().length === Math.min(3000, logs().cap), 20_000), `${texts().length}`);
+		assert.deepStrictEqual(texts().slice(0, kept.length).sort(), kept.slice().sort(), 'the rows read stay');
+		assert.strictEqual(new Set(logs().rows().map((r) => r.id)).size, texts().length, 'none twice');
+		assert.strictEqual(logs().viewState.range.kind, 'week', 'not the default range again');
+		topic.write({ ...rec(ORDERS, 'new'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('new'), 10_000), 'followed');
+	});
+
+	test('SETUP_OTHER (bug 51): Set up log access started for one pipeline, then the tab shows a pipeline of another cluster: its Set up works; on the same cluster the tab says why it cannot', async () => {
+		// The first Set up waits at its username prompt until the test answers it.
+		let answerFirst: (v: string | undefined) => void = () => undefined;
+		const scripted = cloud().ui;
+		let held = false;
+		cloud().ui = {
+			...scripted,
+			input: (options) => {
+				if (!held) {
+					held = true;
+					return new Promise((resolve) => {
+						answerFirst = resolve;
+					});
+				}
+				return scripted.input(options);
+			},
+		};
+		teardowns.push(() => {
+			cloud().ui = scripted;
+		});
+		topic.write(rec(ORDERS, 'o1', MINUTE), rec('d3byoc00000000000003', 'e1', MINUTE));
+		script({ actions: [undefined, undefined, undefined, undefined] });
+		assert.deepStrictEqual(await showLogs(), { kind: 'noAccess' });
+		assert.ok(await waitFor(() => logs().visible && stateKind() === 'noAccess', 10_000), stateKind());
+		const first = logs().setUpAccess();
+		assert.ok(await waitFor(() => held && logs().viewState.settingUp, 10_000), 'the first one runs');
+		// Another pipeline on the same cluster: its request cannot run, and the tab says why.
+		assert.deepStrictEqual(await showLogs(CLICKS), { kind: 'noAccess' });
+		assert.strictEqual(logs().viewState.settingUp, true, 'its buttons are disabled');
+		assert.strictEqual(await logs().setUpAccess(), false);
+		assert.strictEqual(logs().viewState.note, setUpRunningText('rpc-vilnius'));
+		// A pipeline of another cluster: Set up and Use another user work.
+		assert.deepStrictEqual(await showLogs('d3byoc00000000000003', BYOC), { kind: 'noAccess' });
+		assert.strictEqual(logs().viewState.settingUp, false, 'not disabled for another cluster');
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(await waitFor(() => messages('d3byoc00000000000003').length === 1 && stateKind() === 'none', 10_000), logs().statusText);
+		answerFirst(undefined);
+		assert.strictEqual(await first, false, 'the first one was cancelled');
+		assert.strictEqual(logs().title, 'events · byoc-eu', 'the shown pipeline is not touched');
+		assert.strictEqual(logs().viewState.settingUp, false);
+		// Set up running from a cluster's row: the tab's request says why it cannot run.
+		held = false;
+		assert.deepStrictEqual(await showLogs(ORDERS), { kind: 'noAccess' });
+		const fromRow = setUp();
+		assert.ok(await waitFor(() => held, 10_000), 'the row\'s Set up runs');
+		assert.strictEqual(await logs().setUpAccess(), false);
+		assert.strictEqual(logs().viewState.note, setUpRunningText('rpc-vilnius'));
+		answerFirst(undefined);
+		assert.notStrictEqual((await fromRow)?.kind, 'stored', 'cancelled');
+	});
+
+	test('LEFT_OUT (bug 51, G4): left out by the cap, then Load older with the tail at the cap meanwhile: the footer, the export message and one marker row add up', async () => {
+		twoPartitions();
+		topic.write(
+			{ ...rec(ORDERS, 'o1', 21 * MINUTE), partition: 1 }, { ...rec(ORDERS, 'o2', 20 * MINUTE), partition: 0 },
+			...Array.from({ length: 8 }, (_, i) => ({ ...rec(ORDERS, `n${i + 1}`, (9 - i) * MINUTE), partition: i % 2 })),
+		);
+		logs().cap = 6;
+		await showOrders();
+		assert.deepStrictEqual(texts(), ['n3', 'n4', 'n5', 'n6', 'n7', 'n8']);
+		assert.strictEqual(logs().droppedCount, 2);
+		topic.rangeDelayMs = 500;
+		const older = logs().loadOlder();
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'Load older reads');
+		// The tail at the cap meanwhile: n3 and n4 are left out.
+		topic.write({ ...rec(ORDERS, 't1'), partition: 0 }, { ...rec(ORDERS, 't2'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('t2'), 10_000), logs().statusText);
+		assert.strictEqual(logs().droppedCount, 4);
+		await older;
+		topic.rangeDelayMs = 0;
+		assert.deepStrictEqual(texts(), ['o1', 'o2', 'n1', 'n2', 'n5', 'n6'], 'the window read, then the rows kept; the newest dropped for the cap');
+		const gap = logs().viewState.leftOutHere;
+		assert.deepStrictEqual(gap, [{ before: logs().rows()[4].id, count: 2 }], 'one marker row where n3 and n4 are left out');
+		assert.strictEqual(leftOutHereText(2), '2 records left out here');
+		assert.strictEqual(logs().droppedCount, 2, 'the left out add up: n1 and n2 read back, n3 and n4 left out');
+		assert.strictEqual(logs().viewState.newerDropped, 4);
+		const prepend = logs().posted.filter((m) => m.type === 'prepend').at(-1);
+		assert.strictEqual(prepend?.type === 'prepend' ? prepend.dropped : undefined, 2, 'the webview\'s footer total');
+		const file = exportFile('left-out.jsonl');
+		const seen = exportUi(file);
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		assert.deepStrictEqual(seen.infos.map((i) => i.message), ['Exported 6 records to left-out.jsonl. 2 records were left out for the 6-record limit. 4 newer records were dropped for the 6-record limit.']);
+	});
+
+	test('EXPORT_NOTE (bug 51): an export with a filter on names it; a record with no `time` field carries its Kafka time', async () => {
+		const at = Date.now() - 10 * MINUTE;
+		topic.write(
+			{ key: ORDERS, timestamp: at, value: { level: 'WARN', message: `${ORDERS}:no time`, pipeline_id: ORDERS } },
+			rec(ORDERS, 'info', 5 * MINUTE),
+		);
+		await showOrders();
+		await lastHour();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, levels: ['warn'] }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1, 10_000), logs().statusText);
+		const file = exportFile('note.jsonl');
+		const seen = exportUi(file);
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		assert.deepStrictEqual(seen.infos.map((i) => i.message), ['Exported 1 record matching the filter (levels Warn) to note.jsonl.']);
+		assert.deepStrictEqual(linesOf(file).map((l) => JSON.parse(l) as unknown), [{ time: new Date(at).toISOString(), level: 'WARN', message: `${ORDERS}:no time`, pipeline_id: ORDERS }]);
+	});
+
+	test('SETUP_AROUND (bug 51, G2): log access set up from the tab while around the error waits: the search runs again, Live off and the filter kept', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		topic.write(levelAt(ORDERS, 'debug', t0 - 41 * MINUTE, 'DEBUG'), errAt(ORDERS, 'the error', t0 - 40 * MINUTE), recAt(ORDERS, 'after', t0 - 39 * MINUTE));
+		topic.rangeDelayMs = 300;
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'searching');
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+		assert.strictEqual(stateKind(), 'noAccess');
+		const noDebug = { ...NO_FILTER, levels: LOG_LEVELS.filter((l) => l !== 'debug') };
+		assert.strictEqual(logs().setFilter(noDebug), true);
+		assert.strictEqual(stateKind(), 'noAccess', 'nothing read without access');
+		topic.rangeDelayMs = 0;
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 20_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['the error', 'after'], 'around the error, the filter applied');
+		assert.deepStrictEqual(logs().viewState.filter, noDebug, 'the filter kept');
+		assert.strictEqual(logs().viewState.live, false, 'Live off');
+		assert.strictEqual(logs().rows().find((r) => r.id === logs().viewState.focusId)?.message, `${ORDERS}:the error`);
+	});
+
+	test('PALETTE_GONE (bug 51, G3): a config mapped to a cluster that is gone: Start, Stop and Delete from the palette say so and stop there; Show pipeline logs says so, then the pick', async () => {
+		await setUpAccess();
+		topic.write(rec(ORDERS, 'o1', MINUTE));
+		try {
+			await openConfig('moved');
+			fs.writeFileSync(path.join(dir, 'moved.cloud.json'), serializeMapping({ clusterId: 'cgone0000000000000zz', pipelineId: ORDERS, clusterName: 'old-cluster', pipelineName: 'orders' }));
+			const gone = 'The cluster old-cluster that moved.cloud.json maps moved.yaml to is gone or no longer offers the pipeline API.';
+			for (const command of [START_COMMAND, STOP_COMMAND, DELETE_COMMAND]) {
+				infos.length = 0;
+				const requests = fake.requests.length;
+				script({ pipelinePicks: ['orders'] });
+				assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(command))?.kind, 'notStarted', command);
+				assert.deepStrictEqual(infos, [gone], command);
+				assert.deepStrictEqual(pipelinesOffered, [], `${command}: no pick`);
+				assert.ok(!fake.requests.slice(requests).some((r) => r.method !== 'GET'), `${command}: nothing sent`);
+			}
+			infos.length = 0;
+			script({ pipelinePicks: ['orders'] });
+			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
+			assert.deepStrictEqual(infos, [`${gone} Choose the pipeline whose logs to show.`]);
+			assert.strictEqual(pipelinesOffered.length, 1, 'then the pick');
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		}
+	});
+
+	// --- Bug 51 review fixes ---
+
+	test('READER_LOG (bug 51, review): the Cloud view\'s default reader writes its lines (a partition without a leader) to the output channel', () => {
+		const reader = originalReader({ brokers: ['seed-0.example:9092'], access: { username: USERNAME, password: 'not-used', mechanism: 'SCRAM-SHA-256' } });
+		const line = 'Pipeline logs: partition 7 of __redpanda.connect.logs has no leader now; it is read once it has one.';
+		// The reader's `log` option, as `partitions()` calls it (a real read needs a broker).
+		(reader as unknown as { log: (l: string) => void }).log(line);
+		assert.ok(api().outputLines().some((l) => l.includes(line)), 'in the output channel');
+	});
+
+	test('LEADER (bug 51, review): a partition without a leader: the range\'s status, Load older and the around-the-error search say it was not read', async () => {
+		twoPartitions();
+		topic.leaderless = [1];
+		topic.write({ ...rec(ORDERS, 'p0', 5 * MINUTE), partition: 0 }, { ...rec(ORDERS, 'p1', 4 * MINUTE), partition: 1 });
+		await showOrders();
+		await lastHour();
+		assert.deepStrictEqual(texts(), ['p0']);
+		assert.ok(logs().statusText.includes(' Partition 1 had no leader, so it was not read.'), logs().statusText);
+		// Load older: nothing older on the partition read, but partition 1 was not read: not "No older records".
+		await logs().loadOlder();
+		assert.strictEqual(logs().viewState.older, 'more');
+		assert.strictEqual(logs().viewState.olderNote, 'Partition 1 had no leader, so it was not read.');
+		// The search: no ERROR record on the partition read; the note says partition 1 was not read.
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'hour' && logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(logs().viewState.note, `${NO_ERROR_NOTE}. Partition 1 had no leader, so it was not read.`);
+	});
+
+	test('LIVE_FILTER (bug 51, review): Last 15 minutes with Live off, and Live (from now on): a filter change rebases either on its time, the kind kept', async () => {
+		shortWindow(1_500);
+		await showOrders();
+		topic.write(rec(ORDERS, 'early'));
+		assert.ok(await waitFor(() => texts().includes('early'), 10_000), logs().statusText);
+		await logs().setLive(false);
+		await new Promise((r) => setTimeout(r, 2_000));
+		topic.write(rec(ORDERS, 'recent'));
+		const changed = Date.now();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: ORDERS }), true);
+		const range = logs().viewState.range;
+		assert.strictEqual(range.kind, 'recent');
+		assert.ok(range.from >= changed - 1_500 && range.from <= Date.now() - 1_500, 'rebased on the time of the change');
+		assert.strictEqual(logs().viewState.live, false, 'Live stays off');
+		assert.ok(await waitFor(() => logs().viewState.done && texts().includes('recent'), 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['recent'], 'read from then, not from when the panel opened');
+		assert.ok(topic.ranges.at(-1)!.fromTime >= changed - 1_500);
+		assert.strictEqual(topic.activeTails().length, 0, 'not followed');
+		// Live (from now on): it stays Live, reads the last 15 minutes from the change, then follows.
+		assert.strictEqual(await logs().chooseRange({ kind: 'live' }), true);
+		topic.write(rec(ORDERS, 'live one'));
+		assert.ok(await waitFor(() => texts().includes('live one'), 10_000), logs().statusText);
+		await new Promise((r) => setTimeout(r, 2_000));
+		topic.write(rec(ORDERS, 'live two'));
+		assert.ok(await waitFor(() => texts().includes('live two'), 10_000), logs().statusText);
+		const again = Date.now();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'live' }), true);
+		const live = logs().viewState.range;
+		assert.strictEqual(live.kind, 'live', 'the kind the user chose (the menu says Live (from now on))');
+		assert.ok(live.from >= again - 1_500 && live.from <= Date.now() - 1_500, 'the last 15 minutes from the change');
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS && texts().includes('live two'), 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['live two']);
+		topic.write(rec(ORDERS, 'live three'));
+		assert.ok(await waitFor(() => texts().includes('live three'), 10_000), 'then followed');
+	});
+
+	test('LEFT_OUT (bug 51, review): after Load older, a remask removes the marked row (the gap moves to the next one), then the tail pushes it out: the total keeps the gap\'s records and the marker goes', async () => {
+		twoPartitions();
+		// Every row matches the search "q"; the org learned later masks "qn5", which then no longer matches.
+		topic.write(
+			{ ...rec(ORDERS, 'qo1', 21 * MINUTE), partition: 1 }, { ...rec(ORDERS, 'qo2', 20 * MINUTE), partition: 0 },
+			...Array.from({ length: 8 }, (_, i) => ({ ...rec(ORDERS, `qn${i + 1}`, (9 - i) * MINUTE), partition: i % 2 })),
+		);
+		logs().cap = 6;
+		await showOrders();
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'q' }), true);
+		assert.ok(await waitFor(() => texts().length === 6 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['qn3', 'qn4', 'qn5', 'qn6', 'qn7', 'qn8']);
+		topic.rangeDelayMs = 500;
+		const older = logs().loadOlder();
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'Load older reads');
+		topic.write({ ...rec(ORDERS, 'qt1'), partition: 0 }, { ...rec(ORDERS, 'qt2'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('qt2'), 10_000), logs().statusText);
+		// Room for the window read, so Live goes on (the test seam's cap).
+		logs().cap = 10;
+		await older;
+		topic.rangeDelayMs = 0;
+		assert.deepStrictEqual(texts(), ['qo1', 'qo2', 'qn1', 'qn2', 'qn5', 'qn6', 'qn7', 'qn8', 'qt1', 'qt2']);
+		const id = (text: string) => logs().rows().find((r) => r.message === `${ORDERS}:${text}`)!.id;
+		assert.deepStrictEqual(logs().viewState.leftOutHere, [{ before: id('qn5'), count: 2 }]);
+		assert.strictEqual(logs().droppedCount, 2);
+		assert.strictEqual(logs().viewState.newerDropped, 0);
+		// A remask removes the marked row: its gap moves to the next row, the total stays.
+		const qn6 = id('qn6');
+		topic.write({ ...rec(ORDERS, 'qt3', 0, { license_org: 'qn5' }), partition: 0 });
+		assert.ok(await waitFor(() => texts().includes('qt3'), 10_000), logs().statusText);
+		assert.ok(!texts().includes('qn5'), 'no longer matching');
+		assert.deepStrictEqual(logs().viewState.leftOutHere, [{ before: qn6, count: 2 }]);
+		assert.strictEqual(logs().droppedCount, 2);
+		assert.strictEqual(logs().viewState.newerDropped, 0, 'not newer dropped');
+		// The tail pushes the marked row out: the gap's records stay in the total, the marker goes.
+		logs().cap = 6;
+		topic.write({ ...rec(ORDERS, 'qt4'), partition: 1 });
+		assert.ok(await waitFor(() => texts().includes('qt4'), 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['qn7', 'qn8', 'qt1', 'qt2', 'qt3', 'qt4']);
+		assert.deepStrictEqual(logs().viewState.leftOutHere, []);
+		assert.strictEqual(logs().droppedCount, 7, 'the 5 rows pushed out and the 2 of the gap');
+		const append = logs().posted.filter((m) => m.type === 'append').at(-1);
+		assert.strictEqual(append?.type === 'append' ? append.dropped : undefined, 7, 'the webview\'s footer total');
+	});
+
+	test('AROUND_READING (bug 51, review): Stop reading once the window being read holds an ERROR record: shown around it, as the search would have', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		// The second window (an hour each): the ERROR record in its first batch, 600 records after it (a second batch).
+		topic.write(
+			errAt(ORDERS, 'the error', t0 - 100 * MINUTE),
+			...Array.from({ length: 600 }, (_, i) => recAt(ORDERS, `i${i}`, t0 - 99 * MINUTE + i * 2_000)),
+		);
+		topic.rangeDelayMs = 400;
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().panelState.kind === 'reading' && (logs().panelState as { count: number }).count >= 500, 20_000), stateKind());
+		assert.strictEqual(logs().stopReading(), true);
+		topic.rangeDelayMs = 0;
+		assert.strictEqual(logs().viewState.range.kind, 'custom', 'shown around the record found');
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.strictEqual(logs().rows().find((r) => r.id === logs().viewState.focusId)?.message, `${ORDERS}:the error`);
+		assert.ok(!logs().statusText.startsWith('Stopped looking'), logs().statusText);
+	});
+
+	test('SETUP_OTHER (bug 51, review): Set up log access from the tab for one pipeline, the tab then showing another pipeline of the same cluster: once stored, that one is read with it', async () => {
+		let answerFirst: (v: string | undefined) => void = () => undefined;
+		const scripted = cloud().ui;
+		let held = false;
+		cloud().ui = {
+			...scripted,
+			input: (options) => {
+				if (!held) {
+					held = true;
+					return new Promise((resolve) => {
+						answerFirst = resolve;
+					});
+				}
+				return scripted.input(options);
+			},
+		};
+		teardowns.push(() => {
+			cloud().ui = scripted;
+		});
+		topic.write(rec(ORDERS, 'o1', MINUTE), rec(CLICKS, 'c1', MINUTE));
+		script({ actions: [undefined, undefined] });
+		assert.deepStrictEqual(await showLogs(), { kind: 'noAccess' });
+		assert.ok(await waitFor(() => logs().visible && stateKind() === 'noAccess', 10_000), stateKind());
+		const first = logs().setUpAccess();
+		assert.ok(await waitFor(() => held, 10_000), 'Set up runs');
+		assert.deepStrictEqual(await showLogs(CLICKS), { kind: 'noAccess' });
+		script({ inputs: [PASSWORD], choices: ['SCRAM-SHA-256'] });
+		answerFirst(USERNAME);
+		assert.strictEqual(await first, true);
+		assert.strictEqual(logs().title, 'clicks · rpc-vilnius', 'the shown pipeline stays');
+		assert.ok(await waitFor(() => stateKind() === 'none' && messages(CLICKS).length === 1, 10_000), logs().statusText);
+		assert.deepStrictEqual(messages(ORDERS), []);
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

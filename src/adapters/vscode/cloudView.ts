@@ -117,7 +117,7 @@ import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, taggedConfigs } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
 import type { LogReaderFactory, SaslMechanism } from '../logs/logReader';
-import { PlatformaticReader } from '../logs/platformaticReader';
+import { loadKafka, PlatformaticReader } from '../logs/platformaticReader';
 import type { LogsShowOptions, LogSource } from './logsPanel';
 import type { ComponentCatalog } from '../../core/catalogue';
 import type { LintResult } from '../redpandaConnect/lint';
@@ -551,7 +551,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.lint = options.lint;
 		this.localVersion = options.localVersion ?? (() => undefined);
 		this.localCatalogue = options.catalogue ?? (() => undefined);
-		this.logReader = options.logReader ?? ((target) => new PlatformaticReader(target));
+		this.logReader = options.logReader ?? ((target) => new PlatformaticReader(target, loadKafka, { log: (line) => this.log(line) }));
 		this.checkDiagnostics = vscode.languages.createDiagnosticCollection(CHECK_COLLECTION);
 		const context = this.context();
 		this.deployFlow = new CloudDeploy(context);

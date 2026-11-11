@@ -8,7 +8,9 @@
 // says so. **Load older records** sits at the top of the list ("No older records" once the log's first
 // record is shown). The footer says how many records are kept, and how many older ones were left out
 // or newer ones dropped for the cap. While the table is scrolled to the bottom it stays there as records
-// arrive. The host masks every text before it is posted.
+// arrive. The host masks every text before it is posted. Bug 51: records left out for the cap between two
+// shown rows (the tail at the cap while Load older read) are one marker row, "N records left out here",
+// and counted in the footer's left-out total.
 //
 // Ticket 6.4 (board 4): under the header, the level chips (Error, Warn, Info, Debug, Other, each with
 // its count of the records read), the search box (Match case `Aa`, regular expression `.*`; an invalid
@@ -41,7 +43,7 @@
 
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-	customRangeError, filterActive, gapsIn, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
+	customRangeError, filterActive, gapsIn, leftOutHereText, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
 	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, shortTime, slotBounds,
 	slotLabel, slotSizeText, soFarText, type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogStrip, type LogsViewState, type LogsWebviewMessage,
 	type RangeKind,
@@ -73,10 +75,16 @@ export function localTime(ms: number): string {
 /** "3 records", "1 record". */
 const records = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
 
-/** The footer: how many are kept; how many older ones were left out, newer ones dropped, for the cap. */
-export function footerText(kept: number, dropped: number, cap: number, newerDropped = 0): string {
+/**
+ * The footer: how many are kept; how many older ones were left out, newer ones dropped, for the cap.
+ * Bug 51: when `inGaps` of the left out sit between shown rows, the total is "records left out" (not
+ * "older"), and Load older is offered only for older ones.
+ */
+export function footerText(kept: number, dropped: number, cap: number, newerDropped = 0, inGaps = 0): string {
 	const parts = [`${records(kept)} kept${dropped > 0 || newerDropped > 0 ? ` (at most ${cap.toLocaleString('en-US')})` : ''}`];
-	if (dropped > 0) {
+	if (dropped > 0 && inGaps > 0) {
+		parts.push(`${records(dropped)} left out${dropped > inGaps ? '; Load older to page back' : ''}`);
+	} else if (dropped > 0) {
 		parts.push(`${dropped.toLocaleString('en-US')} older ${dropped === 1 ? 'record' : 'records'} left out; Load older to page back`);
 	}
 	if (newerDropped > 0) {
@@ -582,6 +590,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const { view } = state;
 	const shown = state.title !== null;
 	const gaps = new Map(gapsIn(state.rows).map((g) => [g.before, g]));
+	const leftOutHere = new Map((state.view.leftOutHere ?? []).map((g) => [g.before, g.count]));
 	const panel = view.panelState;
 	// Bug 52: Stopped (the account went): Live and the range menu do nothing.
 	const stopped = panel.kind === 'stopped';
@@ -638,7 +647,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 						</thead>
 						<tbody>
 							{state.rows.map((row, i) => {
-								const gap = gaps.get(i);
+								// Bug 51: no quiet-stretch row right after the left-out marker of the same span.
+								const gap = leftOutHere.has(row.id) ? undefined : gaps.get(i);
 								const open = expanded.has(row.id);
 								const classes = [
 									open ? 'rpcn-logs-open' : '',
@@ -647,6 +657,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 								].filter(Boolean).join(' ');
 								return (
 									<Fragment key={row.id}>
+										{leftOutHere.has(row.id)
+											? <tr className="rpcn-logs-gap-row rpcn-logs-left-out-row"><td colSpan={4} className="rpcn-logs-gap">{leftOutHereText(leftOutHere.get(row.id)!)}</td></tr> : null}
 										{gap ? <tr className="rpcn-logs-gap-row"><td colSpan={4} className="rpcn-logs-gap">{noRecordsText(gap.from, gap.to)}</td></tr> : null}
 										<tr data-id={row.id} className={classes || undefined} aria-current={view.focusId === row.id ? 'true' : undefined}>
 											<td className="rpcn-logs-time">
@@ -684,7 +696,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 					</table>
 				) : null}
 			</div>
-			{shown ? <div className="rpcn-logs-footer">{footerText(state.rows.length, state.dropped, state.cap, view.newerDropped)}</div> : null}
+			{shown ? <div className="rpcn-logs-footer">{footerText(state.rows.length, state.dropped, state.cap, view.newerDropped, [...leftOutHere.values()].reduce((a, b) => a + b, 0))}</div> : null}
 		</div>
 	);
 }

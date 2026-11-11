@@ -17,7 +17,7 @@ import type { CloudCluster } from '../cloud/controlPlane';
 import type { CloudPipeline } from '../cloud/dataPlane';
 import { isLogReadError, isSaslMechanism, type LogAccess, LOGS_TOPIC, SASL_MECHANISMS, type SaslMechanism } from '../logs/logReader';
 import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
-import type { LogsShowOptions, LogSource } from './logsPanel';
+import { setUpRunningText, type LogsShowOptions, type LogSource } from './logsPanel';
 import type { CloudContext, CloudNode, LogAccessResult, ShowLogsResult } from './cloudView';
 import { NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
 import { maskCredentials } from '../cloud/errors';
@@ -450,6 +450,11 @@ export class CloudLogs {
 			...(pipeline.updateTime !== undefined ? { deployedAt: pipeline.updateTime } : {}),
 			lastDeploy: () => this.lastDeployOf(cluster.id, pipeline.id),
 			setUpAccess: async () => {
+				// Bug 51: one already running for the cluster (from its row, or another tab's request): the tab says so.
+				if (this.settingUpLogs.has(cluster.id)) {
+					this.ctx.log(`Redpanda Cloud: Set up log access is already running for ${cluster.name}; the Pipeline Logs tab's request was not started.`);
+					return { refused: setUpRunningText(cluster.name) };
+				}
 				if ((await this.setUpLogAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
 					return undefined;
 				}

@@ -78,6 +78,8 @@ export interface LogRangeEnd {
 	 * read might) for the reader's time limit; `next` is where each stopped.
 	 */
 	readonly stalled?: readonly number[];
+	/** Bug 51: partitions given up because they had no leader (−1, or missing from the metadata) for the reader's time limit. */
+	readonly leaderless?: readonly number[];
 }
 
 export interface LogReader {
@@ -92,7 +94,10 @@ export interface LogReader {
 	 * `resumeAt` for a partition it names, then follows the end (fetches with a 2 s wait).
 	 * `onRecords` gets every record read, of any key, in offset order per partition (the caller keeps
 	 * the pipeline's: `isPipelineRecord`), and the positions to resume at, after each fetch. Resolves
-	 * once `signal` aborts (the client is closed then); rejects with a `LogReadError`.
+	 * once `signal` aborts (the client is closed then); rejects with a `LogReadError`. Bug 51: every
+	 * fetched batch moves the position past it (one with no record at or after it too); a failed read of
+	 * the leaders is retried as a failed fetch is; a partition without a leader is not fetched until it
+	 * has one.
 	 */
 	tail(
 		pipelineId: string,
@@ -105,17 +110,24 @@ export interface LogReader {
 	 * A bounded read (ticket 6.3): the same partitions as `tail`, forward from the first record at or
 	 * after `fromTime` (ListOffsets by time; never below the log's first offset) up to the first record
 	 * after `toTime` or the end offsets taken when it starts, whichever is first; then it ends.
-	 * `onRecords` gets every record read, of any key, after each fetch. Records older than the brokers'
-	 * local retention come from tiered storage through the same fetch. The client stays open for the
-	 * reader's next `range`, `logStart` or `retentionMs` and is closed once `signal` aborts (the caller
-	 * aborts it when it is done); an abort ends the read early. Rejects with a `LogReadError`.
+	 * `onRecords` gets every record read, of any key, after each fetch, and the next offset on each
+	 * partition (bug 51: a read that failed goes on from these with `resumeAt`, each partition from its
+	 * own, so a partition that was behind loses nothing). Records older than the brokers' local retention
+	 * come from tiered storage through the same fetch. The client stays open for the reader's next
+	 * `range`, `logStart` or `retentionMs` and is closed once `signal` aborts (the caller aborts it when it
+	 * is done); an abort ends the read early. Rejects with a `LogReadError`. A partition without a leader
+	 * is not fetched; it is waited on until it has one, within the reader's time limit (`leaderless`); one
+	 * placed late stops at the first record after `toTime` or after the time the read started, whichever is
+	 * first (not at the end it has when it is placed). The reader remembers since when a partition has had
+	 * no leader, so its next `range` does not wait the time limit again for it.
 	 */
 	range(
 		pipelineId: string,
 		fromTime: number,
 		toTime: number,
-		onRecords: (records: readonly LogRecord[]) => void,
+		onRecords: (records: readonly LogRecord[], next: LogPositions) => void,
 		signal: AbortSignal,
+		resumeAt?: LogPositions,
 	): Promise<LogRangeEnd>;
 	/** The log's first offset on each partition (ListOffsets earliest); the client as for `range`. */
 	logStart(signal: AbortSignal): Promise<LogPositions>;

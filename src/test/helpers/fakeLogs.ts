@@ -7,6 +7,11 @@
 // made for, every test read and every tail is recorded, and each tail's signal is kept, so a test can
 // tell a reader was stopped. Nothing is written anywhere.
 //
+// Bug 51: a bounded read reports each partition's position after each batch and goes on from `resumeAt`;
+// it reads one partition fully, then the next, so with several partitions one is behind another in time.
+// `leaderless` partitions have no leader: no read reads them, a range names them in its end, and the log's
+// first offset there is unknown (−1), as the reader's.
+//
 // History (ticket 6.3): records may carry any timestamp (written in time order per partition, as
 // ListOffsets by time assumes); `logStart` is each partition's first offset (records below it are gone,
 // as after the retention), `retentionMs` what DescribeConfigs answers (`'refused'`: not allowed), and
@@ -41,6 +46,8 @@ export interface FakeTail {
 export interface FakeRange {
 	readonly fromTime: number;
 	readonly toTime: number;
+	/** Bug 51: where it went on from on each partition it names (a retry after a lost connection). */
+	readonly resumeAt?: LogPositions;
 	readonly signal: AbortSignal;
 	/** The records it delivered (every key). */
 	readonly delivered: LogRecord[];
@@ -87,6 +94,8 @@ export class FakeLogs {
 	connectionsRefused = 0;
 	/** When set, the next bounded read drops its connection after delivering this many batches (once). */
 	dropRangeAfter: number | undefined;
+	/** Bug 51: partitions without a leader (not read; a range's end names them). */
+	leaderless: number[] = [];
 	private readonly waiting = new Set<() => void>();
 	private readonly dropping = new Set<(err: Error) => void>();
 
@@ -147,6 +156,7 @@ export class FakeLogs {
 		this.connectionsRefused = 0;
 		this.dropRangeAfter = undefined;
 		this.signInMessage = undefined;
+		this.leaderless = [];
 	}
 
 	/** The ranges still reading. */
@@ -194,7 +204,7 @@ export class FakeLogs {
 				this.tails.push(tail);
 				this.signIn(target);
 				// As ListOffsets by time: the first offset at or after `fromTime`, else the end.
-				const at = new Map(this.partitions.map((_log, p) => [p, resumeAt?.get(p) ?? this.offsetAt(p, fromTime)]));
+				const at = new Map(this.partitions.map((_log, p) => [p, resumeAt?.get(p) ?? this.offsetAt(p, fromTime)] as const).filter(([p]) => !this.leaderless.includes(p)));
 				while (!signal.aborted) {
 					const batch: LogRecord[] = [];
 					for (const [p, from] of at) {
@@ -225,14 +235,16 @@ export class FakeLogs {
 					});
 				}
 			},
-			range: async (_pipelineId, fromTime, toTime, onRecords, signal) => {
-				const range: FakeRange = { fromTime, toTime, signal, delivered: [] };
+			range: async (_pipelineId, fromTime, toTime, onRecords, signal, resumeAt) => {
+				const range: FakeRange = { fromTime, toTime, ...(resumeAt ? { resumeAt: new Map(resumeAt) } : {}), signal, delivered: [] };
 				this.ranges.push(range);
 				this.signIn(target);
-				const start = new Map(this.partitions.map((_log, p) => [p, this.offsetAt(p, fromTime)]));
+				const start = new Map(this.partitions.map((_log, p) => [p, this.offsetAt(p, fromTime)] as const).filter(([p]) => !this.leaderless.includes(p)));
 				const stop = new Map(this.partitions.map((log, p) => [p, Math.min(log.length, this.offsetAt(p, toTime + 1))]));
-				const at = new Map(start);
-				for (const [p, from] of start) {
+				// Bug 51: each partition goes on from its own position (as the reader's `resumeAt`).
+				const at = new Map([...start].map(([p, o]) => [p, resumeAt?.get(p) ?? o]));
+				// One partition after the other (each fully first), so a partition is behind another in time.
+				for (const [p, from] of [...at]) {
 					for (let o = from; o < stop.get(p)! && !signal.aborted; o += RANGE_BATCH) {
 						if (this.rangeDelayMs > 0) {
 							await new Promise((r) => setTimeout(r, this.rangeDelayMs));
@@ -247,10 +259,11 @@ export class FakeLogs {
 						const batch = this.partitions[p].slice(o, Math.min(o + RANGE_BATCH, stop.get(p)!));
 						range.delivered.push(...batch);
 						at.set(p, o + batch.length);
-						onRecords(batch);
+						onRecords(batch, new Map(at));
 					}
 				}
-				const end = { start, next: at };
+				const leaderless = this.leaderless.slice();
+				const end = { start, next: at, ...(leaderless.length > 0 ? { leaderless } : {}) };
 				if (!signal.aborted) {
 					range.end = end;
 				}
@@ -259,12 +272,12 @@ export class FakeLogs {
 			logStart: async () => {
 				this.logStartReads++;
 				this.signIn(target);
-				return new Map(this.logStart.map((o, p) => [p, o]));
+				return new Map(this.logStart.map((o, p) => [p, this.leaderless.includes(p) ? -1 : o]));
 			},
 			timeBefore: async (start) => {
 				this.timeBeforeReads++;
 				this.signIn(target);
-				const times = [...start].filter(([p, o]) => o - 1 >= this.logStart[p] && o - 1 < this.partitions[p].length).map(([p, o]) => this.partitions[p][o - 1].timestamp);
+				const times = [...start].filter(([p, o]) => !this.leaderless.includes(p) && o - 1 >= this.logStart[p] && o - 1 < this.partitions[p].length).map(([p, o]) => this.partitions[p][o - 1].timestamp);
 				return times.length > 0 ? Math.max(...times) : undefined;
 			},
 			retentionMs: async () => {

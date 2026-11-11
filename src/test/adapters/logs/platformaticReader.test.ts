@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { classifyKafkaError, FETCH_WAIT_MS, loadKafka, PlatformaticReader } from '../../../adapters/logs/platformaticReader';
 import { isLogReadError, type LogPositions, type LogRecord, LOGS_TOPIC } from '../../../adapters/logs/logReader';
+import { atLogStart } from '../../../adapters/logs/history';
 
 // The reader on @platformatic/kafka (ticket 6.2, AD-24) against a scripted stand-in of the library's
 // Consumer: what it asks for (no group joined, nothing committed) and what it makes of the answers.
@@ -15,8 +16,13 @@ function fakeKafka(options: {
 	partitions?: number; base?: number; records?: [number, number, string, string][]; connectError?: unknown; fetchErrorCode?: number;
 	/** The n-th fetch (1-based) answers this Kafka error code on every partition, or throws this error. */
 	fetchFailures?: Record<number, number | Error>;
-	/** Leaders per metadata read (n-th read, 1-based); default `partition % 2`. */
-	leaders?: (read: number) => number[];
+	/**
+	 * Leaders per metadata read (n-th read, 1-based); default `partition % 2`. Bug 51: `undefined` leaves the
+	 * partition out of the answer (a hole in the client's list), −1 is a leader being elected.
+	 */
+	leaders?: (read: number) => (number | undefined)[];
+	/** Bug 51: partition 0's offsets up to this one are compacted away: a fetch below it answers one batch over them holding only an earlier record. */
+	compactedThrough?: number;
 	/** Called on each metadata read. */
 	onMetadata?: (n: number) => void;
 	/** Called on each fetch (it may abort the tail). */
@@ -45,7 +51,14 @@ function fakeKafka(options: {
 				throw options.connectError;
 			}
 			const leaders = options.leaders?.(metadataReads) ?? Array.from({ length: parts }, (_, i) => i % 2);
-			return { topics: new Map([[LOGS_TOPIC, { id: 'topic-id', partitions: leaders.map((leader) => ({ leader })) }]]) };
+			// As the client keeps them: `partitions[partitionIndex]`, a partition not in the answer a hole.
+			const partitions: { leader: number }[] = [];
+			leaders.forEach((leader, i) => {
+				if (leader !== undefined) {
+					partitions[i] = { leader };
+				}
+			});
+			return { topics: new Map([[LOGS_TOPIC, { id: 'topic-id', partitions }]]) };
 		}
 		async listOffsetsWithTimestamps(o: { partitions: Record<string, number[]>; timestamp: bigint }) {
 			calls.push({ op: 'listOffsets', args: { partitions: o.partitions[LOGS_TOPIC], timestamp: o.timestamp } });
@@ -71,14 +84,22 @@ function fakeKafka(options: {
 					topicId: o.topics[0].topicId,
 					partitions: o.topics[0].partitions.map((rp) => {
 						const from = Number(rp.fetchOffset);
-						const got = fetches <= (options.emptyFetches ?? 0) ? [] : logs[rp.partition].filter((r) => r.offset >= from);
+						const compacted = options.compactedThrough;
+						if (rp.partition === 0 && compacted !== undefined && from <= compacted && fetches > (options.emptyFetches ?? 0)) {
+							// One batch from just before the position through the compacted offsets: only its first (earlier) record is left.
+							return {
+								partitionIndex: 0, errorCode: 0, highWatermark: BigInt(base + logs[0].length),
+								records: [{ firstOffset: BigInt(from - 1), firstTimestamp: 0n, lastOffsetDelta: compacted - from + 1, records: [{ offsetDelta: 0, timestampDelta: 0n, key: Buffer.from('older'), value: Buffer.from('{}') }] }],
+							};
+						}
+						const got = fetches <= (options.emptyFetches ?? 0) ? [] : logs[rp.partition].filter((r) => r.offset >= from && (rp.partition !== 0 || compacted === undefined || r.offset > compacted));
 						return {
 							partitionIndex: rp.partition,
 							errorCode: typeof failure === 'number' ? failure : options.fetchErrorCode ?? 0,
 							highWatermark: BigInt(base + logs[rp.partition].length),
 							// One batch starting one before the asked offset, as a broker may answer.
 							records: got.length === 0 ? [] : [{
-								firstOffset: BigInt(got[0].offset - 1), firstTimestamp: BigInt(got[0].timestamp),
+								firstOffset: BigInt(got[0].offset - 1), firstTimestamp: BigInt(got[0].timestamp), lastOffsetDelta: got.at(-1)!.offset - got[0].offset + 1,
 								records: [
 									{ offsetDelta: 0, timestampDelta: 0n, key: Buffer.from('older'), value: Buffer.from('{}') },
 									...got.map((r) => ({ offsetDelta: r.offset - got[0].offset + 1, timestampDelta: BigInt(r.timestamp - got[0].timestamp), key: Buffer.from(r.key), value: Buffer.from(r.value) })),
@@ -333,5 +354,181 @@ suite('Pipeline logs reader on @platformatic/kafka (ticket 6.2, AD-24)', () => {
 		assert.deepStrictEqual(f.calls.filter((c) => c.op === 'fetch').map((c) => (c.args as { partitions: unknown }).partitions), [[[0, 100]], [[1, 100]]]);
 		assert.strictEqual(await reader.timeBefore(new Map([[0, 100], [1, 100]]), abort.signal), undefined, 'none below the log\'s start');
 		abort.abort();
+	});
+	// --- Bug 51 (epic 6 retrospective): reading every partition fully ---
+
+	test('BATCH_ADVANCE (bug 51): a batch with no record at or after the position moves it past the batch; the tail does not spin, the range does not stall', async () => {
+		const abort = new AbortController();
+		const f = fakeKafka({ records: [[0, 1_000, 'p1', '{"n":0}'], [0, 2_000, 'p1', '{"n":1}'], [0, 3_000, 'p1', '{"n":2}']], compactedThrough: 101, onFetch: (n) => (n === 3 ? abort.abort() : undefined) });
+		const got: { records: readonly LogRecord[]; next: LogPositions }[] = [];
+		await new PlatformaticReader(TARGET, f.kafka).tail('p1', 0, (records, next) => got.push({ records, next }), abort.signal);
+		const fetched = f.calls.filter((c) => c.op === 'fetch').map((c) => (c.args as { partitions: [number, number][] }).partitions[0][1]);
+		assert.deepStrictEqual(fetched.slice(0, 2), [100, 102], 'the next fetch after the compacted batch, not at the same position again');
+		assert.deepStrictEqual([...got[0].next], [[0, 102]]);
+		assert.deepStrictEqual(got.flatMap((g) => g.records.map((r) => r.offset)), [102]);
+		const g = fakeKafka({ records: [[0, 1_000, 'p1', '{}'], [0, 2_000, 'p1', '{}'], [0, 3_000, 'p1', '{}']], compactedThrough: 101 });
+		const read: LogRecord[] = [];
+		const end = await new PlatformaticReader(TARGET, g.kafka, { emptyWaitMs: 0, stallMs: 50 }).range('p1', 0, 5_000, (records) => read.push(...records), new AbortController().signal);
+		assert.deepStrictEqual(read.map((r) => r.offset), [102]);
+		assert.strictEqual(end.stalled, undefined, 'not given up');
+		assert.deepStrictEqual([...end.next], [[0, 103]]);
+	});
+
+	test('META_RETRY (bug 51): a failed fetch, then a failed read of the leaders: that read is retried as a fetch is; the read goes on', async () => {
+		const abort = new AbortController();
+		const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+		const f = fakeKafka({
+			records: [[0, 1_000, 'p1', '{}']],
+			fetchFailures: { 1: 6 },
+			onMetadata: (n) => {
+				if (n === 2) {
+					throw reset;
+				}
+			},
+			onFetch: (n) => (n === 3 ? abort.abort() : undefined),
+		});
+		const got: LogRecord[] = [];
+		await new PlatformaticReader(TARGET, f.kafka, { retryDelayMs: 0 }).tail('p1', 0, (records) => got.push(...records), abort.signal);
+		assert.deepStrictEqual(f.calls.map((c) => c.op).slice(0, 6), ['metadata', 'listOffsets', 'fetch', 'metadata', 'metadata', 'fetch']);
+		assert.deepStrictEqual(got.map((r) => r.offset), [100], 'the read went on');
+		// Every read of the leaders failing: retried as a fetch is, then the read fails as a connection error.
+		const g = fakeKafka({
+			records: [[0, 1_000, 'p1', '{}']],
+			fetchFailures: { 1: 6 },
+			onMetadata: (n) => {
+				if (n >= 2) {
+					throw reset;
+				}
+			},
+		});
+		const err = await new PlatformaticReader(TARGET, g.kafka, { retryDelayMs: 0, fetchRetries: 2 }).range('p1', 0, 5_000, () => undefined, new AbortController().signal).then(() => undefined, (e: unknown) => e);
+		assert.ok(isLogReadError(err) && err.kind === 'connection', String(err));
+		assert.strictEqual(g.calls.filter((c) => c.op === 'metadata').length, 3, 'the first read and 2 retries of the leaders');
+	});
+
+	test('LEADER (bug 51): a partition with leader -1 or missing from the metadata is not fetched; waited on until it has a leader; named in the log', async () => {
+		const abort = new AbortController();
+		const lines: string[] = [];
+		const f = fakeKafka({
+			partitions: 3,
+			records: [[0, 1_000, 'p1', '{"p":0}'], [1, 2_000, 'p1', '{"p":1}'], [2, 3_000, 'p1', '{"p":2}']],
+			// The 1st read: partition 1 missing (a hole), partition 2 electing (-1); then both led.
+			leaders: (read) => (read === 1 ? [0, undefined, -1] : [0, 1, 0]),
+		});
+		const got: { records: readonly LogRecord[]; next: LogPositions }[] = [];
+		await new PlatformaticReader(TARGET, f.kafka, { leaderWaitMs: 20, log: (l) => lines.push(l) }).tail('p1', 0, (records, next) => {
+			got.push({ records, next });
+			if (new Set(got.flatMap((x) => x.records.map((r) => r.partition))).size === 3) {
+				abort.abort();
+			}
+		}, abort.signal);
+		const fetches = f.calls.filter((c) => c.op === 'fetch').map((c) => c.args as { node: number; partitions: [number, number][] });
+		assert.ok(fetches.every((x) => x.node >= 0), JSON.stringify(fetches));
+		assert.deepStrictEqual(fetches[0].partitions, [[0, 100]], 'only the led partition at first');
+		assert.deepStrictEqual(f.calls.filter((c) => c.op === 'listOffsets').map((c) => (c.args as { partitions: number[] }).partitions), [[0], [1, 2]], 'each placed once it has a leader');
+		assert.deepStrictEqual(got.flatMap((x) => x.records).map((r) => r.partition).sort(), [0, 1, 2]);
+		assert.deepStrictEqual([...got.at(-1)!.next].sort(), [[0, 101], [1, 101], [2, 101]]);
+		assert.deepStrictEqual(lines, [
+			`Pipeline logs: partition 1 of ${LOGS_TOPIC} has no leader now; it is read once it has one.`,
+			`Pipeline logs: partition 2 of ${LOGS_TOPIC} has no leader now; it is read once it has one.`,
+		]);
+		// A range whose partition never gets a leader: read without it once the time limit passes, and named.
+		const lines2: string[] = [];
+		const g = fakeKafka({ partitions: 2, records: [[0, 1_000, 'p1', '{}'], [1, 1_500, 'p1', '{}']], leaders: () => [0, -1] });
+		const read: LogRecord[] = [];
+		const end = await new PlatformaticReader(TARGET, g.kafka, { leaderWaitMs: 5, stallMs: 50, log: (l) => lines2.push(l) }).range('p1', 0, 5_000, (records) => read.push(...records), new AbortController().signal);
+		assert.deepStrictEqual(read.map((r) => r.partition), [0]);
+		assert.deepStrictEqual(end.leaderless, [1]);
+		assert.ok(g.calls.filter((c) => c.op === 'fetch').every((c) => (c.args as { node: number }).node === 0));
+		assert.ok(lines2.some((l) => l.includes('partition 1') && l.includes('had no leader')), lines2.join('\n'));
+	});
+
+	test('RESUME_PARTS (bug 51): range() reports each partition\'s position after each fetch and goes on from resumeAt, each partition from its own', async () => {
+		const f = fakeKafka({
+			partitions: 2,
+			// Partition 1 is behind partition 0 in time.
+			records: [[0, 1_000, 'p1', '{"n":0}'], [0, 5_000, 'p1', '{"n":1}'], [0, 9_000, 'p1', '{"n":2}'], [1, 2_000, 'p1', '{"n":3}'], [1, 3_000, 'p1', '{"n":4}']],
+		});
+		const positions: LogPositions[] = [];
+		const got: LogRecord[] = [];
+		// As after a lost connection: partition 0 had reached 102, partition 1 only 100.
+		const end = await new PlatformaticReader(TARGET, f.kafka).range('p1', 0, 9_500, (records, next) => {
+			got.push(...records);
+			positions.push(next);
+		}, new AbortController().signal, new Map([[0, 102], [1, 100]]));
+		const fetched = f.calls.filter((c) => c.op === 'fetch').map((c) => (c.args as { partitions: [number, number][] }).partitions);
+		assert.deepStrictEqual(fetched, [[[0, 102]], [[1, 100]]], 'each from its own position');
+		assert.deepStrictEqual(got.map((r) => [r.partition, r.offset]), [[0, 102], [1, 100], [1, 101]], 'none skipped, none twice');
+		assert.deepStrictEqual([...positions.at(-1)!], [[0, 103], [1, 102]]);
+		assert.deepStrictEqual([...end.start], [[0, 100], [1, 100]], 'the start is still the range\'s');
+		assert.deepStrictEqual([...end.next], [[0, 103], [1, 102]]);
+	});
+	// --- Bug 51 review fixes ---
+
+	test('LEADER (bug 51, review): a partition missing at the end of a later metadata answer is a hole: waited on and read, not dropped', async () => {
+		const lines: string[] = [];
+		const f = fakeKafka({ partitions: 2, records: [[0, 1_000, 'p1', '{}'], [1, 1_500, 'p1', '{}']], fetchFailures: { 1: 6 }, leaders: (read) => (read === 2 ? [0] : [0, 0]) });
+		const read: LogRecord[] = [];
+		const end = await new PlatformaticReader(TARGET, f.kafka, { retryDelayMs: 0, leaderWaitMs: 5, log: (l) => lines.push(l) })
+			.range('p1', 0, 5_000, (records) => read.push(...records), new AbortController().signal);
+		assert.deepStrictEqual(read.map((r) => r.partition).sort(), [0, 1], 'partition 1 read once it is in the answer again');
+		assert.strictEqual(end.leaderless, undefined);
+		assert.deepStrictEqual(lines, [`Pipeline logs: partition 1 of ${LOGS_TOPIC} has no leader now; it is read once it has one.`]);
+	});
+
+	test('LEADER (bug 51, review): a partition without a leader is never at the log\'s start (logStart -1)', async () => {
+		const f = fakeKafka({ partitions: 2, records: [[0, 1_000, 'p1', '{}'], [1, 1_500, 'p1', '{}']], leaders: () => [0, -1] });
+		const abort = new AbortController();
+		const first = await new PlatformaticReader(TARGET, f.kafka).logStart(abort.signal);
+		abort.abort();
+		assert.deepStrictEqual([...first], [[0, 100], [1, -1]]);
+		assert.strictEqual(atLogStart(new Map([[0, 100]]), first), false, 'partition 1 not read');
+		assert.strictEqual(atLogStart(new Map([[0, 100], [1, 100]]), first), false);
+	});
+
+	test('LEADER (bug 51, review): the reader remembers a partition without a leader: a later range does not wait the time limit again, and each line is written once until it has a leader again', async () => {
+		const lines: string[] = [];
+		let led = false;
+		const f = fakeKafka({ partitions: 2, records: [[0, 1_000, 'p1', '{}'], [1, 1_500, 'p1', '{}']], leaders: () => (led ? [0, 0] : [0, -1]) });
+		const reader = new PlatformaticReader(TARGET, f.kafka, { leaderWaitMs: 5, stallMs: 150, log: (l) => lines.push(l) });
+		const signal = new AbortController().signal;
+		const read = (): Promise<{ end: Awaited<ReturnType<PlatformaticReader['range']>>; ms: number; partitions: number[] }> => {
+			const t = Date.now();
+			const partitions: number[] = [];
+			return reader.range('p1', 0, 5_000, (records) => partitions.push(...records.map((r) => r.partition)), signal).then((end) => ({ end, ms: Date.now() - t, partitions }));
+		};
+		const first = await read();
+		assert.deepStrictEqual(first.end.leaderless, [1]);
+		assert.ok(first.ms >= 150, `waited ${first.ms} ms`);
+		const second = await read();
+		assert.deepStrictEqual(second.end.leaderless, [1]);
+		assert.ok(second.ms < 150, `not waited again: ${second.ms} ms`);
+		const count = (text: string) => lines.filter((l) => l.includes(text)).length;
+		assert.deepStrictEqual([count('has no leader now'), count('had no leader')], [1, 1], lines.join('\n'));
+		led = true;
+		const third = await read();
+		assert.strictEqual(third.end.leaderless, undefined);
+		assert.deepStrictEqual(third.partitions.sort(), [0, 1]);
+		led = false;
+		const fourth = await read();
+		assert.deepStrictEqual(fourth.end.leaderless, [1]);
+		assert.ok(fourth.ms >= 150, 'lost again: waited on afresh');
+		assert.deepStrictEqual([count('has no leader now'), count('had no leader')], [2, 2], 'named again');
+	});
+
+	test('range() (bug 51, review): a partition that answered empty, then lost its leader for a while, is not counted as empty meanwhile: not given up when it answers again', async () => {
+		const f = fakeKafka({
+			records: [[0, 1_000, 'p1', '{}'], [0, 2_000, 'p1', '{}']],
+			// The 1st fetch empty, the 2nd a moved leader (then no leader for two reads), the 3rd empty again.
+			emptyFetches: 3,
+			fetchFailures: { 2: 6 },
+			leaders: (read) => (read === 2 || read === 3 ? [-1] : [0]),
+		});
+		const read: LogRecord[] = [];
+		const end = await new PlatformaticReader(TARGET, f.kafka, { emptyWaitMs: 0, stallMs: 150, retryDelayMs: 200, leaderWaitMs: 10 })
+			.range('p1', 0, 5_000, (records) => read.push(...records), new AbortController().signal);
+		assert.strictEqual(end.stalled, undefined, 'its empty answers before the leader loss do not count');
+		assert.strictEqual(end.leaderless, undefined);
+		assert.deepStrictEqual(read.map((r) => r.offset), [100, 101]);
 	});
 });

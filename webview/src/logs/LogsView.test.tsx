@@ -231,6 +231,25 @@ describe('Pipeline Logs history (ticket 6.3)', () => {
 		expect(footer()).toBe('3 records kept (at most 3); 1 newer record dropped.');
 	});
 
+	it('LEFT_OUT (bug 51): records left out between two shown rows are one marker row before the later one; the footer says the total', async () => {
+		await show([row(1), row(2), row(5)], { leftOutHere: [{ before: row(5).id, count: 2 }] }, { dropped: 2, cap: 3 });
+		const marker = host.querySelector('.rpcn-logs-left-out-row');
+		expect(marker?.textContent).toBe('2 records left out here');
+		expect(marker?.nextElementSibling?.getAttribute('data-id')).toBe(row(5).id);
+		expect(host.querySelectorAll('.rpcn-logs-left-out-row')).toHaveLength(1);
+		expect(footer()).toBe('3 records kept (at most 3); 2 records left out.');
+		await send({ type: 'state', state: state({ leftOutHere: [] }) });
+		expect(host.querySelector('.rpcn-logs-left-out-row')).toBeNull();
+	});
+
+	it('LEFT_OUT (bug 51, review): a quiet stretch ending at the left-out marker\'s row is not a second row; older ones left out too: Load older offered', async () => {
+		const late = { ...row(5), time: row(2).time + 60 * MIN };
+		await show([row(1), row(2), late], { leftOutHere: [{ before: late.id, count: 2 }] }, { dropped: 3, cap: 3 });
+		expect(host.querySelectorAll('.rpcn-logs-gap-row')).toHaveLength(1);
+		expect(host.querySelector('.rpcn-logs-left-out-row')?.textContent).toBe('2 records left out here');
+		expect(footer()).toBe('3 records kept (at most 3); 3 records left out; Load older to page back.');
+	});
+
 	it('LOAD_OLDER: disabled while a bounded range is still read; a failure shown in its row', async () => {
 		const range = { kind: 'day' as const, from: T0 - 24 * 60 * MIN, to: T0 };
 		await show([row(1)], { range, live: false, done: false });

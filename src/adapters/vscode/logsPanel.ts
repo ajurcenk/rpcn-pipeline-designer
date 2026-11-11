@@ -73,12 +73,26 @@
 // changed; the rows stay). `remask` shapes the kept rows again from their records when a new secret is
 // learned (a log access password, a `license_org`), so the rows and an export after it are masked. A
 // failed Load older says the panel's own words; the cluster's text goes to the output channel only.
+//
+// Bug 51 (epic 6 retrospective, group A): a range read keeps each partition's position (`rangeAt`), so a
+// retry after a lost connection goes on from each partition's own, and Stop reading then Live follows on
+// from there, the rows kept. A filter change or new log access on the live log (the last 15 minutes or
+// Live, Live on or off) reads the last 15 minutes from then, the range's kind kept; during the
+// around-the-error search a filter change runs the search again with it, and Live on ends the search with
+// a note. The search is in Reading with its count and Stop reading (an ERROR record already read is shown
+// around, as the search would have). A partition the search or Load older could not read (no leader) is
+// said in their note, and never counts as the log's start. Set up log access runs per cluster, so another
+// cluster's pipeline shown meanwhile can set up its own; a request that cannot run says why in the note;
+// once stored, the pipeline shown then reads with it when it is on that cluster. The records left out for
+// the cap add up across Load older (those left out before, less those read back, plus those it leaves
+// out); rows the tail leaves out while Load older reads are one gap (`leftOutHere`), counted in the total
+// (`droppedCount`) the footer and the export message say. An export names the filter it was kept with.
 
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	filterActive, isLiveRange, localMinute, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
+	filterActive, filterText, isLiveRange, localMinute, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
 	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogStrip, type LogsViewState,
 	type RangeChoice,
 } from '../../shared/logsProtocol';
@@ -125,6 +139,16 @@ export const ERROR_SEARCH_MS = 24 * 60 * MINUTE_MS;
 export const ERROR_SEARCH_WINDOW_MS = 60 * MINUTE_MS;
 export const SEARCHING_ERROR_STATUS = 'Looking for the newest ERROR record in the last 24 hours…';
 export const NO_ERROR_NOTE = 'No ERROR record in the last 24 hours';
+/** Bug 51: Stop reading ended the around-the-error search. */
+export function stoppedSearchStatus(count: number): string {
+	return `Stopped looking for the newest ERROR record: ${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} read. ${LIVE_OFF_STATUS}`;
+}
+/** Bug 51: Live turned on during the around-the-error search ended it. */
+export const AROUND_ENDED_BY_LIVE_NOTE = 'Stopped looking for the newest ERROR record: Live is on, so the last 15 minutes are shown, then new records.';
+/** Bug 51: Set up log access… asked while it already runs for the cluster. */
+export function setUpRunningText(cluster: string): string {
+	return `Set up log access is already running for ${cluster}; finish it first.`;
+}
 /** Around the error: the record found is not among those shown. */
 export function focusNotShownText(time: number): string {
 	return `The ERROR record of ${localMinute(time)} could not be shown.`;
@@ -194,9 +218,10 @@ export interface LogSource {
 	readonly noAccess?: boolean;
 	/**
 	 * 6.2's Set up log access for the pipeline's cluster: the source to read with once the access is
-	 * stored; `undefined` when it was cancelled or failed (the flow has said so).
+	 * stored; `undefined` when it was cancelled or failed (the flow has said so); bug 51: `refused` (why,
+	 * unmasked) when it could not start (it already runs for the cluster), which the tab says.
 	 */
-	readonly setUpAccess?: () => Promise<LogSource | undefined>;
+	readonly setUpAccess?: () => Promise<LogSource | { readonly refused: string } | undefined>;
 }
 
 export interface LogsPanelOptions {
@@ -219,11 +244,16 @@ interface Kept {
 	readonly record: LogRecord;
 }
 
-/** A read in progress: the tail (following) or a bounded range. */
+/** A read in progress: the tail (following), a bounded range, or the around-the-error search. */
 interface Session {
 	readonly abort: AbortController;
-	readonly kind: 'tail' | 'range';
+	readonly kind: 'tail' | 'range' | 'search';
+	/** Bug 51: the search's newest ERROR candidate so far (Stop reading shows around it). */
+	candidate?: ErrorCandidate;
 }
+
+/** Bug 51: whose Set up log access runs (the cluster). */
+const setUpKey = (source: LogSource) => source.clusterId ?? source.title;
 
 /** "the last 24 hours", "since the last deploy", "2026-11-04 09:00 – 2026-11-05 18:00". */
 function rangeText(range: LogsRange): string {
@@ -246,6 +276,20 @@ function rangeText(range: LogsRange): string {
 }
 
 const recordsText = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
+
+/** Bug 51: the partitions a read gave up (no records for the time limit, no leader), each said with a leading space; '' for none. */
+function partitionsNotReadText(stalled: Iterable<number>, leaderless: Iterable<number>): string {
+	const s = [...stalled];
+	const l = [...leaderless];
+	return (s.length > 0 ? ` Partition ${s.join(', ')} kept answering no records, so the read stopped short there.` : '')
+		+ (l.length > 0 ? ` Partition ${l.join(', ')} had no leader, so it was not read.` : '');
+}
+
+/** Bug 51: the partitions `end` gave up, added to `into` (each once). */
+function addGivenUp(into: { readonly stalled: Set<number>; readonly leaderless: Set<number> }, end: { readonly stalled?: readonly number[]; readonly leaderless?: readonly number[] }): void {
+	end.stalled?.forEach((p) => into.stalled.add(p));
+	end.leaderless?.forEach((p) => into.leaderless.add(p));
+}
 const NO_FILTER_COMPILED = compileFilter(NO_FILTER)!;
 
 export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -338,10 +382,26 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	private stoppedShort = false;
 	/** The pipeline's records the current Load older has read. */
 	private olderCount = 0;
-	/** The newest record time (any key) the range's read has reached: a retry after a lost connection goes on from it. */
-	private rangeReached: number | undefined;
-	/** Set up log access runs for this panel's source (a second request is ignored). */
-	private settingUp = false;
+	/**
+	 * Bug 51: the next offset on each partition the range's read has reached: a retry after a lost
+	 * connection goes on from it, each partition from its own; Stop reading then Live follows on from it.
+	 */
+	private rangeAt: LogPositions | undefined;
+	/** Bug 51: the clusters whose Set up log access runs from this panel (a second request says so). */
+	private readonly settingUpFor = new Set<string>();
+	/** Bug 51: the records the around-the-error search has read of the pipeline (the Reading state's count). */
+	private searchCount = 0;
+	/** Bug 51: Stop reading ended the around-the-error search (no strip for its unread 24 hours). */
+	private searchStopped = false;
+	/** Bug 51: records left out for the cap right before a kept row (by its id): a gap between two reads. */
+	private gaps = new Map<string, number>();
+	/**
+	 * Bug 51: the Load older in progress: the rows the tail left out since it began (their ids) and how
+	 * many records that left out (`tailDropped`: those rows and the gaps between them).
+	 */
+	private olderStart: { readonly ids: Set<string>; tailDropped: number } | undefined;
+	/** Bug 51: rows `remask` removed (no longer matching): read back later, they were never left out for the cap. */
+	private remasked = new Set<string>();
 	private ready = false;
 	/** Every `license_org` seen in this window: masked in every later record and every text shown. */
 	private readonly orgs = new Set<string>();
@@ -399,8 +459,18 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		return this.kept.map((k) => k.row);
 	}
 
+	/** Bug 51: every record left out for the cap that the rows held are short of (older ones, and the gaps between reads). */
 	get droppedCount(): number {
-		return this.dropped;
+		return this.dropped + this.gapCount;
+	}
+
+	/** Bug 51: the records left out between shown rows (the gaps). */
+	private get gapCount(): number {
+		let total = 0;
+		for (const n of this.gaps.values()) {
+			total += n;
+		}
+		return total;
 	}
 
 	/** The range, Live, Load older and the menu's texts, as the webview gets them. */
@@ -423,8 +493,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			note: this.note,
 			panelState: this.panelState,
 			stoppedShort: this.stoppedShort,
-			settingUp: this.settingUp,
+			settingUp: this.source !== undefined && this.settingUpFor.has(setUpKey(this.source)),
 			strip: this.strip,
+			leftOutHere: this.kept.filter((k) => this.gaps.has(k.row.id)).map((k) => ({ before: k.row.id, count: this.gaps.get(k.row.id)! })),
 		};
 	}
 
@@ -435,7 +506,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 */
 	get strip(): LogStrip | null {
 		const failed = this.failure.kind;
-		if (!this.source || failed === 'noAccess' || failed === 'signIn' || failed === 'notAllowed' || this.pendingAround
+		if (!this.source || failed === 'noAccess' || failed === 'signIn' || failed === 'notAllowed' || this.pendingAround || this.searchStopped
 			|| (failed === 'connectionLost' && this.counter.counts.total === 0)) {
 			return null;
 		}
@@ -458,6 +529,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 		if (this.session?.kind === 'range' && this.pendingRange) {
 			return { kind: 'reading', what: `Reading ${rangeText(this.range)}…`, count: this.counter.counts.total };
+		}
+		if (this.session?.kind === 'search') {
+			// Bug 51: the around-the-error search is a read like a range: its count so far and Stop reading.
+			return { kind: 'reading', what: SEARCHING_ERROR_STATUS, count: this.searchCount };
 		}
 		if (this.olderSession) {
 			return { kind: 'reading', what: 'Loading older records…', count: this.olderCount };
@@ -685,22 +760,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.postState();
 			return true;
 		}
-		const live = this.live;
 		this.choices++;
 		this.stopAll();
-		this.reset(this.range, this.chosenAt);
-		if (isLiveRange(this.range.kind) && !live) {
-			// Live stays off: the range is read up to now.
-			this.live = false;
-			this.pendingRange = true;
-			this.readUntil = Date.now();
-		} else if (!isLiveRange(this.range.kind)) {
-			// A bounded range whose Live was turned on follows again once read.
-			this.live = live;
-		}
-		if (this.failure.kind === 'none') {
-			this.status = this.readingStatus();
-		}
+		this.readAgain(true);
 		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} again, ${rangeText(this.range)}, with ${filterActive(filter) ? 'a filter' : 'no filter'}.`));
 		this.postShow();
 		this.changed.fire();
@@ -764,8 +826,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		let message: string;
 		try {
 			count = this.kept.length;
-			const text = exportText(this.kept.map((k) => k.row));
-			const leftOut = this.dropped;
+			const text = exportText(this.kept.map((k) => k.row), this.kept.map((k) => k.ts));
+			const leftOut = this.droppedCount;
+			const inGaps = this.gapCount;
+			const filter = this.mask(source, filterText(this.filter));
 			const newerDropped = this.newerDropped;
 			const cap = this.cap;
 			const name = exportFileName(this.mask(source, source.pipelineName ?? source.pipelineId), Date.now());
@@ -778,7 +842,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			const fileName = this.mask(source, path.posix.basename(uri.path));
 			await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
 			this.options.log(this.mask(source, `Pipeline logs: exported ${recordsText(count)} of ${source.title} to ${uri.scheme === 'file' ? uri.fsPath : uri.toString()}.`));
-			message = exportedMessage(count, fileName, leftOut, newerDropped, cap);
+			message = exportedMessage(count, fileName, leftOut, newerDropped, cap, filter, inGaps);
 		} catch (err) {
 			return failed(err);
 		}
@@ -794,6 +858,54 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		return { kind: 'exported', uri, count, message };
 	}
 
+	/**
+	 * The range read again after a filter or access change (its rows and counts dropped). Bug 51: the
+	 * around-the-error search runs again (with the filter); the live log (the last 15 minutes or Live) reads
+	 * the last 15 minutes from now, its kind kept, then follows (Live off: up to now, Live staying off); Since
+	 * the last deploy whose Live is off is read up to now; a bounded range is read again (`keepLive`: one
+	 * whose Live was turned on follows again once read).
+	 */
+	private readAgain(keepLive: boolean): void {
+		const around = this.pendingAround;
+		const live = this.live;
+		const now = Date.now();
+		if (!around && (this.range.kind === 'recent' || this.range.kind === 'live')) {
+			// The live log, Live on or off: rebased on now, its kind kept (Live from now on stays Live and reads
+			// the last 15 minutes from now too); with Live off it is read up to now, Live staying off.
+			this.reset({ kind: this.range.kind, from: now - this.windowMs, to: null }, now);
+			if (!live) {
+				this.live = false;
+				this.pendingRange = true;
+				this.readUntil = now;
+				if (this.failure.kind === 'none') {
+					this.status = this.readingStatus();
+				}
+			}
+			return;
+		}
+		this.reset(this.range, this.chosenAt);
+		if (around) {
+			this.pendingRange = false;
+			this.pendingAround = true;
+			if (this.failure.kind === 'none') {
+				this.status = SEARCHING_ERROR_STATUS;
+			}
+			return;
+		}
+		if (isLiveRange(this.range.kind) && !live) {
+			// Live stays off: the range is read up to now.
+			this.live = false;
+			this.pendingRange = true;
+			this.readUntil = now;
+		} else if (!isLiveRange(this.range.kind) && keepLive) {
+			// A bounded range whose Live was turned on follows again once read.
+			this.live = live;
+		}
+		if (this.failure.kind === 'none') {
+			this.status = this.readingStatus();
+		}
+	}
+
 	/** Every row and count read so far dropped. */
 	private clearRead(): void {
 		this.kept = [];
@@ -807,7 +919,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.olderFrom = undefined;
 		this.newestTs = undefined;
 		this.leftOutEver = false;
-		this.rangeReached = undefined;
+		this.rangeAt = undefined;
+		this.gaps = new Map();
+		this.remasked = new Set();
 	}
 
 	/** Every row, count and reading of the last range dropped; `range` is the one to read now. */
@@ -821,6 +935,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.live = isLiveRange(range.kind);
 		this.pendingRange = !this.live;
 		this.pendingAround = false;
+		this.searchStopped = false;
 		this.focusId = null;
 		this.note = null;
 		this.done = false;
@@ -872,7 +987,13 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.start();
 			return;
 		}
-		await this.chooseRange({ kind: 'recent' });
+		const around = this.pendingAround;
+		if (await this.chooseRange({ kind: 'recent' }) && around) {
+			// Bug 51: Live ends the around-the-error search, and says so.
+			this.note = AROUND_ENDED_BY_LIVE_NOTE;
+			this.options.log(this.mask(this.source, `Pipeline logs: stopped looking for the newest ERROR record of ${this.source.title}: Live is on.`));
+			this.postState();
+		}
 	}
 
 	private updateDescription(): void {
@@ -892,7 +1013,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	}
 
 	private postShow(): void {
-		this.post({ type: 'show', title: this.title ?? null, rows: this.rows().slice(), dropped: this.dropped, cap: this.cap, status: this.status, state: this.viewState });
+		this.post({ type: 'show', title: this.title ?? null, rows: this.rows().slice(), dropped: this.droppedCount, cap: this.cap, status: this.status, state: this.viewState });
 	}
 
 	private postState(): void {
@@ -1067,9 +1188,10 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		const generation = this.generation;
 		const range = this.range;
 		this.session = { abort, kind: 'range' };
-		// A retry after a lost connection goes on from where the read had reached: the rows stay, and a
-		// record read again is neither counted nor kept twice (`take`).
-		const resumeAt = this.failure.kind === 'connectionLost' ? this.rangeReached : undefined;
+		// A retry after a lost connection goes on from where the read had reached on each partition (bug 51:
+		// each from its own, so one that was behind loses nothing): the rows stay, and a record read again
+		// is neither counted nor kept twice (`take`).
+		const resumeAt = this.failure.kind === 'connectionLost' ? this.rangeAt : undefined;
 		if (resumeAt === undefined && (this.kept.length > 0 || this.counter.counts.total > 0)) {
 			// An earlier read of this range was stopped (the tab hidden): read it again from its start.
 			this.clearRead();
@@ -1091,15 +1213,13 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		// Reading (ticket 6.6): the state shows the count so far and Stop reading.
 		this.postState();
 		const current = () => !abort.signal.aborted && generation === this.generation;
-		reader.range(source.pipelineId, resumeAt ?? range.from, range.to ?? this.readUntil ?? this.chosenAt, (records) => {
+		reader.range(source.pipelineId, range.from, range.to ?? this.readUntil ?? this.chosenAt, (records, next) => {
 			if (current()) {
-				for (const r of records) {
-					this.rangeReached = this.rangeReached === undefined ? r.timestamp : Math.max(this.rangeReached, r.timestamp);
-				}
+				this.rangeAt = next;
 				this.recovered(source);
 				this.receive(source, records);
 			}
-		}, abort.signal).then((end) => {
+		}, abort.signal, resumeAt).then((end) => {
 			if (!current()) {
 				return;
 			}
@@ -1107,7 +1227,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.pendingRange = false;
 			this.done = true;
 			this.positions = end.next;
-			const stalled = end.stalled?.length ? ` Partition ${end.stalled.join(', ')} kept answering no records, so the read stopped short there.` : '';
+			const stalled = partitionsNotReadText(end.stalled ?? [], end.leaderless ?? []);
 			const { total, matched } = this.counter.counts;
 			const read = filterActive(this.filter)
 				? `Read ${recordsText(total)} of ${rangeText(range)}; ${matched.toLocaleString('en-US')} ${matched === 1 ? 'matches' : 'match'}.${stalled}`
@@ -1173,9 +1293,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 					this.olderFrom = Math.min(this.olderFrom ?? r.timestamp, r.timestamp);
 				}
 			}
-			const { matching } = this.take(source, got);
+			const { matching, readBack } = this.take(source, got);
 			if (matching.length > 0) {
-				this.prepend(matching);
+				this.prepend(matching, readBack);
 			}
 		};
 		const filtered = filterActive(this.filter);
@@ -1186,12 +1306,17 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		};
 		this.olderCount = 0;
 		this.older = 'reading';
+		// Bug 51: what the tail leaves out meanwhile is told apart from what this reads.
+		const olderStart = { ids: new Set<string>(), tailDropped: 0 };
+		this.olderStart = olderStart;
 		this.postState();
 		const length = olderWindowMs(this.range, this.chosenAt, this.windowMs);
 		let to = this.olderAnchor();
 		const searchFrom = to;
 		this.options.log(this.mask(source, `Pipeline logs: reading ${source.title} before ${new Date(to).toISOString()}.`));
 		let older: LogsViewState['older'] = 'more';
+		/** Bug 51: the partitions a window gave up (no leader, no records): said in the Load older row. */
+		const givenUp = { stalled: new Set<number>(), leaderless: new Set<number>() };
 		try {
 			const reader = source.reader();
 			const first = await reader.logStart(abort.signal);
@@ -1213,14 +1338,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				if (!current()) {
 					return;
 				}
+				addGivenUp(givenUp, end);
 				// Ticket 6.7: the window is read: the strip extends back to it.
 				this.olderFrom = Math.min(this.olderFrom ?? from, from);
-				const { matching, counted } = this.take(source, got);
+				const { matching, counted, readBack } = this.take(source, got);
 				const reachedStart = atLogStart(end.start, first);
 				// A match ends the walk back; without a filter, so does any of the pipeline's records.
 				if (matching.length > 0 || (counted > 0 && !filtered)) {
 					if (matching.length > 0) {
-						this.prepend(matching);
+						this.prepend(matching, readBack);
 					}
 					older = reachedStart ? 'none' : 'more';
 					break;
@@ -1244,10 +1370,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 					return;
 				}
 				if (before === undefined) {
-					older = 'none';
+					// Bug 51: a partition not read (no leader) may hold older records: not "No older records".
+					older = givenUp.leaderless.size > 0 ? 'more' : 'none';
 					break;
 				}
 				to = Math.min(before, from);
+			}
+			const notRead = partitionsNotReadText(givenUp.stalled, givenUp.leaderless).trim();
+			if (notRead !== '' && current()) {
+				this.olderNote = this.olderNote ? `${this.olderNote}. ${notRead}` : notRead;
 			}
 		} catch (err) {
 			if (stopped && mine()) {
@@ -1260,6 +1391,9 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				this.olderError = `${OLDER_FAILED_PREFIX}${panelStateTexts(this.failureOf(source, err))!.title}.`;
 			}
 		} finally {
+			if (this.olderStart === olderStart) {
+				this.olderStart = undefined;
+			}
 			if (this.olderSession === abort) {
 				this.olderSession = undefined;
 				this.olderStop = undefined;
@@ -1285,16 +1419,22 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		const abort = new AbortController();
 		const generation = this.generation;
 		const current = () => !abort.signal.aborted && generation === this.generation && source === this.source;
-		this.session = { abort, kind: 'range' };
+		const session: Session = { abort, kind: 'search' };
+		this.session = session;
+		this.searchCount = 0;
+		/** Bug 51: the records counted (by partition and offset), so one at a window's edge is counted once. */
+		const searched = new Set<string>();
+		const givenUp = { stalled: new Set<number>(), leaderless: new Set<number>() };
 		this.setStatus(SEARCHING_ERROR_STATUS);
-		this.changed.fire();
+		// Bug 51: Reading, with its count and Stop reading.
+		this.postState();
 		const reader = this.newReader(source);
 		if (!reader) {
 			this.session = undefined;
 			return;
 		}
 		const now = Date.now();
-		let outcome: { readonly found: { readonly id: string; readonly time: number } | undefined } | undefined;
+		let outcome: { readonly found: ErrorCandidate | undefined } | undefined;
 		try {
 			const first = await reader.logStart(abort.signal);
 			let to = now;
@@ -1304,11 +1444,27 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				// Only the newest ERROR candidate of the window is kept, not its records.
 				let candidate: ErrorCandidate | undefined;
 				const end = await reader.range(source.pipelineId, from, to, (records) => {
+					if (!current()) {
+						return;
+					}
 					candidate = this.newestError(source, records, candidate);
+					// Stop reading shows around it (bug 51).
+					session.candidate = candidate ?? session.candidate;
+					const before = searched.size;
+					for (const r of records) {
+						if (isPipelineRecord(r, source.pipelineId)) {
+							searched.add(`${r.partition}:${r.offset}`);
+						}
+					}
+					if (searched.size > before) {
+						this.searchCount = searched.size;
+						this.postState();
+					}
 				}, abort.signal);
 				if (!current()) {
 					break;
 				}
+				addGivenUp(givenUp, end);
 				found = candidate;
 				if (atLogStart(end.start, first)) {
 					break;
@@ -1324,26 +1480,39 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				this.failed(source, err);
 			}
 		} finally {
-			if (this.session?.abort === abort) {
+			const mine = this.session?.abort === abort;
+			if (mine) {
 				this.session = undefined;
 			}
 			// Closes the reader's client.
 			abort.abort();
+			if (mine && generation === this.generation) {
+				// The reading state ends.
+				this.postState();
+			}
 			this.changed.fire();
 		}
 		if (!outcome || generation !== this.generation || source !== this.source) {
 			return;
 		}
+		this.showSearched(source, outcome.found, partitionsNotReadText(givenUp.stalled, givenUp.leaderless));
+	}
+
+	/**
+	 * Around the error's outcome: the 5 minutes around `found` (marked), else the last hour with a note;
+	 * `notRead` (bug 51): the partitions the search gave up, said in the note.
+	 */
+	private showSearched(source: LogSource, found: ErrorCandidate | undefined, notRead = ''): void {
 		const at = Date.now();
-		const { found } = outcome;
 		if (found) {
 			this.reset({ kind: 'custom', from: Math.min(found.time - AROUND_MS, at), to: found.time + AROUND_MS }, at);
 			this.focusId = found.id;
 			this.focusTime = found.time;
+			this.note = notRead === '' ? null : notRead.trim();
 			this.options.log(this.mask(source, `Pipeline logs: the newest ERROR record of ${source.title} is at ${new Date(found.time).toISOString()}; reading around it.`));
 		} else {
 			this.reset(rangeFor({ kind: 'hour' }, at)!, at);
-			this.note = NO_ERROR_NOTE;
+			this.note = notRead === '' ? NO_ERROR_NOTE : `${NO_ERROR_NOTE}.${notRead}`;
 			this.options.log(this.mask(source, `Pipeline logs: no ERROR record of ${source.title} in the last 24 hours; reading the last hour.`));
 		}
 		this.postShow();
@@ -1518,17 +1687,29 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		// The filter applies to the rows as now shown: one that no longer matches goes, as a filter change
 		// would drop it (nothing is read again; a record not kept is not read back).
 		const next: Kept[] = [];
+		/** Bug 51: a gap before a row that goes moves to the next row kept. */
+		let carried = 0;
 		for (const k of this.kept) {
 			const row = this.shape(source, k.record);
+			const gap = this.takeGap(k.row.id) + carried;
+			carried = 0;
 			if (matches(row, this.compiled)) {
 				next.push({ ...k, row });
+				if (gap > 0) {
+					this.gaps.set(row.id, gap);
+				}
 			} else {
+				carried = gap;
 				this.keptIds.delete(row.id);
+				this.remasked.add(row.id);
 				this.counter.unmatch();
 				this.slots.unmatch(k.ts);
 			}
 		}
 		this.kept = next;
+		// Bug 51: a gap past the last row kept is records left out between reads, not newer ones dropped.
+		this.dropped += carried;
+		this.foldLeadingGap();
 		this.postShow();
 		this.changed.fire();
 	}
@@ -1546,9 +1727,31 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.olderStop();
 			return true;
 		}
+		if (this.session?.kind === 'search') {
+			const found = this.session.candidate;
+			if (found) {
+				// Bug 51: an ERROR record was already read: shown around, as the search would have.
+				this.stop();
+				this.showSearched(source, found);
+				return true;
+			}
+			// Bug 51: the around-the-error search ends where it is, said so; Live off.
+			const count = this.searchCount;
+			this.stop();
+			this.pendingAround = false;
+			this.searchStopped = true;
+			this.done = true;
+			this.stoppedShort = true;
+			this.live = false;
+			this.setStatus(stoppedSearchStatus(count));
+			this.postState();
+			return true;
+		}
 		if (this.session?.kind !== 'range' || !this.pendingRange) {
 			return false;
 		}
+		// Bug 51: Live turned on later follows on from where the read stopped (the rows stay).
+		this.positions = this.rangeAt;
 		this.stop();
 		this.pendingRange = false;
 		this.done = true;
@@ -1562,42 +1765,53 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	/**
 	 * Set up log access…, Set up log access again… and Use another user… (ticket 6.6): 6.2's flow for the
 	 * shown pipeline's cluster; once stored, the same range is read again with the new access (around the
-	 * error: searched again). Cancelled or failed: the state stays. `false` then.
+	 * error: searched again); bug 51: when the tab shows another pipeline of that cluster by then, that one
+	 * is read with it. Cancelled or failed: the state stays. `false` then.
 	 */
 	async setUpAccess(): Promise<boolean> {
 		const source = this.source;
-		if (!source?.setUpAccess || this.settingUp) {
+		if (!source?.setUpAccess) {
 			return false;
 		}
-		this.settingUp = true;
+		// Bug 51: per cluster, so another pipeline shown meanwhile can set up its own; a request that cannot
+		// run says why in the tab.
+		const key = setUpKey(source);
+		if (this.settingUpFor.has(key)) {
+			this.note = this.mask(source, setUpRunningText(source.clusterName ?? source.title));
+			this.postState();
+			return false;
+		}
+		this.settingUpFor.add(key);
 		this.postState();
-		let next: LogSource | undefined;
+		let next: LogSource | { readonly refused: string } | undefined;
 		try {
 			next = await source.setUpAccess();
 		} finally {
-			this.settingUp = false;
+			this.settingUpFor.delete(key);
 			this.postState();
 		}
-		if (!next || source !== this.source) {
+		if (next && 'refused' in next) {
+			if (source === this.source) {
+				this.note = this.mask(source, next.refused);
+				this.postState();
+			}
 			return false;
 		}
-		const around = this.pendingAround;
-		const live = this.live;
+		const shown = this.source;
+		if (!next || !shown) {
+			return false;
+		}
+		if (shown !== source) {
+			if (setUpKey(shown) !== key) {
+				return false;
+			}
+			// Bug 51: another pipeline of the same cluster is shown now: it reads with the new access.
+			next = { ...shown, noAccess: next.noAccess, username: next.username, reader: next.reader, hasAccess: next.hasAccess };
+		}
 		this.choices++;
 		this.stopAll();
 		this.source = next;
-		this.reset(this.range, this.chosenAt);
-		if (around) {
-			this.pendingRange = false;
-			this.pendingAround = true;
-			this.status = SEARCHING_ERROR_STATUS;
-		} else if (isLiveRange(this.range.kind) && !live && this.failure.kind === 'none') {
-			// Live stays off: the range is read up to now.
-			this.live = false;
-			this.pendingRange = true;
-			this.readUntil = Date.now();
-			this.status = this.readingStatus();
-		}
+		this.readAgain(false);
 		this.options.log(this.mask(next, `Pipeline logs: reading ${next.title} again with the new log access, ${rangeText(this.range)}.`));
 		this.updateDescription();
 		this.postShow();
@@ -1638,10 +1852,12 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 * The pipeline's rows of `records`, oldest first: each counted once (`counted`: how many were new),
 	 * and those matching the filter not yet kept (`matching`). Every org of the batch is noted first.
 	 */
-	private take(source: LogSource, records: readonly LogRecord[]): { readonly matching: Kept[]; readonly counted: number } {
+	private take(source: LogSource, records: readonly LogRecord[]): { readonly matching: Kept[]; readonly counted: number; readonly readBack: ReadonlySet<string> } {
 		this.noteOrgs(records);
 		const seen = new Set<string>();
 		const matching: Kept[] = [];
+		/** Bug 51: the matching ones counted before (read before and left out, now read back). */
+		const readBack = new Set<string>();
 		let counted = 0;
 		const mine = records.filter((r) => isPipelineRecord(r, source.pipelineId))
 			.map((r, i) => ({ r, i }))
@@ -1653,7 +1869,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			const row = this.shape(source, r);
 			const keep = matches(row, this.compiled);
 			const span = before.get(r.partition);
-			if ((!span || r.offset < span.lo || r.offset > span.hi) && !countedIds.has(row.id)) {
+			const fresh = (!span || r.offset < span.lo || r.offset > span.hi) && !countedIds.has(row.id);
+			if (keep && !fresh && !countedIds.has(row.id) && !this.remasked.has(row.id)) {
+				readBack.add(row.id);
+			}
+			if (fresh) {
 				countedIds.add(row.id);
 				this.counter.add(row, keep);
 				this.slots.add(r.timestamp, levelOf(row), keep);
@@ -1673,7 +1893,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 				matching.push({ row, ts: r.timestamp, record: r });
 			}
 		}
-		return { matching, counted };
+		return { matching, counted, readBack };
 	}
 
 	/** Newer records read forward: the matching ones appended; over the cap the oldest are left out. */
@@ -1689,6 +1909,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			this.kept.push(k);
 			this.keptIds.add(k.row.id);
 		}
+		const gapsBefore = this.gaps.size;
 		const over = this.kept.length - this.cap;
 		let appended = mine;
 		if (over > 0) {
@@ -1697,21 +1918,32 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			const older = focusAt < 0 ? over : Math.min(over, focusAt);
 			const newer = over - older;
 			if (newer > 0) {
-				for (const k of this.kept.splice(this.kept.length - newer, newer)) {
-					this.keptIds.delete(k.row.id);
-				}
+				this.dropNewest(newer);
 				appended = mine.slice(0, mine.length - newer);
-				this.newerDropped += newer;
 			}
 			if (older > 0) {
+				let left = 0;
 				for (const k of this.kept.splice(0, older)) {
 					this.keptIds.delete(k.row.id);
+					// Bug 51: the tail left it out while Load older reads (it is not read back into a gap).
+					this.olderStart?.ids.add(k.row.id);
+					left += 1 + this.takeGap(k.row.id);
 				}
-				this.dropped += older;
+				// The gap before the new oldest row joins them.
+				left += this.kept[0] ? this.takeGap(this.kept[0].row.id) : 0;
+				this.dropped += left;
+				if (this.olderStart) {
+					this.olderStart.tailDropped += left;
+				}
 				this.leftOutEver = true;
 			}
 		}
-		this.post({ type: 'append', rows: appended.slice(-this.cap).map((k) => k.row), dropped: this.dropped });
+		const gapsChanged = this.gaps.size !== gapsBefore;
+		this.post({ type: 'append', rows: appended.slice(-this.cap).map((k) => k.row), dropped: this.droppedCount });
+		if (gapsChanged) {
+			this.postState();
+			return;
+		}
 		if (counted > 0) {
 			this.postState();
 		} else {
@@ -1719,26 +1951,71 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		}
 	}
 
-	/** Older records (Load older): before the kept ones; over the cap the newest are dropped and Live pauses. */
-	private prepend(older: readonly Kept[]): void {
+	/** A gap's count before the row `id`, taken off it (0 when none). */
+	private takeGap(id: string): number {
+		const n = this.gaps.get(id) ?? 0;
+		this.gaps.delete(id);
+		return n;
+	}
+
+	/** A gap before the first kept row is no gap: it joins the older records left out. */
+	private foldLeadingGap(): void {
+		const first = this.kept[0];
+		if (first) {
+			this.dropped += this.takeGap(first.row.id);
+		}
+	}
+
+	/** The newest `n` kept rows dropped for the cap; a gap before one of them goes with it (newer, dropped). */
+	private dropNewest(n: number): void {
+		for (const k of this.kept.splice(this.kept.length - n, n)) {
+			this.keptIds.delete(k.row.id);
+			this.newerDropped += 1 + this.takeGap(k.row.id);
+		}
+	}
+
+	/**
+	 * Older records (Load older): before the kept ones; over the cap the newest are dropped and Live pauses.
+	 * `readBack`: how many of `older` had been read before (records left out for the cap, read back now).
+	 * Bug 51: the records left out add up: those left out before, less the ones read back, and those of
+	 * `older` left out now; when the tail left out rows while Load older read (it was at the cap), they are
+	 * a gap between the rows read and the rows kept, one marker row.
+	 */
+	private prepend(all: readonly Kept[], readBackIds: ReadonlySet<string>): void {
+		const start = this.olderStart;
+		// Bug 51: only the tail's own drops during this Load older are a gap (not a remask's or a fold's).
+		const tailDropped = start?.tailDropped ?? 0;
+		const older = start ? all.filter((k) => !start.ids.has(k.row.id)) : all;
+		if (older.length === 0) {
+			return;
+		}
+		const before = this.dropped - tailDropped;
+		const readBack = older.filter((k) => readBackIds.has(k.row.id)).length;
+		const first = this.kept[0];
+		if (tailDropped > 0 && first) {
+			// The rows the tail left out sit between the window read and the oldest kept row.
+			this.gaps.set(first.row.id, (this.gaps.get(first.row.id) ?? 0) + tailDropped);
+		}
 		const merged = mergeOlder(older, this.kept, this.cap);
 		if (merged.newerDropped > 0) {
-			for (const k of this.kept.slice(this.kept.length - merged.newerDropped)) {
-				this.keptIds.delete(k.row.id);
-			}
+			this.dropNewest(merged.newerDropped);
 		}
 		const taken = older.slice(merged.leftOut);
 		for (const k of taken) {
 			this.keptIds.add(k.row.id);
 		}
 		this.kept = merged.rows;
-		this.dropped = merged.leftOut;
+		this.dropped = Math.max(0, before - readBack) + merged.leftOut;
+		if (tailDropped > 0 && !first) {
+			this.dropped += tailDropped;
+		}
+		this.foldLeadingGap();
 		if (merged.leftOut > 0) {
 			this.leftOutEver = true;
 		}
-		this.post({ type: 'prepend', rows: taken.map((k) => k.row), dropped: this.dropped });
+		this.post({ type: 'prepend', rows: taken.map((k) => k.row), dropped: this.droppedCount });
+		this.postState();
 		if (merged.newerDropped > 0) {
-			this.newerDropped += merged.newerDropped;
 			if (this.live) {
 				this.live = false;
 				if (this.session?.kind === 'tail') {
