@@ -191,7 +191,9 @@ suite('Lint on save (integration)', function () {
 	});
 
 	test('ticket 30 EVERY_COMMAND / CHANGE: a stored secret reaches lint\'s environment; the next lint gets a new value; no value is logged', async () => {
-		const seenLines = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter(Boolean) : []);
+		// Lint's lines only: the live Bloblang check (`blobl`) writes to the same capture file, and a
+		// secret change re-parses the open configs, so its line can land after lint's.
+		const seenLines = () => (fs.existsSync(seen) ? fs.readFileSync(seen, 'utf8').split('\n').filter((l) => l.startsWith('lint ')) : []);
 		try {
 			const doc = await openSaved('secret-lint.yaml', 'input:\n  generate:\n    nope: 1\n');
 			const lintOnce = async (): Promise<string> => {
