@@ -2,7 +2,7 @@
 title: "EXPERIENCE — Redpanda Connect Designer for VS Code"
 status: final
 created: 2026-10-05
-updated: 2026-10-06
+updated: 2026-11-11
 sources:
   - ../brief-rpcn-vscode-designer/brief-rpcn-vscode-designer.md
   - ../brief-rpcn-vscode-designer/addendum.md
@@ -205,6 +205,31 @@ Failure: Set path points at a file that can't be used → the warning appears ag
 9. **Climax:** the terminal logs show the first message written to `webhook-events`, well under 10 minutes after he created the empty file.
 
 Failure: no binary on the machine → Flow 2 steps 1–4 apply before Flow 3 step 2. Failure: he works in an untitled buffer instead of saving `webhooks.yaml` in step 1 → Run is disabled with "Save the file to run it."
+
+## Pipeline Logs
+
+Added 2026-11-11 (epic 6 retrospective AI-3), describing the surface as built in epic 6 (tickets 6.2–6.8). The design boards 1–6 (set up log access, entry points, live log, search and filter, history, empty and error states) live in the external artifact named in the epic's References (`../epic-pipeline-logs/epic-pipeline-logs.md`); they are not copied here, and **this spine wins on any conflict with them**. Reading rules (the cap, host filtering, retries) are architecture AD-24.
+
+- **Where it opens:** a **Pipeline Logs** tab in the bottom panel, next to Output. It shows one pipeline at a time, named "<pipeline> · <cluster>" in the header; Show logs on another pipeline switches to it. Reading happens only while the tab is visible; hidden, it stops, and shown again it resumes.
+- **Entry points:** the Cloud view's pipeline row (inline icon when its cluster has log access, and the row menu: "Show pipeline logs"); the Command Palette's "Show pipeline logs" (the active config's mapped pipeline, else a pick by cluster and name); the Error notification of a deploy, an update or a start (**Show logs** when log access is set, else **Set up log access…**, then the log), which opens the last 15 minutes with the ERROR records highlighted; and, on an Error pipeline's row menu, **Show logs around the error**: "Looking for the newest ERROR record in the last 24 hours…", then the 5 minutes before and after it, the record scrolled to and marked (none found: the note "No ERROR record in the last 24 hours" and the last hour).
+- **Log access:** "Set up log access…" on the cluster row asks for a Redpanda user that may read the logs topic, its password (kept in VS Code's secret storage on this machine only) and the SCRAM mechanism, test-reads the topic, then says "Log access to <cluster> is set up for <user>." A wrong password stores nothing. On a VS Code whose Node is older than 22.22: "Pipeline logs need a newer VS Code (Node 22.22 or later; this one has <version>)", and nothing is asked or sent.
+- **The list:** oldest first, newest at the bottom (followed while scrolled to the bottom); columns Time (local), Level, Message (followed by further fields as `key=value`), Instance. A note row marks 30 minutes or more without a record. A row's ▸ expands its whole JSON with **Copy JSON** and **Show records around this one** (5 minutes either side, the filter cleared, Live off). At most 5,000 records are kept; the footer says how many older ones were left out ("Load older to page back") or newer ones dropped.
+- **Ranges and Live:** the toolbar's **Live** toggle and time-range menu: Live (from now on), Last 15 minutes then live (the default), Last hour, Last 24 hours, Last 7 days, Since the last deploy (then live), Custom range… (From and To in local time, `YYYY-MM-DD HH:MM`, checked in place), plus the topic's retention. Bounded ranges read to their end and then Live is off. **Load older records (before <time>)** at the top of the list reads further back, "No older records" at the log's start.
+- **Filter and search:** the level chips (Error, Warn, Info, Debug, Other, each with its count of the records read), a search over the message and every field (Match case `Aa`, regular expression `.*`; an invalid or too-slow pattern is refused at the box with its error), field chips made by clicking a field's value or an instance in a row (× removes one), and "N of M records match". Matches are highlighted. The filter stays when the range changes and is cleared by Show logs.
+- **The strip:** for bounded ranges and Since the last deploy (hidden for the two live ranges), about 30 to 60 bars, each slot from 1 minute to 1 day as the range needs, named ("per 30 minutes"); a bar's height is the pipeline's records in its slot, errors and warnings marked on top, the matching part darker while a filter is on. A bar's click (or Enter, arrows between bars) shows its slot as a custom range, the filter kept; each bar is named "Nov 5 14:00–14:30: 120 records, 3 errors".
+- **Export…:** in the toolbar (disabled with no rows), saves the rows shown (after the filter, oldest first, already masked) as JSON lines through the save dialog (`<pipeline>-<yyyymmdd-hhmm>.jsonl`), then "Exported N records to <file name>." with **Open**, or "Could not export the records: <reason>".
+
+| State | Surface | Treatment |
+|---|---|---|
+| No pipeline | Pipeline Logs tab | "Use Show logs on a pipeline in the Cloud view." |
+| No log access | Pipeline Logs tab | "<cluster> has no log access set", why logs need a Redpanda user that may read the topic; **Set up log access…**. Nothing is read. |
+| Sign-in refused | Pipeline Logs tab | "<user> could not sign in to <cluster>" (the username, password or mechanism is wrong); **Set up log access again…**, **Retry**. Not retried by itself. |
+| Not allowed | Pipeline Logs tab | "<user> may not read the logs topic" (an admin can grant Read in the Cloud UI's ACLs); **Retry**, **Use another user…**. Not retried by itself. |
+| Connection lost | Pipeline Logs tab | "Lost the connection to <cluster>"; "Live is paused" or "Reading is paused"; the rows shown stay; "Trying again in N s." counted down (5, 10, 20, 30, 60 s, then every 60 s, only while the tab is visible); **Retry now**. |
+| Reading | Pipeline Logs tab | A bounded range or Load older being read: "N records so far", the list filling below; **Stop reading** keeps the rows read and turns Live off. |
+| No records | Pipeline Logs tab | "No records for <pipeline> in <range>" (it may not have started, or wrote nothing; or only hidden levels); **Last 24 hours**, and **Show every level** when levels are hidden. With a filter that matches nothing: "No records match". |
+
+The state fills the list area; the header, toolbar and filter bar stay. Every name and message shown is masked.
 
 ## Deferred (later phases, not specced)
 

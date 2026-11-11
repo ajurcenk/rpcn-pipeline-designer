@@ -16,7 +16,7 @@ estimate: ""
 
 ## Description
 
-Three retrospectives found code written more than once, helpers in the wrong layer, and two panel adapters that no unit test runs. This story is a refactor. When it is done, the Cloud adapter has one poll helper, one offset-to-line helper and one mapping-to-target resolution, and its presentation helpers sit outside the HTTP adapter. The graph model has one ancestor walk, errors are read through `errorText` everywhere, and the graph and Bloblang test panels each sit behind a named Source interface with unit tests. What the user sees does not change.
+Four retrospectives found code written more than once, helpers in the wrong layer, and two panel adapters that no unit test runs. This story is a refactor. When it is done, the Cloud adapter has one poll helper, one offset-to-line helper and one mapping-to-target resolution, and its presentation helpers sit outside the HTTP adapter. The graph model has one ancestor walk, errors are read through `errorText` everywhere, and the graph and Bloblang test panels each sit behind a named Source interface with unit tests. The Pipeline Logs panel keeps its read as one value per range with an explicit state, its helpers for the record count, padding and local time are written once, and its webview messages all follow the past-tense intent convention. What the user sees does not change.
 
 ## Acceptance Criteria
 
@@ -45,14 +45,26 @@ Three retrospectives found code written more than once, helpers in the wrong lay
    **Given** the graph panel adapter and the Bloblang test panel adapter
    **When** the unit tests run
    **Then** each adapter reaches VS Code through a named Source interface, and unit tests drive it through a fake of that interface
-7. **Behavior is unchanged**
+7. **The log panel's read state is one value per range**
+   **Given** the Pipeline Logs panel's tail, bounded range, around-the-error search and Load older
+   **When** the code is read after this story
+   **Then** the read is held as one value per range, with an explicit state (tail, range, search or older), and no flag is reset by hand on a change
+8. **One plural, `pad` and local-time helper**
+   **Given** the "N record(s)" text, the zero padding and the local-time formatting in the logs adapter, protocol and webview
+   **When** the code is read after this story
+   **Then** each is written once and shared, and the text they produce is unchanged
+9. **The log panel's webview messages are past-tense intents**
+   **Given** the webview-to-host messages ticket 6.6 added as commands (`stopReading`, `retryNow` and the others)
+   **When** the code is read after this story
+   **Then** they are named as past-tense intents, as the other log panel messages are, on both sides of the protocol
+10. **Behavior is unchanged**
    **Given** the code after this story
    **When** compile with lint, the corpus, webview, stable and multi-root suites run
    **Then** they all pass, and no existing integration or corpus test was changed to make them pass
 
 ## Boundaries
 
-- Must not change: any command, message, log line, setting, tag or mapping format, or request sent to the Cloud; secret values staying out of logs and messages (bug 44); the webview protocol.
+- Must not change: any command, message, log line, setting, tag or mapping format, or request sent to the Cloud; secret values staying out of logs and messages (bug 44); the webview protocol, except the message names criterion 9 renames.
 
 ## References
 
@@ -60,11 +72,16 @@ Three retrospectives found code written more than once, helpers in the wrong lay
 - source — _bmad-output/initiative-rpcn-vscode-designer/epic-deploy-to-redpanda-cloud/epic-deploy-to-redpanda-cloud-retrospective.md, findings A2, A3, A4 and A6, action item AI-5
 - source — _bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-graph/epic-pipeline-graph-retrospective.md, findings F12, F15 and F17, action item AI-6
 - source — _bmad-output/initiative-rpcn-vscode-designer/epic-bloblang-check-and-test/epic-bloblang-check-and-test-retrospective.md, finding G-1 and Previous-retro follow-through (AI-6 not landed)
+- source — _bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/epic-pipeline-logs-retrospective.md, findings A3, A5 and A7 (Aggregate views), action item AI-4
+- related — _bmad-output/backlog/bug-pipeline-logs-reading-and-state-edge-cases-epic-6-retrospective.md (bug 51, the read state cases)
 
 ## Notes
 
 - Decision: epic 5's AI-5 and epic 3's AI-6 are merged into this one story (user, 2026-11-11, "use your recommendations").
 - Code at 4fffc16: the polls are in `src/adapters/vscode/cloudDeploy.ts` (`follow`) and `src/adapters/vscode/cloudActions.ts`; the offset-to-line copies in `src/adapters/vscode/cloudCheck.ts`, `bloblangNames.ts` and `cloudTranslate.ts` (`LITERAL_ARG`; `ENV_CALL` in `envUsage.ts`); the mapping resolution in `cloudDeploy.ts` (`mappedTarget`) and `cloudActions.ts`; `pipelineStateText` and `sizeChoices` in `src/adapters/cloud/dataPlane.ts`; the ancestor walks in `nodeAt.ts`, `nodeStatus.ts` and `layout.ts`; the panel adapters in `src/adapters/graphPanel/panels.ts` and `src/adapters/bloblangPanel/panels.ts` (the latter has only `sampleStore.test.ts` beside it).
-- Open question: the size. Seven criteria over two areas (Cloud, panels) may be more than one build; the plan may split the Cloud part from the panel part, with the user's yes.
+- Decision: epic 6's AI-4 (the log panel's read state, the shared helpers and the past-tense intents) is added to this story (user, 2026-11-11, "use your recommendations").
+- Code at c783a4a: the log panel's read state is in `src/adapters/vscode/logsPanel.ts`; the plural, `pad` and local-time copies in `src/adapters/logs/export.ts:22,34`, `webview/src/logs/LogsView.tsx:65,68,74`, `src/shared/logsProtocol.ts:252,370,388,676,681` and `src/adapters/logs/history.ts:77`; 6.6's commands in `src/shared/logsProtocol.ts:492-514`.
+- Open question: the size. Ten criteria over three areas (Cloud, panels, log panel) may be more than one build; the plan may split them, with the user's yes.
+- Open question: the order with bug 51. The read state split may come before or after bug 51's fixes; the plan decides.
 - Open question: whether epic 3's AI-6 "shared test filters" (suites re-implementing what `graphHelpers.ts` has) and epic 4's G-1 split of the Bloblang panel registry (tabs, placement, focus) are in scope. Not in the criteria; the plan decides.
 - Decision: no floor (VS Code 1.100.0) runs (user).
