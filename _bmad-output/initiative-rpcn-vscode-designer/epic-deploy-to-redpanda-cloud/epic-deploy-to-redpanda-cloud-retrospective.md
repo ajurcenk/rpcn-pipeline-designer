@@ -153,6 +153,17 @@ No blocking finding: C1–C10 are edge cases outside the paths the criteria name
 
 Human decision (user, 2026-11-09): **accepted-with-open-items**, the machine verdict accepted as proposed. AI-1 taken up (user, 2026-11-09) and split: backlog bug 44 (the masking, C2 and V4, built first) and bug 45 (C1, C3–C10, V1–V3, V5, V6); the other action items are not yet decided.
 
+Human decisions (user, 2026-11-11, "use your recommendations"):
+- AI-1: done. Bug 44 (masking) and bug 45 group A (one deploy per file, the messages, the target re-read, the states) are built and done; bug 45's groups B, C and D are backlog bug 47 (names), bug 48 (translation and Compare) and story 49 (the missing tests).
+- AI-2: approved and applied: the epic's R3 (the description dropped), R6, R7, R8 and Done when 1 and 3, AD-23's BYOC and "no pipeline API" lines, the initiative's out-of-scope list and the spec's Non-goals amended to the build.
+- AI-3: the README says Dedicated is the verified cluster type. The BYOC check (Connect, Deploy, Start/Stop, Delete) stays open for when a BYOC cluster is available (the user, hitl).
+- R3: the pipeline description is dropped from R3; Deploy does not ask for it.
+- AI-4: adopted. Every build plan ends with a review and a manual check result or an explicit "not run" or "skipped by the user"; a decision that changes a requirement is a Plan Change Log line naming it. Applied since bug 41.
+- AI-5: backlog story 50, "Code health for the Cloud adapter and the panels", merged with epic 3's AI-6 code-health item.
+- AI-6: epic 4 AI-2 (a runner-like gate for focus and layout tests) dropped: superseded by bug 41's waits and CI passing on the first attempt. Epic 4 AI-3 (watch CI on every push) adopted: done on every push since bug 41. Epic 4 AI-4 (a determinism question in every review) dropped: a flake gets its own ticket when it appears, as bug 41 did. Epic 3 AI-2 (F9 minor boundary stories) and AI-5 (epic 2's A1 and A4) dropped: not met again in three epics; a ticket is made if one recurs. Epic 3 AI-3 (reconcile the documents) applied with AI-2. Epic 3 AI-6 (code health) merged into story 50. Later retrospectives no longer carry these.
+- C9: settled by design. Bug 45 group A follows an update from Error through the grace period and says when the error may be from before the deploy, so it is right whatever the Data Plane answers.
+- Epic 5 closed as done.
+
 ## Open questions
 
 - Is BYOC still in scope as a claim? If no BYOC cluster will be available, should Done when 1 and the README say Dedicated (AI-3)?

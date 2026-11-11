@@ -108,7 +108,7 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 
 ## Non-goals
 
-- BYOC or Cloud deployment.
+- ~~BYOC or Cloud deployment.~~ In scope since 2026-11-11 (user, epic 5 retrospective AI-2): deploying to Redpanda Cloud BYOC and Dedicated clusters (epic 5) and reading a deployed pipeline's logs (epic 6). No capability covers them yet; their epics hold their requirements.
 - Any editing from the graph: add, remove, reorder, configure, schema-generated property forms; visual editing of nested structures.
 - Streams mode (multiple pipelines).
 - Bundled schema for use without a binary.

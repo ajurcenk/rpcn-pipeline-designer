@@ -28,7 +28,7 @@ Redpanda Connect developers author, check and run pipelines locally in VS Code w
 
 ## Boundaries
 
-Capability boundary: one solo owner with agent lanes; epics are cut by separately usable outcome (baseline → smart YAML editing and run → graph). Out of scope: the spec's Non-goals and the architecture spine's Deferred table (BYOC deploy, graph editing, streams mode, Bloblang LSP, lint while typing, panel restore after reload, debugging groundwork, telemetry, i18n). Tracer path: open a cookbook config → binary and schema resolved (epic-foundation) → completion and lint on save (epic-smart-yaml-editing) → graph beside it with a marker on the faulty node (epic-pipeline-graph).
+Capability boundary: one solo owner with agent lanes; epics are cut by separately usable outcome (baseline → smart YAML editing and run → graph). Out of scope: the spec's Non-goals and the architecture spine's Deferred table (graph editing, streams mode, Bloblang LSP, lint while typing, panel restore after reload, debugging groundwork, telemetry, i18n). Tracer path: open a cookbook config → binary and schema resolved (epic-foundation) → completion and lint on save (epic-smart-yaml-editing) → graph beside it with a marker on the faulty node (epic-pipeline-graph).
 
 - Touch point: redhat.vscode-yaml — schema supplied via `registerContributor`, no code change there; owner: epic-smart-yaml-editing
 - Touch point: the user's `rpk` / `redpanda-connect` binary — consumed via the RedpandaConnect adapter; owner: epic-foundation
@@ -49,4 +49,4 @@ Capability boundary: one solo owner with agent lanes; epics are cut by separatel
 - Decision: repo ticket store in the project repo github.com/ajurcenk/rpcn-pipeline-designer (user, 2026-10-06).
 - Decision: a second release, "Bloblang check and test" (CAP-15–CAP-17), is epic 4 after the three first-release epics; brief and spec amended 2026-10-12 (user, 2026-10-12).
 - Decision: epic 5, "Deploy to Redpanda Cloud", brings Cloud deployment (BYOC and Dedicated) into scope (user, 2026-11-02).
-- Source conflict: spec Non-goals — "BYOC or Cloud deployment" vs epic 5 (user decision 2026-11-02); the spec is not yet amended, so epic 5's requirements are its own (covers empty).
+- Source conflict: spec Non-goals — "BYOC or Cloud deployment" vs epic 5 (user decision 2026-11-02). Settled 2026-11-11 (epic 5 retrospective AI-2): the non-goal is dropped and Cloud deployment (epic 5) and pipeline logs (epic 6) are in scope; the spec has no capability for them yet, so their requirements are their own (covers empty).

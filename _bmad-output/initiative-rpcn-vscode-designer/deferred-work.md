@@ -155,11 +155,14 @@
 - source_plan: none
   summary: Bug 45 group B, names: the pipeline tag names the file without local paths and with its workspace folder, and each file keeps its own mapping (criteria 2 and 6, findings C3 and C7).
   evidence: split from bug 45 at the build's scope check (user, 2026-11-10, "Split, build A first"); it changes the tag format that Compare and Deploy again resolve, so it ships with its own decision on existing tags.
+  resolution: ticketed as backlog 47 (2026-11-11): `_bmad-output/backlog/bug-deploy-names-the-tag-carries-no-local-path-and-each-file-keeps-its-own-mapping-epic-5-retrospective.md`.
 
 - source_plan: none
   summary: Bug 45 group C, translation and Compare: `${secrets.NAME}` checked as a missing secret, Compare on the translated text, and the smaller cases (corrupt mapping offers the tagged pipeline, palette Delete names an unreadable mapping, nested `${A:${B}}`, `env(` in a comment) (criteria 4, 5 and 9, findings C5, C6 and C10).
   evidence: split from bug 45 at the build's scope check (user, 2026-11-10); touches the deploy flow after group A.
+  resolution: ticketed as backlog 48 (2026-11-11): `_bmad-output/backlog/bug-deploy-translation-and-compare-edge-cases-epic-5-retrospective.md`.
 
 - source_plan: none
   summary: Bug 45 group D, the tests the epic 5 retrospective found missing: V1, V2, V3, V5 and V6 (criterion 10).
   evidence: split from bug 45 at the build's scope check (user, 2026-11-10); cleaner once groups A–C have settled the behavior.
+  resolution: ticketed as backlog 49 (2026-11-11): `_bmad-output/backlog/story-integration-tests-for-the-deploy-paths-the-epic-5-retrospective-found-untested.md`.
