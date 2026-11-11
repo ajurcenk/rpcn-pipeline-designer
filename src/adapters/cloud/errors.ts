@@ -140,3 +140,18 @@ export function maskCredentials(text: string, values: readonly (string | undefin
 		.replace(/\b(authorization)(["']?\s*[:=]\s*["']?)(?!Bearer\b)[^\s"',;]+/gi, `$1$2${CREDENTIAL_MASK}`)
 		.replace(/\b(client_secret|access_token)(["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi, `$1$2${CREDENTIAL_MASK}`);
 }
+
+/**
+ * Bug 52: `text` masked when it is, as a whole, one of `values` (empty values skipped); else as is. The
+ * rule for log access passwords shorter than `maskCredentials`' 4 characters in log rows: a row that only
+ * contains their characters is shown as is. (In error text they are masked by substring: `maskCredentials`
+ * with `minLength` 1.)
+ */
+export function maskWhole(text: string, values: Iterable<string>): string {
+	for (const value of values) {
+		if (value && text === value) {
+			return CREDENTIAL_MASK;
+		}
+	}
+	return text;
+}

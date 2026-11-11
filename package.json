@@ -290,6 +290,12 @@
         "icon": "$(key)"
       },
       {
+        "command": "redpandaConnect.cloud.forgetLogAccess",
+        "title": "Forget log access",
+        "category": "Redpanda Connect",
+        "icon": "$(trash)"
+      },
+      {
         "command": "redpandaConnect.cloud.showLogs",
         "title": "Show pipeline logs",
         "category": "Redpanda Connect",
@@ -431,6 +437,9 @@
         {
           "command": "redpandaConnect.cloud.setUpLogAccess",
           "when": "false"
+        },
+        {
+          "command": "redpandaConnect.cloud.forgetLogAccess"
         },
         {
           "command": "redpandaConnect.cloud.showLogs"
@@ -674,6 +683,11 @@
           "command": "redpandaConnect.cloud.setUpLogAccess",
           "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
           "group": "1_actions@2"
+        },
+        {
+          "command": "redpandaConnect.cloud.forgetLogAccess",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster logs$/",
+          "group": "1_actions@3"
         },
         {
           "command": "redpandaConnect.cloud.showLogs",

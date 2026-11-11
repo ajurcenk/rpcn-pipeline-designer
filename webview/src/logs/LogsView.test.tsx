@@ -22,7 +22,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage, retryDelayMs,
-	searchError, searchPattern, shortTime, slotLabel, slotSize, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
+	searchError, searchPattern, shortTime, slotLabel, slotSize, STOPPED_BODY, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
 } from '../../../src/shared/logsProtocol';
 import {
 	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
@@ -500,6 +500,22 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(host.querySelector('.rpcn-logs-empty')).toBeNull();
 		await press('Set up log access…');
 		expect(posted.at(-1)).toEqual({ type: 'setUpAccess' });
+	});
+
+	it('STOPPED (bug 52): the reason, the rows kept, no button and no Load older', async () => {
+		const reason = 'The service account logs-bot was disconnected, so the log is no longer read';
+		await show({ kind: 'stopped', reason }, [row(1)]);
+		expect(part('label')).toBe('Stopped');
+		expect(part('title')).toBe(reason);
+		expect(part('body')).toBe(STOPPED_BODY);
+		expect(labels()).toEqual([]);
+		expect(host.querySelector('.rpcn-logs-older-button')).toBeNull();
+		expect(cells().length).toBe(1);
+		expect(button('rpcn-logs-live')?.disabled, 'Live does nothing').toBe(true);
+		expect(button('rpcn-logs-range-button')?.disabled, 'nor the range menu').toBe(true);
+		await show(NO_PANEL_STATE);
+		expect(button('rpcn-logs-live')?.disabled).toBe(false);
+		expect(button('rpcn-logs-range-button')?.disabled).toBe(false);
 	});
 
 	it('SIGN_IN: "<user> could not sign in to <cluster>"; Set up log access again…, Retry', async () => {

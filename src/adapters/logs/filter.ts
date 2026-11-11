@@ -100,6 +100,14 @@ export class SlotCounter {
 		}
 	}
 
+	/** Bug 52: a record counted as matching no longer matches (its row was masked again). */
+	unmatch(time: number): void {
+		const m = this.minutes.get(Math.floor(time / MINUTE_MS));
+		if (m && m.matched > 0) {
+			m.matched--;
+		}
+	}
+
 	/** The strip from `from` to `end`: the counts per slot of `stripLayout(from, end)`; a record outside it counts in the nearest slot. */
 	strip(from: number, end: number): LogStrip {
 		const layout = stripLayout(from, end);
@@ -130,6 +138,13 @@ export class Counter {
 		this.total++;
 		if (matching) {
 			this.matched++;
+		}
+	}
+
+	/** Bug 52: a record counted as matching no longer matches (its row was masked again). */
+	unmatch(): void {
+		if (this.matched > 0) {
+			this.matched--;
 		}
 	}
 

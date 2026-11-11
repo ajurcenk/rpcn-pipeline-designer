@@ -105,7 +105,8 @@ export interface ExtensionApi {
 	 */
 	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
-		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue' | 'showLogsAroundError' | 'errorFollowUp'>;
+		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue' | 'showLogsAroundError' | 'errorFollowUp'
+		| 'forgetLogAccess' | 'storeAsAnotherWindow'>;
 	/**
 	 * The Pipeline Logs tab (tickets 6.2, 6.3, 6.8): the shown pipeline, its kept rows and status, whether it
 	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions, Export…

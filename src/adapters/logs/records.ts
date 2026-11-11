@@ -6,11 +6,13 @@
 // masked wherever else it appears, in its record and, through the caller's `orgs` (every value seen in
 // the session, `licenseOrgOf`), in every later record and the panel's other text. Every text passes the caller's `mask` (the Cloud
 // view's: the client secret, the tokens, the log access passwords). Ticket 6.4: the row also carries
-// the whole value as shown (`json`: pretty-printed, masked, `license_org` left out). No `vscode` import.
+// the whole value as shown (`json`: pretty-printed, masked, `license_org` left out). Bug 52: a value of
+// any shape is masked value by value (a JSON array, string or number too, not only an object), and log
+// access passwords under 4 characters are masked where a whole value equals one. No `vscode` import.
 
 import type { LogRow } from '../../shared/logsProtocol';
 import type { LogRecord } from './logReader';
-import { CREDENTIAL_MASK } from '../cloud/errors';
+import { CREDENTIAL_MASK, maskWhole } from '../cloud/errors';
 
 /** Fields the row shows in its own columns, or never. */
 const COLUMN_FIELDS = new Set(['time', 'level', 'message', 'instance_id']);
@@ -64,29 +66,57 @@ export function maskOrgs(text: string, orgs: Iterable<string>): string {
 
 /**
  * The row `record` is shown as; every text passes `mask`. `orgs`: the `license_org` values seen so
- * far; the record's own is added, and all of them are masked in its texts.
+ * far; the record's own is added, and all of them are masked in its texts. Bug 52: `exact` (the log
+ * access passwords under 4 characters) is masked where a whole value, a key or the raw text equals one;
+ * every value is masked value by value, whatever its shape (a JSON object, array, string or number, or
+ * text that is not JSON), so a secret's `"` or `\` escaped in the JSON text is not missed.
  */
-export function toLogRow(record: LogRecord, mask: (text: string) => string = (t) => t, orgs: Set<string> = new Set()): LogRow {
+export function toLogRow(record: LogRecord, mask: (text: string) => string = (t) => t, orgs: Set<string> = new Set(), exact: readonly string[] = []): LogRow {
 	const own = licenseOrgOf(record);
 	if (own) {
 		orgs.add(own);
 	}
 	const id = `${record.partition}:${record.offset}`;
 	let value: unknown;
+	let parsed = false;
 	try {
 		value = record.value === null ? undefined : JSON.parse(record.value);
+		parsed = record.value !== null;
 	} catch {
 		value = undefined;
 	}
-	const shown = (text: string) => mask(maskOrgs(text, orgs));
-	if (!isObject(value)) {
-		return { id, time: record.timestamp, level: '', message: shown(record.value ?? ''), instance: '', fields: [], raw: true };
-	}
+	const shown = (text: string) => mask(maskOrgs(maskWhole(text, exact), orgs));
 	// Masked value by value before anything is written as JSON (a nested field, the whole record): in
 	// JSON text a secret's `"`, `\` or control characters are escaped, so masking the text would miss it.
-	const maskDeep = (v: unknown): unknown => typeof v === 'string' ? shown(v)
-		: Array.isArray(v) ? v.map(maskDeep)
-			: isObject(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [shown(k), maskDeep(x)])) : v;
+	// A number or boolean whose text holds a secret becomes the mask.
+	const maskDeep = (v: unknown): unknown => {
+		if (typeof v === 'string') {
+			return shown(v);
+		}
+		if (Array.isArray(v)) {
+			return v.map(maskDeep);
+		}
+		if (isObject(v)) {
+			return Object.fromEntries(Object.entries(v).map(([k, x]) => [shown(k), maskDeep(x)]));
+		}
+		if (typeof v === 'number' || typeof v === 'boolean') {
+			const text = String(v);
+			return shown(text) === text ? v : CREDENTIAL_MASK;
+		}
+		return v;
+	};
+	if (!isObject(value)) {
+		const raw = record.value ?? '';
+		let message = shown(raw);
+		if (parsed && (typeof value === 'string' || Array.isArray(value))) {
+			// A JSON array or string: shown as its text, re-written only when a value in it was masked (its
+			// text may hold a secret escaped). A number's text is masked as text.
+			const masked = maskDeep(value);
+			const same = JSON.stringify(masked) === JSON.stringify(value);
+			message = same ? message : shown(JSON.stringify(masked));
+		}
+		return { id, time: record.timestamp, level: '', message, instance: '', fields: [], raw: true };
+	}
 	const text = (v: unknown) => shown(fieldText(maskDeep(v)));
 	const fields: [string, string][] = [];
 	for (const [key, v] of Object.entries(value)) {
@@ -103,7 +133,7 @@ export function toLogRow(record: LogRecord, mask: (text: string) => string = (t)
 	return {
 		id,
 		time: parseLogTime(value.time) ?? record.timestamp,
-		level: typeof value.level === 'string' ? shown(value.level.toUpperCase()) : value.level === undefined ? '' : text(value.level),
+		level: typeof value.level === 'string' ? shown(shown(value.level).toUpperCase()) : value.level === undefined ? '' : text(value.level),
 		message: value.message === undefined ? '' : text(value.message),
 		instance: value.instance_id === undefined ? '' : text(value.instance_id),
 		fields,

@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { pipelineFrom, pipelineStateText } from '../../../adapters/cloud/dataPlane';
 import {
-	asCloudError, CloudError, cloudErrorFrom, CREDENTIAL_MASK, describeCloudError, hintLines, lintHintsOf, maskCredentials, UNAUTHORIZED_MESSAGE,
+	asCloudError, CloudError, cloudErrorFrom, CREDENTIAL_MASK, describeCloudError, hintLines, lintHintsOf, maskCredentials, maskWhole, UNAUTHORIZED_MESSAGE,
 } from '../../../adapters/cloud/errors';
 import { type FetchLike, requestJson } from '../../../adapters/cloud/http';
 
@@ -58,6 +58,10 @@ suite('Cloud errors (ticket 5.2, AD-23)', () => {
 		assert.ok(masked.includes(`Bearer ${CREDENTIAL_MASK}`), masked);
 		assert.strictEqual(maskCredentials('short ab', ['ab']), 'short ab', 'very short values are not masked');
 		assert.strictEqual(maskCredentials('short ab', ['ab'], 1), `short ${CREDENTIAL_MASK}`, 'bug 44: minLength 1 masks a short value');
+		// Bug 52: a short log password in a row: only a whole value equal to it.
+		assert.strictEqual(maskWhole('ab', ['ab']), CREDENTIAL_MASK);
+		assert.strictEqual(maskWhole('short ab', ['ab']), 'short ab');
+		assert.strictEqual(maskWhole('', ['']), '', 'an empty value is skipped');
 	});
 
 	test('bug 44: requestJson masks a short sent value in an error\'s message and hints only, with the longer secrets as before', async () => {

@@ -170,3 +170,7 @@
 - source_plan: none
   summary: The Bloblang test panel test "PLACE_WITH_GRAPH + PLACE_SECOND (4.17)" (90-bloblang-panel.ts, compiled :2732) failed once in CI: "focus stays in the YAML, in its group: editor none, group 2 (tab Graph: place-graph.yaml [webview]), visible [place-graph.yaml@1], window focused".
   evidence: CI run 43069449219 attempt 1 on 9a4f70b (2026-11-11), a push of ticket and planning documents only; the same code passed it in runs 43039063934 and 43046046364. A focus-timing test of the family bug 41 fixed (focus left on the graph webview's group); not on bug 41's list. The rerun (attempt 2) passed. Settled by reading its focus wait against bug 41's shared helpers (untilText, graphReady) and by whether it fails again.
+
+- source_plan: `_bmad-output/backlog/bug-pipeline-logs-credentials-and-masking-epic-6-retrospective-plan.md`
+  summary: A log access change made in another window while this window is writing to the secret storage (`writing > 0`) is dropped, so the open tab keeps the old access until its next read of the store.
+  evidence: bug 52's thorough review, triage row 18 (the store's change handler shares one `writing` counter for every key, `cloudView.ts` ~:581); fix with a per-key set of the keys this window is writing. Rare: needs two windows changing the same cluster's access at once.

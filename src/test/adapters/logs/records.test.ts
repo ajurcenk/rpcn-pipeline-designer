@@ -97,4 +97,50 @@ suite('Pipeline log records (ticket 6.2)', () => {
 		assert.ok(!JSON.stringify(row).includes('hunter22'), JSON.stringify(row));
 		assert.ok(!JSON.stringify(toLogRow(record('raw hunter22'), mask)).includes('hunter22'));
 	});
+	test('MASK_SHAPES (bug 52): a secret with `"` and `\\` in a value that is a JSON array, string or number, or plain text, is masked in every form', () => {
+		const secret = 'pa"ss\\word';
+		const digits = '98765432';
+		const mask = (t: string) => t.split(secret).join(CREDENTIAL_MASK).split(digits).join(CREDENTIAL_MASK);
+		const escaped = JSON.stringify(secret).slice(1, -1);
+		const cases: [string, string][] = [
+			[JSON.stringify([`array ${secret}`, { k: secret }, Number(digits)]), JSON.stringify([`array ${CREDENTIAL_MASK}`, { k: CREDENTIAL_MASK }, CREDENTIAL_MASK])],
+			[JSON.stringify(`string ${secret}`), JSON.stringify(`string ${CREDENTIAL_MASK}`)],
+			[digits, CREDENTIAL_MASK],
+			[`plain ${secret}`, `plain ${CREDENTIAL_MASK}`],
+		];
+		for (const [value, message] of cases) {
+			const row = toLogRow(record(value), mask);
+			assert.strictEqual(row.message, message, value);
+			assert.ok(!row.message.includes(secret) && !row.message.includes(escaped) && !row.message.includes(digits), row.message);
+		}
+		// An object's number field, in its field and its JSON.
+		const row = toLogRow(record({ message: 'm', pin: Number(digits), ok: true }), mask);
+		assert.deepStrictEqual(row.fields, [['pin', CREDENTIAL_MASK], ['ok', 'true']]);
+		assert.deepStrictEqual(JSON.parse(row.json!), { message: 'm', pin: CREDENTIAL_MASK, ok: true });
+		// Nothing masked: the text as written.
+		assert.strictEqual(toLogRow(record('[1, 2]'), mask).message, '[1, 2]');
+		assert.strictEqual(toLogRow(record('"quoted"'), mask).message, '"quoted"');
+	});
+
+	test('SHORT_PASSWORD (bug 52): a value under 4 characters is masked where a whole value, key, field or raw text equals it; text that only contains it is shown as is', () => {
+		const exact = ['zq'];
+		const row = toLogRow(record({ level: 'zq', message: 'zq', token: 'zq', zq: 1, nested: ['zq', 'zqzq', { a: 'zq' }], note: 'the zq', n: 12 }), undefined, new Set(), [...exact, '12']);
+		assert.strictEqual(row.level, CREDENTIAL_MASK);
+		assert.strictEqual(row.message, CREDENTIAL_MASK);
+		assert.deepStrictEqual(row.fields, [
+			['token', CREDENTIAL_MASK], [CREDENTIAL_MASK, '1'], ['nested', JSON.stringify([CREDENTIAL_MASK, 'zqzq', { a: CREDENTIAL_MASK }])], ['note', 'the zq'], ['n', CREDENTIAL_MASK],
+		]);
+		assert.ok(!/"zq"/.test(row.json!), row.json);
+		assert.strictEqual(toLogRow(record('zq'), undefined, new Set(), exact).message, CREDENTIAL_MASK, 'a raw message');
+		assert.strictEqual(toLogRow(record(JSON.stringify('zq')), undefined, new Set(), exact).message, JSON.stringify(CREDENTIAL_MASK), 'a JSON string');
+		assert.strictEqual(toLogRow(record('zq zq'), undefined, new Set(), exact).message, 'zq zq', 'only contains it');
+		assert.strictEqual(toLogRow(record('12'), undefined, new Set(), ['12']).message, CREDENTIAL_MASK, 'a JSON number');
+	});
+	test('LEVEL (bug 52): a level equal to a secret or a license_org is masked before it is upper-cased', () => {
+		const mask = (t: string) => t.split('hunter22').join(CREDENTIAL_MASK);
+		assert.strictEqual(toLogRow(record({ level: 'hunter22', message: 'm' }), mask).level, CREDENTIAL_MASK);
+		const org = '0a1b2c3d-org';
+		assert.strictEqual(toLogRow(record({ level: org, message: 'm' }), undefined, new Set([org])).level, CREDENTIAL_MASK);
+		assert.strictEqual(toLogRow(record({ level: 'warn', message: 'm' }), mask).level, 'WARN');
+	});
 });

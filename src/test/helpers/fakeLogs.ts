@@ -75,6 +75,8 @@ export class FakeLogs {
 	/** The user that may sign in. */
 	username: string;
 	password: string;
+	/** Bug 52: the refused sign-in's message (default: SASL authentication failed). */
+	signInMessage: string | undefined;
 	/** When set, a read is refused after the sign-in (an authorization error). */
 	refuseRead = false;
 	/** When set, the test read fails with this connection error. */
@@ -144,6 +146,7 @@ export class FakeLogs {
 		this.connectionFailures = 0;
 		this.connectionsRefused = 0;
 		this.dropRangeAfter = undefined;
+		this.signInMessage = undefined;
 	}
 
 	/** The ranges still reading. */
@@ -169,7 +172,7 @@ export class FakeLogs {
 			throw readError('connection', 'Cannot connect to any broker: connect ECONNREFUSED');
 		}
 		if (target.access.username !== this.username || target.access.password !== this.password) {
-			throw readError('signIn', 'Cannot connect to any broker: SASL authentication failed');
+			throw readError('signIn', this.signInMessage ?? 'Cannot connect to any broker: SASL authentication failed');
 		}
 		if (this.refuseRead) {
 			throw readError('notAllowed', 'not allowed to read __redpanda.connect.logs (Kafka error 29)');

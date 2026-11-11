@@ -91,6 +91,13 @@
 // `setUpAccess`, 6.2's Set up log access for its cluster, which the tab's Set up log access again… and
 // Use another user… run before reading the same range again.
 //
+// Bug 52 (epic 6 retrospective): **Forget log access** on a cluster row with access (and in the palette,
+// with a pick of the clusters that have it) removes its record from the secret storage and memory; an
+// open tab on it shows No log access. Disconnect, a connect of another account and an account change
+// in another window drop the log accesses held in memory (the stored records stay until Forget, so the
+// same account reads them again) and stop the tab, saying why. Another window's removal of an access
+// stops the tab on it too; a replaced one is used at the next sign-in.
+//
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 //
 // The code is in four modules (ticket 5.9): this one (the account, Connect and Disconnect, the clusters and
@@ -116,7 +123,7 @@ import type { ComponentCatalog } from '../../core/catalogue';
 import type { LintResult } from '../redpandaConnect/lint';
 import { CloudActions, type PaletteTarget, type PaletteTargetHow, type PipelineAction } from './cloudActions';
 import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy';
-import { CloudLogs, LOG_ACCESS_PREFIX } from './cloudLogs';
+import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
 import { CONNECT_ACTION, DEPLOYED_SCHEME, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
 import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
@@ -132,7 +139,8 @@ export {
 	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, pipelineStateDescription,
 } from './cloudShared';
 export {
-	LOG_ACCESS_PREFIX, logAccessKey, NO_LOG_ACCESS_SET, noLogAccessMessage, SET_UP_LOG_ACCESS_ACTION, SHOW_LOGS_ACTION, signInRefusedMessage,
+	FORGET_LOG_ACCESS_COMMAND, LOG_ACCESS_PREFIX, logAccessForgottenMessage, logAccessKey, NO_CLUSTER_WITH_LOG_ACCESS, NO_LOG_ACCESS_SET, noLogAccessMessage,
+	SET_UP_LOG_ACCESS_ACTION, SHOW_LOGS_ACTION, signInRefusedMessage, type ForgetLogAccessResult,
 } from './cloudLogs';
 
 export const CLOUD_VIEW_ID = 'redpandaConnect.cloud';
@@ -154,6 +162,11 @@ export const SET_UP_LOG_ACCESS_COMMAND = 'redpandaConnect.cloud.setUpLogAccess';
 export const SHOW_LOGS_COMMAND = 'redpandaConnect.cloud.showLogs';
 /** Ticket 6.5: an Error pipeline row's log around its newest ERROR record. */
 export const SHOW_LOGS_AROUND_ERROR_COMMAND = 'redpandaConnect.cloud.showLogsAroundError';
+/** Bug 52: the Pipeline Logs tab's Stopped state after a Disconnect or another account. */
+export function accountDisconnectedReason(name: string | undefined): string {
+	return `The service account${name ? ` ${name}` : ''} was disconnected, so the log is no longer read`;
+}
+export const ACCOUNT_CHANGED_REASON = 'The service account changed, so the log is no longer read';
 /** Whether a service account is connected (menus and the view's empty state). */
 export const CONNECTED_KEY = 'redpandaConnect.cloud.connected';
 export const CLIENT_ID_KEY = 'redpandaConnect.cloud.clientId';
@@ -200,7 +213,8 @@ export const UNREACHABLE_ENDPOINTS: CloudEndpoints = {
 /** The prompts and messages (tests replace them); messages arrive masked. */
 export interface CloudUi {
 	input(options: vscode.InputBoxOptions): Thenable<string | undefined>;
-	pickCluster(clusters: readonly CloudCluster[], title: string): Thenable<CloudCluster | undefined>;
+	/** A cluster (`placeHolder`: the question; default, the deploy's). */
+	pickCluster(clusters: readonly CloudCluster[], title: string, placeHolder?: string): Thenable<CloudCluster | undefined>;
 	/** A palette action's pipeline, from every cluster's; `undefined`: cancelled. */
 	pickPipeline(pipelines: readonly PipelineChoice[], title: string): Thenable<PipelineChoice | undefined>;
 	/**
@@ -236,10 +250,10 @@ export function clusterDescription(c: CloudCluster): string {
 
 export const defaultCloudUi: CloudUi = {
 	input: (options) => vscode.window.showInputBox(options),
-	pickCluster: async (clusters, title) => {
+	pickCluster: async (clusters, title, placeHolder) => {
 		const picked = await vscode.window.showQuickPick(
 			clusters.map((c) => ({ label: c.name, description: clusterDescription(c), cluster: c })),
-			{ title, placeHolder: 'The cluster to create the pipeline on' },
+			{ title, placeHolder: placeHolder ?? 'The cluster to create the pipeline on' },
 		);
 		return picked?.cluster;
 	},
@@ -437,8 +451,15 @@ export interface CloudViewOptions {
 	readonly localVersion?: () => string | undefined;
 	/** Ticket 8: the local schema's catalogue, when one is loaded (else the cluster's is used). */
 	readonly catalogue?: () => ComponentCatalog | undefined;
-	/** Ticket 6.2: the Pipeline Logs tab, which Show logs opens on a pipeline. */
-	readonly logs?: { show(source: LogSource, options?: LogsShowOptions): Promise<void> };
+	/**
+	 * Ticket 6.2: the Pipeline Logs tab, which Show logs opens on a pipeline. Bug 52: `revoke` stops its
+	 * reading (Forget log access, Disconnect, another account), `remask` masks its rows again (a new password).
+	 */
+	readonly logs?: {
+		show(source: LogSource, options?: LogsShowOptions): Promise<void>;
+		revoke?(which: (source: LogSource) => boolean, reason?: string): boolean;
+		remask?(): void;
+	};
 	/** Ticket 6.2: how a cluster's logs are read (default: `@platformatic/kafka`). */
 	readonly logReader?: LogReaderFactory;
 }
@@ -558,7 +579,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 					this.ready = this.readAccount();
 				}
 				// Another window set up a cluster's log access: its rows follow.
-				if (e.key.startsWith(LOG_ACCESS_PREFIX) && this.writing === 0) {
+				// Bug 52: not while disconnected (the stored record counts at the next connect).
+				if (e.key.startsWith(LOG_ACCESS_PREFIX) && this.writing === 0 && this.account) {
 					void this.logAccess.readLogAccess(e.key.slice(LOG_ACCESS_PREFIX.length)).then(() => this.fire());
 				}
 			}),
@@ -642,6 +664,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(DEPLOY_AGAIN_COMMAND, (node?: CloudNode) => this.rowAction('deployAgain', node)),
 			vscode.commands.registerCommand(COPY_ID_COMMAND, (node?: CloudNode) => this.rowAction('copyId', node)),
 			vscode.commands.registerCommand(SET_UP_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.setUpLogAccess(node)),
+			// Bug 52: from a cluster row, or the palette (no argument: a pick).
+			vscode.commands.registerCommand(FORGET_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.forgetLogAccess(node)),
 			// From the palette (ticket 6.5) it gets no argument: the mapped pipeline, else a pick.
 			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
 			vscode.commands.registerCommand(SHOW_LOGS_AROUND_ERROR_COMMAND, (node?: CloudNode) => this.showLogsAroundError(node)),
@@ -669,7 +693,16 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	private secrets(): (string | undefined)[] {
-		return [...this.seenSecrets, ...this.tokens.values()];
+		return [...this.seenSecrets, ...this.logAccess.passwords(), ...this.tokens.values()];
+	}
+
+	/**
+	 * Bug 52: the account is gone (Disconnect, another account here or in another window): the log
+	 * accesses held in memory are dropped and the Pipeline Logs tab stops, saying `reason`.
+	 */
+	private accountGone(reason: string): void {
+		this.logAccess.clear();
+		this.options.logs?.revoke?.((source) => source.clusterId !== undefined, reason);
 	}
 
 	/** `text` with the client secret and every token masked. */
@@ -740,11 +773,15 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.setConnectedContext();
 			return;
 		}
+		const previous = this.account;
 		this.accountGeneration++;
 		this.resetData();
 		this.tokens.clear();
 		this.requested = false;
 		this.account = stored ? { clientId: stored } : undefined;
+		if (previous) {
+			this.accountGone(stored ? ACCOUNT_CHANGED_REASON : accountDisconnectedReason(previous.name ?? previous.clientId));
+		}
 		this.setConnectedContext();
 		this.fire();
 	}
@@ -830,6 +867,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		const previous = this.account;
 		if (previous && previous.clientId !== clientId) {
 			this.tokens.clear(previous.clientId);
+			this.accountGone(ACCOUNT_CHANGED_REASON);
 		}
 		this.resetData();
 		this.account = { clientId, ...(clientName ? { name: clientName } : {}) };
@@ -881,6 +919,9 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.tokens.clear();
 		this.account = undefined;
 		this.resetData();
+		if (name) {
+			this.accountGone(accountDisconnectedReason(name));
+		}
 		this.ready = Promise.resolve();
 		this.setConnectedContext();
 		this.fire();
@@ -932,8 +973,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				const clusters = await listClusters(this.call(), this.endpoints.controlPlaneUrl);
 				const checked = clusters.map((c) => (c.dataplaneUrl && !this.dataplaneUrlOf(c)
 					? { ...c, dataplaneUrl: undefined, detailError: 'its Data Plane address is not https' } : c));
-				// Ticket 6.2: which clusters have log access (the secret storage only; nothing is requested).
-				await Promise.all(checked.map((c) => this.logAccess.readLogAccess(c.id)));
+				// Ticket 6.2: which clusters have log access (the secret storage only; nothing is requested). Bug 52:
+				// not for a load an account change made stale (its accesses were dropped).
+				if (generation === this.generation) {
+					await Promise.all(checked.map((c) => this.logAccess.readLogAccess(c.id, () => generation === this.generation)));
+				}
 				if (generation === this.generation) {
 					this.clusters = { kind: 'ok', value: checked };
 				}
@@ -1273,9 +1317,26 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		return this.actions.rowAction(action, node);
 	}
 
-	/** Removes a cluster's stored log access (the test seam; no command removes it yet). */
+	/** Removes a cluster's log access, as Forget log access does, quietly (the test seam). */
 	removeLogAccess(clusterId: string): Promise<void> {
 		return this.logAccess.removeLogAccess(clusterId);
+	}
+
+	/** Forget log access (bug 52): a cluster row's, or from the palette a picked cluster's. Never throws. */
+	forgetLogAccess(node?: CloudNode): Promise<ForgetLogAccessResult> {
+		return this.logAccess.forgetLogAccess(node);
+	}
+
+	/**
+	 * Writes (a value) or deletes (`undefined`) a secret storage key as another window would: this window
+	 * then follows the change event (the test seam; only in `ExtensionMode.Test`).
+	 */
+	async storeAsAnotherWindow(key: string, value: string | undefined): Promise<void> {
+		if (value === undefined) {
+			await this.options.store.delete(key);
+		} else {
+			await this.options.store.store(key, value);
+		}
 	}
 
 	/** The secret storage's value of `key` (the test seam's NO_LEAK check; only in `ExtensionMode.Test`). */

@@ -234,6 +234,7 @@ export function stateActions(state: LogsPanelState): readonly { readonly label: 
 			return [{ label: 'Stop reading', message: { type: 'stopReading' } }];
 		case 'connectionLost':
 			return [{ label: 'Retry now', message: { type: 'retryNow' } }];
+		case 'stopped':
 		case 'none':
 			return [];
 	}
@@ -582,6 +583,8 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 	const shown = state.title !== null;
 	const gaps = new Map(gapsIn(state.rows).map((g) => [g.before, g]));
 	const panel = view.panelState;
+	// Bug 52: Stopped (the account went): Live and the range menu do nothing.
+	const stopped = panel.kind === 'stopped';
 	const emptyText = view.stoppedShort ? STOPPED_EMPTY_TEXT : filterActive(view.filter) && view.counts.total > 0 ? NO_MATCH_TEXT
 		: view.range.to !== null && view.done ? noRecordsText(view.range.from, view.range.to) : NO_RECORDS_TEXT;
 	const oldest = view.olderBefore;
@@ -595,14 +598,14 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 				<span className="rpcn-logs-status" role="status">{state.status}</span>
 				{shown ? (
 					<div className="rpcn-logs-tools">
-						<button type="button" className="rpcn-logs-button rpcn-logs-live" aria-pressed={view.live} onClick={() => post({ type: 'liveToggled', live: !view.live })}>
+						<button type="button" className="rpcn-logs-button rpcn-logs-live" aria-pressed={view.live} disabled={stopped} onClick={() => post({ type: 'liveToggled', live: !view.live })}>
 							<span className={view.live ? 'rpcn-logs-dot rpcn-logs-dot-on' : 'rpcn-logs-dot'} aria-hidden="true" />Live
 						</button>
 						<div className="rpcn-logs-range">
-							<button type="button" className="rpcn-logs-button rpcn-logs-range-button" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={openMenu}>
+							<button type="button" className="rpcn-logs-button rpcn-logs-range-button" aria-haspopup="dialog" aria-expanded={menuOpen} disabled={stopped} onClick={openMenu}>
 								{rangeButtonText(view)} ▾
 							</button>
-							{menuOpen ? <RangeMenu state={view} post={post} close={() => setMenuOpen(false)} /> : null}
+							{menuOpen && !stopped ? <RangeMenu state={view} post={post} close={() => setMenuOpen(false)} /> : null}
 						</div>
 						<button type="button" className="rpcn-logs-button rpcn-logs-export" aria-label={EXPORT_LABEL} title={EXPORT_LABEL}
 							disabled={state.rows.length === 0} onClick={() => post({ type: 'exportRequested' })}>{EXPORT_TEXT}</button>
@@ -612,7 +615,7 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 			{shown ? <FilterBar draft={draft} view={view} change={changeFilter} /> : null}
 			{shown && view.strip ? <Strip strip={view.strip} filtered={filterActive(view.filter)} post={post} /> : null}
 			<div className="rpcn-logs-scroll" ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Log records">
-				{shown && panel.kind !== 'noAccess' ? (
+				{shown && panel.kind !== 'noAccess' && panel.kind !== 'stopped' ? (
 					<div className="rpcn-logs-older">
 						{view.older === 'none'
 							? <span className="rpcn-logs-no-older">{NO_OLDER_TEXT}</span>

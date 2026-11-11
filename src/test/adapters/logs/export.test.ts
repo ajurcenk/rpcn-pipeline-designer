@@ -23,6 +23,14 @@ suite('Pipeline log export (ticket 6.8)', () => {
 		assert.ok(!/partition|offset|"timestamp"/.test(line));
 	});
 
+	test('MASK_SHAPES (bug 52): a JSON array or string value holding a secret with `"` and `\\`: the line has the mask, the secret neither raw nor escaped', () => {
+		for (const value of [JSON.stringify([`said ${SECRET}`]), JSON.stringify(`said ${SECRET}`)]) {
+			const line = exportLine(toLogRow(record(value), mask));
+			assert.ok(!line.includes(SECRET) && !line.includes(JSON.stringify(SECRET).slice(1, -1)) && !line.includes(JSON.stringify(JSON.stringify(SECRET).slice(1, -1)).slice(1, -1)), line);
+			assert.ok(line.includes(CREDENTIAL_MASK), line);
+		}
+	});
+
 	test('MASKED: a secret value (quoted, escaped) and license_org: the line has the mask, no license_org, no secret, escaped or not', () => {
 		const row = toLogRow(record({ level: 'WARN', message: `token ${SECRET}`, license_org: ORG, note: `for ${ORG}`, deep: { said: [SECRET] } }), mask);
 		const line = exportLine(row);

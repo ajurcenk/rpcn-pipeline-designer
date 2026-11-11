@@ -34,6 +34,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+	ACCOUNT_CHANGED_REASON, accountDisconnectedReason, CloudView, FORGET_LOG_ACCESS_COMMAND, logAccessForgottenMessage, NO_CLUSTER_WITH_LOG_ACCESS,
 	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, logAccessKey, type CloudItem, type CloudUi, LOG_ACCESS_PREFIX, NO_LOG_ACCESS_SET, noLogAccessMessage, type PipelineChoice,
 	SET_UP_LOG_ACCESS_ACTION, SET_UP_LOG_ACCESS_COMMAND, SHOW_LOGS_ACTION, SHOW_LOGS_AROUND_ERROR_COMMAND, SHOW_LOGS_COMMAND, signInRefusedMessage, START_COMMAND,
 } from '../../../adapters/vscode/cloudView';
@@ -734,12 +735,14 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.strictEqual(texts().length, 3000);
 	});
 
-	test('LOAD_OLDER failure: "Could not load older records: …" in its row, kept while the tail goes on; the status line stays the tail\'s', async () => {
+	test('LOAD_OLDER failure (OLDER_ERROR, bug 52): "Could not load older records: …" in the panel\'s own words in its row, the cluster\'s text in the output channel only; kept while the tail goes on; the status line stays the tail\'s', async () => {
 		topic.write(rec(ORDERS, 'one', MINUTE));
 		await showOrders();
 		topic.refuseRead = true;
 		await logs().loadOlder();
-		assert.match(logs().viewState.olderError ?? '', /^Could not load older records: not allowed to read __redpanda\.connect\.logs/);
+		assert.strictEqual(logs().viewState.olderError, 'Could not load older records: logs-reader may not read the logs topic.');
+		assert.ok(!JSON.stringify(logs().posted).includes('Kafka error 29'), 'not the cluster\'s text');
+		assert.ok(api().outputLines().some((l) => l.includes('loading older records of orders · rpc-vilnius failed: not allowed to read __redpanda.connect.logs')), 'in the output channel');
 		assert.strictEqual(logs().panelState.kind, 'none', 'no state: the tail goes on');
 		assert.strictEqual(logs().viewState.older, 'more');
 		topic.write(rec(ORDERS, 'two'));
@@ -2108,6 +2111,397 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.deepStrictEqual(linesOf(file).map((l) => (JSON.parse(l) as { message: string }).message), [`${ORDERS}:before 1`, `${ORDERS}:before 2`]);
 		assert.deepStrictEqual(seen.infos.map((i) => i.message), ['Exported 2 records to live.jsonl.']);
 		assert.strictEqual(logs().viewState.live, true, 'Live goes on');
+	});
+
+	// --- bug 52: log access credentials and masking (epic 6 retrospective) ---
+
+	const forget = (node?: CloudItem['node']) => vscode.commands.executeCommand<{ kind: string; clusterId?: string }>(FORGET_LOG_ACCESS_COMMAND, node);
+	const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+	const VILNIUS_TEXT = 'Dedicated · AWS us-east-2 · Connect 4.115.0';
+	/** Sets up BYOC's log access as `username` with `password` in another window (a change event of the secret storage). */
+	async function otherWindowAccess(clusterId: string, username: string, password: string, mechanism = 'SCRAM-SHA-256'): Promise<void> {
+		await cloud().storeAsAnotherWindow(logAccessKey(clusterId), JSON.stringify({ username, password, mechanism }));
+	}
+
+	test('package.json (bug 52): Forget log access on a cluster row with log access only, and in the palette', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: { commands: { command: string; title: string }[]; menus: Record<string, { command: string; when?: string; group?: string }[]> };
+		};
+		assert.strictEqual(pkg.contributes.commands.find((c) => c.command === FORGET_LOG_ACCESS_COMMAND)?.title, 'Forget log access');
+		const palette = pkg.contributes.menus.commandPalette.find((m) => m.command === FORGET_LOG_ACCESS_COMMAND);
+		assert.ok(palette && palette.when === undefined, 'in the palette (a cluster pick)');
+		const rows = pkg.contributes.menus['view/item/context'].filter((m) => m.command === FORGET_LOG_ACCESS_COMMAND);
+		assert.strictEqual(rows.length, 1);
+		assert.ok(!rows[0].group?.startsWith('inline'), 'in the menu, not inline');
+		const re = new RegExp(/viewItem =~ \/(.+)\/$/.exec(rows[0].when ?? '')![1]);
+		assert.deepStrictEqual(['cloudCluster logs', 'cloudCluster', 'cloudCluster noPipelineApi', 'cloudPipeline state-running logs'].map((v) => re.test(v)), [true, false, false, false]);
+	});
+
+	test('FORGET (bug 52): Forget log access on a cluster row removes its record from the secret storage and memory only; its row loses "logs: <user>"; the open tab on it stops and shows No log access; Set up log access reads again', async () => {
+		await setUpAccess();
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp(clusterNode(BYOC)))?.kind, 'stored', errors.join('\n'));
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().visible && texts().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		const tail = topic.activeTails()[0];
+		infos.length = 0;
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+		assert.deepStrictEqual(infos, [logAccessForgottenMessage('rpc-vilnius')]);
+		assert.strictEqual(await cloud().storedValue(logAccessKey(VILNIUS)), undefined, 'removed from the secret storage');
+		assert.deepStrictEqual(await cloud().storedLogAccess(BYOC), { username: USERNAME, mechanism: 'SCRAM-SHA-256' }, 'the other cluster\'s stays');
+		assert.strictEqual(clusterItem('rpc-vilnius').description, VILNIUS_TEXT);
+		assert.strictEqual(clusterItem('rpc-vilnius').contextValue, 'cloudCluster');
+		assert.strictEqual(pipelineItem('orders').contextValue, 'cloudPipeline state-running');
+		assert.strictEqual(clusterItem('byoc-eu').contextValue, 'cloudCluster logs');
+		assert.deepStrictEqual(logs().panelState, { kind: 'noAccess', cluster: 'rpc-vilnius', topic: '__redpanda.connect.logs' });
+		assert.strictEqual(tail.signal.aborted, true, 'the tail stopped');
+		assert.strictEqual(logs().reading, false);
+		// Not read with it again: another range, or Retry, stays in No log access.
+		const made = topic.targets.length;
+		await logs().chooseRange({ kind: 'hour' });
+		assert.strictEqual(logs().retry(), false);
+		await logs().loadOlder();
+		await pause(300);
+		assert.strictEqual(topic.targets.length, made, 'nothing read');
+		assert.strictEqual(stateKind(), 'noAccess');
+		// The state's Set up log access… stores it again and reads the range.
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1 && stateKind() === 'none', 10_000), logs().statusText);
+	});
+
+	test('FORGET palette (bug 52): a pick of the clusters with log access; Escape changes nothing; with none, it says so', async () => {
+		infos.length = 0;
+		assert.deepStrictEqual(await forget(), { kind: 'notStarted' });
+		assert.deepStrictEqual(infos, [NO_CLUSTER_WITH_LOG_ACCESS]);
+		await setUpAccess();
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp(clusterNode(BYOC)))?.kind, 'stored');
+		const offered: string[][] = [];
+		let answer: string | undefined;
+		const ui = cloud().ui;
+		cloud().ui = { ...ui, pickCluster: async (clusters) => { offered.push(clusters.map((c) => c.name)); return clusters.find((c) => c.name === answer); } };
+		teardowns.push(() => {
+			cloud().ui = ui;
+		});
+		assert.deepStrictEqual(await forget(), { kind: 'notStarted' }, 'Escape');
+		assert.deepStrictEqual(offered, [['rpc-vilnius', 'byoc-eu']]);
+		assert.ok(await cloud().storedLogAccess(VILNIUS) && await cloud().storedLogAccess(BYOC), 'nothing changed');
+		answer = 'byoc-eu';
+		assert.deepStrictEqual(await forget(), { kind: 'forgotten', clusterId: BYOC });
+		assert.strictEqual(await cloud().storedLogAccess(BYOC), undefined);
+		assert.ok(await cloud().storedLogAccess(VILNIUS));
+		assert.deepStrictEqual(offered.at(-1), ['rpc-vilnius', 'byoc-eu']);
+		assert.strictEqual(clusterItem('byoc-eu').contextValue, 'cloudCluster');
+	});
+
+	test('DISCONNECT (bug 52): Disconnect with the tab reading stops it and says so (the rows stay); the access in memory is not used again; the stored record stays, and the same account reads it again', async () => {
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		const tail = topic.activeTails()[0];
+		assert.strictEqual(await cloud().disconnect(), true);
+		assert.deepStrictEqual(logs().panelState, { kind: 'stopped', reason: accountDisconnectedReason('logs-bot') });
+		assert.strictEqual(logs().statusText, accountDisconnectedReason('logs-bot'));
+		assert.strictEqual(tail.signal.aborted, true, 'the tail stopped');
+		assert.strictEqual(logs().reading, false);
+		assert.deepStrictEqual(texts(), ['one'], 'the rows stay');
+		assert.strictEqual(logs().viewState.live, false);
+		const made = topic.targets.length;
+		assert.strictEqual(logs().retry(), false);
+		await logs().loadOlder();
+		await logs().setLive(true);
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), false, 'no range');
+		await pause(300);
+		assert.strictEqual(topic.targets.length, made, 'not used again');
+		assert.strictEqual(stateKind(), 'stopped', 'Live on and another range: it stays Stopped');
+		assert.strictEqual(logs().viewState.live, false);
+		assert.deepStrictEqual(texts(), ['one'], 'the rows still stay');
+		assert.deepStrictEqual(await cloud().storedLogAccess(VILNIUS), { username: USERNAME, mechanism: 'SCRAM-SHA-256' }, 'the stored record stays');
+		await connectAndRead();
+		assert.strictEqual(clusterItem('rpc-vilnius').description, `${VILNIUS_TEXT} · logs: logs-reader`, 'read again');
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => texts().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+	});
+
+	test('ACCOUNT_CHANGE (bug 52): another service account connected, or the account changed in another window, stops the tab as Disconnect does, saying the account changed', async () => {
+		fake.otherClients.set('other-client-52', 'other-secret-52-Lm3w');
+		teardowns.push(() => fake.otherClients.delete('other-client-52'));
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		const tail = topic.activeTails()[0];
+		script({ inputs: ['other-client-52', 'other-secret-52-Lm3w'] });
+		assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true, errors.join('\n'));
+		assert.deepStrictEqual(logs().panelState, { kind: 'stopped', reason: ACCOUNT_CHANGED_REASON });
+		assert.strictEqual(tail.signal.aborted, true, 'the tail stopped');
+		assert.deepStrictEqual(texts(), ['one'], 'the rows stay');
+		// The stored record is read again for the new account's clusters; Show logs reads with it.
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		const second = topic.activeTails()[0];
+		// Another window connects the first account again.
+		await cloud().storeAsAnotherWindow(CLIENT_SECRET_KEY, CLIENT_SECRET);
+		await cloud().storeAsAnotherWindow(CLIENT_ID_KEY, CLIENT_ID);
+		assert.ok(await waitFor(() => stateKind() === 'stopped', 10_000), stateKind());
+		assert.deepStrictEqual(logs().panelState, { kind: 'stopped', reason: ACCOUNT_CHANGED_REASON });
+		assert.strictEqual(second.signal.aborted, true);
+	});
+
+	test('STALE_REMOVED (bug 52): the access removed in another window: the tab shows No log access, not Connection lost; the old password is not sent again', async () => {
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		const made = topic.targets.length;
+		await cloud().storeAsAnotherWindow(logAccessKey(VILNIUS), undefined);
+		assert.ok(await waitFor(() => stateKind() === 'noAccess', 10_000), stateKind());
+		assert.strictEqual(clusterItem('rpc-vilnius').contextValue, 'cloudCluster');
+		await logs().chooseRange({ kind: 'hour' });
+		assert.strictEqual(logs().retry(), false);
+		await pause(300);
+		assert.strictEqual(topic.targets.length, made, 'no sign-in');
+		assert.strictEqual(stateKind(), 'noAccess');
+	});
+
+	test('STALE_REPLACED (bug 52): the access replaced in another window: the next sign-in uses the new one', async () => {
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		const replaced = 'replaced-password-52-Tq8v';
+		topic.username = 'replaced-reader';
+		topic.password = replaced;
+		await otherWindowAccess(VILNIUS, 'replaced-reader', replaced, 'SCRAM-SHA-512');
+		assert.ok(await waitFor(() => clusterItem('rpc-vilnius').description.endsWith('logs: replaced-reader'), 10_000), clusterItem('rpc-vilnius').description);
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 1 && stateKind() === 'none', 10_000), logs().statusText);
+		assert.deepStrictEqual(topic.targets.at(-1)?.access, { username: 'replaced-reader', password: replaced, mechanism: 'SCRAM-SHA-512' });
+		assert.ok(!api().outputLines().join('\n').includes(replaced), 'the new password masked');
+	});
+
+	test('MASK_LATER (bug 52): a license_org or a log password learned after rows are held masks them again (posted again; an export after it too)', async () => {
+		const org = '52520000-aaaa-4bbb-8ccc-dddddddddddd';
+		const later = 'later-password-52-Rw5k';
+		topic.write(rec(ORDERS, `licensed to ${org}`, 3 * MINUTE), rec(ORDERS, `quoting ${later}`, 2 * MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 2, 10_000));
+		assert.deepStrictEqual(texts(), [`licensed to ${org}`, `quoting ${later}`], 'not known yet');
+		topic.write(rec(ORDERS, 'license loaded', 0, { license_org: org }));
+		assert.ok(await waitFor(() => texts().length === 3 && texts()[0] === `licensed to ${CREDENTIAL_MASK}`, 10_000), texts().join(' | '));
+		const lastShow = () => JSON.stringify(logs().posted.filter((m) => m.type === 'show').at(-1));
+		assert.ok(!lastShow().includes(org), 'posted again, masked');
+		// A log password learned: set up for the other cluster in another window.
+		await otherWindowAccess(BYOC, 'byoc-reader', later);
+		assert.ok(await waitFor(() => texts()[1] === `quoting ${CREDENTIAL_MASK}`, 10_000), texts()[1]);
+		assert.ok(!JSON.stringify(logs().rows()).includes(later) && !lastShow().includes(later));
+		const file = exportFile('mask-later.jsonl');
+		exportUi(file);
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		const text = fs.readFileSync(file.fsPath, 'utf8');
+		assert.ok(!text.includes(org) && !text.includes(later), text);
+	});
+
+	test('MASK_LATER filtered (bug 52): with a search on, a row that no longer matches once masked again goes, and the counts follow, without a read', async () => {
+		const later = 'filtered-password-52-Nb4q';
+		topic.write(rec(ORDERS, `quoting ${later}`, 2 * MINUTE), rec(ORDERS, `also ${later} here`, MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 2, 10_000));
+		assert.strictEqual(logs().setFilter({ ...NO_FILTER, text: 'quoting filtered' }), true);
+		assert.ok(await waitFor(() => texts().length === 1 && logs().viewState.counts.matched === 1, 10_000), texts().join(' | '));
+		const reads = topic.tails.length + topic.ranges.length;
+		await otherWindowAccess(BYOC, 'byoc-reader', later);
+		assert.ok(await waitFor(() => texts().length === 0, 10_000), texts().join(' | '));
+		assert.deepStrictEqual([logs().viewState.counts.matched, logs().viewState.counts.total], [0, 2]);
+		assert.strictEqual(topic.tails.length + topic.ranges.length, reads, 'nothing read again');
+	});
+
+	test('MASK_SHAPES (bug 52): a secret with `"` and `\\` in it, in a value that is a JSON object, array, string or number, or plain text: masked in every form in the row and the export', async () => {
+		const quoted = 'pa"ss\\52-Long';
+		const digits = '98765432';
+		topic.password = quoted;
+		script({ inputs: [USERNAME, quoted], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'stored', errors.join('\n'));
+		await otherWindowAccess(BYOC, 'byoc-reader', digits);
+		assert.ok(await waitFor(() => clusterItem('byoc-eu').description.endsWith('logs: byoc-reader'), 10_000));
+		const at = (ago: number) => Date.now() - ago;
+		topic.write(
+			{ key: ORDERS, value: { level: 'INFO', message: `object ${quoted}`, list: [quoted], pin: Number(digits) }, timestamp: at(5 * MINUTE) },
+			{ key: ORDERS, value: [`array ${quoted}`, Number(digits)], timestamp: at(4 * MINUTE) },
+			{ key: ORDERS, value: JSON.stringify(`string ${quoted}`), timestamp: at(3 * MINUTE) },
+			{ key: ORDERS, value: digits, timestamp: at(2 * MINUTE) },
+			{ key: ORDERS, value: `plain ${quoted}`, timestamp: at(MINUTE) },
+		);
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().rows().length === 5, 10_000), logs().statusText);
+		const rows = logs().rows();
+		assert.strictEqual(rows[0].message, `object ${CREDENTIAL_MASK}`);
+		assert.deepStrictEqual(rows[0].fields, [['list', JSON.stringify([CREDENTIAL_MASK])], ['pin', CREDENTIAL_MASK]]);
+		assert.deepStrictEqual(rows.slice(1).map((r) => r.message), [
+			JSON.stringify([`array ${CREDENTIAL_MASK}`, CREDENTIAL_MASK]), JSON.stringify(`string ${CREDENTIAL_MASK}`), CREDENTIAL_MASK, `plain ${CREDENTIAL_MASK}`,
+		]);
+		const file = exportFile('mask-shapes.jsonl');
+		exportUi(file);
+		assert.strictEqual((await logs().exportShown()).kind, 'exported');
+		const escaped = JSON.stringify(quoted).slice(1, -1);
+		const shownTexts = rows.flatMap((r) => [r.message, r.level, r.instance, ...r.fields.flat(), r.json ?? '']);
+		for (const text of [...shownTexts, fs.readFileSync(file.fsPath, 'utf8')]) {
+			for (const secret of [quoted, escaped, digits]) {
+				assert.ok(!text.includes(secret), `${secret} in ${text}`);
+			}
+		}
+		const all = logs().posted;
+		const from = all.map((m) => m.type).lastIndexOf('show');
+		const posted = all.slice(from).flatMap((m) => (m.type === 'show' || m.type === 'append' ? m.rows : []));
+		assert.deepStrictEqual(posted, rows, 'the webview got the rows as masked');
+	});
+
+	test('SHORT_PASSWORD (bug 52): a kept password of 1–3 characters is masked where a whole value, a field or a raw message equals it, and by substring in error text; a row that only contains its characters is shown as is', async () => {
+		const short = 'zq';
+		topic.password = short;
+		topic.failTest = 'the broker said zq is not enough';
+		script({ inputs: [USERNAME, short], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'failed');
+		assert.deepStrictEqual(errors, [`Could not read the pipeline logs of rpc-vilnius: the broker said ${CREDENTIAL_MASK} is not enough`]);
+		assert.ok(!api().outputLines().some((l) => l.includes('said zq')), 'masked in the output channel');
+		topic.failTest = undefined;
+		script({ inputs: [USERNAME, short], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'stored');
+		const at = (ago: number) => Date.now() - ago;
+		topic.write(
+			{ key: ORDERS, value: { level: 'INFO', message: short, token: short, nested: [short, 'zqzq'] }, timestamp: at(4 * MINUTE) },
+			{ key: ORDERS, value: short, timestamp: at(3 * MINUTE) },
+			{ key: ORDERS, value: JSON.stringify(short), timestamp: at(2 * MINUTE) },
+			{ key: ORDERS, value: { level: 'INFO', message: 'the zq of zqzq', note: 'zq!' }, timestamp: at(MINUTE) },
+		);
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().rows().length === 4, 10_000), logs().statusText);
+		const rows = logs().rows();
+		assert.strictEqual(rows[0].message, CREDENTIAL_MASK);
+		assert.deepStrictEqual(rows[0].fields, [['token', CREDENTIAL_MASK], ['nested', JSON.stringify([CREDENTIAL_MASK, 'zqzq'])]]);
+		assert.deepStrictEqual(JSON.parse(rows[0].json!), { level: 'INFO', message: CREDENTIAL_MASK, token: CREDENTIAL_MASK, nested: [CREDENTIAL_MASK, 'zqzq'] });
+		assert.strictEqual(rows[1].message, CREDENTIAL_MASK, 'a raw message');
+		assert.strictEqual(rows[2].message, JSON.stringify(CREDENTIAL_MASK), 'a JSON string');
+		assert.strictEqual(rows[3].message, 'the zq of zqzq', 'only contains it: as is');
+		assert.deepStrictEqual(rows[3].fields, [['note', 'zq!']]);
+	});
+
+	test('SHORT_PASSWORD names (bug 52): a 1–3 character password inside the cluster name is masked only in the cluster\'s text, not in the extension\'s words or the names', async () => {
+		// The cluster refuses it (another password is set), with its text quoting it.
+		topic.signInMessage = 'SASL authentication failed for rp';
+		script({ inputs: [USERNAME, 'rp'], choices: ['SCRAM-SHA-256'] });
+		assert.deepStrictEqual(await setUp(), { kind: 'failed', refused: true, message: signInRefusedMessage(USERNAME, 'rpc-vilnius') });
+		assert.deepStrictEqual(errors, ['logs-reader could not sign in to rpc-vilnius.']);
+		const line = api().outputLines().filter((l) => l.includes('the log access test of logs-reader on rpc-vilnius failed')).at(-1) ?? '';
+		assert.ok(line.endsWith(`on rpc-vilnius failed: SASL authentication failed for ${CREDENTIAL_MASK}; nothing was stored.`), line);
+	});
+
+	test('SHORT_PASSWORD errors (bug 52): a kept 1–3 character password in a tail\'s and a Load older\'s reader error is masked in the output line', async () => {
+		topic.password = 'zq';
+		script({ inputs: [USERNAME, 'zq'], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp())?.kind, 'stored');
+		topic.write(rec(ORDERS, 'one', MINUTE));
+		assert.deepStrictEqual(await showLogs(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => texts().length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		// Load older: the cluster refuses the password now.
+		topic.password = 'rotated-52-Hw2';
+		topic.signInMessage = 'SASL authentication failed for zq';
+		await logs().loadOlder();
+		assert.strictEqual(logs().viewState.olderError, 'Could not load older records: logs-reader could not sign in to rpc-vilnius.');
+		const older = api().outputLines().filter((l) => l.includes('loading older records of orders · rpc-vilnius failed')).at(-1) ?? '';
+		assert.ok(older.endsWith(`failed: SASL authentication failed for ${CREDENTIAL_MASK}`), older);
+		// A tail: another range signs in again and is refused.
+		assert.strictEqual(await logs().chooseRange({ kind: 'recent' }), true);
+		assert.ok(await waitFor(() => stateKind() === 'signIn', 10_000), stateKind());
+		const tail = api().outputLines().filter((l) => l.includes('Pipeline logs: reading orders · rpc-vilnius stopped')).at(-1) ?? '';
+		assert.ok(tail.endsWith(`stopped: SASL authentication failed for ${CREDENTIAL_MASK}`), tail);
+	});
+
+	test('FORGET fails (bug 52): the secret storage\'s delete throws: "Could not remove…", the access and the row unchanged', async () => {
+		const stored = new Map([[CLIENT_ID_KEY, CLIENT_ID], [CLIENT_SECRET_KEY, CLIENT_SECRET], [logAccessKey(VILNIUS), JSON.stringify({ username: USERNAME, password: PASSWORD, mechanism: 'SCRAM-SHA-256' })]]);
+		const changed = new vscode.EventEmitter<{ key: string }>();
+		const view = new CloudView({
+			store: {
+				get: async (k) => stored.get(k), store: async (k, v) => void stored.set(k, v), onDidChange: changed.event,
+				delete: async () => { throw new Error('the keyring is locked'); },
+			},
+			log: () => undefined,
+			endpoints: cloud().endpoints,
+			isDetected: () => true,
+		});
+		try {
+			view.ui = cloud().ui;
+			const root = await view.getChildren();
+			await view.expanded(root[0]);
+			const row = () => view.items().find((i) => i.node.kind === 'cluster' && i.label === 'rpc-vilnius')!;
+			assert.strictEqual(row().contextValue, 'cloudCluster logs');
+			errors.length = 0;
+			assert.deepStrictEqual(await view.forgetLogAccess(clusterNode(VILNIUS)), { kind: 'notStarted' });
+			assert.deepStrictEqual(errors, ['Could not remove the log access from the secret storage: the keyring is locked']);
+			assert.ok(stored.has(logAccessKey(VILNIUS)), 'still stored');
+			assert.strictEqual(row().contextValue, 'cloudCluster logs', 'still held');
+			assert.deepStrictEqual(await view.storedLogAccess(VILNIUS), { username: USERNAME, mechanism: 'SCRAM-SHA-256' });
+		} finally {
+			view.dispose();
+			changed.dispose();
+		}
+	});
+
+	test('FORGET other cluster (bug 52): Forget on rpc-vilnius while the tab shows a pipeline of byoc-eu: that tab keeps reading', async () => {
+		const EVENTS = 'd3byoc00000000000003';
+		await setUpAccess();
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual((await setUp(clusterNode(BYOC)))?.kind, 'stored');
+		topic.write(rec(EVENTS, 'one', MINUTE));
+		assert.deepStrictEqual(await showLogs(EVENTS, BYOC), { kind: 'shown', pipelineId: EVENTS });
+		assert.ok(await waitFor(() => messages(EVENTS).length === 1 && logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		const tail = topic.activeTails()[0];
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+		assert.strictEqual(stateKind(), 'none');
+		assert.strictEqual(tail.signal.aborted, false, 'still reading');
+		topic.write(rec(EVENTS, 'two'));
+		assert.ok(await waitFor(() => messages(EVENTS).length === 2, 10_000));
+	});
+
+	test('FORGET row without access (bug 52): a stale row with no access held or stored says so and changes nothing', async () => {
+		infos.length = 0;
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'notStarted' });
+		assert.deepStrictEqual(infos, ['rpc-vilnius has no log access set.']);
+	});
+
+	test('FORGET around the error (bug 52): Forget while Show logs around the error searches: No log access; Set up log access… runs the search again', async () => {
+		await setUpAccess();
+		const errorAt = Date.now() - 2 * MINUTE;
+		topic.write(
+			...Array.from({ length: 600 }, (_, i) => rec(ORDERS, `info ${i}`, 50 * MINUTE - i * 3_000)),
+			{ ...rec(ORDERS, 'the error', 2 * MINUTE, { level: 'ERROR' }), timestamp: errorAt },
+		);
+		topic.rangeDelayMs = 300;
+		assert.strictEqual((await cloud().showLogsAroundError(pipelineNode(VILNIUS, ORDERS))).kind, 'shown');
+		assert.ok(await waitFor(() => topic.activeRanges().length === 1, 10_000), 'searching');
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+		assert.strictEqual(stateKind(), 'noAccess');
+		assert.ok(await waitFor(() => topic.activeRanges().length === 0, 10_000), 'the search stopped');
+		topic.rangeDelayMs = 0;
+		script({ inputs: [USERNAME, PASSWORD], choices: ['SCRAM-SHA-256'] });
+		assert.strictEqual(await logs().setUpAccess(), true);
+		assert.ok(await waitFor(() => logs().viewState.focusId !== null && logs().viewState.done, 20_000), logs().statusText);
+		assert.strictEqual(logs().viewState.range.kind, 'custom', 'around the error found');
+		assert.strictEqual(logs().rows().find((r) => r.id === logs().viewState.focusId)?.message, `${ORDERS}:the error`);
+	});
+
+	test('REFUSED (bug 52): a password the cluster refused is masked in that attempt\'s messages, and not used to mask rows afterwards', async () => {
+		const refused = 'refused-password-52-Jd6x';
+		topic.signInMessage = `SASL authentication failed for the password ${refused}`;
+		script({ inputs: [USERNAME, refused], choices: ['SCRAM-SHA-256'] });
+		assert.deepStrictEqual(await setUp(), { kind: 'failed', refused: true, message: signInRefusedMessage(USERNAME, 'rpc-vilnius') });
+		const line = api().outputLines().filter((l) => l.includes('the log access test of logs-reader on rpc-vilnius failed')).at(-1) ?? '';
+		assert.ok(line.includes(`SASL authentication failed for the password ${CREDENTIAL_MASK}`), line);
+		assert.ok(!api().outputLines().join('\n').includes(refused), 'masked in the output channel');
+		topic.signInMessage = undefined;
+		topic.write(rec(ORDERS, `quoting ${refused}`, MINUTE));
+		await showOrders();
+		assert.ok(await waitFor(() => texts().length === 1, 10_000));
+		assert.deepStrictEqual(texts(), [`quoting ${refused}`], 'not masked in the rows afterwards');
 	});
 
 	test('BUNDLE: the reader\'s client loads from dist/extension.js with its CRC-32C from the wasm, not the native @node-rs/crc32', async function () {

@@ -66,6 +66,13 @@
 // already masked; rows that arrive while the dialog is open are not added, and nothing is read again.
 // Then "Exported N records to <file name>." with Open (and how many were left out for the cap), or
 // "Could not export the records: <reason>" (masked). The dialog and the messages go through `ui`.
+//
+// Bug 52 (epic 6 retrospective): `revoke` stops the shown pipeline's reading: No log access when its
+// cluster's access was forgotten or removed (also found at a sign-in: the source's `hasAccess` is read
+// before each reader is made), or the Stopped state with a reason (the service account disconnected or
+// changed; the rows stay). `remask` shapes the kept rows again from their records when a new secret is
+// learned (a log access password, a `license_org`), so the rows and an export after it are masked. A
+// failed Load older says the panel's own words; the cluster's text goes to the output channel only.
 
 import * as os from 'os';
 import * as path from 'path';
@@ -157,6 +164,20 @@ export interface LogSource {
 	readonly reader: () => LogReader;
 	/** Every text shown or logged passes it (the Cloud view's mask). */
 	readonly mask: (text: string) => string;
+	/**
+	 * Bug 52: a reader's error text passes it before it is logged (else `mask`): also the log access
+	 * passwords under 4 characters, by substring.
+	 */
+	readonly maskError?: (text: string) => string;
+	/** Bug 52: the values masked in a row only where a whole value equals one (log access passwords under 4 characters). */
+	readonly exact?: () => readonly string[];
+	/** Bug 52: the cluster whose log access it reads with (Forget log access stops it). */
+	readonly clusterId?: string;
+	/**
+	 * Bug 52: whether the cluster has log access now (read at each sign-in): `false` once it was forgotten,
+	 * removed in another window or cleared by a disconnect; the tab then shows No log access.
+	 */
+	readonly hasAccess?: () => boolean;
 	/** The pipeline's last deploy as the Cloud view last read it (the menu's label), when known. */
 	readonly deployedAt?: number;
 	/**
@@ -191,10 +212,11 @@ interface ErrorCandidate {
 	readonly offset: number;
 }
 
-/** A kept row and its record's timestamp (where Load older reads back from). */
+/** A kept row, its record's timestamp (where Load older reads back from) and the record (bug 52: shaped again when a new secret is learned). */
 interface Kept {
 	readonly row: LogRow;
 	readonly ts: number;
+	readonly record: LogRecord;
 }
 
 /** A read in progress: the tail (following) or a bounded range. */
@@ -341,6 +363,17 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	/** `text` as shown: the source's mask and every `license_org` seen. */
 	private mask(source: LogSource, text: string): string {
 		return source.mask(maskOrgs(text, this.orgs));
+	}
+
+	/** A reader's error text as logged (bug 52: `maskError`, which also masks short log access passwords). */
+	private maskError(source: LogSource, text: string): string {
+		const orgsMasked = maskOrgs(text, this.orgs);
+		return source.maskError ? source.maskError(orgsMasked) : source.mask(orgsMasked);
+	}
+
+	/** The row `record` is shown as, with the source's masks and every `license_org` seen. */
+	private shape(source: LogSource, record: LogRecord): LogRow {
+		return toLogRow(record, source.mask, this.orgs, source.exact?.() ?? []);
 	}
 
 	get statusText(): string {
@@ -589,7 +622,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 */
 	async chooseRange(choice: RangeChoice): Promise<boolean> {
 		const source = this.source;
-		if (!source) {
+		// Bug 52: Stopped (the account went) reads nothing until Show logs.
+		if (!source || this.failure.kind === 'stopped') {
 			return false;
 		}
 		const chosen = ++this.choices;
@@ -638,6 +672,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		if (!compiled) {
 			return false;
 		}
+		if (this.failure.kind === 'stopped') {
+			// Bug 52: Stopped (the account went): the filter stays as it was, nothing is read.
+			this.postState();
+			return false;
+		}
 		const same = sameFilter(filter, this.filter);
 		this.filter = filter;
 		this.compiled = compiled;
@@ -676,7 +715,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	around(id: string): boolean {
 		const source = this.source;
 		const kept = this.kept.find((k) => k.row.id === id);
-		if (!source || !kept) {
+		if (!source || !kept || this.failure.kind === 'stopped') {
 			return false;
 		}
 		const now = Date.now();
@@ -806,7 +845,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 * dropped, or nothing was read, the default range is read again.
 	 */
 	async setLive(on: boolean): Promise<void> {
-		if (!this.source || on === this.live) {
+		// Bug 52: Stopped (the account went): Live does nothing.
+		if (!this.source || on === this.live || this.failure.kind === 'stopped') {
 			return;
 		}
 		this.olderError = null;
@@ -878,7 +918,8 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			case 'noAccess':
 			case 'signIn':
 			case 'notAllowed':
-				// Never tried again by itself (Retry, or a new access, does).
+			case 'stopped':
+				// Never tried again by itself (Retry, or a new access, does; Stopped: only another range or Show logs).
 				return;
 			case 'connectionLost':
 				if (!this.retryTimer && this.failure.retryAt === null && this.wantsRead()) {
@@ -912,7 +953,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	retry(): boolean {
 		this.cancelRetry();
 		const source = this.source;
-		if (!source || source.noAccess || this.session || !this.view?.visible || this.failure.kind === 'none' || this.failure.kind === 'noAccess') {
+		if (!source || source.noAccess || this.session || !this.view?.visible || this.failure.kind === 'none' || this.failure.kind === 'noAccess' || this.failure.kind === 'stopped') {
 			return false;
 		}
 		if (this.failure.kind === 'connectionLost') {
@@ -966,8 +1007,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		this.postState();
 	}
 
-	/** Makes a reader for one session; a failure is the status line. */
+	/**
+	 * Makes a reader for one session; a failure is the status line. Bug 52: the cluster's access is read
+	 * at each sign-in; none now (forgotten, removed in another window, a disconnect) is No log access.
+	 */
 	private newReader(source: LogSource): LogReader | undefined {
+		if (source.hasAccess && !source.hasAccess()) {
+			this.revoke((s) => s === source);
+			return undefined;
+		}
 		try {
 			return source.reader();
 		} catch (err) {
@@ -1102,7 +1150,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 */
 	async loadOlder(): Promise<void> {
 		const source = this.source;
-		if (!source || source.noAccess || this.older !== 'more' || !this.view?.visible || this.pendingRange || this.pendingAround) {
+		if (!source || source.noAccess || this.older !== 'more' || !this.view?.visible || this.pendingRange || this.pendingAround || this.failure.kind === 'stopped') {
+			return;
+		}
+		if (source.hasAccess && !source.hasAccess()) {
+			this.revoke((s) => s === source);
 			return;
 		}
 		this.olderError = null;
@@ -1201,10 +1253,11 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			if (stopped && mine()) {
 				keepStopped();
 			} else if (current()) {
-				const message = this.mask(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
+				const message = this.maskError(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
 				this.options.log(`Pipeline logs: loading older records of ${this.mask(source, source.title)} failed: ${message}`);
-				// Shown in the Load older row (the status line is the tail's), until the next action.
-				this.olderError = `${OLDER_FAILED_PREFIX}${message}`;
+				// Shown in the Load older row (the status line is the tail's), until the next action. Bug 52: the
+				// panel's own words for the failure (6.6's titles); the cluster's text goes to the output channel only.
+				this.olderError = `${OLDER_FAILED_PREFIX}${panelStateTexts(this.failureOf(source, err))!.title}.`;
 			}
 		} finally {
 			if (this.olderSession === abort) {
@@ -1308,7 +1361,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			if (!isPipelineRecord(r, source.pipelineId)) {
 				continue;
 			}
-			const row = toLogRow(r, source.mask, this.orgs);
+			const row = this.shape(source, r);
 			if (levelOf(row) !== 'error') {
 				continue;
 			}
@@ -1319,13 +1372,21 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		return found;
 	}
 
-	/** Every `license_org` of `records` noted, so a record before the one that carries it is masked too. */
+	/**
+	 * Every `license_org` of `records` noted, so a record before the one that carries it is masked too;
+	 * bug 52: a new one masks the rows already kept again.
+	 */
 	private noteOrgs(records: readonly LogRecord[]): void {
+		let learned = false;
 		for (const r of records) {
 			const org = licenseOrgOf(r);
-			if (org) {
+			if (org && !this.orgs.has(org)) {
 				this.orgs.add(org);
+				learned = true;
 			}
+		}
+		if (learned) {
+			this.remask();
 		}
 	}
 
@@ -1367,21 +1428,15 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 	 * visible. The reason goes to the output channel only (masked), not into the panel.
 	 */
 	private failed(source: LogSource, err: unknown): void {
-		const message = this.mask(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
+		const message = this.maskError(source, isLogReadError(err) || err instanceof Error ? err.message : String(err));
 		const kind = isLogReadError(err) ? err.kind : 'connection';
-		const user = this.mask(source, source.username ?? 'The user');
-		if (kind === 'signIn') {
-			this.cancelRetry();
-			this.retryAttempt = 0;
-			this.failure = { kind: 'signIn', user, cluster: this.clusterOf(source) };
-		} else if (kind === 'notAllowed') {
-			this.cancelRetry();
-			this.retryAttempt = 0;
-			this.failure = { kind: 'notAllowed', user, topic: LOGS_TOPIC };
-		} else {
+		if (kind === 'connection') {
 			this.retryAttempt++;
-			this.failure = { kind: 'connectionLost', cluster: this.clusterOf(source), live: this.live && !this.pendingRange && !this.pendingAround, retryInS: 0, retryAt: null };
+		} else {
+			this.cancelRetry();
+			this.retryAttempt = 0;
 		}
+		this.failure = this.failureOf(source, err);
 		this.options.log(`Pipeline logs: reading ${this.mask(source, source.title)} stopped: ${message}${kind === 'connection' ? ` (try ${this.retryAttempt})` : ''}`);
 		this.setStatus(panelStateTexts(this.failure)!.title);
 		if (this.failure.kind === 'connectionLost') {
@@ -1391,6 +1446,91 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		if (!this.retryTimer) {
 			this.postState();
 		}
+	}
+
+	/** The state a failed read is (AD-24's kinds): Sign-in refused, Not allowed, else Connection lost. */
+	private failureOf(source: LogSource, err: unknown): LogsPanelState {
+		const kind = isLogReadError(err) ? err.kind : 'connection';
+		const user = this.mask(source, source.username ?? 'The user');
+		if (kind === 'signIn') {
+			return { kind: 'signIn', user, cluster: this.clusterOf(source) };
+		}
+		if (kind === 'notAllowed') {
+			return { kind: 'notAllowed', user, topic: LOGS_TOPIC };
+		}
+		return { kind: 'connectionLost', cluster: this.clusterOf(source), live: this.live && !this.pendingRange && !this.pendingAround, retryInS: 0, retryAt: null };
+	}
+
+	/**
+	 * Bug 52: the shown pipeline's reading stops when `which` matches its source: with no `reason`, the
+	 * tab shows No log access (the access was forgotten, removed in another window, or is gone at a sign-in;
+	 * its Set up log access… reads the same range again); with `reason` (the service account disconnected
+	 * or changed), the Stopped state says it and the rows stay. Nothing is read with that source again.
+	 * `false` when no shown source matches (or it is already in that state).
+	 */
+	revoke(which: (source: LogSource) => boolean, reason?: string): boolean {
+		const source = this.source;
+		if (!source || !which(source) || (reason === undefined && source.noAccess) || (reason !== undefined && this.failure.kind === 'stopped')) {
+			return false;
+		}
+		const around = this.pendingAround;
+		this.choices++;
+		this.stopAll();
+		const next: LogSource = { ...source, noAccess: true, username: undefined };
+		this.source = next;
+		if (reason === undefined) {
+			this.reset(this.range, this.chosenAt);
+			if (around) {
+				// Set up log access… searches again.
+				this.pendingRange = false;
+				this.pendingAround = true;
+			}
+			this.options.log(this.mask(next, `Pipeline logs: stopped reading ${next.title}: ${next.clusterName ?? 'its cluster'} has no log access now.`));
+		} else {
+			// The rows stay; whatever was still being read is dropped.
+			this.generation++;
+			this.cancelRetry();
+			this.retryAttempt = 0;
+			this.live = false;
+			this.pendingRange = false;
+			this.pendingAround = false;
+			this.done = true;
+			this.failure = { kind: 'stopped', reason: this.mask(next, reason) };
+			this.status = panelStateTexts(this.failure)!.title;
+			this.options.log(this.mask(next, `Pipeline logs: stopped reading ${next.title}: ${reason}`));
+		}
+		this.updateDescription();
+		this.postShow();
+		this.changed.fire();
+		return true;
+	}
+
+	/**
+	 * Bug 52: a new secret was learned (a log access password, a `license_org`): every kept row is shaped
+	 * again from its record with the masks as they are now, and the webview gets them again (as an export
+	 * after it does).
+	 */
+	remask(): void {
+		const source = this.source;
+		if (!source || this.kept.length === 0) {
+			return;
+		}
+		// The filter applies to the rows as now shown: one that no longer matches goes, as a filter change
+		// would drop it (nothing is read again; a record not kept is not read back).
+		const next: Kept[] = [];
+		for (const k of this.kept) {
+			const row = this.shape(source, k.record);
+			if (matches(row, this.compiled)) {
+				next.push({ ...k, row });
+			} else {
+				this.keptIds.delete(row.id);
+				this.counter.unmatch();
+				this.slots.unmatch(k.ts);
+			}
+		}
+		this.kept = next;
+		this.postShow();
+		this.changed.fire();
 	}
 
 	/**
@@ -1510,7 +1650,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 		const before = new Map([...this.counted].map(([p, span]) => [p, { ...span }]));
 		const countedIds = new Set<string>();
 		for (const { r } of mine) {
-			const row = toLogRow(r, source.mask, this.orgs);
+			const row = this.shape(source, r);
 			const keep = matches(row, this.compiled);
 			const span = before.get(r.partition);
 			if ((!span || r.offset < span.lo || r.offset > span.hi) && !countedIds.has(row.id)) {
@@ -1530,7 +1670,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			}
 			if (keep && !this.keptIds.has(row.id) && !seen.has(row.id)) {
 				seen.add(row.id);
-				matching.push({ row, ts: r.timestamp });
+				matching.push({ row, ts: r.timestamp, record: r });
 			}
 		}
 		return { matching, counted };

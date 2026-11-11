@@ -222,6 +222,8 @@ export interface LogsRange {
  * records of hidden levels (`hiddenLevels`, for Show every level). `reading`: a bounded range or Load
  * older reads (`count`: the pipeline's records read so far; Stop reading). `connectionLost`: retried after
  * `retryInS` (at `retryAt`, ms since the epoch; `null` while it tries, or while the tab is hidden).
+ * `stopped` (bug 52): reading was stopped for `reason` (the service account was disconnected or changed);
+ * nothing is read until Show logs is used again.
  */
 export type LogsPanelState =
 	| { readonly kind: 'none' }
@@ -230,9 +232,13 @@ export type LogsPanelState =
 	| { readonly kind: 'notAllowed'; readonly user: string; readonly topic: string }
 	| { readonly kind: 'noRecords'; readonly pipeline: string; readonly range: string; readonly hiddenLevels: readonly LogLevel[] }
 	| { readonly kind: 'reading'; readonly what: string; readonly count: number }
-	| { readonly kind: 'connectionLost'; readonly cluster: string; readonly live: boolean; readonly retryInS: number; readonly retryAt: number | null };
+	| { readonly kind: 'connectionLost'; readonly cluster: string; readonly live: boolean; readonly retryInS: number; readonly retryAt: number | null }
+	| { readonly kind: 'stopped'; readonly reason: string };
 
 export const NO_PANEL_STATE: LogsPanelState = { kind: 'none' };
+
+/** Bug 52: the Stopped state's text (the records already shown stay). */
+export const STOPPED_BODY = 'The records already shown stay. Use Show logs on a pipeline in the Cloud view to read its log again.';
 
 /** A lost connection is tried again after these waits, then every last one (ticket 6.6, the user's decision of 2026-11-06). */
 export const RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 30_000, 60_000];
@@ -288,6 +294,8 @@ export function panelStateTexts(state: LogsPanelState, retrySeconds?: number | n
 				body: `${state.live ? 'Live is paused' : 'Reading is paused'}; the records already shown stay. ${retryText(seconds)}`,
 			};
 		}
+		case 'stopped':
+			return { label: 'Stopped', title: state.reason, body: STOPPED_BODY };
 	}
 }
 
@@ -574,6 +582,8 @@ function isPanelState(v: unknown): v is LogsPanelState {
 			return isText(v.what) && isCount(v.count);
 		case 'connectionLost':
 			return isText(v.cluster) && typeof v.live === 'boolean' && isCount(v.retryInS) && (v.retryAt === null || isTime(v.retryAt));
+		case 'stopped':
+			return isText(v.reason);
 		default:
 			return false;
 	}
