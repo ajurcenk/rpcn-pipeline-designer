@@ -1,0 +1,21 @@
+# Step 4: the Bloblang test panel. Click "Test mapping" above the mapping processor.
+input:
+  generate:
+    interval: 2s
+    mapping: |
+      root.user = {"first": "Ada", "last": "Lovelace", "email": "ADA@Example.COM"}
+      root.items = [{"sku": "A1", "price": 12.5, "qty": 2}, {"sku": "B7", "price": 3, "qty": 4}]
+
+pipeline:
+  processors:
+    - label: enrich_order
+      mapping: |
+        root.customer = this.user.first + " " + this.user.last
+        root.email = this.user.email.lowercase()
+        root.total = this.items.map_each(i -> i.price * i.qty).sum()
+        root.item_count = this.items.length()
+        meta source = "demo"
+
+output:
+  stdout:
+    codec: lines

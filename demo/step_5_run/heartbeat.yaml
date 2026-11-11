@@ -1,0 +1,18 @@
+# Step 5: Run and Stop. A heartbeat every second, printed to the terminal; it stops by itself after 30.
+input:
+  generate:
+    interval: 1s
+    count: 30
+    mapping: |
+      root.beat = counter()
+      root.at = now()
+
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+        root.message = "heartbeat " + this.beat.string()
+
+output:
+  stdout:
+    codec: lines

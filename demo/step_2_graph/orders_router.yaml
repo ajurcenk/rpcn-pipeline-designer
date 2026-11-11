@@ -1,0 +1,35 @@
+# Step 2: the pipeline graph. Orders are generated, routed by amount, and printed.
+input:
+  label: orders
+  generate:
+    interval: 1s
+    count: 10
+    mapping: |
+      root.id = uuid_v4()
+      root.customer = ["ada", "linus", "grace"].index(counter() % 3)
+      root.amount = random_int(min: 5, max: 500)
+
+pipeline:
+  processors:
+    - label: route_by_amount
+      switch:
+        - check: this.amount >= 250
+          processors:
+            - label: tag_large
+              mapping: |
+                root = this
+                root.tier = "large"
+            - label: log_large
+              log:
+                level: INFO
+                message: 'large order ${! this.id } for ${! this.amount }'
+        - processors:
+            - label: tag_small
+              mapping: |
+                root = this
+                root.tier = "small"
+
+output:
+  label: print
+  stdout:
+    codec: lines

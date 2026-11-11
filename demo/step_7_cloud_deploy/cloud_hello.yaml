@@ -1,0 +1,22 @@
+# Step 7: deploy to Redpanda Cloud (BYOC or Dedicated). DEMO_GREETING becomes a Cloud secret on deploy.
+input:
+  generate:
+    interval: 5s
+    mapping: |
+      root.greeting = "${DEMO_GREETING}"
+      root.n = counter()
+
+pipeline:
+  processors:
+    - log:
+        level: INFO
+        message: 'cloud demo message ${! this.n }'
+    - switch:
+        - check: this.n % 4 == 0
+          processors:
+            - log:
+                level: ERROR
+                message: 'simulated failure on message ${! this.n }'
+
+output:
+  drop: {}

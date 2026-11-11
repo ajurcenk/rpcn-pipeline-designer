@@ -1,0 +1,19 @@
+# Step 6: environment variables. GREETING has a default; DEMO_API_TOKEN has none, so it is flagged
+# until a local source sets it (a secret variable, the redpandaConnect.env setting or an env file).
+input:
+  generate:
+    interval: 2s
+    count: 5
+    mapping: |
+      root.greeting = "${GREETING:hello}"
+      root.token_set = "${DEMO_API_TOKEN}" != ""
+
+pipeline:
+  processors:
+    - log:
+        level: INFO
+        message: '${! this.greeting } from the environment demo'
+
+output:
+  stdout:
+    codec: lines

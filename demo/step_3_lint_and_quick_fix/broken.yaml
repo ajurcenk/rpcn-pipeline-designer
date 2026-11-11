@@ -1,0 +1,21 @@
+# Step 3: lint on save, the Quick Fix and live Bloblang errors.
+# Save this file: lint reports `intervall` and `levl`; the lightbulb offers "Change to `interval`" / "Change to `level`".
+# The mapping below has a Bloblang error that is shown while you type, before any save.
+input:
+  generate:
+    intervall: 1s
+    count: 3
+    mapping: |
+      root.n = counter()
+
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+        root.double = this.n *
+    - log:
+        levl: INFO
+        message: 'n is ${! this.n }'
+
+output:
+  drop: {}
