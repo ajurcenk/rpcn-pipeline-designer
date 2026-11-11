@@ -166,3 +166,7 @@
   summary: Bug 45 group D, the tests the epic 5 retrospective found missing: V1, V2, V3, V5 and V6 (criterion 10).
   evidence: split from bug 45 at the build's scope check (user, 2026-11-10); cleaner once groups A–C have settled the behavior.
   resolution: ticketed as backlog 49 (2026-11-11): `_bmad-output/backlog/story-integration-tests-for-the-deploy-paths-the-epic-5-retrospective-found-untested.md`.
+
+- source_plan: none
+  summary: The Bloblang test panel test "PLACE_WITH_GRAPH + PLACE_SECOND (4.17)" (90-bloblang-panel.ts, compiled :2732) failed once in CI: "focus stays in the YAML, in its group: editor none, group 2 (tab Graph: place-graph.yaml [webview]), visible [place-graph.yaml@1], window focused".
+  evidence: CI run 43069449219 attempt 1 on 9a4f70b (2026-11-11), a push of ticket and planning documents only; the same code passed it in runs 43039063934 and 43046046364. A focus-timing test of the family bug 41 fixed (focus left on the graph webview's group); not on bug 41's list. The rerun (attempt 2) passed. Settled by reading its focus wait against bug 41's shared helpers (untilText, graphReady) and by whether it fails again.
