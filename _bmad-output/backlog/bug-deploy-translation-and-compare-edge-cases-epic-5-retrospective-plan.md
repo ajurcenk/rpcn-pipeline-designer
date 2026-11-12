@@ -139,3 +139,5 @@ Thorough review (2026-11-12; blind-hunter, edge-case-hunter, verification-gap, i
 **Manual checks:**
 - Dev host 1.143.1 on the user's cluster: Compare with local file on a deployed config that uses `${VAR}` shows no change for the references; a config with `${secrets.NEW_X}` asks for NEW_X on Deploy.
 
+
+**Manual check result (user, 2026-11-12): tested, no issues.** Dev host 1.143.1 with 3a40026 on the user's cluster: Compare with local file on the deployed `compare48.yaml` showed the translated text, read-only, titled "(as sent)", with no change for `${COMPARE48_TOPIC:demo}`; Deploy of `secrets48.yaml` asked for the missing secret `NEW_X`.
