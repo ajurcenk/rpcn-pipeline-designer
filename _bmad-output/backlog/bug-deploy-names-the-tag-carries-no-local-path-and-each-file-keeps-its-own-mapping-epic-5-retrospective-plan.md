@@ -137,3 +137,4 @@ Thorough review (2026-11-11; blind-hunter, edge-case-hunter, verification-gap, i
 
 **Review round (2026-11-11):** `npm run compile` 0. Stable `--grep` the Cloud view and Deploy, Cloud unit and Pipeline logs (6.2) suites: 226 passing, 1 failing (the widened `taggedConfigs` assertion, then updated; `Cloud start, stop and delete` re-run: 9 passing). Multi-root: 14 passing. The wider runs are the coordinator's.
 
+**Manual check result (user, 2026-11-12): tested, no issues.** Dev host 1.143.1 with 3694587 on the user's cluster: a file outside the workspace (`outside47.yaml`) deployed with the tag `outside47.yaml`, no local path; `orders47.yaml` and `orders47.yml` in one folder each deployed to its own pipeline with its own `<file name>.cloud.json`.
