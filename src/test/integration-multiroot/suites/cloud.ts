@@ -2,7 +2,8 @@
 // `test/multiroot/multiroot.code-workspace` each hold `orders-47.yaml`. Each deployed is tagged
 // `<folder name>/<path>`, and the row's file, Compare, Deploy again and Deploy's tagged offer resolve
 // each to its own folder's file (MULTI_ROOT); an old tag with no folder that names a file in both is
-// never resolved alone (OLD_TAG_TWO); an old tag naming one file resolves to it (OLD_TAG_ONE). Against
+// never resolved alone (OLD_TAG_TWO); an old tag naming one file resolves to it (OLD_TAG_ONE); Delete
+// from a row with no config open finds the mapping through the tag and the real folders (ticket 49). Against
 // the local fake Cloud, as `integration/suites/96-cloud.ts`; the configs and mappings are written into
 // the fixture folders for the suite and removed after.
 import * as assert from 'assert';
@@ -11,7 +12,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { CONFIG_TAG } from '../../../adapters/cloud/dataPlane';
 import {
-	type CloudItem, type CloudUi, type CloudView, COMPARE_COMMAND, CONNECT_COMMAND, DEPLOY_AGAIN_COMMAND, DEPLOY_COMMAND, DEPLOYED_SCHEME, IN_SEVERAL_FOLDERS,
+	type CloudItem, type CloudUi, type CloudView, COMPARE_COMMAND, CONNECT_COMMAND, DELETE_ACTION, DELETE_COMMAND, DEPLOY_AGAIN_COMMAND, DEPLOY_COMMAND, DEPLOYED_SCHEME, IN_SEVERAL_FOLDERS,
 } from '../../../adapters/vscode/cloudView';
 import type { LintResult } from '../../../adapters/redpandaConnect/lint';
 import { type ExtensionApi } from '../../../extension';
@@ -36,7 +37,7 @@ const CONFIG = [
 	'',
 ].join('\n');
 
-suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', function () {
+suite('Cloud deploy names and delete in a multi-root workspace (integration, bug 47, ticket 49)', function () {
 	this.timeout(60_000);
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const cloud = () => api().cloud!;
@@ -295,5 +296,32 @@ suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', func
 		script({ picks: ['rpc-vilnius'], confirms: [undefined] });
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.deepStrictEqual(confirmed[0]?.actions, ['Update old-one', 'Create new']);
+	});
+
+	test('DELETE_NO_EDITOR 49: Delete from the row with no config open: the tag finds a/orders-47.yaml in its folder; the confirmation names its mapping, deleted with the pipeline', async () => {
+		const id = await deployNew(file('a'), 'orders-a');
+		const bId = await deployNew(file('b'), 'orders-b');
+		const mapping = mappingOf(file('a'));
+		assert.ok(fs.existsSync(mapping));
+		assert.ok(fs.existsSync(mappingOf(file('b'))));
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		assert.strictEqual(vscode.window.activeTextEditor, undefined, 'no config open');
+		const shown = vscode.workspace.asRelativePath(mapping);
+		assert.strictEqual(shown, `a/${NAME}.cloud.json`);
+		const configText = fs.readFileSync(file('a'), 'utf8');
+		script({ confirms: [DELETE_ACTION] });
+		const deleted = await vscode.commands.executeCommand<{ kind: string; mappings?: string[] }>(DELETE_COMMAND, row('orders-a')!.node);
+		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
+		assert.strictEqual(confirmed.length, 1);
+		assert.deepStrictEqual(confirmed[0].actions, [DELETE_ACTION]);
+		assert.strictEqual(confirmed[0].message,
+			`Delete orders-a on rpc-vilnius? This cannot be undone. ${shown}, which maps a config to it, is deleted too; the config is not changed.`);
+		assert.deepStrictEqual(deleted?.mappings, [mapping]);
+		assert.ok(!fs.existsSync(mapping), 'the mapping is deleted');
+		assert.strictEqual(fs.readFileSync(file('a'), 'utf8'), configText, 'the config is untouched');
+		assert.ok(fake.requests.slice(firstRequest).some((r) => r.method === 'DELETE' && r.url === `/dp/${VILNIUS}/v1/redpanda-connect/pipelines/${id}`));
+		assert.ok(!vilnius().pipelines.some((p) => p.id === id), 'the pipeline is gone');
+		assert.ok(fs.existsSync(mappingOf(file('b'))), 'b\'s mapping is left');
+		assert.ok(vilnius().pipelines.some((p) => p.id === bId), 'orders-b is left');
 	});
 });

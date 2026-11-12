@@ -35,7 +35,7 @@ import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { CONFIG_TAG, type PipelineResources, resourcesOf } from '../../../adapters/cloud/dataPlane';
 import { type ExtensionApi } from '../../../extension';
 import { FAKE_LINT_MARKER, FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
-import { makeTempDir } from '../../helpers/fakeBinary';
+import { connectScript, fixtureBodies, makeTempDir, toolPath, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, waitFor } from '../helpers';
 
 const CLIENT_ID = 'fake-client-id-5-2';
@@ -64,6 +64,12 @@ const SECRET_VALUES = {
 	account45: 'tok-45-account-Pf5s',
 	/** Bug 45: another service account's secret (switched to during a deploy's prompts). */
 	otherClient45: 'tok-45-other-client-secret-Hm3e',
+	/** Ticket 49 (AGAIN_FULL): typed for a missing secret during Deploy again. */
+	again49: 'tok-49-again-typed-Xc5v',
+	/** Ticket 49 (TWO_SOURCES): TWO_49 in redpandaConnect.env, the stronger source. */
+	setting49: 'tok-49-setting-Rb8q',
+	/** Ticket 49 (TWO_SOURCES): TWO_49 in the env file, the weaker source. */
+	envFile49: 'tok-49-env-file-Mw2j',
 };
 const CONFIG = [
 	'input:',
@@ -535,6 +541,10 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(result?.kind, 'timedOut');
 		assert.deepStrictEqual(infos.slice(-1), ['Pipeline slow is still starting on rpc-vilnius; the Cloud view shows its state.']);
 		assert.strictEqual(items().find((i) => i.node.kind === 'pipeline')?.description, `Starting · ${NOT_IN_WORKSPACE}`);
+		// Ticket 49 (FOLLOW_TIMEOUT): the mapping was written at the create, so it holds the new pipeline's ids.
+		const slow = fake.cluster('cvilnius0000000000aa').pipelines.find((p) => p.display_name === 'slow');
+		assert.ok(slow, 'created');
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')), { clusterId: 'cvilnius0000000000aa', pipelineId: slow!.id, clusterName: 'rpc-vilnius', pipelineName: 'slow' });
 	});
 
 	test('DEPLOY_UNSAVED: a dirty config is saved first and its saved text sent; an untitled one is refused', async () => {
@@ -2919,6 +2929,148 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 			fs.rmSync(other, { recursive: true, force: true });
 		}
 	});
+
+	// --- ticket 49: the Deploy paths the epic 5 retrospective found untested ---
+
+	test('AGAIN_FULL 49: Deploy again from the row with a ${VAR}, a missing secret and a check finding: the finding shown (Deploy anyway), the secret asked and created, the translated config sent', async () => {
+		inWorkspace();
+		const { doc, id } = await deployOnce(usingSecrets('BROKER'));
+		const text = usingSecrets('BROKER', 'AGAIN_49');
+		await editConfig(doc, text);
+		assert.ok(await doc.save());
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		cloud().lint = async () => ({ kind: 'findings', findings: [finding(6, 'field mapping is suspect')], logLines: [] });
+		const outputBefore = api().outputLines().length;
+		const messagesBefore = allMessages.length;
+		script({ actions: [DEPLOY_ANYWAY_ACTION], choices: [ADD_NOW_ACTION], inputs: [SECRET_VALUES.again49], confirms: [REPLACE_ACTION] });
+		const again = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(again?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(again?.pipelineId, id);
+		assert.deepStrictEqual(errors, ['orders.yaml may not run on rpc-vilnius: line 6: field mapping is suspect. Nothing was sent.'], 'the check finding shown');
+		assert.deepStrictEqual(errorActions, [[DEPLOY_ANYWAY_ACTION]]);
+		assert.deepStrictEqual(confirmed.map((c) => c.actions), [[REPLACE_ACTION]], 'running: the update flow\'s confirmation');
+		assert.deepStrictEqual(questions.map((q) => q.choices), [[ADD_NOW_ACTION, STOP_DEPLOY_ACTION]], 'the missing secret asked');
+		assert.ok(questions[0].question.includes('Add AGAIN_49 now?'), questions[0].question);
+		assert.strictEqual(asked[0]?.password, true);
+		assert.strictEqual(vilnius().secrets!.get('AGAIN_49'), SECRET_VALUES.again49, 'created with the typed value');
+		assert.deepStrictEqual(puts().map((r) => r.url), [pipelineUrl(id)]);
+		assert.strictEqual(JSON.parse(puts()[0].body).config_yaml, usingSecrets('secrets.BROKER', 'secrets.AGAIN_49'), 'the translated config sent');
+		assert.strictEqual(posts().length, 1, 'only deployOnce\'s create');
+		const shown = JSON.stringify({ output: api().outputLines().slice(outputBefore), messages: allMessages.slice(messagesBefore), asked, put: puts()[0].body });
+		assert.ok(!shown.includes(SECRET_VALUES.again49) && !shown.includes(b64(SECRET_VALUES.again49)), 'no value in a message, a log line or the YAML sent');
+	});
+
+	test('MAP_WRITE_FAILS 49: the config\'s folder read-only after it is saved: the pipeline created and followed; "Could not write orders.yaml.cloud.json: …" shown; no mapping', async function () {
+		// POSIX permissions; not as root.
+		if (process.platform === 'win32' || process.getuid?.() === 0) {
+			this.skip();
+		}
+		const ro = makeTempDir('rpcn-cloud-ro-');
+		const file = path.join(ro, 'orders.yaml');
+		const mapping = path.join(ro, 'orders.yaml.cloud.json');
+		try {
+			await connect();
+			const doc = await openConfig(file);
+			assert.strictEqual(doc.isDirty, false, 'saved');
+			fs.chmodSync(ro, 0o555);
+			const outputBefore = api().outputLines().length;
+			script({ picks: ['rpc-vilnius'], inputs: ['read-only'] });
+			const result = await vscode.commands.executeCommand<{ kind: string; state?: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+			assert.strictEqual(result?.state, 'STATE_RUNNING', 'followed until Running');
+			assert.strictEqual(posts().length, 1, 'created');
+			assert.strictEqual(vilnius().pipelines.find((p) => p.display_name === 'read-only')?.id, result?.pipelineId);
+			assert.strictEqual(errors.length, 1, errors.join('\n'));
+			assert.match(errors[0], /^Could not write orders\.yaml\.cloud\.json: .+\. The next Deploy will not know the pipeline it went to\.$/);
+			assert.ok(api().outputLines().slice(outputBefore).some((l) => l.startsWith(`Redpanda Cloud: could not write ${mapping}: `)));
+			assert.ok(!fs.existsSync(mapping), 'no mapping file');
+			assert.ok(infos.includes('Pipeline read-only is running on rpc-vilnius.'), infos.join('\n'));
+		} finally {
+			fs.chmodSync(ro, 0o755);
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(ro, { recursive: true, force: true });
+		}
+	});
+
+	test('REAL_WIRING 49: the extension\'s own lint and local version (a fake binary 4.120.0 with a lint finding): the check shows the finding and the version line', async function () {
+		this.timeout(120_000);
+		const binDir = makeTempDir('rpcn-cloud-bin-');
+		const grep = toolPath('grep');
+		const cut = toolPath('cut');
+		const lint = [
+			'found=0',
+			`for n in $('${grep}' -n 'nope_49:' "$last" | '${cut}' -d: -f1); do echo "$last($n,1) field nope_49 not recognised" >&2; found=1; done`,
+			'exit $found',
+		].join('\n');
+		// 4.112.0 is the schema fixture set, 4.120.0 the local version it reports, 4.115.0 rpc-vilnius's version in the fake.
+		const bin = writeFakeBinary(binDir, 'redpanda-connect', connectScript({ version: '4.120.0', ...fixtureBodies('4.112.0'), lint }));
+		const binaryState = () => api().redpandaConnect.state as { kind: string; path?: string };
+		// binaryPath is the fallback when PATH yields no binary: PATH is filtered of rpk and redpanda-connect (the fake calls its tools by absolute path).
+		const originalPath = process.env.PATH;
+		try {
+			process.env.PATH = (originalPath ?? '').split(path.delimiter)
+				.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
+				.join(path.delimiter);
+			await rc().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => binaryState().kind === 'ok' && binaryState().path === bin, 30_000), JSON.stringify(binaryState()));
+			cloud().lint = originalLint;
+			cloud().localVersion = originalLocalVersion;
+			await connect();
+			const text = CONFIG.replace('    interval: 5s\n', '    interval: 5s\n    nope_49: 1\n');
+			const doc = await openConfig(configFile, text);
+			assert.ok(await waitFor(() => doc.getText() === text, 10_000));
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+			const result = await vscode.commands.executeCommand<{ kind: string; findings?: string[] }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(result?.kind, 'checkStopped', errors.join('\n'));
+			assert.deepStrictEqual(result?.findings, ['line 4: field nope_49 not recognised']);
+			assert.deepStrictEqual(errors, ['orders.yaml may not run on rpc-vilnius: line 4: field nope_49 not recognised. rpc-vilnius runs Redpanda Connect 4.115.0; this machine has 4.120.0. Nothing was sent.']);
+			assert.deepStrictEqual(errorActions, [[DEPLOY_ANYWAY_ACTION]]);
+			assert.strictEqual(posts().length, 0);
+		} finally {
+			cloud().lint = CLEAN_LINT;
+			cloud().localVersion = () => undefined;
+			process.env.PATH = originalPath;
+			await rc().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => binaryState().path !== bin, 30_000), `binaryPath restored: ${JSON.stringify(binaryState())}`);
+			fs.rmSync(binDir, { recursive: true, force: true });
+		}
+	});
+
+	test('TWO_SOURCES 49: a name in the env file only: offered from the env file; in redpandaConnect.env too, missing in the Cloud: the offer names redpandaConnect.env, the secret created with its value', () => withLocal(async () => {
+		vilnius().secrets = new Map();
+		const envDir = makeTempDir('rpcn-cloud-env-');
+		const envFile = path.join(envDir, 'cloud.env');
+		try {
+			fs.writeFileSync(envFile, `TWO_49=${SECRET_VALUES.envFile49}\n`);
+			await rc().update('envFile', envFile, vscode.ConfigurationTarget.Global);
+			const doc = await openForSecrets(usingSecrets('TWO_49'));
+
+			// The env file only: it is a live source.
+			const keepFile = 'Keep the value from the env file';
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], choices: [keepFile] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.deepStrictEqual(questions.map((q) => q.choices), [[keepFile, ENTER_ANOTHER_ACTION]]);
+			assert.strictEqual(vilnius().secrets!.get('TWO_49'), SECRET_VALUES.envFile49, 'the env file\'s value');
+			assert.strictEqual(lastCreate()!.config_yaml, usingSecrets('secrets.TWO_49'));
+
+			// redpandaConnect.env too (the secret gone from the Cloud): the setting is offered and its value created.
+			vilnius().secrets!.delete('TWO_49');
+			await rc().update('env', { TWO_49: SECRET_VALUES.setting49 }, vscode.ConfigurationTarget.Global);
+			const keep = 'Keep the value from redpandaConnect.env (user settings)';
+			script({ choices: [keep] });
+			assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+			assert.deepStrictEqual(questions.map((q) => q.choices), [[keep, ENTER_ANOTHER_ACTION]]);
+			assert.ok(questions[0].question.includes('redpandaConnect.env') && !questions[0].question.includes('the env file'), questions[0].question);
+			assert.strictEqual(vilnius().secrets!.get('TWO_49'), SECRET_VALUES.setting49, 'the stronger source\'s value');
+			assert.deepStrictEqual(secretPosts().map((r) => JSON.parse(r.body)), [
+				{ id: 'TWO_49', scopes: ['SCOPE_REDPANDA_CONNECT'], secret_data: b64(SECRET_VALUES.envFile49) },
+				{ id: 'TWO_49', scopes: ['SCOPE_REDPANDA_CONNECT'], secret_data: b64(SECRET_VALUES.setting49) },
+			]);
+		} finally {
+			await rc().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+			fs.rmSync(envDir, { recursive: true, force: true });
+		}
+	}));
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {
 		// Ticket 5.7: every secret value used, and its base64 form, only in the body of its secret's create.
