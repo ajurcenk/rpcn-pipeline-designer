@@ -23,9 +23,11 @@ import type { LintResult } from '../redpandaConnect/lint';
 import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
-	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, filesOfTag, findMapping, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_STARTED, reasonOf,
-	mappedTagOf, sharedMappingText, sleep, stateWord,
+	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_STARTED, reasonOf,
+	mappedTagOf, refusedText, sentConfigUri, sharedMappingText, sleep, stateWord,
 } from './cloudShared';
+
+export { sentConfigUri } from './cloudShared';
 
 export const DEPLOY_UNTITLED_MESSAGE = 'Save the file to deploy it.';
 export const DEPLOY_NOT_DETECTED_MESSAGE = 'This file is not a Redpanda Connect config.';
@@ -37,9 +39,7 @@ export const REPLACE_ACTION = 'Replace and restart';
 export const CREATE_NEW_ACTION = 'Create new';
 /** The mapped pipeline or cluster is gone. */
 export const CREATE_NEW_PIPELINE_ACTION = 'Create a new pipeline';
-/** The mapping file is not one. */
-export const DEPLOY_AS_NEW_ACTION = 'Deploy as new';
-/** Bug 47: an old `<stem>.cloud.json` that two configs could own is not used; deploy without it. */
+/** Bug 47: an old `<stem>.cloud.json` that two configs could own is not used; bug 48: nor one that can't be read. Deploy without it. */
 export const DEPLOY_WITHOUT_ACTION = 'Deploy without it';
 /** Ticket 5.7: a missing cloud secret's choices. */
 export const ENTER_ANOTHER_ACTION = 'Enter another value…';
@@ -215,11 +215,12 @@ export class CloudDeploy {
 		} else if (read.kind === 'none') {
 			target = await this.newTarget(file, doc.uri.fsPath, tag, true);
 		} else if (read.kind === 'bad') {
-			this.ctx.log(`Redpanda Cloud: ${mappingFile} is not a deploy mapping: ${read.reason}`);
+			// Bug 48: as with no mapping, a pipeline tagged with this file is offered before a new one.
+			this.ctx.log(`Redpanda Cloud: ${mappingFile} could not be read as a deploy mapping: ${read.reason}`);
 			const choice = await this.ctx.showError(
-				`${mappingName} is not a deploy mapping: ${read.reason}. Deploy ${file} as a new pipeline? ${mappingFile === ownFile
-					? `${mappingName} is then replaced.` : `Its mapping is then ${ownName}; ${mappingName} is not changed.`}`, DEPLOY_AS_NEW_ACTION);
-			target = choice === DEPLOY_AS_NEW_ACTION ? await this.newTarget(file, doc.uri.fsPath, tag, false) : NOT_STARTED;
+				`${mappingName} could not be read as a deploy mapping: ${read.reason}. Deploy ${file} without it? ${mappingFile === ownFile
+					? `${mappingName} is then replaced.` : `Its mapping is then ${ownName}; ${mappingName} is not changed.`}`, DEPLOY_WITHOUT_ACTION);
+			target = choice === DEPLOY_WITHOUT_ACTION ? await this.newTarget(file, doc.uri.fsPath, tag, true) : NOT_STARTED;
 		} else {
 			target = await this.mappedTarget(file, doc.uri.fsPath, tag, mappingName, read.mapping, only !== undefined);
 		}
@@ -422,7 +423,7 @@ export class CloudDeploy {
 		const { problems } = translation;
 		this.ctx.log(`Redpanda Cloud: ${file} was not deployed: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
 		problems.forEach((p) => this.ctx.log(`  ${file}: ${p.message}`));
-		void this.ctx.showError(`${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}. Nothing was sent.`);
+		void this.ctx.showError(`${refusedText(file, problems)}. Nothing was sent.`);
 		return undefined;
 	}
 
@@ -549,7 +550,7 @@ export class CloudDeploy {
 		}
 		let local: ReadonlyMap<string, LocalValue>;
 		try {
-			local = this.ctx.options.localValues?.(uri) ?? new Map<string, LocalValue>();
+			local = this.ctx.options.localValues?.(uri, missing.map((s) => s.name)) ?? new Map<string, LocalValue>();
 		} catch (err) {
 			this.ctx.log(`Redpanda Cloud: could not read the local values of ${file}: ${reasonOf(err)}`);
 			local = new Map<string, LocalValue>();
@@ -961,10 +962,4 @@ function lineRange(text: string, line: number): vscode.Range {
 	const lines = text.split('\n');
 	const index = Math.max(0, Math.min(line, lines.length) - 1);
 	return new vscode.Range(index, 0, index, lines[index].replace(/\r$/, '').length);
-}
-
-/** The right side of the deploy's diff: the local config as it would be sent. */
-export function sentConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
-	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
-	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.local.yaml` });
 }

@@ -45,12 +45,12 @@
 // found inside the workspace folders only ("not in this workspace" otherwise; a tag that names files
 // in two folders is "in more than one folder", and Compare and Deploy again ask which). Clicking a row, or
 // **Open deployed config**, reads the pipeline now and shows its config read-only; **Compare with local
-// file** diffs that (read-only) with the local file (editable); **Deploy local file again** runs the
+// file** diffs that with the local file as Deploy would send it (bug 48: translated, both read-only); **Deploy local file again** runs the
 // normal Deploy of the file when its `.cloud.json` maps to this pipeline, else explains and sends
 // nothing; **Copy pipeline ID** puts the id on the clipboard.
 //
 // Before the create or update (ticket 5.7), Deploy reads the chosen cluster's secrets once (only when
-// the translation made at least one secret reference) and, one at a time, for each referenced secret
+// the config references at least one secret, translated or, bug 48, written as `${secrets.NAME}`) and, one at a time, for each referenced secret
 // the cluster lacks: with a local value (the one the binary would get: secret storage,
 // `redpandaConnect.env`, the env file, VS Code's environment) offers to keep it or enter another (a
 // password box), plus, for a secret used only with a default, not to create it; with no local value,
@@ -132,7 +132,7 @@ import type { SecretStore } from './secrets';
 
 // The names that moved to the deploy flow, the pipeline actions, the log access and the shared module, exported here as before.
 export {
-	ADD_NOW_ACTION, CHECK_COLLECTION, CHECK_SOURCE, CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_ANYWAY_ACTION, DEPLOY_AS_NEW_ACTION,
+	ADD_NOW_ACTION, CHECK_COLLECTION, CHECK_SOURCE, CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_ANYWAY_ACTION,
 	DEPLOY_NOT_DETECTED_MESSAGE, DEPLOY_NOT_ON_DISK_MESSAGE, DEPLOY_UNTITLED_MESSAGE, ENTER_ANOTHER_ACTION, keepValueAction,
 	DEPLOY_WITHOUT_ACTION, localSourceText, REPLACE_ACTION, sentConfigUri, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
 } from './cloudDeploy';
@@ -447,8 +447,8 @@ export interface CloudViewOptions {
 	readonly fetch?: FetchLike;
 	/** Whether a URI is a detected Redpanda Connect config. */
 	readonly isDetected: (uri: vscode.Uri) => boolean;
-	/** Ticket 5.7: the value the binary would get for each variable a config uses (the Environment view's). */
-	readonly localValues?: (uri: vscode.Uri) => ReadonlyMap<string, LocalValue>;
+	/** Ticket 5.7: the value the binary would get for each variable a config uses, and (bug 48) each of `names` (the Environment view's). */
+	readonly localValues?: (uri: vscode.Uri, names?: readonly string[]) => ReadonlyMap<string, LocalValue>;
 	/** Ticket 8: lint of the saved file, as lint on save runs it (none: skipped, as with no binary). */
 	readonly lint?: (doc: vscode.TextDocument) => Promise<LintResult>;
 	/** Ticket 8: the local binary's Connect version (the status bar's), when one is usable. */

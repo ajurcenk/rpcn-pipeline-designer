@@ -1121,7 +1121,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 			script({ pipelinePicks: ['orders'] });
 			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
 			assert.strictEqual(infos.length, 1, infos.join('\n'));
-			assert.match(infos[0], /^bad\.yaml\.cloud\.json could not be read: it is not JSON \(.+\)\. Choose the pipeline whose logs to show\.$/);
+			assert.match(infos[0], /^bad\.yaml\.cloud\.json could not be read as a deploy mapping: it is not JSON \(.+\)\. Choose the pipeline whose logs to show\.$/);
 			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.closeAllEditors');

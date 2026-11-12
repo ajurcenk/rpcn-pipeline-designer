@@ -21,7 +21,7 @@ import * as vscode from 'vscode';
 import {
 	CloudView, CLIENT_ID_KEY, CLIENT_SECRET_KEY, NOT_READ_TEXT, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, DEPLOY_UNTITLED_MESSAGE, DISCONNECT_COMMAND, type CloudItem, type CloudUi,
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
-	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOY_WITHOUT_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
+	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_WITHOUT_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
 	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION, CHECK_SOURCE, DEPLOY_ANYWAY_ACTION,
@@ -904,7 +904,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(confirmed.length, 0, 'no tagged offer when re-creating');
 	});
 
-	test('BAD_SIDECAR: a mapping that is not JSON or lacks an id is named; deploying as new replaces it', async () => {
+	test('BAD_SIDECAR: a mapping that is not JSON or lacks an id is named as not read; deploying without it replaces it', async () => {
 		await connect();
 		const doc = await openConfig(configFile);
 		fs.writeFileSync(sidecarFile(), '{"clusterId": "c1"}');
@@ -912,16 +912,35 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		script({ actions: [undefined] });
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.strictEqual(errors.length, 1);
-		assert.match(errors[0], /^orders\.yaml\.cloud\.json is not a deploy mapping: it has no pipelineId\. Deploy orders\.yaml as a new pipeline\?/);
-		assert.deepStrictEqual(errorActions[0], [DEPLOY_AS_NEW_ACTION]);
+		assert.match(errors[0], /^orders\.yaml\.cloud\.json could not be read as a deploy mapping: it has no pipelineId\. Deploy orders\.yaml without it\? orders\.yaml\.cloud\.json is then replaced\.$/);
+		assert.deepStrictEqual(errorActions[0], [DEPLOY_WITHOUT_ACTION]);
 		assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET'), 'nothing created');
 
 		fs.writeFileSync(sidecarFile(), 'not json {');
-		script({ actions: [DEPLOY_AS_NEW_ACTION], picks: ['rpc-vilnius'], inputs: ['orders'] });
+		script({ actions: [DEPLOY_WITHOUT_ACTION], picks: ['rpc-vilnius'], inputs: ['orders'] });
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
-		assert.match(errors[1], /^orders\.yaml\.cloud\.json is not a deploy mapping: it is not JSON/);
+		assert.match(errors[1], /^orders\.yaml\.cloud\.json could not be read as a deploy mapping: it is not JSON/);
 		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, result?.pipelineId, 'replaced');
+	});
+
+	test('BAD_MAPPING_DEPLOY 48: a mapping that cannot be read and a pipeline tagged with the config: said so, then the tagged pipeline offered as with no mapping', async () => {
+		await connect();
+		const doc = await openConfig(configFile);
+		fake.cluster('cvilnius0000000000aa').pipelines.push({
+			id: 'tagged00000000000048', display_name: 'tagged-48', description: '', config_yaml: CONFIG,
+			resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: { [CONFIG_TAG]: 'orders.yaml' }, state: 'STATE_STOPPED', sequence: [],
+		});
+		fs.writeFileSync(sidecarFile(), 'not json {');
+		script({ actions: [DEPLOY_WITHOUT_ACTION], picks: ['rpc-vilnius'], confirms: ['Update tagged-48'] });
+		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'unchanged', errors.join('\n'));
+		assert.match(errors[0], /^orders\.yaml\.cloud\.json could not be read as a deploy mapping: it is not JSON/);
+		assert.strictEqual(confirmed.length, 1, 'the tagged offer');
+		assert.deepStrictEqual(confirmed[0].actions, ['Update tagged-48', CREATE_NEW_ACTION]);
+		assert.strictEqual(asked.length, 0, 'no name prompt');
+		assert.strictEqual(posts().length + puts().length, 0);
+		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, 'tagged00000000000048', 'the mapping replaced');
 	});
 
 	test('TAGGED: no mapping, the cluster has a pipeline tagged with this file: "Update <name>" or "Create new"; Escape sends nothing; the mapping written either way', async () => {
@@ -1297,6 +1316,60 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(questions.length, 1, 'only the one still missing');
 		assert.ok(questions[0].question.includes('OTHER_57'));
 		assert.deepStrictEqual([...vilnius().secrets!], [['TOKEN', SECRET_VALUES.tokenTyped], ['OTHER_57', SECRET_VALUES.otherTyped]]);
+	});
+
+	test('SECRETS_REF / SAME_SECRET / SECRETS_PRESENT 48: a written ${secrets.TOKEN_48} is asked for as a translated one, once with ${TOKEN_48}, its default optional; sent as written; present: nothing asked', async () => {
+		vilnius().secrets = new Map();
+		const text = usingSecrets('secrets.TOKEN_48', 'TOKEN_48', 'secrets.OPT_48:x');
+		const doc = await openForSecrets(text);
+		script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.tokenTyped], choices: [ADD_NOW_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(questions.length, 1, 'TOKEN_48 asked once; OPT_48 has a default and no local value');
+		assert.ok(questions[0].question.includes('has no secret TOKEN_48') && questions[0].question.includes('Add TOKEN_48 now?'), questions[0].question);
+		assert.deepStrictEqual([...vilnius().secrets!], [['TOKEN_48', SECRET_VALUES.tokenTyped]]);
+		assert.strictEqual(lastCreate()!.config_yaml, usingSecrets('secrets.TOKEN_48', 'secrets.TOKEN_48', 'secrets.OPT_48:x'), 'the written reference as written');
+
+		const only = usingSecrets('secrets.TOKEN_48');
+		await editConfig(doc, only);
+		script({ confirms: [REPLACE_ACTION] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.strictEqual(questions.length, 0, 'present: nothing asked');
+		assert.strictEqual(secretPosts().length, 1, 'nothing more created');
+		assert.strictEqual(JSON.parse(puts()[0].body).config_yaml, only);
+	});
+
+	test('SECRETS_REF 48 with a local value: a written ${secrets.BROKER} is offered the local BROKER as ${BROKER} is (keep or enter another)', () => withLocal(async () => {
+		assert.ok(await api().secrets!.set(undefined, 'BROKER', SECRET_VALUES.brokerLocal));
+		vilnius().secrets = new Map();
+		const doc = await openForSecrets(usingSecrets('secrets.BROKER'));
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], choices: ['Keep the value from secret storage'] });
+		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+		assert.deepStrictEqual(questions.map((q) => q.choices), [['Keep the value from secret storage', ENTER_ANOTHER_ACTION]]);
+		assert.ok(questions[0].question.includes('BROKER is set in secret storage'), questions[0].question);
+		assert.deepStrictEqual([...vilnius().secrets!], [['BROKER', SECRET_VALUES.brokerLocal]]);
+		assert.strictEqual(lastCreate()!.config_yaml, usingSecrets('secrets.BROKER'));
+	}));
+
+	test('SECRETS_BAD / NESTED 48: ${secrets.my_x}, ${secrets.A.B} and ${A_48:${B_48}} are refused with their lines before any prompt; nothing sent', async () => {
+		vilnius().secrets = new Map();
+		const doc = await openForSecrets(usingSecrets('secrets.my_x', 'secrets.A.B', 'A_48:${B_48}'));
+		const before = fake.requests.length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.strictEqual(fake.requests.length, before, 'nothing sent');
+		assert.strictEqual(pickedFrom.length + asked.length + unitsAsked + questions.length, 0, 'nothing asked');
+		assert.deepStrictEqual(errors, [`orders.yaml can't be deployed to Redpanda Cloud: ${[
+			'secrets.my_x (line 5): my_x, the secret name, must match ^[A-Z][A-Z0-9_]*$',
+			'secrets.A.B (line 6): A.B, the secret name, must match ^[A-Z][A-Z0-9_]*$',
+			'line 7: ${A_48:${B_48}} has a reference in its default, which is never expanded (a default is literal text); use a default without ${…}',
+		].join('; ')}. Nothing was sent.`]);
+	});
+
+	test('ENV_COMMENT 48: env( only in a # comment is not refused: deployed', async () => {
+		const { doc } = await deployOnce(CONFIG.replace('root.n = 1', 'root.n = 1 # not env("KEY")').replace('output:', '# env(this.name)\noutput:'));
+		assert.strictEqual(errors.length, 0, errors.join('\n'));
+		assert.ok(String(lastCreate()!.config_yaml).includes('# not env("KEY")'));
+		assert.strictEqual(doc.isDirty, false);
 	});
 
 	test('DEFAULT_NONE and DEFAULT_LOCAL: ${TOPIC:orders} with no local value: nothing asked or created; with one (redpandaConnect.env): keep, change or "Don\'t create it"; before the UNCHANGED comparison', () => withLocal(async () => {
@@ -1763,6 +1836,23 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG);
 	});
 
+	test('BAD_MAPPING_DELETE 48: Delete, Start and Stop with the active config\'s mapping unreadable: said so before the pick; none chosen: nothing sent', async () => {
+		await deployOnce();
+		fs.writeFileSync(sidecarFile(), 'not json {');
+		for (const command of [DELETE_COMMAND, START_COMMAND, STOP_COMMAND]) {
+			const messages = allMessages.length;
+			script({ pipelinePicks: [undefined] });
+			assert.strictEqual((await run(command))?.kind, 'notStarted', command);
+			const said = allMessages.slice(messages);
+			const at = said.findIndex((m) => /^orders\.yaml\.cloud\.json could not be read as a deploy mapping: it is not JSON .*\.$/.test(m));
+			assert.ok(at >= 0, `${command}: ${said.join('\n')}`);
+			assert.strictEqual(pipelinesOffered.length, 1, `${command}: the pick`);
+			assert.ok(at < said.indexOf('orders'), `${command}: said before the pick`);
+		}
+		assert.strictEqual(lifecycle().length, 0, 'nothing sent');
+		assert.strictEqual(fs.readFileSync(sidecarFile(), 'utf8'), 'not json {', 'the mapping left as it is');
+	});
+
 	// --- ticket 5.5: the row's file, the deployed config, Compare, Deploy again and Copy pipeline ID ---
 
 	const ROW_COMMANDS = [OPEN_DEPLOYED_COMMAND, COMPARE_COMMAND, DEPLOY_AGAIN_COMMAND, START_COMMAND, STOP_COMMAND, COPY_ID_COMMAND, DELETE_COMMAND];
@@ -1894,7 +1984,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(errors.length, 1);
 	});
 
-	test('COMPARE: deployed (read now, read-only) ↔ the local file (editable), "<name> (deployed) ↔ orders.yaml"; ${VAR} against ${secrets.VAR} differs; not in the workspace: said so, nothing opened', async () => {
+	test('COMPARE 48: deployed (read now) ↔ the local file as Deploy would send it (translated, read-only), "<name> (deployed) ↔ orders.yaml (as sent)": no change for ${VAR}; unsaved edits compared; a refused translation said as Deploy says it; not in the workspace: said so, nothing opened', async () => {
 		inWorkspace();
 		const { doc, id } = await deployOnce(VARS);
 		const at = gets(id);
@@ -1903,25 +1993,72 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(gets(id), at + 1, 'read now');
 		const tabs = diffTabs();
 		assert.strictEqual(tabs.length, 1);
-		assert.strictEqual(tabs[0].label, 'orders (deployed) ↔ orders.yaml');
+		assert.strictEqual(tabs[0].label, 'orders (deployed) ↔ orders.yaml (as sent)');
 		const input = tabs[0].input as vscode.TabInputTextDiff;
-		assert.strictEqual(input.modified.scheme, 'file', 'the local file itself');
-		assert.strictEqual(input.modified.fsPath, doc.uri.fsPath);
+		assert.strictEqual(input.modified.scheme, DEPLOYED_SCHEME, 'not the file: read-only');
 		assert.strictEqual((await vscode.workspace.openTextDocument(input.original)).getText(), VARS_SENT, 'the deployed config');
-		assert.notStrictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), VARS_SENT, '${VAR} against ${secrets.VAR}');
-		const edit = new vscode.WorkspaceEdit();
-		edit.insert(input.modified, new vscode.Position(0, 0), '# edited\n');
-		assert.ok(await vscode.workspace.applyEdit(edit), 'editable');
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), VARS_SENT, '${VAR} as ${secrets.VAR}: no change');
+
+		// Unsaved edits: what Deploy would save and send; the file is not saved.
+		const edited = VARS.replace('${TOPIC:orders}', '${TOPIC:payments}');
+		await editConfig(doc, edited);
+		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'opened', errors.join('\n'));
+		const again = diffTabs()[0].input as vscode.TabInputTextDiff;
+		assert.strictEqual((await vscode.workspace.openTextDocument(again.modified)).getText(), VARS_SENT.replace('${secrets.TOPIC:orders}', '${secrets.TOPIC:payments}'));
+		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), VARS, 'not saved');
+
+		// A translation Deploy refuses: said as Deploy says it; nothing requested.
+		await editConfig(doc, `${VARS}bad: \${my_x}\n`);
+		const before = fake.requests.length;
+		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notStarted');
+		assert.deepStrictEqual(errors.slice(-1), ['orders.yaml can\'t be deployed to Redpanda Cloud: my_x (line 13): a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$. Nothing was compared.']);
+		assert.strictEqual(fake.requests.length, before, 'nothing requested');
+		await editConfig(doc, VARS);
 		assert.ok(await doc.save());
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-		fs.writeFileSync(configFile, VARS);
+
+		// A file that cannot be read: said and logged; nothing requested (POSIX permissions; not as root).
+		if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+			const outputBefore = api().outputLines().length;
+			fs.chmodSync(configFile, 0o000);
+			try {
+				const before2 = fake.requests.length;
+				assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notStarted');
+				assert.match(errors[errors.length - 1], /^Could not read orders\.yaml: .+\. Nothing was compared\.$/);
+				assert.ok(api().outputLines().slice(outputBefore).some((l) => l.startsWith(`Redpanda Cloud: did not compare ${configFile}: it could not be read: `)));
+				assert.strictEqual(fake.requests.length, before2, 'nothing requested');
+			} finally {
+				fs.chmodSync(configFile, 0o644);
+			}
+		}
 
 		cloud().workspaceFolders = () => [];
-		const before = fake.requests.length;
+		const unread = fake.requests.length;
 		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
 		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from orders.yaml, which is ${NOT_IN_WORKSPACE}, so there is no local file to compare with.`]);
 		assert.strictEqual(diffTabs().length, 0);
-		assert.strictEqual(fake.requests.length, before, 'nothing requested');
+		assert.strictEqual(fake.requests.length, unread, 'nothing requested');
+	});
+
+	test('COMPARE_APART 48: a Compare run while a Deploy\'s "Replace and restart" diff is open leaves that diff\'s right side as it was', async () => {
+		inWorkspace();
+		const { doc } = await deployOnce(VARS);
+		const toDeploy = VARS.replace('${TOPIC:orders}', '${TOPIC:payments}');
+		await editConfig(doc, toDeploy);
+		script({ confirms: [undefined] });
+		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
+		const sent = VARS_SENT.replace('${secrets.TOPIC:orders}', '${secrets.TOPIC:payments}');
+		const deployRight = (diffTabs()[0].input as vscode.TabInputTextDiff).modified;
+		assert.strictEqual((await vscode.workspace.openTextDocument(deployRight)).getText(), sent);
+
+		await editConfig(doc, VARS.replace('${TOPIC:orders}', '${TOPIC:refunds}'));
+		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'opened', errors.join('\n'));
+		const compareRight = diffTabs().map((t) => (t.input as vscode.TabInputTextDiff).modified).find((u) => u.toString() !== deployRight.toString());
+		assert.ok(compareRight, 'Compare has its own right side');
+		assert.strictEqual((await vscode.workspace.openTextDocument(compareRight)).getText(), VARS_SENT.replace('${secrets.TOPIC:orders}', '${secrets.TOPIC:refunds}'));
+		assert.strictEqual((await vscode.workspace.openTextDocument(deployRight)).getText(), sent, 'the Deploy diff unchanged');
+		await editConfig(doc, VARS);
+		assert.ok(await doc.save());
 	});
 
 	test('DEPLOY_AGAIN: the file\'s .cloud.json maps to this pipeline: the normal Deploy (diff, confirmation, PUT); another pipeline or none: explained, nothing sent; not in the workspace: said so', async () => {
@@ -1970,7 +2107,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(infos.slice(-1), ['orders.yaml has no orders.yaml.cloud.json, so a Deploy of it would not update orders. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
 		fs.writeFileSync(sidecarFile(), 'not json');
 		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notMapped');
-		assert.match(infos[infos.length - 1], /^orders\.yaml\.cloud\.json is not a deploy mapping \(it is not JSON/);
+		assert.match(infos[infos.length - 1], /^orders\.yaml\.cloud\.json could not be read as a deploy mapping: it is not JSON/);
 		cloud().workspaceFolders = () => [];
 		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
 		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from orders.yaml, which is ${NOT_IN_WORKSPACE}, so there is no local file to deploy.`]);
@@ -2727,7 +2864,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		}
 	});
 
-	test('OLD_MAPPING_GONE 47: an old mapping whose pipeline is gone: Create a new pipeline writes orders.yaml.cloud.json, the old file left as it is; an old mapping that does not parse: named, Deploy as new writes the new name', async () => {
+	test('OLD_MAPPING_GONE 47: an old mapping whose pipeline is gone: Create a new pipeline writes orders.yaml.cloud.json, the old file left as it is; an old mapping that does not parse: named, Deploy without it writes the new name', async () => {
 		const { doc, id } = await deployOnce();
 		const old = path.join(dir, 'orders.cloud.json');
 		fs.renameSync(sidecarFile(), old);
@@ -2744,10 +2881,11 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		// BAD_SIDECAR through the old name (one owner).
 		fs.rmSync(sidecarFile());
 		fs.writeFileSync(old, 'not json {');
-		script({ actions: [DEPLOY_AS_NEW_ACTION], picks: ['rpc-vilnius'], confirms: [CREATE_NEW_ACTION], inputs: ['again'] });
+		script({ actions: [DEPLOY_WITHOUT_ACTION], picks: ['rpc-vilnius'], confirms: [CREATE_NEW_ACTION], inputs: ['again'] });
 		const asNew = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(asNew?.kind, 'final', errors.join('\n'));
-		assert.match(errors[0], /^orders\.cloud\.json is not a deploy mapping: it is not JSON.*Deploy orders\.yaml as a new pipeline\? Its mapping is then orders\.yaml\.cloud\.json; orders\.cloud\.json is not changed\.$/);
+		assert.match(errors[0], /^orders\.cloud\.json could not be read as a deploy mapping: it is not JSON.*Deploy orders\.yaml without it\? Its mapping is then orders\.yaml\.cloud\.json; orders\.cloud\.json is not changed\.$/);
+		assert.deepStrictEqual(confirmed[0]?.actions, ['Update orders', CREATE_NEW_ACTION], 'bug 48: the pipeline tagged with orders.yaml offered');
 		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, asNew?.pipelineId);
 		assert.strictEqual(fs.readFileSync(old, 'utf8'), 'not json {');
 	});

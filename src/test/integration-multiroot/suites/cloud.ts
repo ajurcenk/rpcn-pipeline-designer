@@ -76,6 +76,18 @@ suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', func
 	const puts = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'PUT');
 	const diffTabs = () => vscode.window.tabGroups.all.flatMap((g) => g.tabs)
 		.filter((t) => t.input instanceof vscode.TabInputTextDiff && t.input.original.scheme === DEPLOYED_SCHEME);
+	/** Bug 48: Compare's right side is the file as it would be sent (read-only), so the file is known by its text. */
+	async function comparedText(): Promise<string> {
+		const modified = (diffTabs()[0].input as vscode.TabInputTextDiff).modified;
+		assert.strictEqual(modified.scheme, DEPLOYED_SCHEME);
+		return (await vscode.workspace.openTextDocument(modified)).getText();
+	}
+	/** Marks each config with a last line of its own, so Compare shows which it read. */
+	function markFiles(...configs: string[]): void {
+		for (const f of configs) {
+			fs.writeFileSync(f, `${CONFIG}# ${f}\n`);
+		}
+	}
 
 	async function open(config: string): Promise<vscode.TextDocument> {
 		const doc = await vscode.workspace.openTextDocument(config);
@@ -205,9 +217,10 @@ suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', func
 
 		// Compare: b's row diffs b's file, with no question.
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		markFiles(file('a'), file('b'));
 		assert.strictEqual((await run(COMPARE_COMMAND, row('orders-b')!.node))?.kind, 'opened', errors.join('\n'));
 		assert.strictEqual(questions.length, 0);
-		assert.strictEqual((diffTabs()[0].input as vscode.TabInputTextDiff).modified.fsPath, file('b'));
+		assert.strictEqual(await comparedText(), fs.readFileSync(file('b'), 'utf8'));
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
 		// Deploy again: a's row updates a's pipeline from a's file.
@@ -247,9 +260,10 @@ suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', func
 		assert.ok(questions[0].question.includes(IN_SEVERAL_FOLDERS), questions[0].question);
 		assert.strictEqual(fake.requests.length, before, 'nothing requested');
 		assert.strictEqual(diffTabs().length, 0);
+		markFiles(file('a'), file('b'));
 		script({ choices: [`b/${NAME}`] });
 		assert.strictEqual((await run(COMPARE_COMMAND, old.node))?.kind, 'opened', errors.join('\n'));
-		assert.strictEqual((diffTabs()[0].input as vscode.TabInputTextDiff).modified.fsPath, file('b'));
+		assert.strictEqual(await comparedText(), fs.readFileSync(file('b'), 'utf8'));
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
 		// Deploy again: asked; Escape sends nothing; a chosen with no mapping: explained, nothing sent.
@@ -271,9 +285,10 @@ suite('Cloud deploy names in a multi-root workspace (integration, bug 47)', func
 		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
 		assert.strictEqual(row('old-one')!.description, `Stopped · ${ONLY_A}`);
 		assert.ok(row('old-one')!.tooltip.includes(`Deployed from ${file('a', ONLY_A)}.`), row('old-one')!.tooltip);
+		markFiles(file('a', ONLY_A));
 		assert.strictEqual((await run(COMPARE_COMMAND, row('old-one')!.node))?.kind, 'opened', errors.join('\n'));
 		assert.strictEqual(questions.length, 0);
-		assert.strictEqual((diffTabs()[0].input as vscode.TabInputTextDiff).modified.fsPath, file('a', ONLY_A));
+		assert.strictEqual(await comparedText(), fs.readFileSync(file('a', ONLY_A), 'utf8'));
 		// Deploy's tagged offer: made for a's file.
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		const doc = await open(file('a', ONLY_A));

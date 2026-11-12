@@ -105,6 +105,8 @@ export interface Region {
 	readonly end: number;
 	/** A YAML double-quoted scalar: `\"` in the source is a `"` in Bloblang. */
 	readonly yamlDoubleQuoted?: boolean;
+	/** A literal block scalar (`|`): its line breaks are Bloblang's (other scalars fold them). */
+	readonly literalBlock?: boolean;
 }
 
 /** The Bloblang regions of the document: Bloblang field values and `${! }` interpolations. */
@@ -124,7 +126,7 @@ function regions(parsed: ParsedYaml, text: string): Region[] {
 					const block = v.type === 'BLOCK_LITERAL' || v.type === 'BLOCK_FOLDED';
 					// A block starts after its header line; a quoted value inside its quotes.
 					const start = block ? text.indexOf('\n', v.range[0]) + 1 || v.range[1] : v.range[0] + (quoted ? 1 : 0);
-					out.push({ start, end: v.range[1] - (quoted ? 1 : 0), yamlDoubleQuoted: v.type === 'QUOTE_DOUBLE' });
+					out.push({ start, end: v.range[1] - (quoted ? 1 : 0), yamlDoubleQuoted: v.type === 'QUOTE_DOUBLE', literalBlock: v.type === 'BLOCK_LITERAL' });
 				}
 				visit(v);
 			}
@@ -157,12 +159,17 @@ export function bloblangCode(source: string): string {
 	return codeOf(source).code;
 }
 
+/** Bug 48: whether the end of `source` (a region's text from its start) is inside a Bloblang `#` comment. */
+export function endsInBloblangComment(source: string): boolean {
+	return codeOf(source).state === 'comment';
+}
+
 /**
  * Blanks Bloblang comments and string literals in `source` (from a region's start to the cursor)
  * so they cannot look like code, and says whether the end is inside one. Strings end at their
  * line, triple-quoted ones may span lines; comments run to the end of their line.
  */
-function codeOf(source: string): { code: string; inString: boolean } {
+function codeOf(source: string): { code: string; inString: boolean; state: 'code' | 'string' | 'triple' | 'comment' } {
 	let code = '';
 	let state: 'code' | 'string' | 'triple' | 'comment' = 'code';
 	for (let i = 0; i < source.length; i++) {
@@ -213,7 +220,7 @@ function codeOf(source: string): { code: string; inString: boolean } {
 			code += c;
 		}
 	}
-	return { code, inString: state !== 'code' };
+	return { code, inString: state !== 'code', state };
 }
 
 /** The region's source up to `offset`, with YAML double-quote escapes turned into Bloblang text. */

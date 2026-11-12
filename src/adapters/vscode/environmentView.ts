@@ -470,11 +470,14 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 	 * Ticket 5.7: the value the binary would get for each variable `uri`'s config uses, read now (as
 	 * `modelFor`), with its source (and, for `redpandaConnect.env`, the level its value comes from).
 	 * A name no source gives, or whose value is empty, is absent. Deploy offers these as the values of
-	 * missing cloud secrets.
+	 * missing cloud secrets. Bug 48: `names` (the secrets of a written `${secrets.NAME}`, which no local
+	 * run reads) count as used too, so their values are offered as `${NAME}`'s would be.
 	 */
-	localValues(uri: vscode.Uri): Map<string, LocalValue> {
+	localValues(uri: vscode.Uri, names: readonly string[] = []): Map<string, LocalValue> {
 		const out = new Map<string, LocalValue>();
-		for (const group of this.compute(uri).groups) {
+		const inputs = this.inputsFor(uri);
+		const extra = names.filter((name) => !inputs.usage.some((u) => u.name === name)).map((name) => ({ name, required: true }));
+		for (const group of environmentModel({ ...inputs, usage: [...inputs.usage, ...extra] }).groups) {
 			for (const v of group.variables) {
 				if (v.state === 'used' && v.referenced && v.value !== undefined && v.value !== '' && !out.has(v.name)) {
 					out.set(v.name, { value: v.value, source: v.source, ...(v.level ? { level: v.level } : {}) });

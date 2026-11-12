@@ -8,6 +8,7 @@ import { CONFIG_TAG, type CloudPipeline, isKnownState, type PipelineState, pipel
 import {
 	type DeployMapping, legacyOwnersOf, legacySidecarPath, type ParsedMapping, parseMapping, sidecarPath, tagNames, taggedConfigs, type WorkspaceRoot,
 } from '../cloud/sidecar';
+import type { TranslateProblem } from '../../core/cloudTranslate';
 import type { CloudContext, DeployResult } from './cloudView';
 
 export const NOT_CONNECTED_MESSAGE = 'No Redpanda Cloud service account is connected. Connect one to deploy.';
@@ -35,6 +36,20 @@ export function pipelineStateDescription(p: CloudPipeline | undefined): string {
 export function deployedConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
 	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
 	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.yaml` });
+}
+/** The right side of the deploy's diff: the local config as it would be sent. */
+export function sentConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
+	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
+	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.local.yaml` });
+}
+/** Bug 48: the right side of Compare with local file (the local config as it would be sent), apart from the deploy's. */
+export function compareConfigUri(clusterId: string, pipelineId: string, name: string): vscode.Uri {
+	const safe = name.replace(/[^\w.-]+/g, '_') || pipelineId;
+	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.compare.yaml` });
+}
+/** Why `file` can't be sent to Redpanda Cloud, each problem with its line (Deploy's message; bug 48: Compare's too). */
+export function refusedText(file: string, problems: readonly TranslateProblem[]): string {
+	return `${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}`;
 }
 export async function readMapping(file: string): Promise<{ readonly kind: 'none' } | ParsedMapping> {
 	let text: string;

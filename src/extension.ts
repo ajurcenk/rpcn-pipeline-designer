@@ -338,7 +338,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		endpoints: testMode ? UNREACHABLE_ENDPOINTS : PRODUCTION_ENDPOINTS,
 		isDetected: (uri) => detection.isDetected(uri),
 		// Ticket 5.7: a missing cloud secret's local value, as the binary would get it.
-		localValues: (uri) => environment.localValues(uri),
+		localValues: (uri, names) => environment.localValues(uri, names),
 		// Ticket 8: the pre-deploy check's lint (as lint on save), local version (the status bar's) and catalogue (the graph's).
 		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
 		localVersion: () => (redpandaConnect.state.kind === 'ok' ? redpandaConnect.state.version : undefined),

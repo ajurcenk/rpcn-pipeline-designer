@@ -13,9 +13,10 @@ import { asCloudError, describeCloudError } from '../cloud/errors';
 import { configTag, taggedConfigs } from '../cloud/sidecar';
 import type { CloudContext, CloudNode, DeployResult, PipelineActionResult, PipelineChoice, RowActionResult } from './cloudView';
 import {
-	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedTagOf, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE,
-	NOT_STARTED, pipelineStateDescription, readMapping, reasonOf, sharedMappingText, sleep, stateWord,
+	compareConfigUri, CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedTagOf, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE,
+	NOT_STARTED, pipelineStateDescription, readMapping, reasonOf, refusedText, sharedMappingText, sleep, stateWord,
 } from './cloudShared';
+import { translateForCloud } from '../../core/cloudTranslate';
 /** The delete confirmation's action. */
 export const DELETE_ACTION = 'Delete';
 
@@ -39,7 +40,7 @@ export type PaletteTarget =
 
 /** How a palette command's target path differs between its callers. */
 export interface PaletteTargetHow {
-	/** Said after a gone or unreadable mapping, then the pick; absent: a gone mapping stops there, an unreadable one goes to the pick unsaid. */
+	/** Said after a gone or unreadable mapping, then the pick; absent: a gone mapping stops there, an unreadable one is said, then the pick. */
 	readonly pickAfterGone?: string;
 	/** The pick sorted by cluster, then pipeline name; else as listed. */
 	readonly byName?: boolean;
@@ -158,9 +159,10 @@ export class CloudActions {
 				const why = `${sharedMappingText(at, config.fsPath)}.`;
 				this.ctx.log(`Redpanda Cloud: ${why}`);
 				void this.ctx.showInfo(then(why));
-			} else if (read.kind === 'bad' && how.pickAfterGone) {
-				this.ctx.log(`Redpanda Cloud: ${at.file} is not a deploy mapping: ${read.reason}`);
-				void this.ctx.showInfo(then(`${mappingName} could not be read: ${read.reason}.`));
+			} else if (read.kind === 'bad') {
+				// Bug 48: said before the pick for every caller (Delete, Start and Stop too).
+				this.ctx.log(`Redpanda Cloud: ${at.file} could not be read as a deploy mapping: ${read.reason}`);
+				void this.ctx.showInfo(then(`${mappingName} could not be read as a deploy mapping: ${read.reason}.`));
 			} else if (read.kind === 'ok') {
 				const m = read.mapping;
 				const cluster = this.ctx.clusterById(m.clusterId);
@@ -562,21 +564,47 @@ export class CloudActions {
 		return { kind: 'notInWorkspace', pipelineId: pipeline.id };
 	}
 
-	/** Compare with the local file: the deployed config (read now, read-only) ↔ the local file (editable). */
+	/**
+	 * Compare with the local file: the deployed config (read now) ↔ the local file as Deploy would send it
+	 * (bug 48: translated, so a `${VAR}` sent as `${secrets.VAR}` is no change), both read-only; the file
+	 * is edited in its own editor. A translation Deploy would refuse is said as Deploy says it, nothing opened.
+	 */
 	private async compare(target: ActionTarget): Promise<RowActionResult> {
 		const file = await this.localFileFor(target.pipeline, 'compare with');
 		if (typeof file !== 'string') {
 			return file;
+		}
+		const name = path.basename(file);
+		// Deploy saves an edited file first, so unsaved edits are what it would send; else the saved file.
+		const fileUri = vscode.Uri.file(file).toString();
+		const edited = vscode.workspace.textDocuments.find((d) => d.isDirty && d.uri.toString() === fileUri);
+		let source: string;
+		try {
+			source = edited ? edited.getText() : await fs.promises.readFile(file, 'utf8');
+		} catch (err) {
+			this.ctx.log(`Redpanda Cloud: did not compare ${file}: it could not be read: ${reasonOf(err)}`);
+			void this.ctx.showError(`Could not read ${name}: ${reasonOf(err)}. Nothing was compared.`);
+			return NOT_STARTED;
+		}
+		const translation = translateForCloud(source);
+		if (translation.kind === 'refused') {
+			const { problems } = translation;
+			this.ctx.log(`Redpanda Cloud: did not compare ${file}: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
+			problems.forEach((p) => this.ctx.log(`  ${file}: ${p.message}`));
+			void this.ctx.showError(`${refusedText(name, problems)}. Nothing was compared.`);
+			return NOT_STARTED;
 		}
 		const read = await this.readNow(target);
 		if (!('configYaml' in read)) {
 			return read;
 		}
 		const left = deployedConfigUri(target.cluster.id, read.id, read.displayName);
+		// Its own URI: a Deploy's diff open meanwhile keeps the text it asks to confirm.
+		const right = compareConfigUri(target.cluster.id, read.id, read.displayName);
 		await this.setDeployed(left, read.configYaml);
-		const name = path.basename(file);
-		await vscode.commands.executeCommand('vscode.diff', left, vscode.Uri.file(file), `${read.displayName} (deployed) ↔ ${name}`, { preview: true });
-		this.ctx.log(`Redpanda Cloud: compared the deployed config of pipeline ${read.displayName} (${read.id}) on ${target.cluster.name} with ${file}.`);
+		await this.setDeployed(right, translation.text);
+		await vscode.commands.executeCommand('vscode.diff', left, right, `${read.displayName} (deployed) ↔ ${name} (as sent)`, { preview: true });
+		this.ctx.log(`Redpanda Cloud: compared the deployed config of pipeline ${read.displayName} (${read.id}) on ${target.cluster.name} with ${file} as it would be sent (${edited ? 'its unsaved edits included' : 'as saved'}).`);
 		return { kind: 'opened', pipelineId: read.id, uri: left.toString() };
 	}
 
@@ -602,7 +630,7 @@ export class CloudActions {
 			return this.ctx.deploy(vscode.Uri.file(file), { clusterId: cluster.id, pipelineId: pipeline.id, name: pipeline.displayName });
 		}
 		const why = read.kind === 'none' ? `${name} has no ${mappingName}, so a Deploy of it would not update ${pipeline.displayName}`
-			: read.kind === 'bad' ? `${mappingName} is not a deploy mapping (${read.reason})`
+			: read.kind === 'bad' ? `${mappingName} could not be read as a deploy mapping: ${read.reason}`
 				: `${mappingName} maps ${name} to pipeline ${read.mapping.pipelineName ?? read.mapping.pipelineId}`
 					+ `${read.mapping.clusterId === cluster.id ? '' : ` on ${this.ctx.clusterById(read.mapping.clusterId)?.name ?? read.mapping.clusterName ?? read.mapping.clusterId}`}, not to ${pipeline.displayName} on ${cluster.name}`;
 		this.ctx.log(`Redpanda Cloud: did not deploy ${file} again to ${pipeline.displayName} (${pipeline.id}): ${why}.`);
