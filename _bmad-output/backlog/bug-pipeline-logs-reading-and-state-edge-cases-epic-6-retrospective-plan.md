@@ -144,3 +144,5 @@ Thorough review (2026-11-11; blind-hunter, edge-case-hunter, verification-gap, i
 - Dev host 1.143.1 on the user's cluster: follow the live log a few minutes, then type a search (it reads the last 15 minutes from then); Show logs around the error, then Stop reading (it stops, the rows stay).
 
 **Results (2026-11-11):** `npm run compile` 0 (lint clean); `test:corpus` 182 passed; `test:webview` 380 passed; stable 1435 passing, 1 pending, 0 failing (VS Code 1.146.0 from .vscode-test); multiroot 11 passing. No floor run. Manual checks on the user's cluster not run (they need the user's cluster and dev host).
+
+**Manual check result (user, 2026-11-11): tested, no issues.** Dev host 1.143.1 with 9734785 on the user's cluster: the live log followed a while, then a search read the last 15 minutes from then and kept following; Show logs around the error, Stop reading stopped it with a message.
