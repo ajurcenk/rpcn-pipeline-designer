@@ -3,7 +3,7 @@ title: 'Integration tests for the Deploy paths the epic 5 retrospective found un
 type: 'chore'
 ticket: '49'
 created: '2026-11-12'
-status: 'built'
+status: 'done'
 baseline_revision: 'b3e37d84cb70bb8417ad48fbdb7b8d48c992ac4f'
 route: 'full'
 route_source: 'auto'
