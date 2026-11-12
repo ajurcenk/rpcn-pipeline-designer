@@ -188,3 +188,7 @@
 - source_plan: `_bmad-output/backlog/bug-pipeline-logs-reading-and-state-edge-cases-epic-6-retrospective-plan.md`
   summary: While following the live log, a partition without a leader is named only in the output channel; the tab's status still says Following, and no line says when it has a leader again.
   evidence: bug 51 group A's thorough review, triage row 32 (blind hunter); the tail waits on it without limit by design. Settled by a status note while a partition is not followed.
+
+- source_plan: `_bmad-output/backlog/bug-deploy-names-the-tag-carries-no-local-path-and-each-file-keeps-its-own-mapping-epic-5-retrospective-plan.md`
+  summary: No test asserts the Show pipeline logs pick's "· in more than one folder" description for a pipeline whose tag matches files in two folders.
+  evidence: bug 47's thorough review, triage row 22 (`cloudLogs.ts`, the pick's `describe`); the multi-root Cloud suite checks the row and Compare / Deploy again only. Display only; a multi-root logs case would close it.

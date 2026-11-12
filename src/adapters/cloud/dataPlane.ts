@@ -50,7 +50,7 @@ export function resourcesText(resources: PipelineResources | undefined): string 
 export function sameResources(a: PipelineResources | undefined, b: PipelineResources | undefined): boolean {
 	return !!a && !!b && a.cpu_shares.trim() === b.cpu_shares.trim() && a.memory_shares.trim() === b.memory_shares.trim();
 }
-/** The tag naming the config a pipeline was deployed from (its workspace-relative path). */
+/** The tag naming the config a pipeline was deployed from (bug 47: its path in its workspace folder, `<folder name>/<path>` in a multi-root workspace, its base name outside every folder; see `configTag`). */
 export const CONFIG_TAG = 'rpcn-vscode/config';
 
 export type PipelineState = 'STATE_STARTING' | 'STATE_RUNNING' | 'STATE_STOPPING' | 'STATE_STOPPED' | 'STATE_ERROR' | 'STATE_COMPLETED' | string;

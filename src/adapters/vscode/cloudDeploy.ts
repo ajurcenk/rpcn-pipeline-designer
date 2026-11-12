@@ -13,7 +13,7 @@ import {
 	type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
 import { asCloudError, describeCloudError, hintLines } from '../cloud/errors';
-import { type DeployMapping, serializeMapping, sidecarPath } from '../cloud/sidecar';
+import { configTag, type DeployMapping, folderOf, serializeMapping, sidecarPath, tagNames } from '../cloud/sidecar';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
 import { checkAgainstCluster, type ClusterComponents, findingMessage, lineOf, versionsDiffer } from '../../core/cloudCheck';
@@ -23,7 +23,8 @@ import type { LintResult } from '../redpandaConnect/lint';
 import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
-	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_STARTED, readMapping, reasonOf, sleep, stateWord,
+	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, filesOfTag, findMapping, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_STARTED, reasonOf,
+	mappedTagOf, sharedMappingText, sleep, stateWord,
 } from './cloudShared';
 
 export const DEPLOY_UNTITLED_MESSAGE = 'Save the file to deploy it.';
@@ -38,6 +39,8 @@ export const CREATE_NEW_ACTION = 'Create new';
 export const CREATE_NEW_PIPELINE_ACTION = 'Create a new pipeline';
 /** The mapping file is not one. */
 export const DEPLOY_AS_NEW_ACTION = 'Deploy as new';
+/** Bug 47: an old `<stem>.cloud.json` that two configs could own is not used; deploy without it. */
+export const DEPLOY_WITHOUT_ACTION = 'Deploy without it';
 /** Ticket 5.7: a missing cloud secret's choices. */
 export const ENTER_ANOTHER_ACTION = 'Enter another value…';
 export const USE_DEFAULT_ACTION = "Don't create it (the Cloud uses the default)";
@@ -180,26 +183,45 @@ export class CloudDeploy {
 			}
 			return NOT_STARTED;
 		}
-		const rel = vscode.workspace.asRelativePath(doc.uri, false);
-		const mappingFile = sidecarPath(doc.uri.fsPath);
+		// Bug 47: the tag holds no local path, and names the workspace folder in a multi-root workspace.
+		const tag = configTag(doc.uri.fsPath, this.ctx.workspaceFolders());
+		const at = await findMapping(doc.uri.fsPath, this.ctx.workspaceFolders(), mappedTagOf(this.ctx));
+		// The mapping read: the config's own, or an old one only this config owns. A mapping written fresh
+		// goes to the config's own name; an old one is left as it is (never renamed or removed).
+		const mappingFile = at.kind === 'own' ? at.file : at.own;
 		const mappingName = path.basename(mappingFile);
-		const read = await readMapping(mappingFile);
+		const ownFile = sidecarPath(doc.uri.fsPath);
+		const ownName = path.basename(ownFile);
+		const read = at.kind === 'own' ? at.read : { kind: 'none' as const };
 		let target: Target | DeployResult;
+		if (only && at.kind === 'shared') {
+			const why = sharedMappingText(at, doc.uri.fsPath);
+			this.ctx.log(`Redpanda Cloud: did not deploy ${file} again to ${only.name}: ${why}.`);
+			void this.ctx.showInfo(`${why}. Nothing was sent.`);
+			return NOT_STARTED;
+		}
 		if (only && (read.kind !== 'ok' || read.mapping.clusterId !== only.clusterId || read.mapping.pipelineId !== only.pipelineId)) {
 			// Deploy again: the mapping changed since the row's check; nothing else is offered.
 			this.ctx.log(`Redpanda Cloud: did not deploy ${file} again to ${only.name}: ${mappingName} no longer maps it to that pipeline.`);
 			void this.ctx.showInfo(`${mappingName} no longer maps ${file} to ${only.name}. Nothing was sent.`);
 			return NOT_STARTED;
 		}
-		if (read.kind === 'none') {
-			target = await this.newTarget(file, rel, true);
+		if (at.kind === 'shared') {
+			const why = sharedMappingText(at, doc.uri.fsPath);
+			this.ctx.log(`Redpanda Cloud: ${why}.`);
+			const choice = await this.ctx.showInfo(
+				`${why}. Deploy ${file} without it? Its mapping is then ${ownName}; ${path.basename(at.file)} is not changed.`, DEPLOY_WITHOUT_ACTION);
+			target = choice === DEPLOY_WITHOUT_ACTION ? await this.newTarget(file, doc.uri.fsPath, tag, true) : NOT_STARTED;
+		} else if (read.kind === 'none') {
+			target = await this.newTarget(file, doc.uri.fsPath, tag, true);
 		} else if (read.kind === 'bad') {
 			this.ctx.log(`Redpanda Cloud: ${mappingFile} is not a deploy mapping: ${read.reason}`);
 			const choice = await this.ctx.showError(
-				`${mappingName} is not a deploy mapping: ${read.reason}. Deploy ${file} as a new pipeline? ${mappingName} is then replaced.`, DEPLOY_AS_NEW_ACTION);
-			target = choice === DEPLOY_AS_NEW_ACTION ? await this.newTarget(file, rel, false) : NOT_STARTED;
+				`${mappingName} is not a deploy mapping: ${read.reason}. Deploy ${file} as a new pipeline? ${mappingFile === ownFile
+					? `${mappingName} is then replaced.` : `Its mapping is then ${ownName}; ${mappingName} is not changed.`}`, DEPLOY_AS_NEW_ACTION);
+			target = choice === DEPLOY_AS_NEW_ACTION ? await this.newTarget(file, doc.uri.fsPath, tag, false) : NOT_STARTED;
 		} else {
-			target = await this.mappedTarget(file, rel, mappingName, read.mapping, only !== undefined);
+			target = await this.mappedTarget(file, doc.uri.fsPath, tag, mappingName, read.mapping, only !== undefined);
 		}
 		if (target.kind !== 'create' && target.kind !== 'update') {
 			return target;
@@ -237,7 +259,7 @@ export class CloudDeploy {
 		// A valid mapping naming these ids is never rewritten.
 		const mapTo = async (p: CloudPipeline) => {
 			if (existing?.clusterId !== cluster.id || existing.pipelineId !== p.id) {
-				await this.writeMapping(mappingFile, { clusterId: cluster.id, pipelineId: p.id, clusterName: cluster.name, pipelineName: p.displayName });
+				await this.writeMapping(ownFile, { clusterId: cluster.id, pipelineId: p.id, clusterName: cluster.name, pipelineName: p.displayName });
 			}
 		};
 		/** The update not sent: the created secrets (if any) stay, said so. */
@@ -250,7 +272,7 @@ export class CloudDeploy {
 				return this.stoppedByAccount(file, cluster, createdSecrets);
 			}
 			const result = this.withCreated(await this.ctx.ui.progress(`Deploying ${name} to ${cluster.name}`, (report) =>
-				this.createAndFollow(cluster, dp, { displayName: name, configYaml, resources, tags: { [CONFIG_TAG]: rel } }, report, mapTo)), createdSecrets);
+				this.createAndFollow(cluster, dp, { displayName: name, configYaml, resources, tags: { [CONFIG_TAG]: tag } }, report, mapTo)), createdSecrets);
 			this.report(file, name, cluster, result, 'create');
 			return result;
 		};
@@ -324,7 +346,7 @@ export class CloudDeploy {
 			description: deployed.description,
 			configYaml,
 			resources,
-			tags: { ...deployed.tags, [CONFIG_TAG]: rel },
+			tags: { ...deployed.tags, [CONFIG_TAG]: tag },
 		};
 		const change = wasRunning
 			? { from: 'STATE_RUNNING', waiting: 'waiting for the restart…' }
@@ -634,10 +656,25 @@ export class CloudDeploy {
 	}
 
 	/**
-	 * No mapping: a cluster, then (`offerTagged`) its pipelines tagged with this file offered for an
-	 * update, else a name for a new pipeline.
+	 * Whether `p`'s tag names the config at `config` (bug 47). A config outside every workspace folder:
+	 * its base name or its absolute path (what an older deploy sent), compared directly. A config in a
+	 * folder: the tag resolves in the workspace folders to this file alone.
 	 */
-	private async newTarget(file: string, rel: string, offerTagged: boolean): Promise<Target | DeployResult> {
+	private taggedWith(p: CloudPipeline, config: string): boolean {
+		const t = p.tags[CONFIG_TAG];
+		const folders = this.ctx.workspaceFolders();
+		if (!folderOf(config, folders)) {
+			return tagNames(t, config, folders);
+		}
+		const files = filesOfTag(t, folders);
+		return files.length === 1 && path.resolve(files[0]) === path.resolve(config);
+	}
+
+	/**
+	 * No mapping: a cluster, then (`offerTagged`) its pipelines tagged with this file (`config`, its
+	 * `tag`) offered for an update, else a name for a new pipeline.
+	 */
+	private async newTarget(file: string, config: string, tag: string, offerTagged: boolean): Promise<Target | DeployResult> {
 		const cluster = await this.pickTarget(file);
 		const dp = cluster && this.ctx.dataplaneUrlOf(cluster);
 		if (!cluster || !dp) {
@@ -652,12 +689,12 @@ export class CloudDeploy {
 				void this.ctx.showError(`Could not check whether ${cluster.name} already has a pipeline deployed from ${file}: ${reason}. Nothing was deployed.`);
 				return NOT_STARTED;
 			}
-			const tagged = listed.value.filter((p) => p.tags[CONFIG_TAG] === rel);
+			const tagged = listed.value.filter((p) => this.taggedWith(p, config));
 			if (tagged.length > 0) {
 				const names = tagged.map((p) => p.displayName);
 				const updates = tagged.map((p) => (names.filter((n) => n === p.displayName).length > 1 ? `Update ${p.displayName} (${p.id})` : `Update ${p.displayName}`));
 				const choice = await this.ctx.ui.confirm(this.ctx.mask(
-					`${cluster.name} has ${tagged.length === 1 ? 'a pipeline' : 'pipelines'} deployed from ${rel}: ${names.join(', ')}. Update ${tagged.length === 1 ? 'it' : 'one'}, or create a new pipeline?`),
+					`${cluster.name} has ${tagged.length === 1 ? 'a pipeline' : 'pipelines'} deployed from ${tag}: ${names.join(', ')}. Update ${tagged.length === 1 ? 'it' : 'one'}, or create a new pipeline?`),
 				...updates, CREATE_NEW_ACTION);
 				if (choice === undefined) {
 					return NOT_STARTED;
@@ -680,7 +717,7 @@ export class CloudDeploy {
 	 * A mapping: its pipeline, read now; a pipeline or cluster gone is offered to be created anew, or,
 	 * with `strict` (Deploy again: this pipeline only), explained with nothing offered or sent.
 	 */
-	private async mappedTarget(file: string, rel: string, mappingName: string, m: DeployMapping, strict = false): Promise<Target | DeployResult> {
+	private async mappedTarget(file: string, config: string, tag: string, mappingName: string, m: DeployMapping, strict = false): Promise<Target | DeployResult> {
 		const cluster = this.ctx.clusterById(m.clusterId);
 		if (cluster?.detailsUnread) {
 			void this.ctx.showError(`Could not read the details of ${cluster.name} (${cluster.detailsUnread}), the cluster ${mappingName} maps ${file} to. Refresh the Cloud view to try again.`);
@@ -696,7 +733,7 @@ export class CloudDeploy {
 			}
 			const choice = await this.ctx.showInfo(
 				`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Create a new pipeline on another cluster?`, CREATE_NEW_PIPELINE_ACTION);
-			return choice === CREATE_NEW_PIPELINE_ACTION ? this.newTarget(file, rel, false) : NOT_STARTED;
+			return choice === CREATE_NEW_PIPELINE_ACTION ? this.newTarget(file, config, tag, false) : NOT_STARTED;
 		}
 		const read = await this.ctx.readPipeline(cluster, dp, m.pipelineId, m.pipelineName ?? m.pipelineId);
 		if (read.kind === 'ok') {

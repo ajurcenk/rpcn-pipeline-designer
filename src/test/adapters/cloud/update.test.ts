@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { CloudCall } from '../../../adapters/cloud/controlPlane';
 import {
@@ -6,14 +8,58 @@ import {
 } from '../../../adapters/cloud/dataPlane';
 import { CloudError } from '../../../adapters/cloud/errors';
 import type { FetchLike } from '../../../adapters/cloud/http';
-import { parseMapping, serializeMapping, sidecarPath } from '../../../adapters/cloud/sidecar';
+import { findMapping } from '../../../adapters/vscode/cloudShared';
+import { legacyOwnersOf, legacySidecarPath, parseMapping, serializeMapping, sidecarPath } from '../../../adapters/cloud/sidecar';
 
 suite('Cloud update, resources and the deploy mapping (ticket 5.3, AD-23)', () => {
-	test('the mapping file sits beside the config as <stem>.cloud.json', () => {
-		assert.strictEqual(sidecarPath(path.join('/w', 'pipes', 'orders.yaml')), path.join('/w', 'pipes', 'orders.cloud.json'));
-		assert.strictEqual(sidecarPath(path.join('/w', 'orders.rpcn.yml')), path.join('/w', 'orders.rpcn.cloud.json'));
+	test('findMapping (bug 47): an extensionless sibling owns orders.cloud.json too; two names of one file count once', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpcn-47-'));
+		try {
+			const yaml = path.join(dir, 'orders.yaml');
+			const old = path.join(dir, 'orders.cloud.json');
+			fs.writeFileSync(yaml, 'input: {}\n');
+			fs.writeFileSync(old, serializeMapping({ clusterId: 'c1', pipelineId: 'p1' }));
+			assert.deepStrictEqual(await findMapping(yaml), { kind: 'own', file: old, read: { kind: 'ok', mapping: { clusterId: 'c1', pipelineId: 'p1' } } }, 'one owner');
+			// A second name of the same file (as a case-insensitive file system shows orders.YAML): still one owner.
+			fs.linkSync(yaml, path.join(dir, 'orders.yml'));
+			assert.strictEqual((await findMapping(yaml)).kind, 'own');
+			fs.rmSync(path.join(dir, 'orders.yml'));
+			// The extensionless `orders`, whose own mapping is orders.cloud.json: shared for orders.yaml, its own for orders.
+			const bare = path.join(dir, 'orders');
+			fs.writeFileSync(bare, 'input: {}\n');
+			const shared = await findMapping(yaml);
+			assert.strictEqual(shared.kind, 'shared');
+			assert.deepStrictEqual(shared.kind === 'shared' && shared.owners, [yaml, bare]);
+			assert.deepStrictEqual(await findMapping(bare), { kind: 'own', file: old, read: { kind: 'ok', mapping: { clusterId: 'c1', pipelineId: 'p1' } } });
+			// The mapped pipeline's tag names one owner: it decides.
+			const folders = [{ name: 'w', path: dir }];
+			assert.strictEqual((await findMapping(yaml, folders, async () => 'orders.yaml')).file, old);
+			assert.deepStrictEqual(await findMapping(bare, folders, async () => 'orders.yaml'), { kind: 'own', file: path.join(dir, 'orders.cloud.json'), read: { kind: 'ok', mapping: { clusterId: 'c1', pipelineId: 'p1' } } }, 'its own name: read as its own');
+			assert.strictEqual((await findMapping(yaml, folders, async () => 'orders')).kind, 'own');
+			assert.deepStrictEqual(await findMapping(yaml, folders, async () => 'orders'), { kind: 'own', file: sidecarPath(yaml), read: { kind: 'none' } }, 'the tag names the other owner');
+			assert.strictEqual((await findMapping(yaml, folders, async () => undefined)).kind, 'shared', 'no tag known');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+
+	test('TWO_EXTS (bug 47): the mapping file sits beside the config as <file name>.cloud.json, so orders.yaml and orders.yml each have their own', () => {
+		assert.strictEqual(sidecarPath(path.join('/w', 'pipes', 'orders.yaml')), path.join('/w', 'pipes', 'orders.yaml.cloud.json'));
+		assert.strictEqual(sidecarPath(path.join('/w', 'pipes', 'orders.yml')), path.join('/w', 'pipes', 'orders.yml.cloud.json'));
+		assert.strictEqual(sidecarPath(path.join('/w', 'orders.rpcn.yml')), path.join('/w', 'orders.rpcn.yml.cloud.json'));
 		assert.strictEqual(sidecarPath(path.join('/w', 'orders')), path.join('/w', 'orders.cloud.json'));
 		assert.strictEqual(sidecarPath(path.join('/w', '.hidden')), path.join('/w', '.hidden.cloud.json'));
+	});
+
+	test('OLD_MAPPING (bug 47): the old <stem>.cloud.json and the configs that could own it', () => {
+		assert.strictEqual(legacySidecarPath(path.join('/w', 'pipes', 'orders.yaml')), path.join('/w', 'pipes', 'orders.cloud.json'));
+		assert.strictEqual(legacySidecarPath(path.join('/w', 'orders.rpcn.yml')), path.join('/w', 'orders.rpcn.cloud.json'));
+		assert.strictEqual(legacySidecarPath(path.join('/w', 'orders')), undefined, 'no extension: the old name is the new one');
+		assert.strictEqual(legacySidecarPath(path.join('/w', '.hidden')), undefined);
+		assert.deepStrictEqual(legacyOwnersOf(path.join('/w', 'orders.yml')), [path.join('/w', 'orders.yml'), path.join('/w', 'orders'), path.join('/w', 'orders.yaml')]);
+		assert.deepStrictEqual(legacyOwnersOf(path.join('/w', 'orders.json')),
+			[path.join('/w', 'orders.json'), path.join('/w', 'orders'), path.join('/w', 'orders.yaml'), path.join('/w', 'orders.yml')], 'the bare stem: its own mapping has the old name');
 	});
 
 	test('the mapping parses strictly and round-trips as 2-space JSON with a trailing newline', () => {

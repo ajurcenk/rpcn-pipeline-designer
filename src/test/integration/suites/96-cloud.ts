@@ -15,12 +15,13 @@
 // Problems entries through `vscode.languages.getDiagnostics`) the seventh.
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	CloudView, CLIENT_ID_KEY, CLIENT_SECRET_KEY, NOT_READ_TEXT, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, DEPLOY_UNTITLED_MESSAGE, DISCONNECT_COMMAND, type CloudItem, type CloudUi,
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
-	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
+	CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_AS_NEW_ACTION, DEPLOY_WITHOUT_ACTION, DEPLOYED_SCHEME, REPLACE_ACTION,
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
 	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION, CHECK_SOURCE, DEPLOY_ANYWAY_ACTION,
@@ -85,7 +86,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	let dir: string;
 	let configFile: string;
 	let originalUi: CloudUi;
-	let originalFolders: () => readonly string[];
+	let originalFolders: CloudView['workspaceFolders'];
 	/** Ticket 8: the check's seams, restored at the end. */
 	let originalLint: CloudView['lint'];
 	let originalLocalVersion: CloudView['localVersion'];
@@ -174,7 +175,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		return doc;
 	}
 
-	const sidecarFile = () => path.join(dir, 'orders.cloud.json');
+	/** Bug 47: `<file name>.cloud.json`. */
+	const sidecarFile = () => path.join(dir, 'orders.yaml.cloud.json');
 	/** The fake's requests since this test began. */
 	let firstRequest = 0;
 	const puts = () => fake.requests.slice(firstRequest).filter((r) => r.method === 'PUT');
@@ -462,7 +464,11 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(body.config_yaml, CONFIG, 'the file\'s text, unchanged');
 		assert.strictEqual(body.display_name, 'orders');
 		assert.deepStrictEqual(body.resources, resourcesOf(1));
-		assert.deepStrictEqual(body.tags, { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false) });
+		assert.deepStrictEqual(body.tags, { [CONFIG_TAG]: 'orders.yaml' });
+		// Bug 47 OUTSIDE: no workspace folder (the stable run opens none): the tag is the base name; no local path in any request.
+		for (const r of fake.requests.slice(firstRequest)) {
+			assert.ok(!r.body.includes(dir) && !r.body.includes(os.homedir()), `a local path in ${r.method} ${r.url}`);
+		}
 		assert.deepStrictEqual(progressTitles.filter((t) => t.startsWith('Deploying')), ['Deploying orders to rpc-vilnius']);
 		assert.ok(progressReports.includes('Starting…'), progressReports.join(', '));
 		assert.ok(infos.includes('Pipeline orders is running on rpc-vilnius.'), infos.join('\n'));
@@ -803,7 +809,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(fake.cluster('cvilnius0000000000aa').pipelines.length, 1, 'one pipeline on the cluster');
 		assert.deepStrictEqual(JSON.parse(puts()[0].body), {
 			display_name: 'orders', description: 'set in the Cloud UI', config_yaml: changed, resources: resourcesOf(1),
-			tags: { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false), team: 'payments' },
+			tags: { [CONFIG_TAG]: 'orders.yaml', team: 'payments' },
 		});
 		assert.ok(progressReports.includes('waiting for the restart…'), progressReports.join(', '));
 		assert.ok(progressReports.includes('Starting…'), 'followed through the restart');
@@ -879,7 +885,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		script({ actions: [undefined] });
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.strictEqual(posts().length, 1, 'declined: nothing created');
-		assert.match(infos[infos.length - 1], /^Pipeline orders, which orders\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\. Create a new pipeline\?$/);
+		assert.match(infos[infos.length - 1], /^Pipeline orders, which orders\.yaml\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\. Create a new pipeline\?$/);
 
 		script({ actions: [CREATE_NEW_PIPELINE_ACTION], inputs: [(o) => o.value] });
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
@@ -892,7 +898,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		script({ actions: [CREATE_NEW_PIPELINE_ACTION], picks: ['byoc-eu'], inputs: ['moved'] });
 		const moved = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(moved?.kind, 'final', errors.join('\n'));
-		assert.ok(infos.some((m) => m.startsWith('The cluster old-cluster that orders.cloud.json maps orders.yaml to is gone or no longer offers the pipeline API.')), infos.join('\n'));
+		assert.ok(infos.some((m) => m.startsWith('The cluster old-cluster that orders.yaml.cloud.json maps orders.yaml to is gone or no longer offers the pipeline API.')), infos.join('\n'));
 		assert.strictEqual(pickedFrom.length, 1, 'a cluster pick');
 		assert.deepStrictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')), { clusterId: 'cbyoc000000000000bbb', pipelineId: moved?.pipelineId, clusterName: 'byoc-eu', pipelineName: 'moved' });
 		assert.strictEqual(confirmed.length, 0, 'no tagged offer when re-creating');
@@ -906,7 +912,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		script({ actions: [undefined] });
 		assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
 		assert.strictEqual(errors.length, 1);
-		assert.match(errors[0], /^orders\.cloud\.json is not a deploy mapping: it has no pipelineId\. Deploy orders\.yaml as a new pipeline\?/);
+		assert.match(errors[0], /^orders\.yaml\.cloud\.json is not a deploy mapping: it has no pipelineId\. Deploy orders\.yaml as a new pipeline\?/);
 		assert.deepStrictEqual(errorActions[0], [DEPLOY_AS_NEW_ACTION]);
 		assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET'), 'nothing created');
 
@@ -914,14 +920,14 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		script({ actions: [DEPLOY_AS_NEW_ACTION], picks: ['rpc-vilnius'], inputs: ['orders'] });
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
-		assert.match(errors[1], /^orders\.cloud\.json is not a deploy mapping: it is not JSON/);
+		assert.match(errors[1], /^orders\.yaml\.cloud\.json is not a deploy mapping: it is not JSON/);
 		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, result?.pipelineId, 'replaced');
 	});
 
 	test('TAGGED: no mapping, the cluster has a pipeline tagged with this file: "Update <name>" or "Create new"; Escape sends nothing; the mapping written either way', async () => {
 		await connect();
 		const doc = await openConfig(configFile);
-		const rel = vscode.workspace.asRelativePath(doc.uri, false);
+		const rel = 'orders.yaml';
 		fake.cluster('cvilnius0000000000aa').pipelines.push({
 			id: 'tagged00000000000001', display_name: 'from-a-colleague', description: 'theirs', config_yaml: CONFIG,
 			resources: { cpu_shares: '100m', memory_shares: '400M' }, tags: { [CONFIG_TAG]: rel }, state: 'STATE_STOPPED', sequence: [],
@@ -1676,7 +1682,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 
 	test('DELETE_MAPPED: the confirmation names the .cloud.json mapping a config to the pipeline; it is deleted after the DELETE, the config untouched; another pipeline\'s mapping is left', async () => {
 		const { doc, id } = await deployOnce();
-		const rel = vscode.workspace.asRelativePath(doc.uri, false);
+		const rel = 'orders.yaml';
 		// A second pipeline tagged with the same file, which the mapping does not name.
 		seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: rel } });
 		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
@@ -1739,7 +1745,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fake.cluster(VILNIUS).pipelines = [];
 		script({ confirms: [DELETE_ACTION] });
 		assert.strictEqual((await run(DELETE_COMMAND))?.kind, 'notStarted');
-		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.cloud.json maps orders.yaml to, is no longer on rpc-vilnius.']);
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.yaml.cloud.json maps orders.yaml to, is no longer on rpc-vilnius.']);
 		assert.strictEqual(confirmed.length, 0);
 		assert.strictEqual(pipelinesOffered.length, 0);
 		assert.ok(!lifecycle().some((l) => l.startsWith('DELETE')));
@@ -1752,7 +1758,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const deleted = await run(DELETE_COMMAND);
 		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
 		assert.strictEqual(deleted?.pipelineId, id);
-		assert.ok(confirmed[0].message.includes('orders.cloud.json'), confirmed[0].message);
+		assert.ok(confirmed[0].message.includes('orders.yaml.cloud.json'), confirmed[0].message);
 		assert.ok(!fs.existsSync(sidecarFile()));
 		assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG);
 	});
@@ -1773,7 +1779,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		return ROW_COMMANDS.filter((c) => out.has(c));
 	}
 	const inWorkspace = () => {
-		cloud().workspaceFolders = () => [dir];
+		cloud().workspaceFolders = () => [{ name: path.basename(dir), path: dir }];
 	};
 	const activeTabLabel = () => vscode.window.tabGroups.activeTabGroup.activeTab?.label;
 	const gets = (id: string) => fake.requests.slice(firstRequest).filter((r) => r.method === 'GET' && r.url === pipelineUrl(id)).length;
@@ -1913,7 +1919,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		cloud().workspaceFolders = () => [];
 		const before = fake.requests.length;
 		assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
-		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from ${configFile}, which is ${NOT_IN_WORKSPACE}, so there is no local file to compare with.`]);
+		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from orders.yaml, which is ${NOT_IN_WORKSPACE}, so there is no local file to compare with.`]);
 		assert.strictEqual(diffTabs().length, 0);
 		assert.strictEqual(fake.requests.length, before, 'nothing requested');
 	});
@@ -1942,7 +1948,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		const putsBefore = puts().length;
 		const gone = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
 		assert.strictEqual(gone?.kind, 'notStarted');
-		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.cloud.json maps orders.yaml to, is no longer on rpc-vilnius. Nothing was sent.']);
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders, which orders.yaml.cloud.json maps orders.yaml to, is no longer on rpc-vilnius. Nothing was sent.']);
 		assert.ok(!infos.some((m) => m.includes('Create a new pipeline')), 'no create offer');
 		assert.strictEqual(asked.length, 0, 'no name asked');
 		assert.strictEqual(posts().length, 1, 'no POST');
@@ -1951,23 +1957,23 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fake.failures = [];
 
 		// A second pipeline tagged with the same file: the mapping names the first.
-		seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false) } });
+		seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: 'orders.yaml' } });
 		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
 		const sent = fake.requests.length;
 		script({});
 		const other = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('copy')!.node);
 		assert.strictEqual(other?.kind, 'notMapped');
-		assert.deepStrictEqual(infos.slice(-1), ['orders.cloud.json maps orders.yaml to pipeline orders, not to copy on rpc-vilnius. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
+		assert.deepStrictEqual(infos.slice(-1), ['orders.yaml.cloud.json maps orders.yaml to pipeline orders, not to copy on rpc-vilnius. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
 		fs.rmSync(sidecarFile());
 		const none = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
 		assert.strictEqual(none?.kind, 'notMapped');
-		assert.deepStrictEqual(infos.slice(-1), ['orders.yaml has no orders.cloud.json, so a Deploy of it would not update orders. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
+		assert.deepStrictEqual(infos.slice(-1), ['orders.yaml has no orders.yaml.cloud.json, so a Deploy of it would not update orders. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.']);
 		fs.writeFileSync(sidecarFile(), 'not json');
 		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notMapped');
-		assert.match(infos[infos.length - 1], /^orders\.cloud\.json is not a deploy mapping \(it is not JSON/);
+		assert.match(infos[infos.length - 1], /^orders\.yaml\.cloud\.json is not a deploy mapping \(it is not JSON/);
 		cloud().workspaceFolders = () => [];
 		assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'notInWorkspace');
-		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from ${configFile}, which is ${NOT_IN_WORKSPACE}, so there is no local file to deploy.`]);
+		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from orders.yaml, which is ${NOT_IN_WORKSPACE}, so there is no local file to deploy.`]);
 		assert.strictEqual(fake.requests.length, sent, 'nothing sent');
 		assert.strictEqual(unitsAsked, 0);
 		assert.deepStrictEqual(errors, []);
@@ -2372,7 +2378,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 		assert.deepStrictEqual(JSON.parse(puts()[0].body), {
 			display_name: 'orders', description: 'changed meanwhile', config_yaml: changed, resources: resourcesOf(1),
-			tags: { [CONFIG_TAG]: vscode.workspace.asRelativePath(doc.uri, false), team: 'meanwhile' },
+			tags: { [CONFIG_TAG]: 'orders.yaml', team: 'meanwhile' },
 		});
 	});
 
@@ -2402,7 +2408,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		});
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
-		assert.ok(infos.some((m) => /^Pipeline orders, which orders\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\. Create a new pipeline\?$/.test(m)), infos.join('\n'));
+		assert.ok(infos.some((m) => /^Pipeline orders, which orders\.yaml\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\. Create a new pipeline\?$/.test(m)), infos.join('\n'));
 		assert.strictEqual(asked[asked.length - 1].value, 'orders', 'the old name offered');
 		assert.notStrictEqual(result?.pipelineId, id);
 		assert.strictEqual(puts().length, 0);
@@ -2544,6 +2550,236 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(result?.kind, 'timedOut', errors.join('\n'));
 		assert.strictEqual(result?.state, 'STATE_STOPPING');
 		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders is still stopping on rpc-vilnius; the Cloud view shows its state.']);
+	});
+
+	// --- bug 47: the tag carries no local path, and each file keeps its own mapping ---
+
+	test('ONE_FOLDER 47: in a one-folder workspace the tag is the folder-relative path, as before; the row shows the file; the mapping <file name>.cloud.json beside it', async () => {
+		inWorkspace();
+		await connect();
+		const sub = path.join(dir, 'pipes');
+		fs.mkdirSync(sub, { recursive: true });
+		const file = path.join(sub, 'orders.yaml');
+		try {
+			const doc = await openConfig(file);
+			script({ picks: ['rpc-vilnius'], inputs: ['piped'] });
+			const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+			assert.deepStrictEqual(lastCreate()!.tags, { [CONFIG_TAG]: 'pipes/orders.yaml' });
+			assert.strictEqual(JSON.parse(fs.readFileSync(path.join(sub, 'orders.yaml.cloud.json'), 'utf8')).pipelineId, result?.pipelineId);
+			assert.strictEqual(pipelineRow('piped')!.description, 'Running · orders.yaml');
+			assert.ok(pipelineRow('piped')!.tooltip.includes(`Deployed from ${file}.`), pipelineRow('piped')!.tooltip);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(sub, { recursive: true, force: true });
+		}
+	});
+
+	test('TWO_EXTS 47: orders.yaml and orders.yml in one folder, each deployed: each its own pipeline and mapping (<file name>.cloud.json); deploying one again updates only its own', async () => {
+		inWorkspace();
+		const yml = path.join(dir, 'orders.yml');
+		try {
+			const { id } = await deployOnce();
+			const other = await openConfig(yml, CONFIG.replace('interval: 5s', 'interval: 6s'));
+			script({ picks: ['rpc-vilnius'], inputs: ['orders-yml'] });
+			const second = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, other.uri);
+			assert.strictEqual(second?.kind, 'final', errors.join('\n'));
+			assert.strictEqual(confirmed.length, 0, 'orders.yaml\'s pipeline is not offered: its tag names the other file');
+			assert.notStrictEqual(second?.pipelineId, id);
+			assert.deepStrictEqual(lastCreate()!.tags, { [CONFIG_TAG]: 'orders.yml' });
+			assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, id);
+			assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'orders.yml.cloud.json'), 'utf8')).pipelineId, second?.pipelineId);
+			assert.ok(!fs.existsSync(path.join(dir, 'orders.cloud.json')), 'no shared mapping');
+			assert.strictEqual(fake.cluster(VILNIUS).pipelines.length, 2);
+
+			await editConfig(other, CONFIG.replace('interval: 5s', 'interval: 7s'));
+			script({ confirms: [REPLACE_ACTION] });
+			const again = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, other.uri);
+			assert.strictEqual(again?.kind, 'final', errors.join('\n'));
+			assert.strictEqual(again?.pipelineId, second?.pipelineId);
+			assert.deepStrictEqual(puts().map((r) => r.url), [pipelineUrl(second!.pipelineId!)], 'orders.yaml\'s pipeline is not touched');
+			assert.strictEqual(fake.cluster(VILNIUS).pipelines.find((p) => p.id === id)!.config_yaml, CONFIG);
+			assert.deepStrictEqual([pipelineRow('orders')!.description, pipelineRow('orders-yml')!.description], ['Running · orders.yaml', 'Running · orders.yml']);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(yml, { force: true });
+		}
+	});
+
+	test('OLD_MAPPING 47: a mapping written before the fix (orders.cloud.json), no other config of that name: Deploy, the palette, Deploy again and Delete use it; it is never renamed', async () => {
+		inWorkspace();
+		const { doc, id } = await deployOnce();
+		const old = path.join(dir, 'orders.cloud.json');
+		fs.renameSync(sidecarFile(), old);
+		const text = fs.readFileSync(old, 'utf8');
+		script({});
+		const unchanged = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(unchanged?.kind, 'unchanged', errors.join('\n'));
+		assert.strictEqual(unchanged?.pipelineId, id);
+		assert.strictEqual(pickedFrom.length, 0, 'no cluster pick: the mapping names it');
+
+		const stopped = await run(STOP_COMMAND);
+		assert.strictEqual(stopped?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(stopped?.pipelineId, id);
+		assert.strictEqual(pipelinesOffered.length, 0, 'the palette: no pick');
+
+		await editConfig(doc, CONFIG.replace('root.n = 1', 'root.n = 4'));
+		await doc.save();
+		script({});
+		const again = await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(again?.kind, 'final', errors.join('\n'));
+		assert.strictEqual(again?.pipelineId, id);
+		assert.deepStrictEqual(puts().filter((r) => r.url === pipelineUrl(id)).map((r) => JSON.parse(r.body).config_yaml), [CONFIG.replace('root.n = 1', 'root.n = 4')]);
+		assert.strictEqual(fs.readFileSync(old, 'utf8'), text, 'the old mapping unchanged');
+		assert.ok(!fs.existsSync(sidecarFile()), 'never renamed or copied');
+
+		script({ confirms: [DELETE_ACTION] });
+		const deleted = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(deleted?.kind, 'deleted', errors.join('\n'));
+		assert.ok(confirmed[0].message.includes('orders.cloud.json, which maps a config to it, is deleted too'), confirmed[0].message);
+		assert.deepStrictEqual(deleted?.mappings, [old]);
+		assert.ok(!fs.existsSync(old), 'deleted with its pipeline, as Delete does');
+	});
+
+	test('OLD_MAPPING_SHARED 47: an old orders.cloud.json that orders.yaml and orders.yml could both own, its pipeline\'s tag naming neither: used for neither, with a message naming it and the fix', async () => {
+		inWorkspace();
+		const yml = path.join(dir, 'orders.yml');
+		try {
+			const { doc, id } = await deployOnce();
+			const old = path.join(dir, 'orders.cloud.json');
+			fs.renameSync(sidecarFile(), old);
+			const text = fs.readFileSync(old, 'utf8');
+			fs.writeFileSync(yml, CONFIG);
+			// The mapped pipeline's tag names neither config (so it cannot decide); another pipeline is tagged with orders.yaml.
+			fake.cluster(VILNIUS).pipelines[0].tags = {};
+			seed('p00000000000000copy', 'copy', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: 'orders.yaml' } });
+			await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+			const shared = 'orders.cloud.json could map orders.yaml or orders.yml, so it is not used for orders.yaml'
+				+ ' (rename it to <file name>.cloud.json for the config it belongs to, such as orders.yaml.cloud.json, or remove it)';
+
+			// Deploy: said so; declined, nothing sent.
+			const before = fake.requests.length;
+			script({ actions: [undefined] });
+			assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
+			assert.deepStrictEqual(infos.slice(-1), [`${shared}. Deploy orders.yaml without it? Its mapping is then orders.yaml.cloud.json; orders.cloud.json is not changed.`]);
+			assert.ok(fake.requests.slice(before).every((r) => r.method === 'GET'), 'nothing sent');
+
+			// The palette: said so, then the pick; Delete of the picked mapped pipeline does not name the old mapping.
+			script({ pipelinePicks: ['orders'], confirms: [undefined] });
+			assert.strictEqual((await run(DELETE_COMMAND))?.kind, 'notStarted');
+			assert.ok(infos.includes(`${shared}.`), infos.join('\n'));
+			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
+			assert.strictEqual(confirmed[0].message, 'Delete orders on rpc-vilnius? This cannot be undone.');
+			assert.strictEqual(lifecycle().length, 0);
+
+			// Deploy again from the row tagged with orders.yaml: explained, nothing sent.
+			script({});
+			assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('copy')!.node))?.kind, 'notMapped');
+			assert.deepStrictEqual(infos.slice(-1), [`${shared}. Deploy orders.yaml from its editor to choose where it goes. Nothing was sent.`]);
+
+			// Deploy without it: the pipeline tagged with orders.yaml is offered; a new one created, its mapping the new name, the old one unchanged.
+			script({ actions: [DEPLOY_WITHOUT_ACTION], picks: ['rpc-vilnius'], confirms: [CREATE_NEW_ACTION], inputs: ['orders-new'] });
+			const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+			assert.deepStrictEqual(confirmed[0].actions, ['Update copy', CREATE_NEW_ACTION]);
+			assert.notStrictEqual(result?.pipelineId, id);
+			assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, result?.pipelineId);
+			assert.strictEqual(fs.readFileSync(old, 'utf8'), text, 'never renamed or changed');
+
+			// Deploy again: the new mapping, with no shared message and no pick.
+			const messages = infos.length;
+			script({});
+			const again = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(again?.kind, 'unchanged', errors.join('\n'));
+			assert.strictEqual(again?.pipelineId, result?.pipelineId);
+			assert.ok(!infos.slice(messages).some((m) => m.includes('orders.cloud.json')), infos.join('\n'));
+			assert.strictEqual(pickedFrom.length, 0);
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(yml, { force: true });
+		}
+	});
+
+	test('OLD_MAPPING_TAGGED 47: an old orders.cloud.json that orders.yaml and orders.yml could both own, its pipeline tagged with orders.yaml: the tag decides', async () => {
+		inWorkspace();
+		const yml = path.join(dir, 'orders.yml');
+		try {
+			const { doc, id } = await deployOnce();
+			const old = path.join(dir, 'orders.cloud.json');
+			fs.renameSync(sidecarFile(), old);
+			const text = fs.readFileSync(old, 'utf8');
+			const other = await openConfig(yml, CONFIG.replace('interval: 5s', 'interval: 6s'));
+			script({});
+			const same = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+			assert.strictEqual(same?.kind, 'unchanged', errors.join('\n'));
+			assert.strictEqual(same?.pipelineId, id);
+			assert.strictEqual(pickedFrom.length, 0);
+			// orders.yml: not its mapping, so a first deploy (a cluster pick; Escape), with no message about it.
+			script({ picks: [undefined] });
+			assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, other.uri))?.kind, 'notStarted');
+			assert.strictEqual(pickedFrom.length, 1);
+			assert.ok(!infos.some((m) => m.includes('orders.cloud.json')), infos.join('\n'));
+			assert.strictEqual(fs.readFileSync(old, 'utf8'), text);
+			assert.ok(!fs.existsSync(sidecarFile()));
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(yml, { force: true });
+		}
+	});
+
+	test('OLD_MAPPING_GONE 47: an old mapping whose pipeline is gone: Create a new pipeline writes orders.yaml.cloud.json, the old file left as it is; an old mapping that does not parse: named, Deploy as new writes the new name', async () => {
+		const { doc, id } = await deployOnce();
+		const old = path.join(dir, 'orders.cloud.json');
+		fs.renameSync(sidecarFile(), old);
+		const text = fs.readFileSync(old, 'utf8');
+		fake.cluster(VILNIUS).pipelines = [];
+		script({ actions: [CREATE_NEW_PIPELINE_ACTION], inputs: [(o) => o.value] });
+		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.match(infos.find((m) => m.startsWith('Pipeline orders, which'))!, /^Pipeline orders, which orders\.cloud\.json maps orders\.yaml to, is no longer on rpc-vilnius\./);
+		assert.notStrictEqual(result?.pipelineId, id);
+		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, result?.pipelineId, 'the new name');
+		assert.strictEqual(fs.readFileSync(old, 'utf8'), text, 'the old file left as it is');
+
+		// BAD_SIDECAR through the old name (one owner).
+		fs.rmSync(sidecarFile());
+		fs.writeFileSync(old, 'not json {');
+		script({ actions: [DEPLOY_AS_NEW_ACTION], picks: ['rpc-vilnius'], confirms: [CREATE_NEW_ACTION], inputs: ['again'] });
+		const asNew = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(asNew?.kind, 'final', errors.join('\n'));
+		assert.match(errors[0], /^orders\.cloud\.json is not a deploy mapping: it is not JSON.*Deploy orders\.yaml as a new pipeline\? Its mapping is then orders\.yaml\.cloud\.json; orders\.cloud\.json is not changed\.$/);
+		assert.strictEqual(JSON.parse(fs.readFileSync(sidecarFile(), 'utf8')).pipelineId, asNew?.pipelineId);
+		assert.strictEqual(fs.readFileSync(old, 'utf8'), 'not json {');
+	});
+
+	test('OLD_ABSOLUTE_TAG 47: no mapping, a pipeline tagged with the file\'s absolute path (sent before the fix, no folder open): offered; the update rewrites the tag to the base name', async () => {
+		await connect();
+		const doc = await openConfig(configFile);
+		seed('pabsolute00000000047', 'from-before', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: configFile, team: 'kept' } });
+		await editConfig(doc, CONFIG.replace('interval: 5s', 'interval: 3s'));
+		script({ picks: ['rpc-vilnius'], confirms: ['Update from-before'] });
+		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
+		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
+		assert.deepStrictEqual(confirmed[0].actions, ['Update from-before', CREATE_NEW_ACTION]);
+		assert.strictEqual(result?.pipelineId, 'pabsolute00000000047');
+		assert.deepStrictEqual(JSON.parse(puts()[0].body).tags, { [CONFIG_TAG]: 'orders.yaml', team: 'kept' });
+	});
+
+	test('OUTSIDE_SAME_NAME 47: a file outside every folder whose name a workspace file also has: offered its own tagged pipeline, not taken for the workspace file', async () => {
+		const other = makeTempDir('rpcn-cloud-ws-');
+		try {
+			fs.writeFileSync(path.join(other, 'orders.yaml'), CONFIG);
+			cloud().workspaceFolders = () => [{ name: 'ws', path: other }];
+			await connect();
+			const doc = await openConfig(configFile);
+			seed('poutside0000000000047', 'outside-one', 'STATE_STOPPED', { tags: { [CONFIG_TAG]: 'orders.yaml' } });
+			script({ picks: ['rpc-vilnius'], confirms: [undefined] });
+			assert.strictEqual((await vscode.commands.executeCommand<{ kind: string }>(DEPLOY_COMMAND, doc.uri))?.kind, 'notStarted');
+			assert.deepStrictEqual(confirmed[0]?.actions, ['Update outside-one', CREATE_NEW_ACTION]);
+			assert.strictEqual(posts().length, 0, 'no duplicate created');
+		} finally {
+			fs.rmSync(other, { recursive: true, force: true });
+		}
 	});
 
 	test('NO_LEAK: no secret or token in a request outside its place, a message, the output channel, a setting, a file or the view', () => {

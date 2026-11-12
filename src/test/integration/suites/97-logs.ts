@@ -1075,11 +1075,15 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		return { ...r, value: { ...r.value, level } };
 	};
 
-	/** A detected config `<name>.yaml` in the suite's directory, active in the editor; with `mapTo`, its `.cloud.json` maps it there. */
+	/**
+	 * A detected config `<name>.yaml` in the suite's directory, active in the editor; with `mapTo`, its
+	 * `<name>.yaml.cloud.json` (bug 47) maps it there; any old `<name>.cloud.json` is removed.
+	 */
 	async function openConfig(name: string, mapTo?: { readonly clusterId: string; readonly pipelineId: string; readonly pipelineName: string }): Promise<vscode.TextDocument> {
 		const file = path.join(dir, `${name}.yaml`);
 		fs.writeFileSync(file, 'input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n');
-		const sidecar = path.join(dir, `${name}.cloud.json`);
+		const sidecar = path.join(dir, `${name}.yaml.cloud.json`);
+		fs.rmSync(path.join(dir, `${name}.cloud.json`), { force: true });
 		if (mapTo) {
 			fs.writeFileSync(sidecar, serializeMapping({ clusterName: 'rpc-vilnius', ...mapTo }));
 		} else {
@@ -1106,18 +1110,18 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 			await openConfig('gone', { clusterId: VILNIUS, pipelineId: 'd3gone00000000000009', pipelineName: 'gone' });
 			script({ pipelinePicks: ['clicks'] });
 			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: CLICKS });
-			assert.ok(infos.includes('Pipeline gone, which gone.cloud.json maps gone.yaml to, is no longer on rpc-vilnius. Choose the pipeline whose logs to show.'), infos.join('\n'));
+			assert.ok(infos.includes('Pipeline gone, which gone.yaml.cloud.json maps gone.yaml to, is no longer on rpc-vilnius. Choose the pipeline whose logs to show.'), infos.join('\n'));
 			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
 			assert.strictEqual(logs().title, 'clicks · rpc-vilnius', 'SWITCH: the tab switches to it');
 			assert.ok(await waitFor(() => messages(CLICKS).length === 1, 10_000), logs().statusText);
 			// A .cloud.json that is not a mapping: said so, then the pick.
 			await openConfig('bad');
-			fs.writeFileSync(path.join(dir, 'bad.cloud.json'), '{ not json');
+			fs.writeFileSync(path.join(dir, 'bad.yaml.cloud.json'), '{ not json');
 			infos.length = 0;
 			script({ pipelinePicks: ['orders'] });
 			assert.deepStrictEqual(await palette(), { kind: 'shown', pipelineId: ORDERS });
 			assert.strictEqual(infos.length, 1, infos.join('\n'));
-			assert.match(infos[0], /^bad\.cloud\.json could not be read: it is not JSON \(.+\)\. Choose the pipeline whose logs to show\.$/);
+			assert.match(infos[0], /^bad\.yaml\.cloud\.json could not be read: it is not JSON \(.+\)\. Choose the pipeline whose logs to show\.$/);
 			assert.strictEqual(pipelinesOffered.length, 1, 'the pick');
 		} finally {
 			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
@@ -2792,6 +2796,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		topic.write(rec(ORDERS, 'o1', MINUTE));
 		try {
 			await openConfig('moved');
+			// Bug 47: a mapping under the old name (`<stem>.cloud.json`), one config to own it: still used.
 			fs.writeFileSync(path.join(dir, 'moved.cloud.json'), serializeMapping({ clusterId: 'cgone0000000000000zz', pipelineId: ORDERS, clusterName: 'old-cluster', pipelineName: 'orders' }));
 			const gone = 'The cluster old-cluster that moved.cloud.json maps moved.yaml to is gone or no longer offers the pipeline API.';
 			for (const command of [START_COMMAND, STOP_COMMAND, DELETE_COMMAND]) {

@@ -19,7 +19,7 @@ import { isLogReadError, isSaslMechanism, type LogAccess, LOGS_TOPIC, SASL_MECHA
 import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
 import { setUpRunningText, type LogsShowOptions, type LogSource } from './logsPanel';
 import type { CloudContext, CloudNode, LogAccessResult, ShowLogsResult } from './cloudView';
-import { NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
+import { IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
 import { maskCredentials } from '../cloud/errors';
 
 /** Ticket 6.5: the Error notification's way to the log. */
@@ -485,7 +485,8 @@ export class CloudLogs {
 			title: 'Show pipeline logs: the pipeline',
 			describe: (c, pipeline) => {
 				const local = this.ctx.localFileOf(pipeline);
-				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE : undefined;
+				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE
+					: local.kind === 'ambiguous' ? IN_SEVERAL_FOLDERS : undefined;
 				return [c.name, pipelineStateDescription(pipeline), ...(from ? [from] : []), ...(this.logUsers.has(c.id) ? [] : [NO_LOG_ACCESS_SET])].join(' · ');
 			},
 		});

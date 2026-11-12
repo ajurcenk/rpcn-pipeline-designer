@@ -25,3 +25,8 @@ _bmad/render/
 
 # Manual-check VS Code profile and workspace (scripts/dev-host.sh)
 .dev-host/
+
+# The multi-root Cloud suite's fixtures (bug 47), written and removed by the suite
+test/multiroot/*/orders-47.yaml
+test/multiroot/*/only-a-47.yaml
+test/multiroot/*/*-47.yaml.cloud.json

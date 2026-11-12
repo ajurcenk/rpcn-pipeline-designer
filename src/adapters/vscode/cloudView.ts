@@ -20,8 +20,10 @@
 // to the deployed pipeline's size on an update, to 1 on a create; nothing is saved). The first
 // deploy asks for a cluster (offering an update of a pipeline there already tagged with this file)
 // and a name (the file's name without its extension), creates the pipeline with a tag naming the
-// file, and writes the mapping beside the file (`orders.yaml` → `orders.cloud.json`, ids only,
-// ticket 5.3). A deploy with a mapping reads the mapped pipeline and replaces it (`PUT`, every
+// file (bug 47: its path in its workspace folder, `<folder name>/<path>` in a multi-root workspace, its
+// base name outside every folder: never a local absolute path), and writes the mapping beside the file
+// (`orders.yaml` → `orders.yaml.cloud.json`, ids only, ticket 5.3; an old `orders.cloud.json` is read
+// when no other config beside could own it, and never renamed). A deploy with a mapping reads the mapped pipeline and replaces it (`PUT`, every
 // field: the deployed name, description and other tags
 // kept); a running or starting one is restarted by that, so a diff of the deployed and the local
 // config opens first and a modal confirmation is needed. Config and size as deployed: nothing is
@@ -40,7 +42,8 @@
 // pipelines again. Nothing is polled in the background.
 //
 // Each pipeline row (ticket 5.5) shows the file it was deployed from (its `rpcn-vscode/config` tag),
-// found inside the workspace folders only ("not in this workspace" otherwise). Clicking a row, or
+// found inside the workspace folders only ("not in this workspace" otherwise; a tag that names files
+// in two folders is "in more than one folder", and Compare and Deploy again ask which). Clicking a row, or
 // **Open deployed config**, reads the pipeline now and shows its config read-only; **Compare with local
 // file** diffs that (read-only) with the local file (editable); **Deploy local file again** runs the
 // normal Deploy of the file when its `.cloud.json` maps to this pipeline, else explains and sends
@@ -107,14 +110,13 @@
 // What they share without state (constants, texts, pure helpers) is in `cloudShared.ts`; no feature module
 // imports another.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
 import { CONFIG_TAG, type CloudPipeline, getPipeline, type PipelineState, listPipelines, type PipelineResources, type SizeChoice, sizeChoices, stateKey } from '../cloud/dataPlane';
 import { asCloudError, CloudError, maskCredentials } from '../cloud/errors';
 import { defaultFetch, type FetchLike } from '../cloud/http';
-import { type DeployMapping, taggedConfigs } from '../cloud/sidecar';
+import { type DeployMapping, type WorkspaceRoot } from '../cloud/sidecar';
 import { type ServiceAccount, TokenCache } from '../cloud/token';
 import type { LogReaderFactory, SaslMechanism } from '../logs/logReader';
 import { loadKafka, PlatformaticReader } from '../logs/platformaticReader';
@@ -124,7 +126,7 @@ import type { LintResult } from '../redpandaConnect/lint';
 import { CloudActions, type PaletteTarget, type PaletteTargetHow, type PipelineAction } from './cloudActions';
 import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy';
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
-import { CONNECT_ACTION, DEPLOYED_SCHEME, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
+import { CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
 import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
 
@@ -132,11 +134,11 @@ import type { SecretStore } from './secrets';
 export {
 	ADD_NOW_ACTION, CHECK_COLLECTION, CHECK_SOURCE, CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_ANYWAY_ACTION, DEPLOY_AS_NEW_ACTION,
 	DEPLOY_NOT_DETECTED_MESSAGE, DEPLOY_NOT_ON_DISK_MESSAGE, DEPLOY_UNTITLED_MESSAGE, ENTER_ANOTHER_ACTION, keepValueAction,
-	localSourceText, REPLACE_ACTION, sentConfigUri, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
+	DEPLOY_WITHOUT_ACTION, localSourceText, REPLACE_ACTION, sentConfigUri, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
 } from './cloudDeploy';
 export { DELETE_ACTION, deployedViewUri } from './cloudActions';
 export {
-	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, pipelineStateDescription,
+	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, IN_SEVERAL_FOLDERS, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, pipelineStateDescription,
 } from './cloudShared';
 export {
 	FORGET_LOG_ACCESS_COMMAND, LOG_ACCESS_PREFIX, logAccessForgottenMessage, logAccessKey, NO_CLUSTER_WITH_LOG_ACCESS, NO_LOG_ACCESS_SET, noLogAccessMessage,
@@ -366,7 +368,9 @@ export type RowActionResult =
 type LocalFile =
 	| { readonly kind: 'none' }
 	| { readonly kind: 'outside'; readonly tag: string }
-	| { readonly kind: 'ok'; readonly tag: string; readonly path: string };
+	| { readonly kind: 'ok'; readonly tag: string; readonly path: string }
+	/** Bug 47: the tag names a file in more than one workspace folder (`paths`, in their order); never one alone. */
+	| { readonly kind: 'ambiguous'; readonly tag: string; readonly paths: readonly string[] };
 
 
 type Loaded<T> = { readonly kind: 'ok'; readonly value: T } | { readonly kind: 'error'; readonly message: string };
@@ -388,7 +392,7 @@ export interface CloudContext {
 	readonly logReader: LogReaderFactory;
 	readonly nodeVersion: string;
 	errorFollowUp: Promise<ShowLogsResult | undefined> | undefined;
-	workspaceFolders(): readonly string[];
+	workspaceFolders(): readonly WorkspaceRoot[];
 	readonly account: { readonly clientId: string; name?: string } | undefined;
 	readonly ready: Promise<void>;
 	requested: boolean;
@@ -503,11 +507,12 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	/** Ticket 6.5: what the last Error notification's action did, once chosen (the test seam awaits it). */
 	errorFollowUp: Promise<ShowLogsResult | undefined> | undefined;
 	/**
-	 * The workspace folders a pipeline's tag is resolved in (the local file of a row, the mapping a
-	 * delete removes): VS Code's `file:` folders; the test seam replaces it (the stable run opens none).
+	 * The workspace folders a pipeline's tag is made from (Deploy) and resolved in (the local file of a
+	 * row, the mapping a delete removes): VS Code's `file:` folders, with their names (bug 47); the test
+	 * seam replaces it (the stable run opens none).
 	 */
-	workspaceFolders: () => readonly string[] = () =>
-		(vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath);
+	workspaceFolders: () => readonly WorkspaceRoot[] = () =>
+		(vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => ({ name: f.name, path: f.uri.fsPath }));
 	readonly tokens: TokenCache;
 	/** `redpanda-cloud:` URI → the deployed config it shows. */
 	private readonly deployedConfigs = new Map<string, string>();
@@ -1214,16 +1219,19 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				const local = this.localFileOf(p);
 				const item = new vscode.TreeItem(p?.displayName ?? node.id, vscode.TreeItemCollapsibleState.None);
 				item.id = `pipeline:${node.clusterId}:${node.id}`;
-				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE : undefined;
+				const from = local.kind === 'ok' ? path.basename(local.path) : local.kind === 'outside' ? NOT_IN_WORKSPACE
+					: local.kind === 'ambiguous' ? IN_SEVERAL_FOLDERS : undefined;
 				item.description = from ? `${state} · ${from}` : state;
 				item.iconPath = new vscode.ThemeIcon(stateIcon(p?.state));
-				// A state the extension does not know is `state-unknown`: Delete only. ` hasFile`: Deploy again.
+				// A state the extension does not know is `state-unknown`: Delete only. ` hasFile`: Deploy again
+				// (bug 47: also for a file in more than one folder, which asks which).
 				// ` logs` (ticket 6.2): its cluster has log access, so Show logs is inline.
-				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}${local.kind === 'ok' ? ' hasFile' : ''}${this.logAccess.logUsers.has(node.clusterId) ? ' logs' : ''}`;
+				item.contextValue = `cloudPipeline state-${stateKey(p?.state)}${local.kind === 'ok' || local.kind === 'ambiguous' ? ' hasFile' : ''}${this.logAccess.logUsers.has(node.clusterId) ? ' logs' : ''}`;
 				// A click opens the deployed config, read now.
 				item.command = { command: OPEN_DEPLOYED_COMMAND, title: 'Open deployed config', arguments: [node] };
 				const deployedFrom = local.kind === 'ok' ? `. Deployed from ${local.path}.`
-					: local.kind === 'outside' ? `. Deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}.` : '.';
+					: local.kind === 'outside' ? `. Deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}.`
+						: local.kind === 'ambiguous' ? `. Deployed from ${local.tag}, which is ${IN_SEVERAL_FOLDERS}: ${local.paths.join(', ')}.` : '.';
 				item.tooltip = `${p?.displayName ?? node.id} (${node.id}): ${state}${deployedFrom}`;
 				item.accessibilityInformation = { label: `Pipeline ${p?.displayName ?? node.id}, ${state}${from ? `, ${local.kind === 'ok' ? `deployed from ${from}` : `its file ${from}`}` : ''}` };
 				return item;
@@ -1244,22 +1252,18 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/**
-	 * The file a pipeline was deployed from: its tag resolved inside the workspace folders only, the
-	 * first that is a file there; a tag outside them, or naming no file, is `outside`.
+	 * The file a pipeline was deployed from: its tag resolved inside the workspace folders only, when
+	 * exactly one file there matches it; more than one (an old tag in a multi-root workspace, bug 47)
+	 * is `ambiguous`; a tag outside them, or naming no file, is `outside`.
 	 */
 	private localFileOf(p: CloudPipeline | undefined): LocalFile {
 		const tag = p?.tags[CONFIG_TAG];
 		if (!tag) {
 			return { kind: 'none' };
 		}
-		const found = taggedConfigs(tag, this.workspaceFolders()).find((file) => {
-			try {
-				return fs.statSync(file).isFile();
-			} catch {
-				return false;
-			}
-		});
-		return found ? { kind: 'ok', tag, path: found } : { kind: 'outside', tag };
+		const found = filesOfTag(tag, this.workspaceFolders());
+		return found.length === 1 ? { kind: 'ok', tag, path: found[0] }
+			: found.length > 1 ? { kind: 'ambiguous', tag, paths: found } : { kind: 'outside', tag };
 	}
 
 	private pipelineById(clusterId: string, id: string): CloudPipeline | undefined {

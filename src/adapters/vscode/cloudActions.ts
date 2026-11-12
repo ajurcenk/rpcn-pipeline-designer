@@ -10,11 +10,11 @@ import * as vscode from 'vscode';
 import type { CloudCluster } from '../cloud/controlPlane';
 import { canStart, canStop, CONFIG_TAG, type CloudPipeline, deletePipeline, getPipeline, pipelineStateText, startPipeline, stopPipeline } from '../cloud/dataPlane';
 import { asCloudError, describeCloudError } from '../cloud/errors';
-import { sidecarPath, taggedSidecars } from '../cloud/sidecar';
+import { configTag, taggedConfigs } from '../cloud/sidecar';
 import type { CloudContext, CloudNode, DeployResult, PipelineActionResult, PipelineChoice, RowActionResult } from './cloudView';
 import {
-	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription,
-	readMapping, reasonOf, sleep, stateWord,
+	CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedTagOf, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE,
+	NOT_STARTED, pipelineStateDescription, readMapping, reasonOf, sharedMappingText, sleep, stateWord,
 } from './cloudShared';
 /** The delete confirmation's action. */
 export const DELETE_ACTION = 'Delete';
@@ -148,12 +148,18 @@ export class CloudActions {
 		const config = configOf();
 		if (config) {
 			const file = path.basename(config.fsPath);
-			const mappingName = path.basename(sidecarPath(config.fsPath));
+			// Bug 47: the config's own mapping, or an old one only it could own; one two configs could own is not used.
+			const at = await findMapping(config.fsPath, this.ctx.workspaceFolders(), mappedTagOf(this.ctx));
+			const mappingName = path.basename(at.file);
 			// With `pickAfterGone`, a message is followed by it and the pick; else a gone cluster or pipeline stops there.
 			const then = (message: string) => (how.pickAfterGone ? `${message} ${how.pickAfterGone}` : message);
-			const read = await readMapping(sidecarPath(config.fsPath));
-			if (read.kind === 'bad' && how.pickAfterGone) {
-				this.ctx.log(`Redpanda Cloud: ${sidecarPath(config.fsPath)} is not a deploy mapping: ${read.reason}`);
+			const read = at.kind === 'own' ? at.read : { kind: 'none' as const };
+			if (at.kind === 'shared') {
+				const why = `${sharedMappingText(at, config.fsPath)}.`;
+				this.ctx.log(`Redpanda Cloud: ${why}`);
+				void this.ctx.showInfo(then(why));
+			} else if (read.kind === 'bad' && how.pickAfterGone) {
+				this.ctx.log(`Redpanda Cloud: ${at.file} is not a deploy mapping: ${read.reason}`);
 				void this.ctx.showInfo(then(`${mappingName} could not be read: ${read.reason}.`));
 			} else if (read.kind === 'ok') {
 				const m = read.mapping;
@@ -295,17 +301,21 @@ export class CloudActions {
 	}
 
 	/**
-	 * The `.cloud.json` files that map a config to `pipeline`: beside the config its
-	 * `rpcn-vscode/config` tag names (only inside a workspace folder) and beside the active config,
-	 * each kept only when it parses and names this cluster and pipeline.
+	 * The `.cloud.json` files that map a config to `pipeline`: of the configs its `rpcn-vscode/config`
+	 * tag can name (only inside a workspace folder) and of the active config, each config's own mapping
+	 * or the old one only it could own (bug 47; one two configs could own is not used), each kept only
+	 * when it parses and names this cluster and pipeline.
 	 */
 	private async mappingsOf(cluster: CloudCluster, pipeline: CloudPipeline, config: vscode.Uri | undefined): Promise<string[]> {
 		const candidates = new Set<string>();
-		if (config) {
-			candidates.add(sidecarPath(config.fsPath));
-		}
-		for (const file of taggedSidecars(pipeline.tags[CONFIG_TAG], this.ctx.workspaceFolders())) {
-			candidates.add(file);
+		const configs = [...(config ? [config.fsPath] : []), ...taggedConfigs(pipeline.tags[CONFIG_TAG], this.ctx.workspaceFolders())];
+		for (const c of new Set(configs)) {
+			const at = await findMapping(c, this.ctx.workspaceFolders(), mappedTagOf(this.ctx));
+			if (at.kind === 'own') {
+				candidates.add(at.file);
+			} else if (await mapsTo(at.file, cluster.id, pipeline.id)) {
+				this.ctx.log(`Redpanda Cloud: ${sharedMappingText(at, c)}; it is not deleted with ${pipeline.displayName}.`);
+			}
 		}
 		const out: string[] = [];
 		for (const file of candidates) {
@@ -526,11 +536,25 @@ export class CloudActions {
 		return { kind: 'opened', pipelineId: read.id, uri: uri.toString() };
 	}
 
-	/** The row's local file, or said why there is none (`what`: what needs it). */
-	private localFileFor(pipeline: CloudPipeline, what: string): string | RowActionResult {
+	/**
+	 * The row's local file, or said why there is none (`what`: what needs it). Bug 47: a tag naming
+	 * files in more than one folder is never resolved alone: the user picks one (cancelled: nothing done).
+	 */
+	private async localFileFor(pipeline: CloudPipeline, what: string): Promise<string | RowActionResult> {
 		const local = this.ctx.localFileOf(pipeline);
 		if (local.kind === 'ok') {
 			return local.path;
+		}
+		if (local.kind === 'ambiguous') {
+			// Each choice carries its file: shown by its tag here, with its path when two would read the same.
+			const folders = this.ctx.workspaceFolders();
+			const tags = local.paths.map((f) => configTag(f, folders));
+			const offered = local.paths.map((file, i) => ({
+				file, label: tags.filter((t) => t === tags[i]).length > 1 ? `${tags[i]} (${file})` : tags[i],
+			}));
+			const choice = await this.ctx.ui.pickChoice(`${ROW_ACTION_TEXT[what === 'deploy' ? 'deployAgain' : 'compare']}: ${pipeline.displayName}`, this.ctx.mask(
+				`Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${IN_SEVERAL_FOLDERS}. Which file to ${what}?`), offered.map((o) => o.label));
+			return offered.find((o) => o.label === choice)?.file ?? NOT_STARTED;
 		}
 		void this.ctx.showInfo(local.kind === 'outside'
 			? `Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}, so there is no local file to ${what}.`
@@ -540,7 +564,7 @@ export class CloudActions {
 
 	/** Compare with the local file: the deployed config (read now, read-only) ↔ the local file (editable). */
 	private async compare(target: ActionTarget): Promise<RowActionResult> {
-		const file = this.localFileFor(target.pipeline, 'compare with');
+		const file = await this.localFileFor(target.pipeline, 'compare with');
 		if (typeof file !== 'string') {
 			return file;
 		}
@@ -559,14 +583,21 @@ export class CloudActions {
 	/** Deploy again: the normal Deploy of the row's file, only when its `.cloud.json` maps to this pipeline. */
 	private async deployAgain(target: ActionTarget): Promise<RowActionResult> {
 		const { cluster, pipeline } = target;
-		const file = this.localFileFor(pipeline, 'deploy');
+		const file = await this.localFileFor(pipeline, 'deploy');
 		if (typeof file !== 'string') {
 			return file;
 		}
 		const name = path.basename(file);
-		const mappingFile = sidecarPath(file);
-		const mappingName = path.basename(mappingFile);
-		const read = await readMapping(mappingFile);
+		// Bug 47: the file's own mapping, or an old one only it could own.
+		const at = await findMapping(file, this.ctx.workspaceFolders(), mappedTagOf(this.ctx));
+		const mappingName = path.basename(at.kind === 'own' ? at.file : at.own);
+		if (at.kind === 'shared') {
+			const why = sharedMappingText(at, file);
+			this.ctx.log(`Redpanda Cloud: did not deploy ${file} again to ${pipeline.displayName} (${pipeline.id}): ${why}.`);
+			void this.ctx.showInfo(`${why}. Deploy ${name} from its editor to choose where it goes. Nothing was sent.`);
+			return { kind: 'notMapped', pipelineId: pipeline.id };
+		}
+		const read = at.read;
 		if (read.kind === 'ok' && read.mapping.clusterId === cluster.id && read.mapping.pipelineId === pipeline.id) {
 			return this.ctx.deploy(vscode.Uri.file(file), { clusterId: cluster.id, pipelineId: pipeline.id, name: pipeline.displayName });
 		}
