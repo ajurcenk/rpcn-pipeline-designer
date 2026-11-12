@@ -178,10 +178,12 @@
 - source_plan: none
   summary: Bug 51 group B, time and strip: one time per record across the row, the strip, Show records around and the around-the-error window, and strip bars that match their rows (criterion 5, findings C6 and C7).
   evidence: split from bug 51 at the build's scope check (user, 2026-11-11, "Start A"); it touches how rows carry their time and how the strip counts, so it builds on group A.
+  resolution: ticketed as backlog 53 (2026-11-11): `_bmad-output/backlog/bug-pipeline-logs-one-time-per-record-and-a-strip-that-matches-its-rows-epic-6-retrospective.md`.
 
 - source_plan: none
   summary: Bug 51 group C, search: slow patterns such as `.*.*.*x` refused on the host and in the webview's highlight, which never runs on uncapped text (criterion 6, finding C12).
   evidence: split from bug 51 at the build's scope check (user, 2026-11-11, "Start A"); independent of groups A and B.
+  resolution: ticketed as backlog 54 (2026-11-11): `_bmad-output/backlog/bug-pipeline-logs-slow-search-patterns-are-refused-everywhere-epic-6-retrospective.md`.
 
 - source_plan: `_bmad-output/backlog/bug-pipeline-logs-reading-and-state-edge-cases-epic-6-retrospective-plan.md`
   summary: While following the live log, a partition without a leader is named only in the output channel; the tab's status still says Following, and no line says when it has a leader again.
