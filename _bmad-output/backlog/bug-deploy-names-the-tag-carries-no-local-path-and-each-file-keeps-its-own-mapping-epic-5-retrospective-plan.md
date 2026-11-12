@@ -3,7 +3,7 @@ title: 'Deploy names: the tag carries no local path and each file keeps its own 
 type: 'bugfix'
 ticket: '47'
 created: '2026-11-11'
-status: 'built'
+status: 'done'
 baseline_revision: 'fcc5b43fabfc2c298c53421e94fcadf178072afd'
 route: 'full'
 route_source: 'auto'
