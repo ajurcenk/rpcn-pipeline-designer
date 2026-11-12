@@ -3,7 +3,7 @@ title: 'Pipeline logs read every partition fully and read what their status says
 type: 'bugfix'
 ticket: '51'
 created: '2026-11-11'
-status: 'built'
+status: 'done'
 baseline_revision: '65f419802719e6d7137e77c4efd34c470532c014'
 route: 'full'
 route_source: 'auto'
