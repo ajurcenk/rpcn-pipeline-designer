@@ -1,8 +1,9 @@
 // What the Pipeline Logs panel shows of a record (AD-24, ticket 6.2): pure. A pipeline's records are
-// those whose key is its id. A JSON object value becomes time (its `time`, else the record's
-// timestamp), level, message, instance (`instance_id`) and its further fields in their order (each
-// value as text; `pipeline_id`, the shown pipeline, left out); a value that is not a JSON object is
-// shown as text. `license_org` is never shown (ticket 38's rule): not as a field, and its value is
+// those whose key is its id. A JSON object value becomes time (bug 53: the record's Kafka timestamp;
+// the value's own `time` as `ownTime` when they differ by a second or more; the value's `time` when the
+// record has no timestamp), level, message, instance (`instance_id`) and its further fields in their
+// order (each value as text; `pipeline_id`, the shown pipeline, left out); a value that is not a JSON
+// object is shown as text. `license_org` is never shown (ticket 38's rule): not as a field, and its value is
 // masked wherever else it appears, in its record and, through the caller's `orgs` (every value seen in
 // the session, `licenseOrgOf`), in every later record and the panel's other text. Every text passes the caller's `mask` (the Cloud
 // view's: the client secret, the tokens, the log access passwords). Ticket 6.4: the row also carries
@@ -13,6 +14,9 @@
 import type { LogRow } from '../../shared/logsProtocol';
 import type { LogRecord } from './logReader';
 import { CREDENTIAL_MASK, maskWhole } from '../cloud/errors';
+
+/** Bug 53: the value's own `time` is carried (`ownTime`) only when it is this far or more from the Kafka timestamp. */
+export const OWN_TIME_MIN_DIFF_MS = 1_000;
 
 /** Fields the row shows in its own columns, or never. */
 const COLUMN_FIELDS = new Set(['time', 'level', 'message', 'instance_id']);
@@ -130,9 +134,15 @@ export function toLogRow(record: LogRecord, mask: (text: string) => string = (t)
 			whole[shown(key)] = maskDeep(v);
 		}
 	}
+	// Bug 53: the record's one time is its Kafka timestamp (the value's `time` only when it has none, a
+	// negative timestamp); the value's own `time` rides along when they differ by a second or more.
+	const valueTime = parseLogTime(value.time);
+	const noTimestamp = record.timestamp < 0;
+	const ownTime = !noTimestamp && valueTime !== undefined && Math.abs(valueTime - record.timestamp) >= OWN_TIME_MIN_DIFF_MS ? valueTime : undefined;
 	return {
 		id,
-		time: parseLogTime(value.time) ?? record.timestamp,
+		time: noTimestamp ? valueTime ?? record.timestamp : record.timestamp,
+		...(ownTime !== undefined ? { ownTime } : {}),
 		level: typeof value.level === 'string' ? shown(shown(value.level).toUpperCase()) : value.level === undefined ? '' : text(value.level),
 		message: value.message === undefined ? '' : text(value.message),
 		instance: value.instance_id === undefined ? '' : text(value.instance_id),

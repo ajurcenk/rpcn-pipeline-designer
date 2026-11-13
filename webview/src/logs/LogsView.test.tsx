@@ -26,7 +26,7 @@ import {
 } from '../../../src/shared/logsProtocol';
 import {
 	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
-	rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT, EXPORT_LABEL, EXPORT_TEXT,
+	ownTimeText, rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT, EXPORT_LABEL, EXPORT_TEXT,
 } from './LogsView';
 
 let host: HTMLDivElement;
@@ -146,6 +146,20 @@ describe('Pipeline Logs view (ticket 6.2)', () => {
 
 	it('localTime is the viewer\'s local time, to the millisecond', () => {
 		expect(localTime(new Date(2026, 0, 2, 3, 4, 5, 60).getTime())).toBe('2026-01-02 03:04:05.060');
+	});
+
+	it('Bug 53 OWN_TIME / SAME_TIME: the row shows the Kafka time; its own time, when it differs, in the tooltip and accessible name', async () => {
+		const own = T0 - 30 * MIN;
+		await send({ type: 'show', title: 'orders · rpc-vilnius', rows: [row(1, { ownTime: own }), row(2)], dropped: 0, cap: 5000, status: '', state: STATE });
+		const times = [...host.querySelectorAll('tbody tr[data-id] .rpcn-logs-time')];
+		const mark = times[0].querySelector('.rpcn-logs-own-time');
+		expect(mark?.getAttribute('title')).toBe(ownTimeText(own));
+		expect(ownTimeText(own)).toBe(`Its own time: ${localTime(own)}`);
+		expect(mark?.firstChild?.textContent).toBe(localTime(T0 + 1000));
+		expect(times[0].textContent).toBe(`${localTime(T0 + 1000)}. Its own time: ${localTime(own)}`);
+		expect(times[1].querySelector('.rpcn-logs-own-time')).toBeNull();
+		expect(times[1].querySelector('[title]')).toBeNull();
+		expect(times[1].textContent).toBe(localTime(T0 + 2000));
 	});
 });
 
@@ -810,6 +824,13 @@ describe('Pipeline Logs records-per-time strip (ticket 6.7)', () => {
 			{ ...good, matched: good.total.map((n) => n + 1) }, { ...good, errors: good.total.map((n, i) => (i === 1 ? n + 1 : 0)) }, { ...good, warns: good.total.map((n, i) => (i === 1 ? n + 1 : 0)) },
 		]) {
 			expect(parseLogsHostMessage({ type: 'state', state: state({ strip: bad }) })).toBeUndefined();
+		}
+		// Bug 53: a row's `ownTime` is absent or a finite number.
+		const show = (r: unknown) => parseLogsHostMessage({ type: 'show', title: 't', rows: [r], dropped: 0, cap: 5000, status: '', state: state() });
+		expect(show(row(1, { ownTime: T0 }))).toBeDefined();
+		expect(show(row(1))).toBeDefined();
+		for (const ownTime of ['x', null, NaN, Infinity]) {
+			expect(show({ ...row(1), ownTime })).toBeUndefined();
 		}
 		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0 - MIN, to: T0, index: 3 })).toEqual({ type: 'slotChosen', from: T0 - MIN, to: T0 });
 		expect(parseLogsWebviewMessage({ type: 'slotChosen', from: T0, to: T0 })).toBeUndefined();

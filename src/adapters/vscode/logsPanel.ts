@@ -510,7 +510,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			|| (failed === 'connectionLost' && this.counter.counts.total === 0)) {
 			return null;
 		}
-		const span = stripSpan(this.range, this.chosenAt, this.olderFrom, this.readUntil, this.newestTs);
+		const span = stripSpan(this.range, this.chosenAt, this.olderFrom, this.readUntil, this.newestTs, this.live);
 		return span ? this.slots.strip(span.from, span.end) : null;
 	}
 

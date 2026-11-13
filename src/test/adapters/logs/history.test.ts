@@ -135,5 +135,16 @@ suite('Pipeline logs history rules (ticket 6.3)', () => {
 		assert.deepStrictEqual(stripSpan({ kind: 'custom', from: NOW - HOUR_MS, to: NOW - MINUTE_MS }, NOW), { from: NOW - HOUR_MS, end: NOW - MINUTE_MS });
 		assert.deepStrictEqual(stripSpan({ kind: 'deploy', from: NOW - 3 * HOUR_MS, to: null }, NOW - HOUR_MS, undefined, undefined, NOW), { from: NOW - 3 * HOUR_MS, end: NOW });
 		assert.deepStrictEqual(stripSpan({ kind: 'deploy', from: NOW - 3 * HOUR_MS, to: null }, NOW), { from: NOW - 3 * HOUR_MS, end: NOW });
+		// Bug 53 LIVE_AFTER_RANGE: a bounded range, then Live: the span ends at the newest record read.
+		const custom = { kind: 'custom', from: NOW - HOUR_MS, to: NOW - 30 * MINUTE_MS } as const;
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, undefined, undefined, NOW - 2 * MINUTE_MS, true), { from: NOW - HOUR_MS, end: NOW - 2 * MINUTE_MS });
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, undefined, undefined, NOW - 40 * MINUTE_MS, true), { from: NOW - HOUR_MS, end: NOW - 30 * MINUTE_MS }, 'never before the range\'s end');
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, undefined, undefined, NOW - 2 * MINUTE_MS, false), { from: NOW - HOUR_MS, end: NOW - 2 * MINUTE_MS }, 'Live off after live records: they stay in the span');
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, undefined, NOW, NOW - 40 * MINUTE_MS, false), { from: NOW - HOUR_MS, end: NOW - 30 * MINUTE_MS }, 'Live off: readUntil not followed');
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, undefined, NOW - MINUTE_MS, NOW - 2 * MINUTE_MS, true), { from: NOW - HOUR_MS, end: NOW - MINUTE_MS }, 'Live on: readUntil later than newest');
+		assert.deepStrictEqual(stripSpan(custom, NOW - HOUR_MS, NOW - 2 * HOUR_MS, undefined, NOW - 2 * MINUTE_MS, true), { from: NOW - 2 * HOUR_MS, end: NOW - 2 * MINUTE_MS }, 'Live on: from Load older\'s window');
+		const deployRange = { kind: 'deploy', from: NOW - 3 * HOUR_MS, to: null } as const;
+		assert.deepStrictEqual(stripSpan(deployRange, NOW - HOUR_MS, undefined, NOW - MINUTE_MS, NOW, true), stripSpan(deployRange, NOW - HOUR_MS, undefined, NOW - MINUTE_MS, NOW), 'Since the last deploy: unchanged by live');
 	});
+
 });

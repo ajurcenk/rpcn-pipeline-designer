@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { compileFilter, Counter, INSTANCE_FIELD, levelOf, matches, sameFilter, SlotCounter } from '../../../adapters/logs/filter';
-import { DAY_MS, HOUR_MS, MINUTE_MS, filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, searchPattern, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
+import { DAY_MS, HOUR_MS, MINUTE_MS, filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, searchPattern, slotBounds, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
 
 // The Pipeline Logs panel's filter (ticket 6.4): the level a row counts under, the levels, the search
 // (plain or a regular expression, Match case) over the message, the level, the instance and every
@@ -197,11 +197,45 @@ suite('Pipeline logs filter (ticket 6.4)', () => {
 		assert.strictEqual(week.total.reduce((a, b) => a + b, 0), 5);
 		assert.strictEqual(week.total[0], 1);
 		assert.strictEqual(week.total[36], 3, 'the first 4 hours of t0');
-		// A record outside the span counts in the nearest slot.
+		// Bug 53 STRIP_OUTSIDE: a record outside the span is in no bar (not clamped into an edge one).
 		const hour = c.strip(t0, t0 + HOUR_MS);
-		assert.strictEqual(hour.total.reduce((a, b) => a + b, 0), 5);
-		assert.strictEqual(hour.total[0], 1, 'the record 6 days before');
+		assert.strictEqual(hour.total.reduce((a, b) => a + b, 0), 3, 'the record 6 days before and the one 23 hours after are left out');
+		assert.strictEqual(hour.total[0], 0, 'not the record 6 days before');
 		assert.strictEqual(hour.total[5], 1);
-		assert.strictEqual(hour.total[59], 1);
+		assert.strictEqual(hour.total[29], 1);
+		assert.strictEqual(hour.total[30], 1);
+		assert.strictEqual(hour.total[59], 0, 'not the record 23 hours after');
+	});
+
+	test('SlotCounter (bug 53): the minute the span ends in is in the last bar (it ends at the span\'s end); a minute after it is in none', () => {
+		const t0 = Date.UTC(2026, 10, 5, 0, 0);
+		const c = new SlotCounter();
+		c.add(t0 + 10 * MINUTE_MS + 10_000, 'info', true);
+		c.add(t0 + 11 * MINUTE_MS, 'info', true);
+		// From mid-minute: 10 one-minute slots from t0 to t0+10m; the span ends at t0+10m30s.
+		const s = c.strip(t0 + 30_000, t0 + 10 * MINUTE_MS + 30_000);
+		assert.strictEqual(s.total.length, 10);
+		assert.strictEqual(s.total[9], 1, 'the record at t0+10m10s, within the span');
+		assert.strictEqual(s.total.reduce((a, b) => a + b, 0), 1, 'the record at t0+11m, after the span, in no bar');
+	});
+
+	test('SlotCounter (bug 53): the strip on whole minutes, its bars as for the span given; a record before `from` in its first minute and one after `end` in its last are counted, each inside its bar\'s times', () => {
+		const t0 = Date.UTC(2026, 10, 5, 10, 0);
+		const c = new SlotCounter();
+		const before = t0 + 10_000;
+		const after = t0 + 20 * MINUTE_MS + 50_000;
+		c.add(before, 'info', true);
+		c.add(after, 'info', true);
+		const s = c.strip(t0 + 30_000, t0 + 20 * MINUTE_MS + 10_000);
+		assert.deepStrictEqual([s.start, s.from, s.end], [t0, t0, t0 + 21 * MINUTE_MS - 1], 'from its first minute\'s start to its last minute\'s last millisecond');
+		assert.strictEqual(s.total.length, 20, 'the bars of the span given, none added');
+		assert.strictEqual(s.total.reduce((a, b) => a + b, 0), 2);
+		for (const [t, i] of [[before, 0], [after, 19]] as const) {
+			assert.strictEqual(s.total[i], 1, `${t} in bar ${i}`);
+			const b = slotBounds(s, s.total.length, i);
+			assert.ok(b.from <= t && t <= b.to, `${t} inside bar ${i}: ${b.from}–${b.to}`);
+		}
+		const day = c.strip(t0 + 30_000, t0 + DAY_MS + 30_000);
+		assert.strictEqual(day.total.length, 48, 'Last 24 hours keeps its 48 bars');
 	});
 });

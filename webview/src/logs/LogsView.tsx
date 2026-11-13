@@ -72,6 +72,14 @@ export function localTime(ms: number): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
+/**
+ * Bug 53: a row's time is its record's Kafka timestamp; when the value's own `time` differs, the time
+ * cell's tooltip and accessible name add it: "Its own time: 2026-11-05 16:19:15.510".
+ */
+export function ownTimeText(ownTime: number): string {
+	return `Its own time: ${localTime(ownTime)}`;
+}
+
 /** "3 records", "1 record". */
 const records = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
 
@@ -669,7 +677,9 @@ export function LogsView({ post }: { readonly post: (message: LogsWebviewMessage
 											<td className="rpcn-logs-time">
 												<button type="button" className="rpcn-logs-expand" aria-expanded={open} aria-label={open ? 'Hide the whole record' : 'Show the whole record'}
 													onClick={() => toggleExpanded(row.id)} />
-												{localTime(row.time)}
+												{row.ownTime === undefined
+													? localTime(row.time)
+													: <span className="rpcn-logs-own-time" title={ownTimeText(row.ownTime)}>{localTime(row.time)}<span className="rpcn-logs-sr">. {ownTimeText(row.ownTime)}</span></span>}
 											</td>
 											<td className={levelClass(row.level)}><Highlighted text={row.level} re={marks} /></td>
 											<td className={row.raw ? 'rpcn-logs-message rpcn-logs-raw' : 'rpcn-logs-message'}>

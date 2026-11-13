@@ -1655,11 +1655,18 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		return s;
 	};
 	const sum = (a: readonly number[]) => a.reduce((x, y) => x + y, 0);
-	/** The strip's slot of each of `timestamps`, as its bars count them (clamped to the strip). */
-	const slotted = (s: { start: number; size: number; total: readonly number[] }, timestamps: readonly number[]) => {
+	/**
+	 * The strip's slot of each of `timestamps`, as its bars count them (bug 53: one outside the strip in
+	 * none; the minute the strip ends in, in its last bar).
+	 */
+	const slotted = (s: { start: number; size: number; end: number; total: readonly number[] }, timestamps: readonly number[]) => {
 		const out = s.total.map(() => 0);
 		for (const t of timestamps) {
-			out[Math.min(out.length - 1, Math.max(0, slotOf(t, s.start, s.size)))]++;
+			const minute = Math.floor(t / MINUTE) * MINUTE;
+			const i = slotOf(minute, s.start, s.size);
+			if (i >= 0 && minute <= s.end) {
+				out[Math.min(out.length - 1, i)]++;
+			}
 		}
 		return out;
 	};
@@ -1722,7 +1729,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 			const range = logs().viewState.range;
 			assert.deepStrictEqual(s.total, slotted(s, ordersTimes().filter((t) => t >= range.from && t <= range.to!)), `${kind}: the records per slot`);
 			assert.ok(s.start <= range.from && s.start > range.from - MINUTE, 'from the range\'s start (on its minute)');
-			assert.strictEqual(s.end, range.to);
+			assert.strictEqual(s.end, Math.floor(range.to! / MINUTE) * MINUTE + MINUTE - 1, 'to the last millisecond of the range\'s end minute (bug 53)');
 			return s;
 		};
 		const day = await read('day', 30 * MINUTE, 48, 7);
@@ -1877,7 +1884,7 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		const read = window.delivered.filter((r) => r.key === ORDERS).map((r) => r.timestamp);
 		assert.ok(read.length > 0 && read.length < 1200, `${read.length} read`);
 		const s = strip();
-		assert.strictEqual(s.from, Math.min(...read), 'from the oldest record read');
+		assert.strictEqual(s.from, Math.floor(Math.min(...read) / MINUTE) * MINUTE, 'from the oldest record read (its minute, bug 53)');
 		assert.ok(s.from > window.fromTime, 'not from the window\'s start');
 		assert.strictEqual(sum(s.total), logs().viewState.counts.total);
 		assert.strictEqual(sum(s.total), 1 + read.length);
@@ -1891,6 +1898,76 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
 		assert.strictEqual(texts().length, 5);
 		assert.strictEqual(sum(strip().total), 8);
+	});
+
+	test('LIVE_AFTER_RANGE (bug 53): a bounded range, then Live: the strip goes on to the newest record read; a live record is in its own bar, whose click reads it', async () => {
+		const t0 = Date.now();
+		topic.write(recAt(ORDERS, 'in range 1', t0 - 50 * MINUTE), recAt(ORDERS, 'in range 2', t0 - 40 * MINUTE));
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'custom', from: t0 - HOUR, to: t0 - 30 * MINUTE }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 2, 10_000), logs().statusText);
+		assert.strictEqual(strip().end, Math.floor((t0 - 30 * MINUTE) / MINUTE) * MINUTE + MINUTE - 1, 'Live off: the range\'s end (its minute)');
+		await logs().setLive(true);
+		assert.ok(await waitFor(() => topic.activeTails().length === 1, 10_000), logs().statusText);
+		const [live] = topic.write(recAt(ORDERS, 'live', Date.now()));
+		assert.ok(await waitFor(() => texts().includes('live') && sum(logs().viewState.strip?.total ?? []) === 3, 10_000), logs().statusText);
+		const s = strip();
+		assert.ok(s.end >= live.timestamp, 'the span goes on to the newest record read');
+		assert.deepStrictEqual(s.total, slotted(s, ordersTimes()), 'each record in its own bar');
+		const i = slotOf(live.timestamp, s.start, s.size);
+		assert.ok(i >= 0 && i < s.total.length, `the live record's bar ${i} of ${s.total.length}`);
+		assert.strictEqual(s.total[i], 1, 'the live record is counted in its own bar, not piled into the range\'s last one');
+		const bounds = slotBounds(s, s.total.length, i);
+		assert.ok(bounds.from <= live.timestamp && live.timestamp <= bounds.to, 'the bar\'s times hold it');
+		assert.strictEqual(await logs().chooseSlot(bounds.from, bounds.to), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(texts(), ['live'], 'the bar\'s click reads the record it counts');
+	});
+
+	test('AROUND_DIFF and OWN_TIME (bug 53): a record whose own time is 30 minutes from its Kafka timestamp: shown at the Kafka time, its own time carried; Show records around this one reads around the Kafka time', async () => {
+		const t0 = Date.now();
+		const own = new Date(t0 - 60 * MINUTE).toISOString();
+		const written = topic.write(
+			recAt(ORDERS, 'before', t0 - 33 * MINUTE),
+			{ ...recAt(ORDERS, 'target', t0 - 30 * MINUTE), value: { ...recAt(ORDERS, 'target', t0 - 30 * MINUTE).value, time: own } },
+			recAt(ORDERS, 'after', t0 - 27 * MINUTE),
+			recAt(ORDERS, 'far', t0 - 20 * MINUTE),
+		);
+		const kafka = written[1].timestamp;
+		await showOrders();
+		assert.strictEqual(await logs().chooseRange({ kind: 'hour' }), true);
+		assert.ok(await waitFor(() => logs().viewState.done && texts().length === 4, 10_000), logs().statusText);
+		const target = logs().rows().find((r) => r.message.endsWith(':target'))!;
+		assert.strictEqual(target.time, kafka, 'OWN_TIME: the row\'s time is the Kafka timestamp');
+		assert.strictEqual(target.ownTime, Date.parse(own), 'its own time carried for the tooltip');
+		assert.strictEqual(logs().rows().find((r) => r.message.endsWith(':before'))!.ownTime, undefined, 'SAME_TIME: no second time');
+		assert.strictEqual(logs().around(target.id), true);
+		assert.ok(await waitFor(() => logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: kafka - AROUND_MS, to: kafka + AROUND_MS });
+		assert.deepStrictEqual(texts(), ['before', 'target', 'after'], 'the record is in the rows read');
+	});
+
+	test('ERROR_DIFF (bug 53): the newest ERROR record\'s own time is 20 minutes from its Kafka timestamp: Show logs around the error reads around the Kafka time, the record in it and marked', async () => {
+		await setUpAccess();
+		const t0 = Date.now();
+		const at = (minutes: number) => t0 - minutes * MINUTE;
+		const error = errAt(ORDERS, 'the error', at(120));
+		const written = topic.write(
+			recAt(ORDERS, '-123m', at(123)),
+			{ ...error, value: { ...error.value, time: new Date(at(140)).toISOString() } },
+			recAt(ORDERS, '-117m', at(117)),
+			recAt(ORDERS, '-10m', at(10)),
+		);
+		const kafka = written[1].timestamp;
+		await showLogs(CLICKS);
+		assert.ok(await waitFor(() => logs().statusText === FOLLOWING_STATUS, 10_000), logs().statusText);
+		assert.deepStrictEqual(await aroundError(), { kind: 'shown', pipelineId: ORDERS });
+		assert.ok(await waitFor(() => logs().viewState.range.kind === 'custom' && logs().viewState.done, 10_000), logs().statusText);
+		assert.deepStrictEqual(logs().viewState.range, { kind: 'custom', from: kafka - AROUND_MS, to: kafka + AROUND_MS });
+		assert.deepStrictEqual(texts(), ['-123m', 'the error', '-117m']);
+		const target = logs().rows()[1];
+		assert.strictEqual(logs().viewState.focusId, target.id, 'the found record is in the window read and marked');
+		assert.ok(!logs().statusText.includes('could not be shown'), logs().statusText);
 	});
 
 	// --- ticket 6.8: export ---

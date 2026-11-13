@@ -25,7 +25,8 @@ suite('Pipeline log records (ticket 6.2)', () => {
 		const row = toLogRow(record(value));
 		assert.deepStrictEqual(row, {
 			id: '0:4703',
-			time: Date.UTC(2026, 10, 5, 16, 49, 15, 510),
+			time: Date.UTC(2026, 10, 5, 16, 49, 16, 511),
+			ownTime: Date.UTC(2026, 10, 5, 16, 49, 15, 510),
 			level: 'INFO',
 			message: 'Running main config from specified file',
 			instance: 'inst-1',
@@ -83,12 +84,34 @@ suite('Pipeline log records (ticket 6.2)', () => {
 		assert.strictEqual(toLogRow(record('', { value: null })).message, '');
 	});
 
-	test('RECORD: no or a bad time falls back to the record\'s timestamp; times with nanoseconds or an offset parse', () => {
+	test('RECORD: the row\'s time is the record\'s timestamp, with no or a bad value time too (no own time then); times with nanoseconds or an offset parse', () => {
 		assert.strictEqual(toLogRow(record({ message: 'x' })).time, Date.UTC(2026, 10, 5, 16, 49, 16, 511));
 		assert.strictEqual(toLogRow(record({ message: 'x', time: 'yesterday' })).time, Date.UTC(2026, 10, 5, 16, 49, 16, 511));
+		assert.strictEqual(toLogRow(record({ message: 'x' })).ownTime, undefined, 'SAME_TIME: missing');
+		assert.strictEqual(toLogRow(record({ message: 'x', time: 'yesterday' })).ownTime, undefined, 'SAME_TIME: bad');
 		assert.strictEqual(parseLogTime('2026-11-05T16:49:15.5Z'), Date.UTC(2026, 10, 5, 16, 49, 15, 500));
 		assert.strictEqual(parseLogTime('2026-11-05T18:49:15.123456+02:00'), Date.UTC(2026, 10, 5, 16, 49, 15, 123));
 		assert.strictEqual(parseLogTime(12), undefined);
+	});
+
+	test('Bug 53: the row\'s time is always the Kafka timestamp; the value\'s own time rides along only when it differs', () => {
+		const kafka = Date.UTC(2026, 10, 5, 16, 49, 16, 511);
+		const off = toLogRow(record({ message: 'x', time: '2026-11-05T16:19:16.511Z' }));
+		assert.deepStrictEqual([off.time, off.ownTime], [kafka, kafka - 30 * 60_000], 'OWN_TIME: 30 minutes apart');
+		const same = toLogRow(record({ message: 'x', time: '2026-11-05T16:49:16.511999Z' }));
+		assert.strictEqual(same.time, kafka);
+		assert.ok(!('ownTime' in same), 'SAME_TIME: equal, no second time');
+		const near = toLogRow(record({ message: 'x', time: new Date(kafka - 500).toISOString() }));
+		assert.ok(!('ownTime' in near), 'SAME_TIME: 500 ms apart (a logger\'s time and the producer\'s), no second time');
+		assert.strictEqual(toLogRow(record({ message: 'x', time: new Date(kafka + 1_000).toISOString() })).ownTime, kafka + 1_000, 'OWN_TIME: a second apart');
+	});
+
+	test('Bug 53: a record with no Kafka timestamp (negative) is shown at the value\'s time, with no own time; else at its timestamp', () => {
+		const own = Date.UTC(2026, 10, 5, 16, 19, 16, 511);
+		const none = toLogRow(record({ message: 'x', time: new Date(own).toISOString() }, { timestamp: -1 }));
+		assert.strictEqual(none.time, own);
+		assert.ok(!('ownTime' in none));
+		assert.strictEqual(toLogRow(record({ message: 'x' }, { timestamp: -1 })).time, -1, 'no value time either: the timestamp as before');
 	});
 
 	test('NO_LEAK: every text passes the mask (message, fields, instance, level, a raw value)', () => {

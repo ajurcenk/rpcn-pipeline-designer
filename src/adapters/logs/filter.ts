@@ -108,20 +108,32 @@ export class SlotCounter {
 		}
 	}
 
-	/** The strip from `from` to `end`: the counts per slot of `stripLayout(from, end)`; a record outside it counts in the nearest slot. */
+	/**
+	 * The strip from `from` to `end`: the counts per slot of `stripLayout(from, end)`. Bug 53: as the counts
+	 * are per minute, its `from` and `end` are widened to whole minutes (the slots as for the span given), so
+	 * every minute counted lies inside its bar's times (`slotBounds`); a minute outside them is in no slot.
+	 */
 	strip(from: number, end: number): LogStrip {
-		const layout = stripLayout(from, end);
+		const given = stripLayout(from, end);
+		const layout = { ...given, from: given.start, end: Math.floor(given.end / MINUTE_MS) * MINUTE_MS + MINUTE_MS - 1 };
 		const zero = () => new Array<number>(layout.count).fill(0);
 		const total = zero();
 		const errors = zero();
 		const warns = zero();
 		const matched = zero();
 		for (const [minute, m] of this.minutes) {
-			const i = Math.min(layout.count - 1, Math.max(0, slotOf(minute * MINUTE_MS, layout.start, layout.size)));
-			total[i] += m.total;
-			errors[i] += m.errors;
-			warns[i] += m.warns;
-			matched[i] += m.matched;
+			// Bug 53: a minute outside the span is in no slot (never clamped into an edge bar). The last minute
+			// belongs to the last slot (it ends at `end`), even past the slots' whole sizes.
+			const at = minute * MINUTE_MS;
+			const i = slotOf(at, layout.start, layout.size);
+			if (i < 0 || at > layout.end) {
+				continue;
+			}
+			const slot = Math.min(i, layout.count - 1);
+			total[slot] += m.total;
+			errors[slot] += m.errors;
+			warns[slot] += m.warns;
+			matched[slot] += m.matched;
 		}
 		return { start: layout.start, from: layout.from, size: layout.size, end: layout.end, total, errors, warns, matched };
 	}

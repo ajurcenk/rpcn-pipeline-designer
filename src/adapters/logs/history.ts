@@ -108,13 +108,17 @@ export function retentionText(ms: number | undefined): string {
  * Ticket 6.7: the times the strip spans, or `undefined` for a range without one (Live; the last
  * 15 minutes, then live). From the range's start, or the oldest window Load older read (`olderFrom`), to
  * the range's end; Since the last deploy, which goes on live, ends at the latest of when it was chosen,
- * the time it was read up to (`readUntil`) and the newest record counted (`newest`).
+ * the time it was read up to (`readUntil`) and the newest record counted (`newest`). Bug 53: a bounded
+ * range ends at the later of its end and `newest` (the live records read stay in the span once Live is
+ * off), and while its Live is on (`live`) at `readUntil` too.
  */
-export function stripSpan(range: LogsRange, chosenAt: number, olderFrom?: number, readUntil?: number, newest?: number): { readonly from: number; readonly end: number } | undefined {
+export function stripSpan(range: LogsRange, chosenAt: number, olderFrom?: number, readUntil?: number, newest?: number, live = false): { readonly from: number; readonly end: number } | undefined {
 	if (range.kind === 'live' || range.kind === 'recent') {
 		return undefined;
 	}
 	const from = Math.min(range.from, olderFrom ?? range.from);
-	const end = range.to ?? Math.max(chosenAt, readUntil ?? chosenAt, newest ?? chosenAt);
+	const end = range.to === null
+		? Math.max(chosenAt, readUntil ?? chosenAt, newest ?? chosenAt)
+		: Math.max(range.to, newest ?? range.to, live ? readUntil ?? range.to : range.to);
 	return { from, end: Math.max(from, end) };
 }

@@ -13,8 +13,13 @@ export const MAX_LOG_ROWS = 5_000;
 export interface LogRow {
 	/** `<partition>:<offset>`, unique in the topic. */
 	readonly id: string;
-	/** Milliseconds since the epoch: the value's `time`, else the record's timestamp. Shown in local time. */
+	/**
+	 * Milliseconds since the epoch: the record's Kafka timestamp (bug 53: the one time of a record, for
+	 * the row, the sort, the strip, the gap notes and the reads around it). Shown in local time.
+	 */
 	readonly time: number;
+	/** Bug 53: the value's own `time` (milliseconds), present only when it differs from `time`. */
+	readonly ownTime?: number;
 	/** `INFO`, `WARN`, …; empty for a value that is not a JSON object. */
 	readonly level: string;
 	/** The value's `message`; a value that is not a JSON object, as text. */
@@ -900,7 +905,8 @@ function isRow(v: unknown): v is LogRow {
 	return isObject(v) && typeof v.id === 'string' && typeof v.time === 'number' && typeof v.level === 'string'
 		&& typeof v.message === 'string' && typeof v.instance === 'string' && Array.isArray(v.fields)
 		&& v.fields.every((f) => Array.isArray(f) && f.length === 2 && typeof f[0] === 'string' && typeof f[1] === 'string')
-		&& (v.raw === undefined || v.raw === true) && (v.json === undefined || typeof v.json === 'string');
+		&& (v.raw === undefined || v.raw === true) && (v.json === undefined || typeof v.json === 'string')
+		&& (v.ownTime === undefined || (typeof v.ownTime === 'number' && Number.isFinite(v.ownTime)));
 }
 
 const isLevel = (v: unknown): v is LogLevel => typeof v === 'string' && (LOG_LEVELS as readonly string[]).includes(v);
