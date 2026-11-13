@@ -22,7 +22,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage, retryDelayMs,
-	searchError, searchPattern, shortTime, slotLabel, slotSize, STOPPED_BODY, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
+	MAX_MATCH_CHARS, searchError, searchPattern, shortTime, SLOW_PATTERN_ERROR, slotLabel, slotSize, STOPPED_BODY, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
 } from '../../../src/shared/logsProtocol';
 import {
 	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
@@ -438,6 +438,24 @@ describe('Pipeline Logs filter and search (ticket 6.4)', () => {
 		expect(searchPattern('', false, false)).toBeUndefined();
 		expect(searchError({ text: '(', matchCase: false, regex: false })).toBeUndefined();
 		expect(searchError({ text: '(', matchCase: false, regex: true })).toMatch(/Invalid regular expression/);
+	});
+
+	it('highlightParts (bug 54): only the first MAX_MATCH_CHARS are searched, the rest shown unmarked and whole; a refused pattern gives no highlight', () => {
+		const re = searchPattern('needle', false, false, true) as RegExp;
+		const before = `needle${'x'.repeat(MAX_MATCH_CHARS - 9)}`;
+		// A match that crosses the cap is not found or marked, as on the host.
+		const text = `${before}needle${'y'.repeat(10)}needle`;
+		const parts = highlightParts(text, re);
+		expect(parts).toEqual([{ text: 'needle', match: true }, { text: text.slice(6), match: false }]);
+		expect(parts.map((p) => p.text).join('')).toBe(text);
+		const atCap = `${'x'.repeat(MAX_MATCH_CHARS - 6)}needle${'z'.repeat(5)}needle`;
+		expect(highlightParts(atCap, re)).toEqual([
+			{ text: 'x'.repeat(MAX_MATCH_CHARS - 6), match: false }, { text: 'needle', match: true }, { text: `${'z'.repeat(5)}needle`, match: false },
+		]);
+		const refused = searchPattern('.*.*x', false, true, true);
+		expect(refused).toEqual({ error: SLOW_PATTERN_ERROR });
+		expect(searchError({ text: '.*.*x', matchCase: false, regex: true })).toBe(SLOW_PATTERN_ERROR);
+		expect(searchPattern('.*.*x', false, false, true)).toBeInstanceOf(RegExp);
 	});
 });
 

@@ -115,51 +115,388 @@ export const SLOW_PATTERN_ERROR = 'This pattern could take too long; simplify it
 /** At most this many characters of each value are searched. */
 export const MAX_MATCH_CHARS = 10_000;
 
+// The slow-pattern check (bug 54): one tokenizer reads the source into items (an atom with the set of
+// characters it can match, a zero-width assertion, or a group of alternatives) with their quantifiers;
+// one walk refuses a repeat whose characters meet those of an earlier repeat with nothing required
+// between them that neither can match, and a repeated group that holds a quantifier or an alternation.
+
 /**
- * Whether `source` has a quantified group that holds a quantifier or an alternation (`(a+)+`, `(a*)*`,
- * `(a|aa)+`, `(?:x{2,})*`), the shape whose backtracking can block for a very long time.
+ * A set of characters: bits 0–127 for ASCII (four words of 32), and in word 4 the non-ASCII ones in
+ * two kinds, spaces (what `\s` matches beyond ASCII) and the others: per kind a bit for "some of
+ * them" and a bit for "all of them", so a complement stays exact (`\S` holds no non-ASCII space,
+ * `[^é]` holds other non-ASCII characters).
  */
-export function slowPattern(source: string): boolean {
-	/** Per open group: whether it holds a quantifier or an alternation. */
-	const stack: boolean[] = [];
-	const quantifierAt = (i: number) => source[i] === '*' || source[i] === '+' || source[i] === '?' || (source[i] === '{' && /^\{\d+(,\d*)?\}/.test(source.slice(i)));
-	const repeatsAt = (i: number) => source[i] === '*' || source[i] === '+' || (source[i] === '{' && /^\{\d+,\d*\}|^\{\d{2,}\}/.test(source.slice(i)));
-	for (let i = 0; i < source.length; i++) {
-		const c = source[i];
-		if (c === '\\') {
-			i++;
-		} else if (c === '[') {
-			// A class: to its closing `]` (escapes skipped).
-			for (i++; i < source.length && source[i] !== ']'; i++) {
-				if (source[i] === '\\') {
-					i++;
-				}
-			}
-		} else if (c === '(') {
-			stack.push(false);
-			if (source[i + 1] === '?') {
-				// `(?:`, `(?=`, `(?!`, `(?<=`, `(?<!`, `(?<name>`: skip the prefix.
-				const m = /^\?(?::|=|!|<=|<!|<[^>]*>)/.exec(source.slice(i + 1));
-				i += m ? m[0].length : 1;
-			}
-		} else if (c === ')') {
-			const inner = stack.pop() ?? false;
-			const repeated = repeatsAt(i + 1);
-			if (inner && repeated) {
-				return true;
-			}
-			if (stack.length > 0 && (inner || quantifierAt(i + 1))) {
-				stack[stack.length - 1] = true;
-			}
-		} else if (c === '|') {
-			if (stack.length > 0) {
-				stack[stack.length - 1] = true;
-			}
-		} else if (quantifierAt(i) && stack.length > 0) {
-			stack[stack.length - 1] = true;
+type CharSet = number[];
+
+const NON_ASCII = 128;
+const SOME_SPACES = 1;
+const SOME_OTHERS = 2;
+const ALL_SPACES = 4;
+const ALL_OTHERS = 8;
+const noChars = (): CharSet => [0, 0, 0, 0, 0];
+const allChars = (): CharSet => [-1, -1, -1, -1, SOME_SPACES | SOME_OTHERS | ALL_SPACES | ALL_OTHERS];
+const addChar = (s: CharSet, code: number) => {
+	if (code < NON_ASCII) {
+		s[code >>> 5] |= 1 << (code & 31);
+	} else {
+		s[4] |= /\s/.test(String.fromCharCode(code)) ? SOME_SPACES : SOME_OTHERS;
+	}
+};
+const hasBit = (s: CharSet, bit: number) => (s[bit >>> 5] & (1 << (bit & 31))) !== 0;
+const addRange = (s: CharSet, from: number, to: number) => {
+	for (let c = from; c <= Math.min(to, NON_ASCII - 1); c++) {
+		addChar(s, c);
+	}
+	if (from === to && to >= NON_ASCII) {
+		addChar(s, to);
+	} else if (to >= NON_ASCII) {
+		s[4] |= SOME_SPACES | SOME_OTHERS;
+	}
+};
+const unionInto = (s: CharSet, t: CharSet) => {
+	for (let i = 0; i < 5; i++) {
+		s[i] |= t[i];
+	}
+};
+const union = (s: CharSet, t: CharSet): CharSet => s.map((w, i) => w | t[i]);
+const overlaps = (s: CharSet, t: CharSet) => s.some((w, i) => (w & t[i] & (i === 4 ? SOME_SPACES | SOME_OTHERS : -1)) !== 0);
+/** Every character not in `s`: a non-ASCII kind is in unless `s` holds all of it, and all of it when `s` holds none. */
+const complement = (s: CharSet): CharSet => {
+	const kind = (some: number, all: number, someBit: number, allBit: number) => ((s[4] & all) === 0 ? someBit : 0) | ((s[4] & some) === 0 ? allBit : 0);
+	return [~s[0], ~s[1], ~s[2], ~s[3], kind(SOME_SPACES, ALL_SPACES, SOME_SPACES, ALL_SPACES) | kind(SOME_OTHERS, ALL_OTHERS, SOME_OTHERS, ALL_OTHERS)];
+};
+/** `s` with both cases of each ASCII letter in it (conservatively, whatever the flags). */
+const folded = (s: CharSet): CharSet => {
+	const f = [...s];
+	for (let c = 65; c <= 90; c++) {
+		if (hasBit(s, c) || hasBit(s, c + 32)) {
+			addChar(f, c);
+			addChar(f, c + 32);
 		}
 	}
-	return false;
+	return f;
+};
+const charsOf = (ranges: readonly (readonly [number, number])[], nonAscii = 0): CharSet => {
+	const s = noChars();
+	for (const [from, to] of ranges) {
+		addRange(s, from, to);
+	}
+	s[4] |= nonAscii;
+	return s;
+};
+const DIGITS = charsOf([[48, 57]]);
+const WORD = charsOf([[48, 57], [65, 90], [95, 95], [97, 122]]);
+/** `\s`: tab to carriage return, space, and non-ASCII spaces. */
+const SPACE = charsOf([[9, 13], [32, 32]], SOME_SPACES | ALL_SPACES);
+const CLASS_ESCAPES: Readonly<Record<string, CharSet>> = {
+	d: DIGITS, D: complement(DIGITS), w: WORD, W: complement(WORD), s: SPACE, S: complement(SPACE),
+};
+const CONTROL_ESCAPES: Readonly<Record<string, number>> = { t: 9, n: 10, v: 11, f: 12, r: 13, 0: 0 };
+
+type RegexNode =
+	| { readonly kind: 'chars'; readonly chars: CharSet; readonly backReference: boolean }
+	| { readonly kind: 'assertion' }
+	| { readonly kind: 'group'; readonly alternatives: RegexItem[][]; readonly lookaround: boolean };
+
+interface RegexItem {
+	readonly node: RegexNode;
+	/** Whether a quantifier follows; `min` and `max` are 1 without one. */
+	readonly quantified: boolean;
+	readonly min: number;
+	readonly max: number;
+}
+
+/** The items of `source` (read without the `u` flag), as the top level's alternatives. */
+function regexItems(source: string): RegexItem[][] {
+	let i = 0;
+	// The capturing groups (`(` not followed by `?`, and `(?<name>`), escapes and classes skipped: `\N`
+	// is a back-reference only for N up to their count, `\k<…>` only with a named group.
+	const groups = (source.match(/\\.|\[(?:\\.|[^\]\\])*\]?|\((?!\?)|\(\?<(?![=!])/g) ?? []).filter((t) => t[0] === '(');
+	const namedGroups = groups.some((t) => t.length > 1);
+	const hex = (length: number) => {
+		const digits = source.slice(i, i + length);
+		return digits.length === length && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : undefined;
+	};
+	/** The escape after a `\` at `i - 1`, inside a class or not: a character or a class escape's set. */
+	const escape = (inClass: boolean): number | CharSet => {
+		const c = source[i++] ?? '\\';
+		if (c in CLASS_ESCAPES) {
+			return CLASS_ESCAPES[c];
+		}
+		if (c in CONTROL_ESCAPES) {
+			return CONTROL_ESCAPES[c];
+		}
+		if (inClass && c === 'b') {
+			return 8;
+		}
+		if (c === 'x' || c === 'u') {
+			const code = hex(c === 'x' ? 2 : 4);
+			if (code !== undefined) {
+				i += c === 'x' ? 2 : 4;
+				return code;
+			}
+		}
+		if (c === 'c' && /[a-zA-Z]/.test(source[i] ?? '')) {
+			return source.charCodeAt(i++) & 31;
+		}
+		return c.charCodeAt(0);
+	};
+	const charClass = (): CharSet => {
+		const negated = source[i] === '^';
+		if (negated) {
+			i++;
+		}
+		const s = noChars();
+		const member = (): number | CharSet => {
+			if (source[i] === '\\') {
+				i++;
+				return escape(true);
+			}
+			return source.charCodeAt(i++);
+		};
+		const add = (m: number | CharSet) => {
+			if (typeof m === 'number') {
+				addChar(s, m);
+			} else {
+				unionInto(s, m);
+			}
+		};
+		while (i < source.length && source[i] !== ']') {
+			const from = member();
+			if (source[i] === '-' && i + 1 < source.length && source[i + 1] !== ']') {
+				i++;
+				const to = member();
+				if (typeof from === 'number' && typeof to === 'number') {
+					addRange(s, from, to);
+				} else {
+					// `[\d-z]`: the escape, the `-` and the other end, each as itself.
+					add(from);
+					add(to);
+					addChar(s, 45);
+				}
+			} else {
+				add(from);
+			}
+		}
+		i++;
+		return negated ? complement(folded(s)) : folded(s);
+	};
+	const quantifier = (): { min: number; max: number } | undefined => {
+		const c = source[i];
+		let q: { min: number; max: number } | undefined;
+		if (c === '*' || c === '+' || c === '?') {
+			i++;
+			q = { min: c === '+' ? 1 : 0, max: c === '?' ? 1 : Infinity };
+		} else if (c === '{') {
+			const m = /^\{(\d+)(,(\d*))?\}/.exec(source.slice(i));
+			if (m) {
+				i += m[0].length;
+				const min = Number(m[1]);
+				q = { min, max: m[2] === undefined ? min : m[3] === '' ? Infinity : Number(m[3]) };
+			}
+		}
+		if (q && source[i] === '?') {
+			i++;
+		}
+		return q;
+	};
+	const alternatives = (): RegexItem[][] => {
+		const alts: RegexItem[][] = [[]];
+		while (i < source.length && source[i] !== ')') {
+			const c = source[i++];
+			let node: RegexNode;
+			if (c === '|') {
+				alts.push([]);
+				continue;
+			} else if (c === '^' || c === '$') {
+				node = { kind: 'assertion' };
+			} else if (c === '.') {
+				node = { kind: 'chars', chars: allChars(), backReference: false };
+			} else if (c === '[') {
+				node = { kind: 'chars', chars: charClass(), backReference: false };
+			} else if (c === '(') {
+				// `(?=`, `(?!`, `(?<=`, `(?<!` are lookarounds; `(?:`, `(?<name>`, `(?i:` plain groups.
+				const prefix = /^\?(?:(=|!|<=|<!)|:|<[^>=!]*>|[a-zA-Z]*(?:-[a-zA-Z]*)?:)/.exec(source.slice(i));
+				i += prefix ? prefix[0].length : 0;
+				const lookaround = prefix?.[1] !== undefined;
+				const inner = alternatives();
+				i++;
+				node = { kind: 'group', alternatives: inner, lookaround };
+			} else if (c === '\\') {
+				const next = source[i];
+				if (next === 'b' || next === 'B') {
+					i++;
+					node = { kind: 'assertion' };
+				} else if ((/[1-9]/.test(next ?? '') && Number(/^\d+/.exec(source.slice(i))?.[0]) <= groups.length) || (next === 'k' && namedGroups)) {
+					// A back-reference (`\1`, `\k<name>`): it can match anything, of any length.
+					const m = /^(?:\d+|k<[^>]*>?)/.exec(source.slice(i));
+					i += m ? m[0].length : 1;
+					node = { kind: 'chars', chars: allChars(), backReference: true };
+				} else if (/[1-7]/.test(next ?? '')) {
+					// With fewer groups, `\1`–`\377` is an octal escape (`\8`, `\9` are the digit, below).
+					const m = /^(?:[0-3][0-7]{0,2}|[4-7][0-7]?)/.exec(source.slice(i));
+					const digits = m?.[0] ?? next;
+					i += digits.length;
+					const code = parseInt(digits, 8);
+					node = { kind: 'chars', chars: folded(charsOf([[code, code]])), backReference: false };
+				} else {
+					const e = escape(false);
+					node = { kind: 'chars', chars: typeof e === 'number' ? folded(charsOf([[e, e]])) : folded(e), backReference: false };
+				}
+			} else {
+				node = { kind: 'chars', chars: folded(charsOf([[c.charCodeAt(0), c.charCodeAt(0)]])), backReference: false };
+			}
+			const q = quantifier();
+			alts[alts.length - 1].push({ node, quantified: q !== undefined, min: q?.min ?? 1, max: q?.max ?? 1 });
+		}
+		return alts;
+	};
+	const top: RegexItem[][] = [];
+	// A stray `)` (an invalid pattern, refused when compiled): read on after it.
+	while (i <= source.length) {
+		top.push(...alternatives());
+		i++;
+	}
+	return top;
+}
+
+/**
+ * A quantified item whose count can vary (`*`, `+`, `?`, `{n,}`, `{n,m}` with m > n: a chain of
+ * `a?` or `a{1,2}` multiplies the tries too); a back-reference always. `{n}` is not.
+ */
+const isRepeat = (item: RegexItem) => (item.node.kind === 'chars' && item.node.backReference) || (item.quantified && item.max > item.min);
+
+const charsInMemo = new WeakMap<readonly (readonly RegexItem[])[], CharSet>();
+
+/** Every character an item of `alts` can match. */
+function charsIn(alts: readonly (readonly RegexItem[])[]): CharSet {
+	const known = charsInMemo.get(alts);
+	if (known) {
+		return known;
+	}
+	const s = noChars();
+	for (const item of alts.flat()) {
+		if (item.node.kind === 'chars') {
+			unionInto(s, item.node.chars);
+		} else if (item.node.kind === 'group' && !item.node.lookaround) {
+			unionInto(s, charsIn(item.node.alternatives));
+		}
+	}
+	charsInMemo.set(alts, s);
+	return s;
+}
+
+/** Whether `alts` hold a quantifier or an alternation, at any depth. */
+const holdsVariation = (alts: readonly (readonly RegexItem[])[]): boolean =>
+	alts.length > 1 || alts.flat().some((item) => item.quantified || (item.node.kind === 'group' && holdsVariation(item.node.alternatives)));
+
+/** The 6.4 rule's repeat of a group: `*`, `+`, `{n,}`, any `{n,m}` but `{0,1}`, or `{n}` with n ≥ 10. */
+const repeatsGroup = (item: RegexItem) => item.quantified && item.max > 1 && (item.max > item.min || item.min >= 10);
+
+class Refused extends Error {}
+
+/**
+ * The repeats' characters after `alts`, walked from `pending` (the characters of the repeats since the
+ * last separator); throws `Refused` for a slow shape.
+ */
+function walk(alts: readonly (readonly RegexItem[])[], pending: CharSet): CharSet {
+	// Memoised per (group, pending), so a nested `(…){2}` is not walked 2^depth times.
+	let byPending = walkMemo.get(alts);
+	if (!byPending) {
+		byPending = new Map();
+		walkMemo.set(alts, byPending);
+	}
+	const key = pending.join(',');
+	const known = byPending.get(key);
+	if (known) {
+		return known;
+	}
+	const ends = walkUncached(alts, pending);
+	byPending.set(key, ends);
+	return ends;
+}
+
+const walkMemo = new WeakMap<readonly (readonly RegexItem[])[], Map<string, CharSet>>();
+
+function walkUncached(alts: readonly (readonly RegexItem[])[], pending: CharSet): CharSet {
+	const ends = noChars();
+	for (const seq of alts) {
+		let p = pending;
+		for (const item of seq) {
+			p = step(item, p);
+		}
+		unionInto(ends, p);
+	}
+	return ends;
+}
+
+function step(item: RegexItem, p: CharSet): CharSet {
+	const { node } = item;
+	if (node.kind === 'assertion') {
+		return p;
+	}
+	if (node.kind === 'group') {
+		if (node.lookaround) {
+			// Zero-width: its content is checked from here (`\w+(?=.*x)` backtracks both), and leaves P as it was.
+			walk(node.alternatives, p);
+			return p;
+		}
+		if (!item.quantified) {
+			return walk(node.alternatives, p);
+		}
+		if (repeatsGroup(item) && holdsVariation(node.alternatives)) {
+			return refuse();
+		}
+		if (!isRepeat(item)) {
+			// `(…){n}`: its content in place, twice when n ≥ 2.
+			let q = p;
+			for (let n = 0; n < Math.min(item.max, 2); n++) {
+				q = walk(node.alternatives, q);
+			}
+			return q;
+		}
+		walk(node.alternatives, noChars());
+		return repeatStep(item, charsIn(node.alternatives), p);
+	}
+	if (isRepeat(item)) {
+		return repeatStep(item, node.chars, p);
+	}
+	if (item.min === 0) {
+		return p;
+	}
+	return overlaps(node.chars, p) ? p : noChars();
+}
+
+function repeatStep(item: RegexItem, chars: CharSet, p: CharSet): CharSet {
+	if (overlaps(chars, p)) {
+		return refuse();
+	}
+	return item.min === 0 ? union(p, chars) : chars;
+}
+
+const refuse = (): never => {
+	throw new Refused();
+};
+
+/**
+ * Whether `source` could backtrack for a very long time on a long value, so the search refuses it:
+ * - a repeated group that holds a quantifier or an alternation (`(a+)+`, `(a|aa)*`, `(?:x{2,})*`);
+ * - two repeats (`*`, `+`, `?`, `{n,}`, `{n,m}` with m > n, a back-reference) whose characters meet,
+ *   with nothing required between them that neither can match, at any depth, lookarounds included:
+ *   `.*.*x`, `\w+\w+x`, `a*a*x`, `.*a.*b` (`a` is in `.`), `.{1,100}.{1,100}`, `.*a?a?b`, `(?<n>.*)\k<n>`.
+ * Repeats of characters that cannot meet pass (`\w+\s+\w+`, `\d+\s*ms`, `a+b*`, `[^a]+a+`), as do
+ * single quantifiers, `{n}` and a range after nothing it meets (`\d{1,3}`, `\d{1,3}\.\d{1,3}`). Letters
+ * count in both cases, whatever the flags. Nested too deep to check counts as refused.
+ */
+export function slowPattern(source: string): boolean {
+	try {
+		walk(regexItems(source), noChars());
+		return false;
+	} catch (err) {
+		// Refused, or nested too deep to check (a RangeError): refused. Anything else is malformed input,
+		// left for `new RegExp` to report.
+		return err instanceof Refused || err instanceof RangeError;
+	}
 }
 
 /**

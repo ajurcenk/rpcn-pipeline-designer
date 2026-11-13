@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { compileFilter, Counter, INSTANCE_FIELD, levelOf, matches, sameFilter, SlotCounter } from '../../../adapters/logs/filter';
-import { DAY_MS, HOUR_MS, MINUTE_MS, filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
+import { DAY_MS, HOUR_MS, MINUTE_MS, filterActive, MAX_MATCH_CHARS, NO_FILTER, parseLogFilter, searchError, searchPattern, SLOW_PATTERN_ERROR, slowPattern, type LogFilter, type LogRow } from '../../../shared/logsProtocol';
 
 // The Pipeline Logs panel's filter (ticket 6.4): the level a row counts under, the levels, the search
 // (plain or a regular expression, Match case) over the message, the level, the instance and every
@@ -60,6 +60,68 @@ suite('Pipeline logs filter (ticket 6.4)', () => {
 		for (const p of ['fail(ed)?', 'a+b*', '(ab)+', '(a+)?', '[(a+)+]', '\\(a+\\)+', 'x{2}', '(?:error) .*', '(a|b)']) {
 			assert.strictEqual(slowPattern(p), false, p);
 		}
+	});
+
+	// Bug 54: two repeats whose characters meet, with nothing required between them that neither can
+	// match, are refused too; repeats of characters that cannot meet are not.
+	const OVERLAP = ['.*.*.*x', '\\w+\\w+x', '.*\\d+x', '\\s*.*', 'a*a*x', '.*a*x', '.*a.*a.*b', 'error.*timeout.*retry', '.{1,100}.{1,100}.{1,100}x',
+		'(?<n>.*)\\k<n>x', '(a).*\\1+', 'x*x*x*y', 'a+a+$', '(.*)?.*x', '(a*){5}x', '\\d*\\d{0,9}x', '.*(?=x).*', '(ab)+.*', '[a-z]+[^0-9]+x',
+		// Case folding, lookarounds, escapes, non-ASCII, and chains of `?` and small ranges.
+		'a*A*x', 'A+a+x', '(?=.*.*x)', '(?!\\w+\\w+x)', '\\w+(?=.*x)', '\\x61*a*x', '\\cJ*\\n*x', '[\\d-z]+1+x', '\\S+[^\\x00-\\x7f]+x', '[^é]+ü+x',
+		'.*a?a?a?a?a?a?b', `${'a?'.repeat(18)}${'a'.repeat(18)}b`, `${'a{1,2}'.repeat(16)}b`, `${'(a|a)?'.repeat(18)}b`];
+	const ACCEPTED_64 = ['fail(ed)?', 'a+b*', '(ab)+', '(a+)?', '[(a+)+]', '\\(a+\\)+', 'x{2}', '(?:error) .*', '(a|b)'];
+	const ACCEPTED = ['^error$', '^Input .* active$', '[a-z]', '[^x]+', '\\d+', 'colou?r', '\\d{1,3}', '.{1000}', 'error.*timeout', '\\w+\\s+\\w+', '\\S+\\s+\\S+',
+		'\\d+\\s*ms', '[A-Z]+\\s+[0-9]+', '\\d+\\.\\d+', '\\d+[a-z]+', '\\d{1,3}\\.\\d{1,3}', '(\\w+)\\s\\1', 'https?://\\S+', '[\\w.-]+@\\w+',
+		'[^a-z]+[a-z]+', '[^a]+a+x', '\\d+\\1'];
+
+	test('SLOW (bug 54): repeats that can meet are refused, at the box and on the host, with the same message; plain text never', () => {
+		for (const p of OVERLAP) {
+			assert.strictEqual(slowPattern(p), true, p);
+			assert.strictEqual(searchError({ text: p, matchCase: false, regex: true }), SLOW_PATTERN_ERROR, p);
+			assert.strictEqual(searchError({ text: p, matchCase: true, regex: true }), SLOW_PATTERN_ERROR, `${p} with Match case`);
+			assert.strictEqual(compileFilter({ ...NO_FILTER, text: p, regex: true }), undefined, p);
+			assert.strictEqual(parseLogFilter({ ...NO_FILTER, text: p, regex: true }), undefined, `${p}: the host refuses it`);
+			assert.strictEqual(searchError({ text: p, matchCase: false, regex: false }), undefined, `${p} as plain text`);
+		}
+		for (const p of [...ACCEPTED_64, ...ACCEPTED]) {
+			assert.strictEqual(slowPattern(p), false, p);
+			assert.strictEqual(searchError({ text: p, matchCase: false, regex: true }), undefined, p);
+			assert.ok(compileFilter({ ...NO_FILTER, text: p, regex: true }), p);
+			assert.ok(parseLogFilter({ ...NO_FILTER, text: p, regex: true }), `${p}: the host takes it`);
+		}
+		assert.strictEqual(keeps({ text: '.*.*x' }, row({ message: 'a .*.*x b' })), true, 'plain text: searched literally');
+		assert.strictEqual(keeps({ text: '.*.*x' }, row({ message: 'abx' })), false, 'plain text: no pattern');
+		assert.strictEqual(keeps({ text: '\\w+\\s+\\w+', regex: true }), true, 'an accepted pattern matches as before');
+		assert.strictEqual(keeps({ text: '\\d+\\s*ms', regex: true }, row({ message: 'took 12 ms' })), true);
+	});
+
+	test('SLOW (bug 54): every accepted pattern runs in under a second on 10,000-character worst-case values', function () {
+		this.timeout(120_000);
+		const literals = (p: string) => p.replace(/\\[dDwWsSbBk]|[\\^$.|?*+()[\]{}<>]/g, '') || 'a';
+		for (const p of [...ACCEPTED_64, ...ACCEPTED]) {
+			const values = ['a', ' ', '1', 'x', 'ab', 'aA1 _-.', 'é', literals(p)].map((unit) => unit.repeat(Math.ceil(MAX_MATCH_CHARS / unit.length)).slice(0, MAX_MATCH_CHARS));
+			const compiled = compileFilter({ ...NO_FILTER, text: p, regex: true })!;
+			for (const value of values) {
+				const started = Date.now();
+				matches(row({ message: value, level: '', instance: '', fields: [] }), compiled);
+				const took = Date.now() - started;
+				assert.ok(took < 1000, `${p} on ${JSON.stringify(value.slice(0, 7))}…: ${took} ms`);
+			}
+		}
+	});
+
+	test('SLOW (bug 54): a deeply nested pattern is checked fast; too deep, malformed or unclosed input does not throw', () => {
+		for (const p of [`${'('.repeat(250)}a${')?'.repeat(250)}`, `${'(?:'.repeat(166)}a${'){2}'.repeat(166)}`]) {
+			const started = Date.now();
+			slowPattern(p);
+			assert.ok(Date.now() - started < 100, `${p.length} characters: ${Date.now() - started} ms`);
+		}
+		for (const p of ['[a', 'a)', 'a\\', '(', '(?<n', '\\k<', `${'('.repeat(50_000)}a${')'.repeat(50_000)}`]) {
+			assert.doesNotThrow(() => searchPattern(p, false, true), p.slice(0, 20));
+		}
+		assert.match(searchError({ text: '[a', matchCase: false, regex: true }) ?? '', /Invalid regular expression/);
+		assert.match(searchError({ text: 'a)', matchCase: false, regex: true }) ?? '', /Invalid regular expression/);
+		assert.match(searchError({ text: 'a\\', matchCase: false, regex: true }) ?? '', /\\ at end of pattern|Invalid regular expression/);
 	});
 
 	test('SLOW: at most the first 10,000 characters of each value are searched', () => {

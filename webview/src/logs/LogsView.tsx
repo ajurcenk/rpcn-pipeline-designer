@@ -43,7 +43,7 @@
 
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-	customRangeError, filterActive, gapsIn, leftOutHereText, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
+	customRangeError, filterActive, gapsIn, leftOutHereText, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, MAX_MATCH_CHARS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
 	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, shortTime, slotBounds,
 	slotLabel, slotSizeText, soFarText, type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogStrip, type LogsViewState, type LogsWebviewMessage,
 	type RangeKind,
@@ -115,15 +115,20 @@ export function chipText(key: string, value: string): string {
 	return `${key}=${value.length > 24 ? `${value.slice(0, 23)}…` : value}`;
 }
 
-/** `text` split at the matches of `re` (a global pattern; empty matches skipped). */
+/**
+ * `text` split at the matches of `re` (a global pattern; empty matches skipped), searched in its first
+ * `MAX_MATCH_CHARS` only, as on the host; the rest is shown unmarked. A match that crosses the cap is
+ * not found or marked, as on the host. The parts join to the whole text.
+ */
 export function highlightParts(text: string, re: RegExp | undefined): { readonly text: string; readonly match: boolean }[] {
 	if (!re || text === '') {
 		return [{ text, match: false }];
 	}
 	const parts: { text: string; match: boolean }[] = [];
+	const searched = text.length > MAX_MATCH_CHARS ? text.slice(0, MAX_MATCH_CHARS) : text;
 	let at = 0;
 	re.lastIndex = 0;
-	for (let m = re.exec(text); m; m = re.exec(text)) {
+	for (let m = re.exec(searched); m; m = re.exec(searched)) {
 		if (m[0].length === 0) {
 			re.lastIndex++;
 			continue;

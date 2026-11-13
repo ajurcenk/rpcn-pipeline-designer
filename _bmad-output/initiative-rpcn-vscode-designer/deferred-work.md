@@ -198,3 +198,6 @@
 - source_plan: none
   summary: Story 50 group C, the Pipeline Logs panel: the read held as one value per range with an explicit state, one plural, `pad` and local-time helper, and the 6.6 webview messages renamed as past-tense intents (criteria 7 to 9).
   evidence: Split from story 50 (user, 2026-11-12, "Split, build A first"); independently shippable, and it touches the same code as bug 53.
+- source_plan: `_bmad-output/backlog/bug-pipeline-logs-slow-search-patterns-are-refused-everywhere-epic-6-retrospective-plan.md`
+  summary: The Pipeline Logs slow-pattern check does not weigh alternatives that match the same text under a fixed count after an overlapping repeat, so a contrived pattern such as `a+[^x](a|a){2}é{1,3}Z` is accepted and takes about 1.6 s on a 10,000-character value.
+  evidence: Found by the bug 54 implementer's fuzz after review pass 2 (medium, measured); the naive fix (refusing any alternation after an overlapping repeat) would also refuse common searches such as `(error|warn).*`.
