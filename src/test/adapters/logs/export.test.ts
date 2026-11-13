@@ -105,4 +105,12 @@ suite('Pipeline log export (ticket 6.8)', () => {
 		assert.strictEqual(exportedMessage(3, 'o.jsonl', 2, 0, 3, '', 2), 'Exported 3 records to o.jsonl. 2 records were left out for the 3-record limit.');
 		assert.strictEqual(exportedMessage(3, 'o.jsonl', 2, 0, 3), 'Exported 3 records to o.jsonl. 2 older records were left out for the 3-record limit.');
 	});
+
+	test('story 56: the file stamp and the counts read as before (logsText)', () => {
+		assert.strictEqual(exportFileName('my pipe', new Date(2026, 10, 5, 9, 7).getTime()), 'my-pipe-20261105-0907.jsonl');
+		assert.strictEqual(exportedMessage(1, 'a.jsonl', 1, 1, 5000), 'Exported 1 record to a.jsonl. 1 older record was left out for the 5,000-record limit. 1 newer record was dropped for the 5,000-record limit.');
+		assert.strictEqual(exportedMessage(1, 'a.jsonl', 1, 0, 5000, '', 1), 'Exported 1 record to a.jsonl. 1 record was left out for the 5,000-record limit.');
+		assert.strictEqual(exportedMessage(2140, 'a.jsonl', 1000, 2, 5000, 'levels Warn', 10),
+			'Exported 2,140 records matching the filter (levels Warn) to a.jsonl. 1,000 records were left out for the 5,000-record limit. 2 newer records were dropped for the 5,000-record limit.');
+	});
 });

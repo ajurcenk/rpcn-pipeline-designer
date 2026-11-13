@@ -5,6 +5,7 @@
 // shares). No `vscode` import.
 
 import { DAY_MS, HOUR_MS, type LogsRange, MINUTE_MS, type RangeChoice } from '../../shared/logsProtocol';
+import { countText } from '../../shared/logsText';
 import type { LogPositions } from './logReader';
 
 /** The default range's look back, and the shortest window Load older reads. */
@@ -74,20 +75,19 @@ export function atLogStart(start: LogPositions, logStart: LogPositions): boolean
 
 /** "7 days", "6 hours", "90 minutes", "1 day". */
 export function durationText(ms: number): string {
-	const unit = (n: number, one: string) => `${n.toLocaleString('en-US')} ${one}${n === 1 ? '' : 's'}`;
 	if (ms >= DAY_MS && ms % DAY_MS === 0) {
-		return unit(ms / DAY_MS, 'day');
+		return countText(ms / DAY_MS, 'day');
 	}
 	if (ms >= HOUR_MS && ms % HOUR_MS === 0) {
-		return unit(ms / HOUR_MS, 'hour');
+		return countText(ms / HOUR_MS, 'hour');
 	}
 	if (ms >= DAY_MS) {
-		return unit(Math.round((ms / DAY_MS) * 10) / 10, 'day');
+		return countText(Math.round((ms / DAY_MS) * 10) / 10, 'day');
 	}
 	if (ms >= HOUR_MS) {
-		return unit(Math.round((ms / HOUR_MS) * 10) / 10, 'hour');
+		return countText(Math.round((ms / HOUR_MS) * 10) / 10, 'hour');
 	}
-	return unit(Math.max(1, Math.round(ms / MINUTE_MS)), 'minute');
+	return countText(Math.max(1, Math.round(ms / MINUTE_MS)), 'minute');
 }
 
 /** Retention for the menu when DescribeConfigs is refused or fails. */

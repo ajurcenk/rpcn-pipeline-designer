@@ -550,7 +550,7 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(host.querySelector('.rpcn-logs-older-button')).toBeNull();
 		expect(host.querySelector('.rpcn-logs-empty')).toBeNull();
 		await press('Set up log access…');
-		expect(posted.at(-1)).toEqual({ type: 'setUpAccess' });
+		expect(posted.at(-1)).toEqual({ type: 'accessSetUpRequested' });
 	});
 
 	it('STOPPED (bug 52): the reason, the rows kept, no button and no Load older', async () => {
@@ -578,7 +578,7 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(labels()).toEqual(['Set up log access again…', 'Retry']);
 		await press('Set up log access again…');
 		await press('Retry');
-		expect(posted.slice(-2)).toEqual([{ type: 'setUpAccess' }, { type: 'retryNow' }]);
+		expect(posted.slice(-2)).toEqual([{ type: 'accessSetUpRequested' }, { type: 'retryRequested' }]);
 	});
 
 	it('NOT_ALLOWED: names the topic; Retry, Use another user…', async () => {
@@ -587,7 +587,7 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(part('body')).toContain(TOPIC);
 		expect(labels()).toEqual(['Retry', 'Use another user…']);
 		await press('Use another user…');
-		expect(posted.at(-1)).toEqual({ type: 'useAnotherUser' });
+		expect(posted.at(-1)).toEqual({ type: 'anotherUserRequested' });
 	});
 
 	it('NO_RECORDS: "No records for <pipeline> in <range>"; Last 24 hours; Show every level only when levels hide records; "No records match" stays apart', async () => {
@@ -597,12 +597,12 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(labels()).toEqual(['Last 24 hours']);
 		expect(host.querySelector('.rpcn-logs-empty'), 'not the plain note too').toBeNull();
 		await press('Last 24 hours');
-		expect(posted.at(-1)).toEqual({ type: 'last24h' });
+		expect(posted.at(-1)).toEqual({ type: 'last24hRequested' });
 		await show({ kind: 'noRecords', pipeline: 'orders', range: 'the last hour', hiddenLevels: ['debug', 'info'] });
 		expect(part('body')).toBe('It wrote only levels that are hidden (Debug, Info).');
 		expect(labels()).toEqual(['Last 24 hours', 'Show every level']);
 		await press('Show every level');
-		expect(posted.at(-1)).toEqual({ type: 'showEveryLevel' });
+		expect(posted.at(-1)).toEqual({ type: 'everyLevelRequested' });
 		// A search with no match: 6.4's line, no state.
 		await show(NO_PANEL_STATE, [], { done: true, filter: { ...NO_FILTER, text: 'x' }, counts: { ...NO_COUNTS, total: 3 } });
 		expect(panel()).toBeNull();
@@ -617,7 +617,7 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(messages()).toEqual(['message 1', 'message 2']);
 		expect(labels()).toEqual(['Stop reading']);
 		await press('Stop reading');
-		expect(posted.at(-1)).toEqual({ type: 'stopReading' });
+		expect(posted.at(-1)).toEqual({ type: 'stopRequested' });
 		await send({ type: 'state', state: state({ panelState: { kind: 'reading', what: 'Reading the last 7 days…', count: 1 } }) });
 		expect(part('count')).toBe('1 record so far');
 		await send({ type: 'state', state: state() });
@@ -644,7 +644,7 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 			expect(countdown?.getAttribute('aria-live')).toBe('off');
 			expect(labels()).toEqual(['Retry now']);
 			await press('Retry now');
-			expect(posted.at(-1)).toEqual({ type: 'retryNow' });
+			expect(posted.at(-1)).toEqual({ type: 'retryRequested' });
 			await send({ type: 'state', state: state({ panelState: { kind: 'connectionLost', cluster: 'rpc-vilnius', live: false, retryInS: 10, retryAt: null } }) });
 			expect(part('body')).toBe('Reading is paused; the records already shown stay. Trying again…');
 		} finally {
@@ -663,8 +663,19 @@ describe('Pipeline Logs states (ticket 6.6)', () => {
 		expect(panelStateTexts(NO_PANEL_STATE)).toBeUndefined();
 	});
 
+	it('story 56: the six old message names are refused; the footer and match texts keep their counts', () => {
+		for (const type of ['stopReading', 'retryNow', 'setUpAccess', 'useAnotherUser', 'showEveryLevel', 'last24h']) {
+			expect(parseLogsWebviewMessage({ type })).toBeUndefined();
+		}
+		expect(matchText(1, 1)).toBe('1 of 1 record matches');
+		expect(footerText(1, 1, 1, 1)).toBe('1 record kept (at most 1); 1 older record left out; Load older to page back; 1 newer record dropped.');
+		expect(footerText(1, 1, 1, 0, 1)).toBe('1 record kept (at most 1); 1 record left out.');
+		expect(footerText(2140, 1200, 5000, 3)).toBe('2,140 records kept (at most 5,000); 1,200 older records left out; Load older to page back; 3 newer records dropped.');
+		expect(footerText(2140, 1200, 5000, 0, 200)).toBe('2,140 records kept (at most 5,000); 1,200 records left out; Load older to page back.');
+	});
+
 	it('the new messages are validated both ways; a state without panelState or with a bad one is refused', async () => {
-		for (const type of ['stopReading', 'retryNow', 'setUpAccess', 'useAnotherUser', 'showEveryLevel', 'last24h'] as const) {
+		for (const type of ['stopRequested', 'retryRequested', 'accessSetUpRequested', 'anotherUserRequested', 'everyLevelRequested', 'last24hRequested'] as const) {
 			expect(parseLogsWebviewMessage({ type, extra: 1 })).toEqual({ type });
 		}
 		const { panelState: _p, ...without } = state();

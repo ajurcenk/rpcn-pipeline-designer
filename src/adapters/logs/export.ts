@@ -7,6 +7,7 @@
 // filter the rows were kept with. No `vscode` import.
 
 import type { LogRow } from '../../shared/logsProtocol';
+import { countText, fileStamp } from '../../shared/logsText';
 
 /** `ms` as an ISO time; `undefined` for a time a `Date` cannot hold (never throws). */
 function isoTime(ms: number): string | undefined {
@@ -36,19 +37,14 @@ export function exportText(rows: readonly LogRow[], kafkaTimes?: readonly number
 	return rows.map((r, i) => `${exportLine(r, kafkaTimes?.[i])}\n`).join('');
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
-
 /**
  * The save dialog's file name: `<pipeline>-<yyyymmdd-hhmm>.jsonl` in local time, the pipeline's name
  * with every character a file name may not hold (and spaces) as `-`.
  */
 export function exportFileName(pipeline: string, now: number): string {
-	const d = new Date(now);
 	const name = pipeline.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|-+$/g, '') || 'pipeline';
-	return `${name}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.jsonl`;
+	return `${name}-${fileStamp(now)}.jsonl`;
 }
-
-const records = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
 
 /**
  * After the save: "Exported N records to <file name>.", with a filter on "Exported N records matching
@@ -58,12 +54,13 @@ const records = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record
  */
 export function exportedMessage(count: number, fileName: string, leftOut: number, newerDropped: number, cap: number, filter = '', inGaps = 0): string {
 	const limit = `${cap.toLocaleString('en-US')}-record limit`;
-	const parts = [filter === '' ? `Exported ${records(count)} to ${fileName}.` : `Exported ${records(count)} matching the filter (${filter}) to ${fileName}.`];
+	const parts = [filter === '' ? `Exported ${countText(count, 'record')} to ${fileName}.` : `Exported ${countText(count, 'record')} matching the filter (${filter}) to ${fileName}.`];
 	if (leftOut > 0) {
-		parts.push(`${leftOut.toLocaleString('en-US')} ${inGaps > 0 ? '' : 'older '}${leftOut === 1 ? 'record was' : 'records were'} left out for the ${limit}.`);
+		const older = inGaps > 0 ? '' : 'older ';
+		parts.push(`${countText(leftOut, `${older}record was`, `${older}records were`)} left out for the ${limit}.`);
 	}
 	if (newerDropped > 0) {
-		parts.push(`${newerDropped.toLocaleString('en-US')} newer ${newerDropped === 1 ? 'record was' : 'records were'} dropped for the ${limit}.`);
+		parts.push(`${countText(newerDropped, 'newer record was', 'newer records were')} dropped for the ${limit}.`);
 	}
 	return parts.join(' ');
 }

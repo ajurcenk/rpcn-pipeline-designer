@@ -4,7 +4,13 @@
 // notes; ticket 6.4: the levels, the filter and its search pattern; ticket 6.6: the panel's states and
 // their texts; ticket 6.7: the records-per-time strip's slots, labels and state). The panel adapter
 // (`src/adapters/vscode/logsPanel.ts`), the record shaping (`src/adapters/logs/records.ts`) and
-// `webview/src/logs` import it. Imports nothing (AD-15).
+// `webview/src/logs` import it. Imports nothing but `logsText.ts`, the panel's shared texts (AD-15); it
+// re-exports `localMinute` and `shortTime` from there only for the existing test imports.
+
+import { countText, localMinute, matchCountText, shortTime } from './logsText';
+
+/** Kept only for the existing test imports; new code imports these from `logsText.ts`. */
+export { localMinute, shortTime } from './logsText';
 
 /** At most this many records are kept (the oldest dropped first), by the host and the webview alike. */
 export const MAX_LOG_ROWS = 5_000;
@@ -618,7 +624,7 @@ export function retryText(seconds: number | null): string {
 
 /** "2,140 records so far". */
 export function soFarText(count: number): string {
-	return `${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} so far`;
+	return `${countText(count, 'record')} so far`;
 }
 
 /** A state's small label, title and text, as board 6 has them (the countdown: `retrySeconds`, else the state's wait). */
@@ -725,7 +731,7 @@ export function slotBounds(layout: Pick<StripLayout, 'start' | 'from' | 'size' |
 
 /** "per minute", "per 30 minutes", "per 4 hours", "per day", "per 2 days". */
 export function slotSizeText(size: number): string {
-	const unit = (n: number, one: string) => (n === 1 ? `per ${one}` : `per ${n.toLocaleString('en-US')} ${one}s`);
+	const unit = (n: number, one: string) => `per ${n === 1 ? one : countText(n, one)}`;
 	if (size % DAY_MS === 0) {
 		return unit(size / DAY_MS, 'day');
 	}
@@ -733,14 +739,6 @@ export function slotSizeText(size: number): string {
 		return unit(size / HOUR_MS, 'hour');
 	}
 	return unit(Math.round(size / MINUTE_MS), 'minute');
-}
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** "Nov 5 14:00", in local time: the strip's axis and its bars' names. */
-export function shortTime(ms: number): string {
-	const d = new Date(ms);
-	return `${MONTHS[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 /** "Nov 5 14:00–14:30", or "Nov 5 20:00–Nov 6 00:00" across midnight (`end` exclusive). */
@@ -756,16 +754,15 @@ export function slotTimeText(from: number, end: number): string {
  * warnings when there are some; with a filter on, how many match).
  */
 export function slotLabel(from: number, end: number, counts: { readonly total: number; readonly errors: number; readonly warns: number; readonly matched: number }, filtered: boolean): string {
-	const n = (v: number, one: string) => `${v.toLocaleString('en-US')} ${one}${v === 1 ? '' : 's'}`;
-	const parts = [counts.total === 0 ? 'no records' : n(counts.total, 'record')];
+	const parts = [counts.total === 0 ? 'no records' : countText(counts.total, 'record')];
 	if (counts.errors > 0) {
-		parts.push(n(counts.errors, 'error'));
+		parts.push(countText(counts.errors, 'error'));
 	}
 	if (counts.warns > 0) {
-		parts.push(n(counts.warns, 'warning'));
+		parts.push(countText(counts.warns, 'warning'));
 	}
 	if (filtered && counts.total > 0) {
-		parts.push(`${counts.matched.toLocaleString('en-US')} ${counts.matched === 1 ? 'matches' : 'match'}`);
+		parts.push(matchCountText(counts.matched));
 	}
 	return `${slotTimeText(from, end)}: ${parts.join(', ')}`;
 }
@@ -842,7 +839,7 @@ export interface LogsViewState {
 
 /** Bug 51: the marker row of records left out for the cap between two shown rows. */
 export function leftOutHereText(count: number): string {
-	return `${count.toLocaleString('en-US')} ${count === 1 ? 'record' : 'records'} left out here`;
+	return `${countText(count, 'record')} left out here`;
 }
 
 export type LogsHostMessage =
@@ -883,17 +880,17 @@ export type LogsWebviewMessage =
 	/** Copy JSON where the webview cannot write the clipboard itself: the host copies the row's JSON. */
 	| { readonly type: 'copyRequested'; readonly id: string }
 	/** Ticket 6.6: Stop reading (a bounded range or Load older): the records read stay, the read ends. */
-	| { readonly type: 'stopReading' }
+	| { readonly type: 'stopRequested' }
 	/** Ticket 6.6: Retry (a refused sign-in, a missing permission) and Retry now (a lost connection). */
-	| { readonly type: 'retryNow' }
+	| { readonly type: 'retryRequested' }
 	/** Ticket 6.6: Set up log access…, Set up log access again… (6.2's flow for the shown pipeline's cluster). */
-	| { readonly type: 'setUpAccess' }
+	| { readonly type: 'accessSetUpRequested' }
 	/** Ticket 6.6: Use another user… (the same flow). */
-	| { readonly type: 'useAnotherUser' }
+	| { readonly type: 'anotherUserRequested' }
 	/** Ticket 6.6: No records' Show every level: the level filter cleared. */
-	| { readonly type: 'showEveryLevel' }
+	| { readonly type: 'everyLevelRequested' }
 	/** Ticket 6.6: No records' Last 24 hours. */
-	| { readonly type: 'last24h' }
+	| { readonly type: 'last24hRequested' }
 	/** Ticket 6.7: a bar of the strip: its slot's times as drawn (inclusive), read as a custom range, the filter kept. */
 	| { readonly type: 'slotChosen'; readonly from: number; readonly to: number }
 	/** Ticket 6.8: Export…: the host saves the rows it shows (a snapshot) as JSON lines, through the save dialog. */
@@ -1025,12 +1022,12 @@ export function parseLogsWebviewMessage(v: unknown): LogsWebviewMessage | undefi
 		case 'ready':
 		case 'olderRequested':
 		case 'retentionRequested':
-		case 'stopReading':
-		case 'retryNow':
-		case 'setUpAccess':
-		case 'useAnotherUser':
-		case 'showEveryLevel':
-		case 'last24h':
+		case 'stopRequested':
+		case 'retryRequested':
+		case 'accessSetUpRequested':
+		case 'anotherUserRequested':
+		case 'everyLevelRequested':
+		case 'last24hRequested':
 		case 'exportRequested':
 			return { type: v.type };
 		case 'liveToggled':
@@ -1057,14 +1054,6 @@ export function parseLogsWebviewMessage(v: unknown): LogsWebviewMessage | undefi
 		default:
 			return undefined;
 	}
-}
-
-const pad = (n: number, width = 2) => String(n).padStart(width, '0');
-
-/** `2026-11-05 16:49`, in local time: the menu's and the gap notes' form. */
-export function localMinute(ms: number): string {
-	const d = new Date(ms);
-	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**

@@ -147,4 +147,11 @@ suite('Pipeline logs history rules (ticket 6.3)', () => {
 		assert.deepStrictEqual(stripSpan(deployRange, NOW - HOUR_MS, undefined, NOW - MINUTE_MS, NOW, true), stripSpan(deployRange, NOW - HOUR_MS, undefined, NOW - MINUTE_MS, NOW), 'Since the last deploy: unchanged by live');
 	});
 
+	test('story 56: durationText\'s counts read as before (logsText)', () => {
+		assert.strictEqual(durationText(7 * 24 * 60 * 60_000), '7 days');
+		assert.strictEqual(durationText(60 * 60_000), '1 hour');
+		assert.strictEqual(durationText(36 * 60 * 60_000 + 1), '1.5 days');
+		assert.strictEqual(durationText(90 * 60_000), '1.5 hours');
+		assert.strictEqual(durationText(60_000), '1 minute');
+	});
 });

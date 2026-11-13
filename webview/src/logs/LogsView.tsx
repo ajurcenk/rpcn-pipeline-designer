@@ -43,11 +43,15 @@
 
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-	customRangeError, filterActive, gapsIn, leftOutHereText, LEVEL_LABELS, levelOfText, localMinute, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, MAX_MATCH_CHARS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
-	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, shortTime, slotBounds,
+	customRangeError, filterActive, gapsIn, leftOutHereText, LEVEL_LABELS, levelOfText, LOG_LEVELS, MAX_FIELD_FILTERS, MAX_LOG_ROWS, MAX_MATCH_CHARS, NO_COUNTS, NO_FILTER, NO_PANEL_STATE,
+	noRecordsText, panelStateTexts, parseLocalDateTime, parseLogsHostMessage, RANGE_KINDS, RANGE_LABELS, retryText, searchError, searchPattern, slotBounds,
 	slotLabel, slotSizeText, soFarText, type LogFilter, type LogLevel, type LogRow, type LogsPanelState, type LogStrip, type LogsViewState, type LogsWebviewMessage,
 	type RangeKind,
 } from '../../../src/shared/logsProtocol';
+import { countText, localMinute, localTime, shortTime } from '../../../src/shared/logsText';
+
+/** Kept only for the existing test imports; new code imports it from `logsText.ts`. */
+export { localTime } from '../../../src/shared/logsText';
 
 export const NO_PIPELINE_TITLE = 'No pipeline';
 export const NO_RECORDS_TEXT = 'No records of this pipeline yet.';
@@ -64,14 +68,6 @@ export const EXPORT_LABEL = 'Export the shown records';
 /** The field chip that stands for the instance column (as the host's `filter.ts`). */
 const INSTANCE_FIELD = 'instance_id';
 
-const pad = (n: number, width = 2) => String(n).padStart(width, '0');
-
-/** `2026-11-05 16:49:15.510`, in the viewer's local time. */
-export function localTime(ms: number): string {
-	const d = new Date(ms);
-	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
-}
-
 /**
  * Bug 53: a row's time is its record's Kafka timestamp; when the value's own `time` differs, the time
  * cell's tooltip and accessible name add it: "Its own time: 2026-11-05 16:19:15.510".
@@ -80,23 +76,20 @@ export function ownTimeText(ownTime: number): string {
 	return `Its own time: ${localTime(ownTime)}`;
 }
 
-/** "3 records", "1 record". */
-const records = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'record' : 'records'}`;
-
 /**
  * The footer: how many are kept; how many older ones were left out, newer ones dropped, for the cap.
  * Bug 51: when `inGaps` of the left out sit between shown rows, the total is "records left out" (not
  * "older"), and Load older is offered only for older ones.
  */
 export function footerText(kept: number, dropped: number, cap: number, newerDropped = 0, inGaps = 0): string {
-	const parts = [`${records(kept)} kept${dropped > 0 || newerDropped > 0 ? ` (at most ${cap.toLocaleString('en-US')})` : ''}`];
+	const parts = [`${countText(kept, 'record')} kept${dropped > 0 || newerDropped > 0 ? ` (at most ${cap.toLocaleString('en-US')})` : ''}`];
 	if (dropped > 0 && inGaps > 0) {
-		parts.push(`${records(dropped)} left out${dropped > inGaps ? '; Load older to page back' : ''}`);
+		parts.push(`${countText(dropped, 'record')} left out${dropped > inGaps ? '; Load older to page back' : ''}`);
 	} else if (dropped > 0) {
-		parts.push(`${dropped.toLocaleString('en-US')} older ${dropped === 1 ? 'record' : 'records'} left out; Load older to page back`);
+		parts.push(`${countText(dropped, 'older record')} left out; Load older to page back`);
 	}
 	if (newerDropped > 0) {
-		parts.push(`${newerDropped.toLocaleString('en-US')} newer ${newerDropped === 1 ? 'record' : 'records'} dropped`);
+		parts.push(`${countText(newerDropped, 'newer record')} dropped`);
 	}
 	return `${parts.join('; ')}.`;
 }
@@ -112,7 +105,7 @@ export function rangeButtonText(state: LogsViewState): string {
 
 /** "40 of 20,000 records match". */
 export function matchText(matched: number, total: number): string {
-	return `${matched.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${total === 1 ? 'record matches' : 'records match'}`;
+	return `${matched.toLocaleString('en-US')} of ${countText(total, 'record matches', 'records match')}`;
 }
 
 /** A field chip's text: "instance …c1gjg", "path=/config/connect.yaml" (long values cut). */
@@ -241,20 +234,20 @@ export function secondsLeft(state: Extract<LogsPanelState, { kind: 'connectionLo
 export function stateActions(state: LogsPanelState): readonly { readonly label: string; readonly message: LogsWebviewMessage; readonly primary?: true }[] {
 	switch (state.kind) {
 		case 'noAccess':
-			return [{ label: 'Set up log access…', message: { type: 'setUpAccess' }, primary: true }];
+			return [{ label: 'Set up log access…', message: { type: 'accessSetUpRequested' }, primary: true }];
 		case 'signIn':
-			return [{ label: 'Set up log access again…', message: { type: 'setUpAccess' }, primary: true }, { label: 'Retry', message: { type: 'retryNow' } }];
+			return [{ label: 'Set up log access again…', message: { type: 'accessSetUpRequested' }, primary: true }, { label: 'Retry', message: { type: 'retryRequested' } }];
 		case 'notAllowed':
-			return [{ label: 'Retry', message: { type: 'retryNow' } }, { label: 'Use another user…', message: { type: 'useAnotherUser' } }];
+			return [{ label: 'Retry', message: { type: 'retryRequested' } }, { label: 'Use another user…', message: { type: 'anotherUserRequested' } }];
 		case 'noRecords':
 			return [
-				{ label: 'Last 24 hours', message: { type: 'last24h' } },
-				...(state.hiddenLevels.length > 0 ? [{ label: 'Show every level', message: { type: 'showEveryLevel' } } as const] : []),
+				{ label: 'Last 24 hours', message: { type: 'last24hRequested' } },
+				...(state.hiddenLevels.length > 0 ? [{ label: 'Show every level', message: { type: 'everyLevelRequested' } } as const] : []),
 			];
 		case 'reading':
-			return [{ label: 'Stop reading', message: { type: 'stopReading' } }];
+			return [{ label: 'Stop reading', message: { type: 'stopRequested' } }];
 		case 'connectionLost':
-			return [{ label: 'Retry now', message: { type: 'retryNow' } }];
+			return [{ label: 'Retry now', message: { type: 'retryRequested' } }];
 		case 'stopped':
 		case 'none':
 			return [];
@@ -298,7 +291,7 @@ function StatePanel({ state, post, settingUp }: { readonly state: LogsPanelState
 			<div className="rpcn-logs-state-actions">
 				{stateActions(state).map((a) => (
 					<button key={a.label} type="button" className={a.primary ? 'rpcn-logs-button rpcn-logs-primary' : 'rpcn-logs-button'}
-						disabled={settingUp && (a.message.type === 'setUpAccess' || a.message.type === 'useAnotherUser')} onClick={() => post(a.message)}>{a.label}</button>
+						disabled={settingUp && (a.message.type === 'accessSetUpRequested' || a.message.type === 'anotherUserRequested')} onClick={() => post(a.message)}>{a.label}</button>
 				))}
 			</div>
 		</section>
