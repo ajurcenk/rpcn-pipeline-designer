@@ -13,6 +13,7 @@
 import {
 	isSampleName, MAX_SAMPLE_NAME_LENGTH, type BloblangSample, type InputMeta, type ResultMeta,
 } from '../shared/bloblangProtocol';
+import { errorText } from '../shared/errorText';
 
 export const SAMPLES_FILE_VERSION = 1;
 
@@ -137,7 +138,7 @@ export function parseSamplesFile(text: string): SamplesParse {
 	try {
 		value = JSON.parse(text.replace(/^﻿/, ''));
 	} catch (e) {
-		return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+		return { ok: false, reason: errorText(e) };
 	}
 	try {
 		if (!isObject(value)) {

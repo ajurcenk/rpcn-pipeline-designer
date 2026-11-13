@@ -12,6 +12,7 @@ import {
 	type DeployMapping, legacyOwnersOf, legacySidecarPath, type ParsedMapping, parseMapping, sidecarPath, tagNames, taggedConfigs, type WorkspaceRoot,
 } from '../cloud/sidecar';
 import type { TranslateProblem } from '../../core/cloudTranslate';
+import { errorText } from '../../shared/errorText';
 import type { CloudContext, DeployResult } from './cloudView';
 
 export const NOT_CONNECTED_MESSAGE = 'No Redpanda Cloud service account is connected. Connect one to deploy.';
@@ -26,7 +27,6 @@ export const DEPLOYED_SCHEME = 'redpanda-cloud';
 /** After this many failed polls in a row the deploy stops following the pipeline. */
 export const MAX_POLL_FAILURES = 5;
 export const NOT_STARTED: DeployResult = { kind: 'notStarted' };
-export const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** `Running`, or `Error (<reason>)` with the cluster's reason or "the cluster gave no reason". */
 export function pipelineStateDescription(p: CloudPipeline | undefined): string {
@@ -62,7 +62,7 @@ export async function readMapping(file: string): Promise<{ readonly kind: 'none'
 		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
 			return { kind: 'none' };
 		}
-		return { kind: 'bad', reason: `it could not be read (${reasonOf(err)})` };
+		return { kind: 'bad', reason: `it could not be read (${errorText(err)})` };
 	}
 	return parseMapping(text);
 }

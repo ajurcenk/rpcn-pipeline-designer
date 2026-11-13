@@ -9,12 +9,9 @@
 
 import * as vscode from 'vscode';
 import { schemaHash } from '../../core/schema';
+import { errorText } from '../../shared/errorText';
 import type { LogLine } from '../redpandaConnect/binary';
 import type { SchemaSnapshot } from '../redpandaConnect/schema';
-
-function errorText(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
 
 export const REDHAT_YAML_EXTENSION_ID = 'redhat.vscode-yaml';
 

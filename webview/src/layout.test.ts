@@ -247,6 +247,18 @@ describe('VIEW_HIGHLIGHT (ticket 3.7): the selected node, or the collapsed group
 		expect(visibleAncestor(nested, new Set(['outer', 'middle']), 'leaf')).toBe('outer');
 		expect(visibleAncestor(nested, new Set(['outer']), 'leaf')).toBe('outer');
 	});
+	it('stops at the node itself on a parent cycle (never in a built model)', () => {
+		const cyclic: PipelineModel = {
+			nodes: [
+				{ id: 'a', role: 'processor', component: 'switch', group: true, range: [0, 10], parent: 'b' },
+				{ id: 'b', role: 'route', range: [2, 8], parent: 'a' },
+			],
+			edges: [],
+		};
+		// Walking on past `b` would come back to `a`, collapsed, and draw the node as its own ancestor.
+		expect(visibleAncestor(cyclic, new Set(['a', 'b']), 'a')).toBe('b');
+		expect(visibleAncestor(cyclic, new Set(['a']), 'a')).toBe('a');
+	});
 	it('is nothing for null or an id the model does not have', () => {
 		expect(visibleAncestor(model, new Set(), null)).toBeUndefined();
 		expect(visibleAncestor(model, new Set(), 'path:gone')).toBeUndefined();
@@ -408,6 +420,17 @@ describe('KEYBOARD (ticket 11)', () => {
 		expect(focusTarget({ nodes: [], edges: [] }, none, [LOG])).toBeUndefined();
 		expect(focusChain(model, LOG)).toEqual([LOG, CASE0, SW]);
 		expect(focusChain(model, 'path:gone')).toEqual(['path:gone']);
+		// A parent cycle (never in a built model) ends before the node comes round again.
+		const cyclic: PipelineModel = {
+			nodes: [
+				{ id: 'a', role: 'processor', component: 'switch', group: true, range: [0, 10], parent: 'b' },
+				{ id: 'b', role: 'route', range: [2, 8], parent: 'a' },
+			],
+			edges: [],
+		};
+		expect(focusChain(cyclic, 'a')).toEqual(['a', 'b']);
+		// A parent the model does not have is not in the chain.
+		expect(focusChain({ nodes: [{ id: 'x', role: 'input', range: [0, 5], parent: 'gone' }], edges: [] }, 'x')).toEqual(['x']);
 	});
 	it('NAMES: "{role} {type}{, label}", a group\'s summary and state, the first message with a count', () => {
 		const byId = new Map(model.nodes.map((n) => [n.id, n]));

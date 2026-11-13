@@ -113,18 +113,18 @@ export async function until(predicate: () => boolean, timeoutMs: number): Promis
 	return true;
 }
 
-/** Whether a tab group holds a text tab of `key`. */
-export function hasTextTab(key: string): boolean {
-	return vscode.window.tabGroups.all.some((g) => g.tabs.some((t) => isTextTabOf(t, key)));
+/** Whether a tab group of `tabGroups` (the registry's Source's) holds a text tab of `key`. */
+export function hasTextTab(key: string, tabGroups: Pick<vscode.TabGroups, 'all'>): boolean {
+	return tabGroups.all.some((g) => g.tabs.some((t) => isTextTabOf(t, key)));
 }
 
 export function isTextTabOf(tab: vscode.Tab | undefined, key: string): boolean {
 	return tab?.input instanceof vscode.TabInputText && tab.input.uri.toString() === key;
 }
 
-/** The open text document of `key` (a `uri.toString()`), if any. */
-export function openDocument(key: string): vscode.TextDocument | undefined {
-	return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+/** The open text document of `key` (a `uri.toString()`) among `documents` (the Source's open documents), if any. */
+export function openDocument(key: string, documents: readonly vscode.TextDocument[]): vscode.TextDocument | undefined {
+	return documents.find((d) => d.uri.toString() === key);
 }
 
 /** How long an announced rename stays pending when it is never reported (ticket 4.13). */

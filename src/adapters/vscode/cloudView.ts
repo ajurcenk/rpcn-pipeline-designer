@@ -123,11 +123,12 @@ import type { LogReaderFactory, SaslMechanism } from '../logs/logReader';
 import { loadKafka, PlatformaticReader } from '../logs/platformaticReader';
 import type { LogsShowOptions, LogSource } from './logsPanel';
 import type { ComponentCatalog } from '../../core/catalogue';
+import { errorText } from '../../shared/errorText';
 import type { LintResult } from '../redpandaConnect/lint';
 import { CloudActions, type PaletteTarget, type PaletteTargetHow, type PipelineAction } from './cloudActions';
 import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy';
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
-import { CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
+import { CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription } from './cloudShared';
 import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
 
@@ -766,7 +767,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		try {
 			[clientId, secret] = await Promise.all([this.options.store.get(CLIENT_ID_KEY), this.options.store.get(CLIENT_SECRET_KEY)]);
 		} catch (err) {
-			this.log(`Redpanda Cloud: could not read the secret storage: ${reasonOf(err)}`);
+			this.log(`Redpanda Cloud: could not read the secret storage: ${errorText(err)}`);
 		}
 		if (generation !== this.accountGeneration) {
 			return; // this window connected or disconnected meanwhile
@@ -890,8 +891,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			this.account = undefined;
 			this.setConnectedContext();
 			this.fire();
-			this.log(`Redpanda Cloud: could not store the service account: ${reasonOf(err)}`);
-			void this.showError(`Could not store the service account in the secret storage: ${reasonOf(err)}`);
+			this.log(`Redpanda Cloud: could not store the service account: ${errorText(err)}`);
+			void this.showError(`Could not store the service account in the secret storage: ${errorText(err)}`);
 			return false;
 		} finally {
 			this.writing--;
@@ -936,7 +937,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			await this.removeStored(CLIENT_ID_KEY);
 			await this.removeStored(CLIENT_SECRET_KEY);
 		} catch (err) {
-			void this.showError(`Could not remove the service account from the secret storage: ${reasonOf(err)}`);
+			void this.showError(`Could not remove the service account from the secret storage: ${errorText(err)}`);
 			this.ready = this.readAccount();
 			return false;
 		} finally {

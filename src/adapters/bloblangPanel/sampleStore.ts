@@ -21,6 +21,7 @@ import {
 	applySampleChange, parseSamplesFile, relinkAll, relinkSamples, samplesFileName, serializeSamplesFile, type RelinkMove, type SampleChange,
 	type SampleRef, type SamplesFile,
 } from '../../core/samples';
+import { errorText } from '../../shared/errorText';
 
 /** A config's samples file as read: its value (`undefined`: no file), or why it can't be read. */
 export type SamplesState =
@@ -303,7 +304,7 @@ export class SampleStore implements vscode.Disposable {
 				// Moved meanwhile: nothing to move any more.
 				return 'none';
 			}
-			const reason = e instanceof Error ? e.message : String(e);
+			const reason = errorText(e);
 			this.log(`Samples: ${path.posix.basename(from.path)}: ${reason}`);
 			return { failed: reason };
 		}
@@ -338,7 +339,7 @@ export class SampleStore implements vscode.Disposable {
 			await this.deleteFile(uri, { useTrash: true });
 			return undefined;
 		} catch (e) {
-			const reason = e instanceof Error ? e.message : String(e);
+			const reason = errorText(e);
 			this.log(`Samples: ${path.posix.basename(uri.path)}: not moved to the trash: ${reason}`);
 			return reason;
 		}
@@ -358,7 +359,7 @@ export class SampleStore implements vscode.Disposable {
 			this.wrote.fire(config);
 			return 'written';
 		} catch (e) {
-			const reason = e instanceof Error ? e.message : String(e);
+			const reason = errorText(e);
 			this.log(`Samples: ${path.posix.basename(uri.path)}: ${reason}`);
 			// What is on disk now is unknown: the next read says.
 			this.seen.delete(uri.toString());
@@ -410,7 +411,7 @@ export class SampleStore implements vscode.Disposable {
 		try {
 			text = await readText(uri);
 		} catch (e) {
-			const reason = e instanceof Error ? e.message : String(e);
+			const reason = errorText(e);
 			return { kind: 'unreadable', reason };
 		}
 		const known = this.seen.has(key);

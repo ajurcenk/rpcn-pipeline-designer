@@ -22,6 +22,7 @@ import { createHmac, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isEnvName } from '../../shared/bloblangProtocol';
+import { errorText } from '../../shared/errorText';
 import { ENV_SETTING } from './commandLine';
 
 export { ENV_SETTING };
@@ -158,7 +159,7 @@ export class EnvSettingFiles {
 					// The folder itself is unusable (`ENOTDIR`): nothing was written.
 				}
 			}
-			const reason = err instanceof Error ? err.message : String(err);
+			const reason = errorText(err);
 			return { kind: 'failed', path: file, reason };
 		}
 	}

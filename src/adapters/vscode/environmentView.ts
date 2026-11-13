@@ -34,6 +34,7 @@ import * as vscode from 'vscode';
 import { readEnvFile } from '../../core/envFileRead';
 import { envUsage } from '../../core/envUsage';
 import { licenseExpiryDate } from '../../core/licenseLog';
+import { errorText } from '../../shared/errorText';
 import { commandSettings, defaultArgsEnvironment, describeArgsFailure, envFileFor } from '../redpandaConnect/args';
 import type { BinaryState } from '../redpandaConnect/binary';
 import { isValidEnvName, validateEnvSetting } from '../redpandaConnect/envSetting';
@@ -286,7 +287,6 @@ const fileExists = (file: string): boolean => {
 		return false;
 	}
 };
-const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const keyOf = (v: { readonly source: EnvSource; readonly name: string }) => `${v.source}:${v.name}`;
 
 /** Ticket 5.7: a variable's value as the binary would get it, and where it comes from. */
@@ -837,7 +837,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 				try {
 					envFile = { path: resolved.path, read: readEnvFile(fs.readFileSync(resolved.path, 'utf8')) };
 				} catch (err) {
-					envFile = { path: resolved.path, read: { error: (err as NodeJS.ErrnoException).code ?? reasonOf(err) } };
+					envFile = { path: resolved.path, read: { error: (err as NodeJS.ErrnoException).code ?? errorText(err) } };
 				}
 			}
 		} else {
@@ -918,7 +918,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			await writeEnvSettingKey(uri, name, value, level, this.writeSetting);
 			return true;
 		} catch (err) {
-			const reason = value ? reasonOf(err).split(value).join('…') : reasonOf(err);
+			const reason = value ? errorText(err).split(value).join('…') : errorText(err);
 			this.options.log(`${ENV_SETTING_KEY}: could not ${value === undefined ? 'remove' : 'set'} ${name} in the ${level} settings: ${reason}`);
 			this.ui.error(`Could not ${value === undefined ? 'remove' : 'set'} ${name} in ${ENV_SETTING_KEY} (${level} settings): ${reason}`);
 			return false;
@@ -1111,7 +1111,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		try {
 			await this.treeView?.reveal(node, { select: true, focus: true });
 		} catch (err) {
-			this.options.log(`Environment view: could not reveal ${name}: ${reasonOf(err)}`);
+			this.options.log(`Environment view: could not reveal ${name}: ${errorText(err)}`);
 			return false;
 		}
 		return true;
@@ -1148,7 +1148,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			// Never left `checking`; the reason is masked, else not given (it may quote a value).
 			let reason = 'the check could not finish.';
 			try {
-				reason = `the check could not finish: ${this.maskLicense(reasonOf(err), uri)}`;
+				reason = `the check could not finish: ${this.maskLicense(errorText(err), uri)}`;
 			} catch {
 				// Keep the reason without the error's text.
 			}
@@ -1181,7 +1181,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 		try {
 			return await this.openExternal(vscode.Uri.parse(this.options.licenseReadmeUrl ?? DEFAULT_LICENSE_README_URL));
 		} catch (err) {
-			this.ui.error(`Could not open the README: ${reasonOf(err)}`);
+			this.ui.error(`Could not open the README: ${errorText(err)}`);
 			return false;
 		}
 	}
@@ -1197,7 +1197,7 @@ export class EnvironmentView implements vscode.TreeDataProvider<EnvironmentNode>
 			await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
 			return true;
 		} catch (err) {
-			this.ui.error(`Could not open the env file ${file}: ${reasonOf(err)}`);
+			this.ui.error(`Could not open the env file ${file}: ${errorText(err)}`);
 			return false;
 		}
 	}

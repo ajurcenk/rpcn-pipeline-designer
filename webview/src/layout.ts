@@ -5,6 +5,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api';
+import { ancestorIds, nodesById } from '../../src/shared/graphModel';
 import type {
 	NodeSeverity, NodeStatus, NodeStatusById, PipelineEdge, PipelineModel, PipelineNode,
 } from '../../src/shared/protocol';
@@ -145,15 +146,16 @@ export function visibleAncestor(model: PipelineModel, collapsed: Collapsed, id: 
 	if (id === null) {
 		return undefined;
 	}
-	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const byId = nodesById(model);
 	const node = byId.get(id);
 	if (!node) {
 		return undefined;
 	}
 	let shown = node.id;
-	const seen = new Set<string>([node.id]);
-	for (let p = node.parent; p !== undefined && !seen.has(p); p = byId.get(p)?.parent) {
-		seen.add(p);
+	for (const p of ancestorIds((a) => byId.get(a)?.parent, node.id)) {
+		if (p === node.id) {
+			break; // a parent cycle back to the node
+		}
 		if (collapsed.has(p)) {
 			shown = p;
 		}
@@ -259,16 +261,12 @@ export function motionDuration(prefersReducedMotion: boolean): number {
 
 /** The nodes that are drawn, in model order: every node with no collapsed group above it. */
 export function visibleNodes(model: PipelineModel, collapsed: Collapsed): PipelineNode[] {
-	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const byId = nodesById(model);
+	const parentOf = (id: string) => byId.get(id)?.parent;
 	const hidden = (node: PipelineNode): boolean => {
-		const seen = new Set<string>();
-		for (let p = node.parent; p !== undefined && !seen.has(p); p = byId.get(p)?.parent) {
-			seen.add(p);
-			if (collapsed.has(p)) {
-				return true;
-			}
-		}
-		return false;
+		// From the node's own parent, as the model lists it.
+		const up = node.parent === undefined ? [] : [node.parent, ...ancestorIds(parentOf, node.parent)];
+		return up.some((p) => collapsed.has(p));
 	};
 	return model.nodes.filter((n) => !hidden(n));
 }
@@ -308,12 +306,18 @@ export function nextFocus(model: PipelineModel, collapsed: Collapsed, current: s
 
 /** A node and its ancestors, nearest first (what focus falls back to when the node goes: MODEL_CHANGE). */
 export function focusChain(model: PipelineModel, id: string): string[] {
-	const byId = new Map(model.nodes.map((n) => [n.id, n]));
-	const chain: string[] = [];
-	for (let n = byId.get(id); n !== undefined && !chain.includes(n.id); n = n.parent === undefined ? undefined : byId.get(n.parent)) {
-		chain.push(n.id);
+	const byId = nodesById(model);
+	if (!byId.has(id)) {
+		return [id];
 	}
-	return chain.length === 0 ? [id] : chain;
+	const chain = [id];
+	for (const p of ancestorIds((a) => byId.get(a)?.parent, id)) {
+		if (p === id || !byId.has(p)) {
+			break; // a parent cycle back to the node, or a parent the model does not have
+		}
+		chain.push(p);
+	}
+	return chain;
 }
 
 /**
@@ -415,14 +419,7 @@ function padding(top: number): string {
 
 /** The ancestors of a node, nearest first, ending with the root (`undefined`). */
 function ancestors(id: string, parentOf: ReadonlyMap<string, string | undefined>): (string | undefined)[] {
-	const chain: (string | undefined)[] = [];
-	const seen = new Set<string>();
-	for (let p = parentOf.get(id); p !== undefined && !seen.has(p); p = parentOf.get(p)) {
-		seen.add(p);
-		chain.push(p);
-	}
-	chain.push(undefined);
-	return chain;
+	return [...ancestorIds((a) => parentOf.get(a), id), undefined];
 }
 
 const ROOT_ID = 'root';
@@ -505,7 +502,7 @@ function visibleEdges(model: PipelineModel, ids: ReadonlySet<string>): PipelineE
  * Nothing is draggable or connectable.
  */
 export function toFlow(model: PipelineModel, laidOut: ElkNode, collapsed: Collapsed = new Set()): Layout {
-	const byId = new Map(model.nodes.map((n) => [n.id, n]));
+	const byId = nodesById(model);
 	const nodes: ViewNode[] = [];
 	const ids = new Set<string>();
 	const walk = (elkNode: ElkNode, parentId: string | undefined): void => {

@@ -115,7 +115,8 @@ import { freeSampleName, inputMetaOf, linkOf, samplesFor, type RelinkMove, type 
 import {
 	parseBloblangWebviewMessage, type BinaryStatus, type BloblangHostMessage, type BloblangProcessorKind, type InputMeta,
 } from '../../shared/bloblangProtocol';
-import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo, returnFocusTo } from '../graphPanel/groups';
+import { errorText } from '../../shared/errorText';
+import { BLOBLANG_VIEW_TYPE, holdsGraph, isTestGroup, newGroupNextTo, returnFocusTo, vscodeSource, type PanelSource } from '../graphPanel/groups';
 import { webviewHtml } from '../graphPanel/html';
 import { hasTextTab, isTextTabOf, overwrittenBy, PENDING_RENAME_MS, PendingRenames, renamedThrough, renameFate, renameWinners } from '../graphPanel/tabs';
 import type { BinaryState } from '../redpandaConnect/binary';
@@ -181,10 +182,30 @@ export const MAX_BLOBLANG_POSTED = 50;
 /** A rename's key in `BloblangPanels.targets` (bug 24). */
 const targetKey = (from: vscode.Uri, to: vscode.Uri): string => `${from.toString()}\n${to.toString()}`;
 
+/**
+ * The slice of VS Code the Bloblang test panel registry and its panels reach themselves (story 55):
+ * the workspace's document, file and rename events, `textDocuments`, `openTextDocument`, `applyEdit`,
+ * `fs.stat` and `getWorkspaceFolder`; the window's tab groups, visible and active editors,
+ * `showTextDocument` and `createWebviewPanel`; and `executeCommand`. The real API satisfies it
+ * (`vscodeSource`, the default); unit tests pass a fake. Not through it: the samples store
+ * (`SampleStore`: save events, `fs`, its file watchers) and the end-of-line hints (`BloblangHints`:
+ * visible editors, `textDocuments`, decorations) still use VS Code directly; prompts and messages
+ * stay on their own seams (`showMessage`, `confirmDelete`, `askLabel`, else VS Code's), and
+ * commands are registered on VS Code's own.
+ */
+export interface BloblangPanelsSource extends PanelSource {
+	readonly workspace: Pick<typeof vscode.workspace,
+		| 'onDidChangeTextDocument' | 'onDidSaveTextDocument' | 'onDidCloseTextDocument' | 'onDidOpenTextDocument'
+		| 'onWillRenameFiles' | 'onDidRenameFiles' | 'textDocuments' | 'openTextDocument' | 'applyEdit' | 'getWorkspaceFolder'>
+		& { readonly fs: Pick<vscode.FileSystem, 'stat'> };
+	readonly window: Pick<typeof vscode.window,
+		| 'tabGroups' | 'visibleTextEditors' | 'activeTextEditor' | 'onDidChangeActiveTextEditor' | 'showTextDocument' | 'createWebviewPanel'>;
+}
+
 /** Whether `uri` is a file (bug 24); `false` when it is missing or can't be read. */
-async function isFile(uri: vscode.Uri): Promise<boolean> {
+async function isFile(uri: vscode.Uri, source: BloblangPanelsSource): Promise<boolean> {
 	try {
-		return ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.File) !== 0;
+		return ((await source.workspace.fs.stat(uri)).type & vscode.FileType.File) !== 0;
 	} catch {
 		return false;
 	}
@@ -294,6 +315,8 @@ export interface BloblangPanelsOptions {
 	 * `undefined`: `vscode.workspace.fs.delete`.
 	 */
 	readonly deleteFile?: DeleteFile;
+	/** The VS Code API the registry reaches (story 55). `undefined`: the real one. */
+	readonly source?: BloblangPanelsSource;
 }
 
 /** What Add label's input box shows and checks (4.16). */
@@ -385,7 +408,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		this.ref = this.generate ? undefined : link;
 		this.saved = link;
 		this.watch = this.generate ? NO_WATCH : owner.samples.watch(uri);
-		this.hadTab = hasTextTab(uri.toString());
+		this.hadTab = hasTextTab(uri.toString(), owner.source.window.tabGroups);
 		this.subscription = panel.webview.onDidReceiveMessage((m) => this.receive(m));
 	}
 
@@ -801,7 +824,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	private async writeLabel(doc: vscode.TextDocument, insertion: TextInsertion, name: string): Promise<void> {
 		const edit = new vscode.WorkspaceEdit();
 		edit.insert(doc.uri, doc.positionAt(insertion.offset), insertion.text);
-		if (!await vscode.workspace.applyEdit(edit) || this.processor()?.label !== name) {
+		if (!await this.owner.source.workspace.applyEdit(edit) || this.processor()?.label !== name) {
 			this.owner.tell(couldNotAddLabel(LABEL_EDIT_FAILED), 'error');
 			return;
 		}
@@ -819,7 +842,7 @@ class BloblangPanel implements BloblangPanelHandle {
 		if (doc.getText().slice(insertion.offset, end) === insertion.text) {
 			const undo = new vscode.WorkspaceEdit();
 			undo.delete(doc.uri, new vscode.Range(doc.positionAt(insertion.offset), doc.positionAt(end)));
-			await vscode.workspace.applyEdit(undo);
+			await this.owner.source.workspace.applyEdit(undo);
 		}
 		const reason = outcome === 'taken' ? labelInSamples(name)
 			: 'failed' in outcome ? labelSamplesNotSaved(outcome.failed) : labelSamplesUnreadable(outcome.unreadable);
@@ -933,7 +956,7 @@ class BloblangPanel implements BloblangPanelHandle {
 							outcome = await this.owner.runTest(this.uri, current, this.path, next);
 						} catch (e) {
 							this.fail(e);
-							outcome = { result: { kind: 'error', message: e instanceof Error ? e.message : String(e) }, durationMs: 0, binary: null };
+							outcome = { result: { kind: 'error', message: errorText(e) }, durationMs: 0, binary: null };
 						}
 						if (this.pending === undefined && !this.disposed) {
 							const result = outcome.result;
@@ -941,7 +964,7 @@ class BloblangPanel implements BloblangPanelHandle {
 							const text = line === undefined ? undefined : mappingLineText(current?.processor?.source ?? '', line);
 							this.hint = line !== undefined && text !== undefined ? { line, text } : undefined;
 							this.updateHint();
-							const shown = maskedResult(result, this.uri);
+							const shown = maskedResult(result, this.uri, this.owner.source);
 							const id = this.nextResultId++;
 							this.offered = { id, names: shown.kind === 'error' ? shown.missingVariables ?? [] : [] };
 							await this.post({ type: 'result', id, ...outcome, result: shown });
@@ -985,7 +1008,7 @@ class BloblangPanel implements BloblangPanelHandle {
 	}
 
 	private document(): vscode.TextDocument | undefined {
-		return vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
+		return this.owner.source.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
 	}
 
 	/**
@@ -1048,7 +1071,7 @@ class BloblangPanel implements BloblangPanelHandle {
 
 	private fail(e: unknown): void {
 		if (!this.disposed) {
-			this.owner.log(`${this.panel.title}: ${e instanceof Error ? e.message : String(e)}`);
+			this.owner.log(`${this.panel.title}: ${errorText(e)}`);
 		}
 	}
 
@@ -1085,8 +1108,11 @@ export class BloblangPanels implements vscode.Disposable {
 	readonly hints = new BloblangHints();
 	/** The configs' samples files (4.9). */
 	readonly samples: SampleStore;
+	/** The VS Code API the registry and its panels reach (story 55). */
+	readonly source: BloblangPanelsSource;
 
 	constructor(private readonly options: BloblangPanelsOptions) {
+		this.source = options.source ?? vscodeSource;
 		this.samples = new SampleStore((line) => this.log(line), options.deleteFile);
 		this.pendingRenames = new PendingRenames(options.pendingRenameMs ?? PENDING_RENAME_MS);
 		this.subscriptions = [
@@ -1098,7 +1124,7 @@ export class BloblangPanels implements vscode.Disposable {
 			}),
 			// The shown Bloblang follows edits, so it always matches what the next run uses; each panel
 			// follows its processor (4.10).
-			vscode.workspace.onDidChangeTextDocument((e) => {
+			this.source.workspace.onDidChangeTextDocument((e) => {
 				const entries = this.panelsOf(e.document.uri);
 				if (entries.length === 0) {
 					return;
@@ -1128,7 +1154,7 @@ export class BloblangPanels implements vscode.Disposable {
 				this.match(e.document, entries, false);
 			}),
 			// A save moves the samples of the panels whose processor's link changed (4.10).
-			vscode.workspace.onDidSaveTextDocument((doc) => {
+			this.source.workspace.onDidSaveTextDocument((doc) => {
 				this.dirty.delete(doc.uri.toString());
 				for (const entry of this.panelsOf(doc.uri)) {
 					entry.markSaved();
@@ -1136,7 +1162,7 @@ export class BloblangPanels implements vscode.Disposable {
 				void this.relinkOnSave(doc.uri);
 			}),
 			// Closed with unsaved changes (4.10): each panel resets to its saved position, matched by it on reopen.
-			vscode.workspace.onDidCloseTextDocument((doc) => {
+			this.source.workspace.onDidCloseTextDocument((doc) => {
 				// A rename closes the old document (4.17): its panels move, they are not reset.
 				if (this.renaming(doc.uri.toString())) {
 					return;
@@ -1147,7 +1173,7 @@ export class BloblangPanels implements vscode.Disposable {
 					}
 				}
 			}),
-			vscode.workspace.onDidOpenTextDocument((doc) => {
+			this.source.workspace.onDidOpenTextDocument((doc) => {
 				const entries = this.panelsOf(doc.uri);
 				if (entries.some((entry) => entry.isReset)) {
 					this.match(doc, entries, !doc.isDirty);
@@ -1160,13 +1186,13 @@ export class BloblangPanels implements vscode.Disposable {
 				}
 			}),
 			// TAB_CLOSE (4.17): a panel whose file had a text tab and has none left closes.
-			vscode.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
-			vscode.workspace.onWillRenameFiles((e) => {
+			this.source.window.tabGroups.onDidChangeTabs(() => this.tabsChanged()),
+			this.source.workspace.onWillRenameFiles((e) => {
 				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
 				// Bug 24: the rename waits for the check of which new names hold a file.
 				e.waitUntil(this.checkTargets(e.files));
 			}),
-			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
+			this.source.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
 	}
 
@@ -1176,9 +1202,9 @@ export class BloblangPanels implements vscode.Disposable {
 	 */
 	private async checkTargets(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): Promise<void> {
 		await Promise.all(files.map(async (f) => {
-			if (await isFile(f.oldUri)) {
+			if (await isFile(f.oldUri, this.source)) {
 				const key = targetKey(f.oldUri, f.newUri);
-				const target = { held: await isFile(f.newUri) };
+				const target = { held: await isFile(f.newUri, this.source) };
 				this.targets.set(key, target);
 				setTimeout(() => {
 					if (this.targets.get(key) === target) {
@@ -1202,7 +1228,7 @@ export class BloblangPanels implements vscode.Disposable {
 	private tabsChanged(): void {
 		for (const entry of [...this.panels]) {
 			const key = entry.uri.toString();
-			if (hasTextTab(key)) {
+			if (hasTextTab(key, this.source.window.tabGroups)) {
 				entry.hadTab = true;
 			} else if (entry.hadTab && !this.renaming(key) && !this.pendingRenames.creating(key)) {
 				entry.panel.dispose();
@@ -1306,7 +1332,7 @@ export class BloblangPanels implements vscode.Disposable {
 		if (this.options.setVariable) {
 			return this.options.setVariable(name, uri);
 		}
-		const set = await vscode.commands.executeCommand<unknown>(SET_MISSING_COMMAND, name, uri);
+		const set = await this.source.commands.executeCommand<unknown>(SET_MISSING_COMMAND, name, uri);
 		return typeof set === 'string' ? set : undefined;
 	}
 
@@ -1362,7 +1388,7 @@ export class BloblangPanels implements vscode.Disposable {
 					}
 				}
 			} catch (err) {
-				this.log(`Test mapping: ${err instanceof Error ? err.message : String(err)}`);
+				this.log(`Test mapping: ${errorText(err)}`);
 			}
 		}
 		for (const entry of entries) {
@@ -1427,7 +1453,7 @@ export class BloblangPanels implements vscode.Disposable {
 				}
 			}
 		} catch (e) {
-			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+			this.log(`Test mapping: ${errorText(e)}`);
 		} finally {
 			releases.forEach((release) => release());
 		}
@@ -1457,7 +1483,7 @@ export class BloblangPanels implements vscode.Disposable {
 			if (uri instanceof vscode.Uri && typeof processorPath === 'string') {
 				return await this.show(uri, processorPath);
 			}
-			const editor = vscode.window.activeTextEditor;
+			const editor = this.source.window.activeTextEditor;
 			const doc = editor?.document;
 			if (doc?.uri.scheme === 'untitled') {
 				this.tell(SAVE_TO_TEST);
@@ -1472,7 +1498,7 @@ export class BloblangPanels implements vscode.Disposable {
 			}
 			return await this.show(doc.uri, processor.path);
 		} catch (e) {
-			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+			this.log(`Test mapping: ${errorText(e)}`);
 			return undefined;
 		}
 	}
@@ -1526,7 +1552,7 @@ export class BloblangPanels implements vscode.Disposable {
 			open.panel.reveal(undefined, true);
 			return open;
 		}
-		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+		const doc = this.source.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
 		const processors = doc && this.options.detection.isDetected(uri) ? bloblangProcessors(parsedDocument(doc).parsed) : [];
 		const processor = bloblangProcessorByPath(processors, processorPath);
 		if (!processor) {
@@ -1538,11 +1564,11 @@ export class BloblangPanels implements vscode.Disposable {
 		try {
 			await this.options.graphSettled?.(uri);
 		} catch (e) {
-			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+			this.log(`Test mapping: ${errorText(e)}`);
 		}
-		const yamlColumn = editorColumnOf(uri);
+		const yamlColumn = editorColumnOf(uri, this.source);
 		const placed = await this.placement(uri, yamlColumn);
-		const panel = vscode.window.createWebviewPanel(
+		const panel = this.source.window.createWebviewPanel(
 			BLOBLANG_VIEW_TYPE,
 			title,
 			{ viewColumn: placed.column, preserveFocus: true },
@@ -1586,11 +1612,11 @@ export class BloblangPanels implements vscode.Disposable {
 	 */
 	private async returnFocus(doc: vscode.TextDocument, column: vscode.ViewColumn, through: readonly vscode.ViewColumn[]): Promise<void> {
 		try {
-			if (await returnFocusTo(doc, column, through) === 'missed') {
+			if (await returnFocusTo(doc, column, through, this.source) === 'missed') {
 				this.log('Test mapping: focus did not stay in the YAML.');
 			}
 		} catch (e) {
-			this.log(`Test mapping: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
+			this.log(`Test mapping: could not return focus to the YAML: ${errorText(e)}`);
 		}
 	}
 
@@ -1605,7 +1631,7 @@ export class BloblangPanels implements vscode.Disposable {
 	): Promise<{
 		readonly column: vscode.ViewColumn; readonly movedFocus: boolean; readonly created?: vscode.ViewColumn; readonly through: readonly vscode.ViewColumn[];
 	}> {
-		const groups = vscode.window.tabGroups;
+		const groups = this.source.window.tabGroups;
 		const testGroup = groups.all.find(isTestGroup);
 		if (testGroup) {
 			return { column: testGroup.viewColumn, movedFocus: false, through: [] };
@@ -1614,7 +1640,7 @@ export class BloblangPanels implements vscode.Disposable {
 		try {
 			graph = this.options.graphColumn?.(uri);
 		} catch (e) {
-			this.log(`Test mapping: ${e instanceof Error ? e.message : String(e)}`);
+			this.log(`Test mapping: ${errorText(e)}`);
 		}
 		if (graph === undefined || graph === yamlColumn) {
 			// Never into a graph's group: `Beside` would land in the one right of the active group.
@@ -1622,7 +1648,7 @@ export class BloblangPanels implements vscode.Disposable {
 			graph = beside && holdsGraph(beside) ? beside.viewColumn : undefined;
 		}
 		if (graph !== undefined) {
-			const below = await newGroupNextTo(graph, 'below');
+			const below = await newGroupNextTo(graph, 'below', this.source);
 			if (below !== undefined) {
 				// The new group's column: the groups from it on (the YAML's, maybe) are one further now.
 				return { column: below, movedFocus: true, created: below, through: [graph, below] };
@@ -1647,7 +1673,7 @@ export class BloblangPanels implements vscode.Disposable {
 				binary: null,
 			};
 		}
-		const cwd = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
+		const cwd = this.source.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? path.dirname(uri.fsPath);
 		const locate = (line: number, char: number): FilePosition => positionIn(text, processor.positions.offsetAt(line, char));
 		// A generate mapping runs on no input of the panel's (16): `testConfig` gives it an empty message.
 		const { content, meta } = processor.kind === 'generate' ? { content: '', meta: {} } : input;
@@ -1659,11 +1685,11 @@ export class BloblangPanels implements vscode.Disposable {
 	 * `line` (past the end: the last line), revealed in the centre, and the editor takes focus.
 	 */
 	async goToLine(uri: vscode.Uri, line: number): Promise<void> {
-		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())
-			?? await vscode.workspace.openTextDocument(uri);
+		const doc = this.source.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())
+			?? await this.source.workspace.openTextDocument(uri);
 		const at = new vscode.Position(Math.max(0, Math.min(line, doc.lineCount) - 1), 0);
 		const range = new vscode.Range(at, at);
-		const editor = await vscode.window.showTextDocument(doc, { viewColumn: editorColumn(uri), preserveFocus: false, selection: range });
+		const editor = await this.source.window.showTextDocument(doc, { viewColumn: editorColumn(uri, this.source), preserveFocus: false, selection: range });
 		editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 	}
 
@@ -1673,12 +1699,12 @@ export class BloblangPanels implements vscode.Disposable {
 	 * (as the graph's).
 	 */
 	async focusEditor(uri: vscode.Uri): Promise<void> {
-		const column = editorColumnOf(uri);
+		const column = editorColumnOf(uri, this.source);
 		if (column === undefined) {
 			return;
 		}
-		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString()) ?? await vscode.workspace.openTextDocument(uri);
-		await vscode.window.showTextDocument(doc, { viewColumn: column, preserveFocus: false });
+		const doc = this.source.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString()) ?? await this.source.workspace.openTextDocument(uri);
+		await this.source.window.showTextDocument(doc, { viewColumn: column, preserveFocus: false });
 	}
 
 	/** The end-of-line hints' current ranges in `uri` (test seam: decorations can't be read back). */
@@ -1722,24 +1748,24 @@ export class BloblangPanels implements vscode.Disposable {
  * The editor group of `uri`'s editor: a visible editor's, else the group with a tab of it, else the
  * first group.
  */
-function editorColumn(uri: vscode.Uri): vscode.ViewColumn {
+function editorColumn(uri: vscode.Uri, source: BloblangPanelsSource): vscode.ViewColumn {
 	const key = uri.toString();
-	const visible = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === key)?.viewColumn;
+	const visible = source.window.visibleTextEditors.find((e) => e.document.uri.toString() === key)?.viewColumn;
 	if (visible !== undefined) {
 		return visible;
 	}
-	const group = vscode.window.tabGroups.all.find((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === key));
+	const group = source.window.tabGroups.all.find((g) => g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === key));
 	return group?.viewColumn ?? vscode.ViewColumn.One;
 }
 
 /** The column of a visible editor of `uri`, else of a group with a tab of it (4.17: focus returns there). */
-function editorColumnOf(uri: vscode.Uri): vscode.ViewColumn | undefined {
+function editorColumnOf(uri: vscode.Uri, source: BloblangPanelsSource): vscode.ViewColumn | undefined {
 	const key = uri.toString();
-	const groups = vscode.window.tabGroups;
+	const groups = source.window.tabGroups;
 	if (isTextTabOf(groups.activeTabGroup.activeTab, key)) {
 		return groups.activeTabGroup.viewColumn;
 	}
-	return vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === key && e.viewColumn !== undefined)?.viewColumn
+	return source.window.visibleTextEditors.find((e) => e.document.uri.toString() === key && e.viewColumn !== undefined)?.viewColumn
 		?? groups.all.find((g) => g.tabs.some((t) => isTextTabOf(t, key)))?.viewColumn;
 }
 
@@ -1798,12 +1824,12 @@ function keyOf(uri: vscode.Uri, processorPath: string): string {
  * Ticket 32: a missing variable's name that masking would change is left out (it would show a
  * secret value on its button).
  */
-function maskedResult(result: MappingTestOutcome['result'], uri: vscode.Uri): MappingTestOutcome['result'] {
+function maskedResult(result: MappingTestOutcome['result'], uri: vscode.Uri, source: BloblangPanelsSource): MappingTestOutcome['result'] {
 	const values = activeSecretValues();
 	if (!values || result.kind === 'ok' || result.kind === 'deleted') {
 		return result;
 	}
-	const scope = vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() ?? WINDOW_SCOPE;
+	const scope = source.workspace.getWorkspaceFolder(uri)?.uri.toString() ?? WINDOW_SCOPE;
 	const mask = (text: string) => values.mask(text, scope);
 	if (result.kind === 'parseError') {
 		return { ...result, message: mask(result.message), excerpt: mask(result.excerpt) };

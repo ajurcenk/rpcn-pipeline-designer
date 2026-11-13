@@ -201,3 +201,9 @@
 - source_plan: `_bmad-output/backlog/bug-pipeline-logs-slow-search-patterns-are-refused-everywhere-epic-6-retrospective-plan.md`
   summary: The Pipeline Logs slow-pattern check does not weigh alternatives that match the same text under a fixed count after an overlapping repeat, so a contrived pattern such as `a+[^x](a|a){2}é{1,3}Z` is accepted and takes about 1.6 s on a 10,000-character value.
   evidence: Found by the bug 54 implementer's fuzz after review pass 2 (medium, measured); the naive fix (refusing any alternation after an overlapping repeat) would also refuse common searches such as `(error|warn).*`.
+- source_plan: `_bmad-output/backlog/story-code-health-for-the-graph-model-and-the-panel-adapters-story-50-group-b-plan.md`
+  summary: Epic 4 retrospective G-1, splitting the Bloblang test panel registry (`src/adapters/bloblangPanel/panels.ts`) into its tabs, placement and focus parts, was left out of story 55.
+  evidence: Story 55's decision (2026-11-13, the recommended option): deferred as it is large; story 55 only puts the registry behind `BloblangPanelsSource` with unit tests, which a split can build on.
+- source_plan: `_bmad-output/backlog/story-code-health-for-the-graph-model-and-the-panel-adapters-story-50-group-b-plan.md`
+  summary: Epic 3 retrospective AI-6, shared test filters for the integration suites, was left out of story 55.
+  evidence: Story 55's decision (2026-11-13, the recommended option): they would edit the integration suites, which story 55's criterion 2 keeps unchanged (`git diff eb154b8 -- src/test/integration src/test/integration-multiroot src/test/corpus` empty).

@@ -8,6 +8,7 @@
 // to the workspace's files. No `vscode` import.
 
 import * as path from 'path';
+import { errorText } from '../../shared/errorText';
 
 export interface DeployMapping {
 	readonly clusterId: string;
@@ -111,7 +112,7 @@ export function parseMapping(text: string): ParsedMapping {
 	try {
 		value = JSON.parse(text);
 	} catch (err) {
-		return { kind: 'bad', reason: `it is not JSON (${err instanceof Error ? err.message : String(err)})` };
+		return { kind: 'bad', reason: `it is not JSON (${errorText(err)})` };
 	}
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
 		return { kind: 'bad', reason: 'it is not a JSON object' };

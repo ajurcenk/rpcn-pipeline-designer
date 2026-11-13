@@ -63,6 +63,9 @@ suite('core/nodeAt (3.5, AD-16)', () => {
 			edges: [],
 		};
 		assert.doesNotThrow(() => nodeAt(cycle, 5));
+		// The walk from `a` stops when it comes round to `a` again: `a` is one below `b`, so it wins.
+		assert.strictEqual(nodeAt(cycle, 5), 'a');
+		assert.strictEqual(nodeAt(cycle, 1), 'a');
 		assert.strictEqual(nodeAt({ nodes: [{ id: 'x', role: 'input', range: [0, 5], parent: 'gone' }], edges: [] }, 1), 'x');
 		assert.strictEqual(nodeAt({} as unknown as PipelineModel, 1), undefined);
 	});

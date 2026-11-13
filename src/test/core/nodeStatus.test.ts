@@ -92,6 +92,12 @@ suite('core/nodeStatus (3.8, AD-17)', () => {
 			edges: [],
 		};
 		assert.doesNotThrow(() => nodeStatusOf(cyclic, [{ offset: 3, severity: 'error', message: 'x' }]));
+		// The diagnostic maps to `a` (the deeper of the two), rolls up to `b` and stops before `a`
+		// again: no roll-up onto the node itself, and the message once.
+		assert.deepStrictEqual(nodeStatusOf(cyclic, [{ offset: 3, severity: 'error', message: 'x' }]), {
+			a: { severity: 'error', own: 'error', messages: ['x'], ownMessages: ['x'] },
+			b: { severity: 'error', messages: ['x'] },
+		});
 	});
 
 	test('deterministic: equal inputs serialise equally, whatever order the diagnostics come in', () => {

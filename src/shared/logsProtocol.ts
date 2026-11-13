@@ -4,9 +4,10 @@
 // notes; ticket 6.4: the levels, the filter and its search pattern; ticket 6.6: the panel's states and
 // their texts; ticket 6.7: the records-per-time strip's slots, labels and state). The panel adapter
 // (`src/adapters/vscode/logsPanel.ts`), the record shaping (`src/adapters/logs/records.ts`) and
-// `webview/src/logs` import it. Imports nothing but `logsText.ts`, the panel's shared texts (AD-15); it
+// `webview/src/logs` import it. Imports nothing but `logsText.ts`, the panel's shared texts, and `errorText.ts` (AD-15); it
 // re-exports `localMinute` and `shortTime` from there only for the existing test imports.
 
+import { errorText } from './errorText';
 import { countText, localMinute, matchCountText, shortTime } from './logsText';
 
 /** Kept only for the existing test imports; new code imports these from `logsText.ts`. */
@@ -525,7 +526,7 @@ export function searchPattern(text: string, matchCase: boolean, regex: boolean, 
 	try {
 		return new RegExp(regex ? text : escapeRegExp(text), flags);
 	} catch (err) {
-		return { error: err instanceof Error ? err.message : String(err) };
+		return { error: errorText(err) };
 	}
 }
 

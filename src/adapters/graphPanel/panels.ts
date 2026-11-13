@@ -30,11 +30,12 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { errorText } from '../../shared/errorText';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import type { DetectionRegistry } from '../vscode/detection';
 import type { LintDiagnostics } from '../vscode/diagnostics';
 import { GraphPanel, type GraphPanelHandle } from './graphPanel';
-import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo } from './groups';
+import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo, vscodeSource, type GraphPanelSource, type PanelSource } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
 import {
@@ -69,8 +70,8 @@ const SAVE_AS_TAB_WAIT_MS = 500;
 export { GRAPH_VIEW_TYPE };
 
 /** Whether `graph`'s panel is active and its group is the active one: the lock acts on the active group. */
-function inItsGroup(graph: GraphPanel): boolean {
-	return graph.panel.active && vscode.window.tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn;
+function inItsGroup(graph: GraphPanel, tabGroups: vscode.TabGroups): boolean {
+	return graph.panel.active && tabGroups.activeTabGroup.viewColumn === graph.panel.viewColumn;
 }
 
 /** Whether `group` holds nothing but graph panels. */
@@ -81,6 +82,21 @@ function onlyGraphs(group: vscode.TabGroup): boolean {
 /** The tab title of a file's graph panel. */
 export function graphTitle(uri: vscode.Uri): string {
 	return `Graph: ${path.posix.basename(uri.path)}`;
+}
+
+/**
+ * The slice of VS Code the graph panel registry and its panels reach (story 55): the workspace's
+ * document and file events, the window's editor and tab events, visible and active editors, tab
+ * groups, `createWebviewPanel` and `showTextDocument`, and `executeCommand`. The real API satisfies
+ * it (`vscodeSource`, the default); unit tests pass a fake. Commands are registered on VS Code's own.
+ */
+export interface GraphPanelsSource extends PanelSource, GraphPanelSource {
+	readonly workspace: Pick<typeof vscode.workspace,
+		| 'onDidChangeTextDocument' | 'onDidCreateFiles' | 'onDidSaveTextDocument' | 'onWillRenameFiles' | 'onDidRenameFiles'
+		| 'textDocuments' | 'openTextDocument'>;
+	readonly window: Pick<typeof vscode.window,
+		| 'onDidChangeTextEditorSelection' | 'onDidChangeActiveTextEditor' | 'onDidChangeVisibleTextEditors'
+		| 'visibleTextEditors' | 'activeTextEditor' | 'tabGroups' | 'createWebviewPanel' | 'showTextDocument'>;
 }
 
 /** What the graph needs of the file's diagnostics (AD-17): the deduplicated set and its change event. */
@@ -139,6 +155,8 @@ export interface GraphPanelsOptions {
 	 */
 	readonly saveAsWindowMs?: number;
 	readonly saveAsCloseMs?: number;
+	/** The VS Code API the registry reaches (story 55). `undefined`: the real one. */
+	readonly source?: GraphPanelsSource;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -207,8 +225,10 @@ export class GraphPanels implements vscode.Disposable {
 	private queue: Promise<unknown> = Promise.resolve();
 	private disposed = false;
 	private readonly subscriptions: vscode.Disposable[];
+	private readonly source: GraphPanelsSource;
 
 	constructor(private readonly options: GraphPanelsOptions) {
+		this.source = options.source ?? vscodeSource;
 		const stored = options.memento?.get<unknown>(HIDDEN_GRAPHS_STATE);
 		this.hidden = new Set(Array.isArray(stored) ? stored.filter((k): k is string => typeof k === 'string') : []);
 		this.saveAsWindowMs = options.saveAsWindowMs ?? SAVE_AS_WINDOW_MS;
@@ -218,7 +238,7 @@ export class GraphPanels implements vscode.Disposable {
 		// is open (OTHER_DOC, OTHER_FILE, CLOSED). Events with no content change (dirty state, save)
 		// send nothing.
 		this.subscriptions = [
-			vscode.workspace.onDidChangeTextDocument((e) => {
+			this.source.workspace.onDidChangeTextDocument((e) => {
 				if (e.contentChanges.length > 0) {
 					void this.panels.get(e.document.uri.toString())?.changed(e.document);
 				}
@@ -227,14 +247,14 @@ export class GraphPanels implements vscode.Disposable {
 			// A selection change with no kind is VS Code's own (the text moved, or a programmatic
 			// set): it makes its editor the driving one only when that editor has focus, so a
 			// second split editor whose cursor shifts with an edit does not take over.
-			vscode.window.onDidChangeTextEditorSelection((e) => {
+			this.source.window.onDidChangeTextEditorSelection((e) => {
 				if (e.kind !== undefined || e.textEditor === this.focused) {
 					this.drive(e.textEditor);
 				} else {
 					this.follow(e.textEditor);
 				}
 			}),
-			vscode.window.onDidChangeActiveTextEditor((editor) => {
+			this.source.window.onDidChangeActiveTextEditor((editor) => {
 				if (editor) {
 					this.focused = editor;
 					this.drive(editor);
@@ -254,7 +274,7 @@ export class GraphPanels implements vscode.Disposable {
 				}
 			}),
 			options.schema.onDidChange(() => this.hostChanged()),
-			vscode.window.onDidChangeVisibleTextEditors((visible) => {
+			this.source.window.onDidChangeVisibleTextEditors((visible) => {
 				// A rename never reported no longer holds a column for its new name (4.13).
 				this.pendingRenames.prune();
 				this.adoptRenamedDriving(visible);
@@ -276,27 +296,27 @@ export class GraphPanels implements vscode.Disposable {
 			// file had a text tab and has none left closes.
 			// A Save As (ticket 12) is tested on the opened tabs and applied on the source's close, before
 			// TAB_CLOSE, so that close closes nothing.
-			vscode.window.tabGroups.onDidChangeTabs((e) => {
+			this.source.window.tabGroups.onDidChangeTabs((e) => {
 				this.saveAsOpened(e.opened);
 				this.saveAsClosed(e.closed);
 				this.tabsChanged();
 			}),
-			vscode.workspace.onDidCreateFiles((e) => e.files.forEach((uri) => this.recent(uri.toString(), 'created'))),
-			vscode.workspace.onDidSaveTextDocument((doc) => this.recent(doc.uri.toString(), 'saved')),
-			vscode.workspace.onWillRenameFiles((e) => {
+			this.source.workspace.onDidCreateFiles((e) => e.files.forEach((uri) => this.recent(uri.toString(), 'created'))),
+			this.source.workspace.onDidSaveTextDocument((doc) => this.recent(doc.uri.toString(), 'saved')),
+			this.source.workspace.onWillRenameFiles((e) => {
 				this.pendingRenames.announce(e.files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() })));
 				const froms = e.files.map((f) => f.oldUri.toString());
 				const renamed = (key: string) => froms.some((from) => key === from || within(key, from));
 				[...this.tabbedRenames].filter(renamed).forEach((key) => this.tabbedRenames.delete(key));
-				for (const tab of vscode.window.tabGroups.all.flatMap((g) => g.tabs)) {
+				for (const tab of this.source.window.tabGroups.all.flatMap((g) => g.tabs)) {
 					if (tab.input instanceof vscode.TabInputText && renamed(tab.input.uri.toString())) {
 						this.tabbedRenames.add(tab.input.uri.toString());
 					}
 				}
 			}),
-			vscode.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
+			this.source.workspace.onDidRenameFiles((e) => this.renamed(e.files)),
 		];
-		this.shown(vscode.window.visibleTextEditors);
+		this.shown(this.source.window.visibleTextEditors);
 		this.updateContext();
 	}
 
@@ -333,7 +353,7 @@ export class GraphPanels implements vscode.Disposable {
 	 * skipped.
 	 */
 	private editorFor(key: string): vscode.TextEditor | undefined {
-		const visible = vscode.window.visibleTextEditors.filter((e) => e.viewColumn !== undefined);
+		const visible = this.source.window.visibleTextEditors.filter((e) => e.viewColumn !== undefined);
 		const driving = this.driving.get(key);
 		if (driving && visible.includes(driving)) {
 			return driving;
@@ -372,7 +392,7 @@ export class GraphPanels implements vscode.Disposable {
 		try {
 			return this.options.autoOpen?.() === true && this.options.detection?.isDetected(doc.uri) === true;
 		} catch (e) {
-			this.options.log(`Graph auto-open: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Graph auto-open: ${errorText(e)}`);
 			return false;
 		}
 	}
@@ -384,7 +404,7 @@ export class GraphPanels implements vscode.Disposable {
 	private tabsChanged(): void {
 		for (const graph of [...this.panels.values()]) {
 			const key = graph.uri.toString();
-			if (hasTextTab(key)) {
+			if (hasTextTab(key, this.source.window.tabGroups)) {
 				graph.hadTab = true;
 			} else if (graph.hadTab && !this.pendingRenames.renaming(key) && !this.pendingRenames.creating(key)) {
 				graph.panel.dispose();
@@ -407,7 +427,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 		}
 		for (const [key, candidate] of [...this.saveAsCandidates]) {
-			if (saveAsExpired(candidate, now, this.saveAsCloseMs) || !hasTextTab(key)) {
+			if (saveAsExpired(candidate, now, this.saveAsCloseMs) || !hasTextTab(key, this.source.window.tabGroups)) {
 				this.saveAsCandidates.delete(key);
 			}
 		}
@@ -468,7 +488,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			const from = tab.input.uri.toString();
 			for (const [key, candidate] of [...this.saveAsCandidates]) {
-				if (confirmsSaveAs(candidate, from, now, hasTextTab(key), this.saveAsCloseMs)) {
+				if (confirmsSaveAs(candidate, from, now, hasTextTab(key, this.source.window.tabGroups), this.saveAsCloseMs)) {
 					this.saveAsCandidates.delete(key);
 					if (this.applySaveAs(from, vscode.Uri.parse(key), candidate.column)) {
 						this.saveAsTargets.add(key);
@@ -493,7 +513,7 @@ export class GraphPanels implements vscode.Disposable {
 	private applySaveAs(from: string, to: vscode.Uri, column: vscode.ViewColumn): boolean {
 		const key = to.toString();
 		this.options.log(`Graph: ${path.posix.basename(vscode.Uri.parse(from).path)} was saved as ${path.posix.basename(to.path)}.`);
-		const graph = hasTextTab(from) ? undefined : this.panels.get(from);
+		const graph = hasTextTab(from, this.source.window.tabGroups) ? undefined : this.panels.get(from);
 		const remembered = !from.startsWith('untitled:') && this.seen.has(from);
 		const target = graph !== undefined || this.hidden.has(from) || remembered;
 		const other = this.panels.get(key);
@@ -508,7 +528,7 @@ export class GraphPanels implements vscode.Disposable {
 			this.panels.set(key, graph);
 			// The driving editor is the new file's editor in the column of its tab.
 			this.renamedDriving.set(key, { column, reported: true });
-			this.adoptRenamedDriving(vscode.window.visibleTextEditors);
+			this.adoptRenamedDriving(this.source.window.visibleTextEditors);
 			this.options.detection?.markDetected(to);
 			this.updateContext();
 			void graph.diagnosticsChanged();
@@ -596,7 +616,7 @@ export class GraphPanels implements vscode.Disposable {
 				entry.reported = true;
 			}
 		}
-		this.adoptRenamedDriving(vscode.window.visibleTextEditors);
+		this.adoptRenamedDriving(this.source.window.visibleTextEditors);
 		this.follows(this.seen, moved, winners);
 		// At a name whose own graph stays open (the moved file's tab keeps it), a moved file's Hide does
 		// not land: the open graph wins (bug 26). With no tab moving there, the graph closes with its tab.
@@ -701,7 +721,7 @@ export class GraphPanels implements vscode.Disposable {
 			this.options.detection?.markDetected(target);
 			return await this.enqueue(() => this.open(target, undefined, false));
 		} catch (e) {
-			this.options.log(`Show graph: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Show graph: ${errorText(e)}`);
 			return undefined;
 		}
 	}
@@ -722,7 +742,7 @@ export class GraphPanels implements vscode.Disposable {
 			this.panels.get(key)?.panel.dispose();
 			await this.storeHidden();
 		} catch (e) {
-			this.options.log(`Hide graph: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Hide graph: ${errorText(e)}`);
 		}
 	}
 
@@ -741,7 +761,7 @@ export class GraphPanels implements vscode.Disposable {
 	 * has focus, its file. Never `window.activeTextEditor` (spike 3.14).
 	 */
 	private activeUri(): vscode.Uri | undefined {
-		const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+		const input = this.source.window.tabGroups.activeTabGroup.activeTab?.input;
 		if (input instanceof vscode.TabInputText) {
 			return input.uri;
 		}
@@ -755,7 +775,7 @@ export class GraphPanels implements vscode.Disposable {
 		try {
 			await this.options.memento?.update(HIDDEN_GRAPHS_STATE, [...this.hidden]);
 		} catch (e) {
-			this.options.log(`Hide graph: could not store the hidden files: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Hide graph: could not store the hidden files: ${errorText(e)}`);
 		}
 	}
 
@@ -793,13 +813,13 @@ export class GraphPanels implements vscode.Disposable {
 		}
 		// A queued auto-open whose file's tab closed meanwhile opens nothing, and nothing opens for a
 		// file hidden while its open was queued (F2_HIDE_QUEUED: Hide graph after a queued Show graph).
-		if (this.disposed || this.hidden.has(key) || (auto && (!shownIn || !this.shouldAutoOpen(shownIn.doc) || !hasTextTab(key)))) {
+		if (this.disposed || this.hidden.has(key) || (auto && (!shownIn || !this.shouldAutoOpen(shownIn.doc) || !hasTextTab(key, this.source.window.tabGroups)))) {
 			return undefined;
 		}
 		const yamlColumn = shownIn?.column ?? this.columnOf(key);
 		const title = graphTitle(target);
 		const placed = await this.graphColumn(yamlColumn);
-		const panel = vscode.window.createWebviewPanel(
+		const panel = this.source.window.createWebviewPanel(
 			GRAPH_VIEW_TYPE,
 			title,
 			{ viewColumn: placed.column, preserveFocus: true },
@@ -819,9 +839,10 @@ export class GraphPanels implements vscode.Disposable {
 			() => this.options.diagnostics.diagnosticsFor(graph.uri),
 			() => hostStatusOf(this.options.binary.state, this.options.schema),
 			() => this.options.actions,
+			this.source,
 			this.options.ignoreWebviewMessages,
 		);
-		graph.hadTab = hasTextTab(key);
+		graph.hadTab = hasTextTab(key, this.source.window.tabGroups);
 		this.panels.set(key, graph);
 		panel.onDidDispose(() => {
 			graph.dispose();
@@ -834,7 +855,7 @@ export class GraphPanels implements vscode.Disposable {
 		});
 		panel.webview.html = graphHtml(panel.webview, this.options.extensionUri, title);
 		this.updateContext();
-		const doc = shownIn?.doc ?? openDocument(key);
+		const doc = shownIn?.doc ?? openDocument(key, this.source.workspace.textDocuments);
 		await this.lock(graph, yamlColumn, doc, placed.through);
 		return graph;
 	}
@@ -844,7 +865,7 @@ export class GraphPanels implements vscode.Disposable {
 	 * a group whose active tab is the file, else any group holding a tab of it.
 	 */
 	private columnOf(key: string): vscode.ViewColumn | undefined {
-		const groups = vscode.window.tabGroups;
+		const groups = this.source.window.tabGroups;
 		if (isTextTabOf(groups.activeTabGroup.activeTab, key)) {
 			return groups.activeTabGroup.viewColumn;
 		}
@@ -866,7 +887,7 @@ export class GraphPanels implements vscode.Disposable {
 				return { column };
 			}
 		}
-		const groups = vscode.window.tabGroups;
+		const groups = this.source.window.tabGroups;
 		if (yamlColumn === undefined) {
 			return await this.aboveTestPanels((groups.activeTabGroup.viewColumn + 1) as vscode.ViewColumn) ?? { column: vscode.ViewColumn.Beside };
 		}
@@ -888,11 +909,11 @@ export class GraphPanels implements vscode.Disposable {
 	 * logged) `undefined`.
 	 */
 	private async aboveTestPanels(column: vscode.ViewColumn): Promise<{ readonly column: vscode.ViewColumn; readonly through: vscode.ViewColumn } | undefined> {
-		const group = vscode.window.tabGroups.all.find((g) => g.viewColumn === column);
+		const group = this.source.window.tabGroups.all.find((g) => g.viewColumn === column);
 		if (!group || !onlyTestPanels(group)) {
 			return undefined;
 		}
-		const above = await newGroupNextTo(column, 'above');
+		const above = await newGroupNextTo(column, 'above', this.source);
 		if (above === undefined) {
 			this.options.log('Graph: could not open a group above the test panels.');
 			return undefined;
@@ -918,7 +939,7 @@ export class GraphPanels implements vscode.Disposable {
 			}
 			graph.panel.reveal(undefined, false);
 			// A panel disposed meanwhile (Hide graph, its tab closed) ends the sequence (F6_DISPOSE).
-			const active = await until(() => graph.isDisposed || inItsGroup(graph), this.options.lockWaitMs ?? LOCK_WAIT_MS);
+			const active = await until(() => graph.isDisposed || inItsGroup(graph, this.source.window.tabGroups), this.options.lockWaitMs ?? LOCK_WAIT_MS);
 			if (graph.isDisposed) {
 				return;
 			}
@@ -928,7 +949,7 @@ export class GraphPanels implements vscode.Disposable {
 				return;
 			}
 		} catch (e) {
-			this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Graph ${name}: could not lock its group: ${errorText(e)}`);
 			graph.settleLock();
 			return;
 		}
@@ -948,11 +969,11 @@ export class GraphPanels implements vscode.Disposable {
 	private lockLate(
 		graph: GraphPanel, yamlColumn: vscode.ViewColumn | undefined, doc: vscode.TextDocument | undefined, name: string, through?: vscode.ViewColumn,
 	): void {
-		const atTimeout = vscode.window.activeTextEditor;
+		const atTimeout = this.source.window.activeTextEditor;
 		let userEditor = false;
 		/** Set once the sequence ends: it finished, or the panel (or the registry) was disposed. */
 		let done = false;
-		const editorListener = vscode.window.onDidChangeActiveTextEditor((e) => {
+		const editorListener = this.source.window.onDidChangeActiveTextEditor((e) => {
 			if (e && e !== atTimeout && !(e.document === doc && e.viewColumn === yamlColumn)) {
 				userEditor = true;
 			}
@@ -967,7 +988,7 @@ export class GraphPanels implements vscode.Disposable {
 			try {
 				// One bounded poll over the whole window: a panel already active whose group becomes
 				// active later is caught too.
-				const active = await until(() => done || graph.isDisposed || inItsGroup(graph), this.options.lockLateWindowMs ?? LATE_LOCK_WINDOW_MS);
+				const active = await until(() => done || graph.isDisposed || inItsGroup(graph, this.source.window.tabGroups), this.options.lockLateWindowMs ?? LATE_LOCK_WINDOW_MS);
 				if (done || graph.isDisposed) {
 					return;
 				}
@@ -983,7 +1004,7 @@ export class GraphPanels implements vscode.Disposable {
 				}
 				await this.lockAndReturn(graph, yamlColumn, doc, name, () => userEditor, through);
 			} catch (e) {
-				this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
+				this.options.log(`Graph ${name}: could not lock its group: ${errorText(e)}`);
 			} finally {
 				end();
 				graph.settleLock();
@@ -1010,18 +1031,18 @@ export class GraphPanels implements vscode.Disposable {
 				this.options.log(`Graph ${name}: another editor became active, so its group was not locked.`);
 				return;
 			}
-			if (!inItsGroup(graph)) {
+			if (!inItsGroup(graph, this.source.window.tabGroups)) {
 				this.options.log(`Graph ${name}: its group is no longer active, so it was not locked.`);
 				return;
 			}
 			// Only a group holding nothing but graphs is locked, never one of the user's editor groups.
-			if (onlyGraphs(vscode.window.tabGroups.activeTabGroup)) {
-				await vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+			if (onlyGraphs(this.source.window.tabGroups.activeTabGroup)) {
+				await this.source.commands.executeCommand('workbench.action.lockEditorGroup');
 			} else {
 				this.options.log(`Graph ${name}: its group holds other editors, so it was not locked.`);
 			}
 		} catch (e) {
-			this.options.log(`Graph ${name}: could not lock its group: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Graph ${name}: could not lock its group: ${errorText(e)}`);
 		}
 		if (yamlColumn === undefined || !doc) {
 			return;
@@ -1036,11 +1057,11 @@ export class GraphPanels implements vscode.Disposable {
 			// two are taken back from.
 			const own = graph.panel.viewColumn;
 			const from = [...(own !== undefined ? [own] : []), ...(through !== undefined ? [through] : [])];
-			if (await returnFocusTo(doc, yamlColumn, from, () => !graph.isDisposed && !userEditor()) === 'missed') {
+			if (await returnFocusTo(doc, yamlColumn, from, this.source, () => !graph.isDisposed && !userEditor()) === 'missed') {
 				this.options.log(`Graph ${name}: focus did not stay in the YAML.`);
 			}
 		} catch (e) {
-			this.options.log(`Graph ${name}: could not return focus to the YAML: ${e instanceof Error ? e.message : String(e)}`);
+			this.options.log(`Graph ${name}: could not return focus to the YAML: ${errorText(e)}`);
 		}
 	}
 
@@ -1053,7 +1074,7 @@ export class GraphPanels implements vscode.Disposable {
 		if (this.options.setContext) {
 			this.options.setContext(GRAPH_OPEN_PATHS_KEY, paths);
 		} else {
-			void vscode.commands.executeCommand('setContext', GRAPH_OPEN_PATHS_KEY, paths);
+			void this.source.commands.executeCommand('setContext', GRAPH_OPEN_PATHS_KEY, paths);
 		}
 	}
 

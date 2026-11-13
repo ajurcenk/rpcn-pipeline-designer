@@ -7,6 +7,28 @@ import { until } from './tabs';
 export const GRAPH_VIEW_TYPE = 'redpandaConnect.graph';
 export const BLOBLANG_VIEW_TYPE = 'redpandaConnect.bloblang';
 
+/**
+ * The slice of VS Code the editor-group helpers reach (story 55): the window's groups, active
+ * editor and `showTextDocument`, and `executeCommand`. The real API satisfies it (`vscodeSource`);
+ * the panel registries' own Sources extend it, and unit tests pass a fake.
+ */
+export interface PanelSource {
+	readonly window: Pick<typeof vscode.window, 'tabGroups' | 'activeTextEditor' | 'onDidChangeActiveTextEditor' | 'showTextDocument'>;
+	readonly commands: Pick<typeof vscode.commands, 'executeCommand'>;
+}
+
+/**
+ * The slice of VS Code one graph panel (`GraphPanel`) reaches: open documents, `openTextDocument`
+ * and `showTextDocument`. The graph registry's Source (`GraphPanelsSource`) includes it.
+ */
+export interface GraphPanelSource {
+	readonly workspace: Pick<typeof vscode.workspace, 'textDocuments' | 'openTextDocument'>;
+	readonly window: Pick<typeof vscode.window, 'showTextDocument'>;
+}
+
+/** The real VS Code API: the panel registries' default Source. */
+export const vscodeSource = { workspace: vscode.workspace, window: vscode.window, commands: vscode.commands } as const;
+
 /** How long `newGroupNextTo` waits for each of its focus changes. */
 const GROUP_WAIT_MS = 1_000;
 
@@ -53,21 +75,23 @@ export function isTestGroup(group: vscode.TabGroup): boolean {
  * group; `undefined` when the group can't be made active or no group was created in time (focus
  * may have moved). Never throws.
  */
-export async function newGroupNextTo(column: vscode.ViewColumn, direction: 'below' | 'above', waitMs = GROUP_WAIT_MS): Promise<vscode.ViewColumn | undefined> {
+export async function newGroupNextTo(
+	column: vscode.ViewColumn, direction: 'below' | 'above', source: PanelSource, waitMs = GROUP_WAIT_MS,
+): Promise<vscode.ViewColumn | undefined> {
 	try {
 		const focus = FOCUS_GROUP_COMMANDS[column - 1];
 		if (focus === undefined) {
 			return undefined;
 		}
-		const groups = vscode.window.tabGroups;
+		const groups = source.window.tabGroups;
 		if (groups.activeTabGroup.viewColumn !== column) {
-			await vscode.commands.executeCommand(focus);
+			await source.commands.executeCommand(focus);
 			if (!await until(() => groups.activeTabGroup.viewColumn === column, waitMs)) {
 				return undefined;
 			}
 		}
 		const count = groups.all.length;
-		await vscode.commands.executeCommand(direction === 'below' ? 'workbench.action.newGroupBelow' : 'workbench.action.newGroupAbove');
+		await source.commands.executeCommand(direction === 'below' ? 'workbench.action.newGroupBelow' : 'workbench.action.newGroupAbove');
 		const created = await until(() => groups.all.length > count && groups.activeTabGroup.tabs.length === 0, waitMs);
 		return created ? groups.activeTabGroup.viewColumn : undefined;
 	} catch {
@@ -108,9 +132,10 @@ const RETAKES = 2;
  * when another group is activated, nothing more is done. Throws what `showTextDocument` throws.
  */
 export async function returnFocusTo(
-	doc: vscode.TextDocument, column: vscode.ViewColumn, through: readonly vscode.ViewColumn[], mayRetake: () => boolean = () => true,
+	doc: vscode.TextDocument, column: vscode.ViewColumn, through: readonly vscode.ViewColumn[], source: PanelSource,
+	mayRetake: () => boolean = () => true,
 ): Promise<FocusReturn> {
-	const groups = vscode.window.tabGroups;
+	const groups = source.window.tabGroups;
 	/** The editor the user moved to during the window, if any. */
 	let user: { readonly doc: vscode.TextDocument; readonly column: vscode.ViewColumn } | undefined;
 	/** Another group was activated, not by this sequence. */
@@ -118,11 +143,11 @@ export async function returnFocusTo(
 	const target = () => user ?? { doc, column };
 	const focused = () => {
 		const { doc: d, column: c } = target();
-		const active = vscode.window.activeTextEditor;
+		const active = source.window.activeTextEditor;
 		return active?.document === d && active.viewColumn === c && groups.activeTabGroup.viewColumn === c;
 	};
 	const subscriptions = [
-		vscode.window.onDidChangeActiveTextEditor((editor) => {
+		source.window.onDidChangeActiveTextEditor((editor) => {
 			if (editor?.viewColumn !== undefined && !(editor.document === doc && editor.viewColumn === column)) {
 				user = { doc: editor.document, column: editor.viewColumn };
 			}
@@ -140,7 +165,7 @@ export async function returnFocusTo(
 				return user || foreign || attempt === 1 ? 'declined' : 'missed';
 			}
 			const { doc: d, column: c } = target();
-			await vscode.window.showTextDocument(d, { viewColumn: c, preserveFocus: false });
+			await source.window.showTextDocument(d, { viewColumn: c, preserveFocus: false });
 			if (await until(focused, FOCUS_WAIT_MS)) {
 				await new Promise((r) => setTimeout(r, FOCUS_SETTLE_MS));
 				if (focused()) {

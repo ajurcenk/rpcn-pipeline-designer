@@ -9,11 +9,13 @@ import { buildPipelineModel, nodeAt } from '../../core/graph';
 import { nodeStatusOf } from '../../core/nodeStatus';
 import { errorSelection, parseErrorOf } from '../../core/parseError';
 import type { BinaryActions } from '../redpandaConnect/notify';
+import { errorText } from '../../shared/errorText';
 import {
 	parseWebviewMessage, type HostMessage, type HostStatus, type NodeStatusById, type ParseError, type PipelineModel,
 } from '../../shared/protocol';
 import { parsedDocument } from '../vscode/parseCache';
 import { statusDiagnostics } from './status';
+import type { GraphPanelSource } from './groups';
 import { openDocument } from './tabs';
 
 /** How many of a panel's posted messages `posted` keeps (test seam; a bound, not a log). */
@@ -109,6 +111,8 @@ export class GraphPanel implements GraphPanelHandle {
 		private readonly hostStatus: () => HostStatus,
 		/** The binary warning's actions; `undefined`: the empty state's buttons do nothing. */
 		private readonly actions: () => BinaryActions | undefined,
+		/** The VS Code API it reaches: the registry's Source (`GraphPanelsOptions.source`). */
+		private readonly source: GraphPanelSource,
 		/** Test seam (`GraphPanelsOptions.ignoreWebviewMessages`): the webview's own messages are not handled. */
 		ignoreWebviewMessages = false,
 	) {
@@ -128,7 +132,7 @@ export class GraphPanel implements GraphPanelHandle {
 			if (msg?.type === 'ready') {
 				// Only a document already open (4.13): a `ready` never reopens a closed one, which would
 				// then stay open for minutes. Closed, the last model and status, if any (READY_CLOSED).
-				const doc = openDocument(this.uri.toString());
+				const doc = openDocument(this.uri.toString(), this.source.workspace.textDocuments);
 				if (doc || this.lastModel) {
 					await this.postSnapshot(doc);
 				}
@@ -230,7 +234,7 @@ export class GraphPanel implements GraphPanelHandle {
 			}
 			const catalogue = this.catalogue();
 			const key = this.uri.toString();
-			const doc = openDocument(key);
+			const doc = openDocument(key, this.source.workspace.textDocuments);
 			if (!catalogue || catalogue === this.modelCatalogue || !doc) {
 				return;
 			}
@@ -256,7 +260,7 @@ export class GraphPanel implements GraphPanelHandle {
 	async diagnosticsChanged(): Promise<void> {
 		try {
 			const key = this.uri.toString();
-			const doc = openDocument(key);
+			const doc = openDocument(key, this.source.workspace.textDocuments);
 			if (!doc) {
 				// The document is gone: its diagnostics no longer describe anything the graph shows.
 				this.status = {};
@@ -416,8 +420,8 @@ export class GraphPanel implements GraphPanelHandle {
 
 	private async document(): Promise<vscode.TextDocument> {
 		const key = this.uri.toString();
-		return openDocument(key)
-			?? vscode.workspace.openTextDocument(this.uri);
+		return openDocument(key, this.source.workspace.textDocuments)
+			?? this.source.workspace.openTextDocument(this.uri);
 	}
 
 	/**
@@ -455,7 +459,7 @@ export class GraphPanel implements GraphPanelHandle {
 		if (this.disposed) {
 			return;
 		}
-		this.log(`Graph ${path.posix.basename(this.uri.path)}: ${e instanceof Error ? e.message : String(e)}`);
+		this.log(`Graph ${path.posix.basename(this.uri.path)}: ${errorText(e)}`);
 	}
 
 	/**
@@ -481,7 +485,7 @@ export class GraphPanel implements GraphPanelHandle {
 		if (!editor) {
 			return;
 		}
-		await vscode.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
+		await this.source.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
 	}
 
 	/**
@@ -505,7 +509,7 @@ export class GraphPanel implements GraphPanelHandle {
 	 * opens no new one.
 	 */
 	private async select(doc: vscode.TextDocument, range: vscode.Range): Promise<void> {
-		const editor = await vscode.window.showTextDocument(doc, {
+		const editor = await this.source.window.showTextDocument(doc, {
 			viewColumn: this.editor()?.viewColumn ?? vscode.ViewColumn.One,
 			preserveFocus: false,
 		});

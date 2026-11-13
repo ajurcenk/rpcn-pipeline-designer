@@ -15,10 +15,12 @@ import { configTag, taggedConfigs } from '../cloud/sidecar';
 import type { CloudContext, CloudNode, DeployResult, PipelineActionResult, PipelineChoice, RowActionResult } from './cloudView';
 import {
 	compareConfigUri, CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON,
-	NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription, pollPipeline, readMapping, reasonOf, refusedText, sharedMappingText, stateWord,
+	NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription, pollPipeline, readMapping, refusedText, sharedMappingText, stateWord,
 	stillText,
 } from './cloudShared';
 import { translateForCloud } from '../../core/cloudTranslate';
+import { errorText } from '../../shared/errorText';
+
 /** The delete confirmation's action. */
 export const DELETE_ACTION = 'Delete';
 
@@ -74,7 +76,7 @@ export class CloudActions {
 			}
 			return await this.startOrStop(action, target);
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: ${action} failed: ${message}`);
 			void this.ctx.showError(`${ACTION_TEXT[action].failed} failed: ${message}`);
 			return { kind: 'failed', message };
@@ -403,8 +405,8 @@ export class CloudActions {
 				removed.push(file);
 				this.ctx.log(`Redpanda Cloud: deleted ${file}, the mapping to the deleted pipeline ${pipeline.displayName} (${pipeline.id}).`);
 			} catch (err) {
-				this.ctx.log(`Redpanda Cloud: could not delete ${file}: ${reasonOf(err)}`);
-				void this.ctx.showError(`Could not delete ${path.basename(file)}: ${reasonOf(err)}. It maps a config to the deleted pipeline ${pipeline.displayName}.`);
+				this.ctx.log(`Redpanda Cloud: could not delete ${file}: ${errorText(err)}`);
+				void this.ctx.showError(`Could not delete ${path.basename(file)}: ${errorText(err)}. It maps a config to the deleted pipeline ${pipeline.displayName}.`);
 			}
 		}
 		return removed;
@@ -450,7 +452,7 @@ export class CloudActions {
 					return { kind: 'copied', pipelineId: pipeline.id };
 			}
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: ${ROW_ACTION_TEXT[action]} failed: ${message}`);
 			void this.ctx.showError(`${ROW_ACTION_TEXT[action]} failed: ${message}`);
 			return { kind: 'failed', message };
@@ -561,8 +563,8 @@ export class CloudActions {
 		try {
 			source = edited ? edited.getText() : await fs.promises.readFile(file, 'utf8');
 		} catch (err) {
-			this.ctx.log(`Redpanda Cloud: did not compare ${file}: it could not be read: ${reasonOf(err)}`);
-			void this.ctx.showError(`Could not read ${name}: ${reasonOf(err)}. Nothing was compared.`);
+			this.ctx.log(`Redpanda Cloud: did not compare ${file}: it could not be read: ${errorText(err)}`);
+			void this.ctx.showError(`Could not read ${name}: ${errorText(err)}. Nothing was compared.`);
 			return NOT_STARTED;
 		}
 		const translation = translateForCloud(source);

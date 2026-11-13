@@ -14,6 +14,7 @@
 // (`setActiveSecretValues`).
 
 import * as vscode from 'vscode';
+import { errorText } from '../../shared/errorText';
 import {
 	CLEAR_SECRETS_COMMAND, declaredSecretNames, isSecretKey, parseSecretKey, REMOVE_SECRET_COMMAND, SECRET_ENV_SETTING,
 	SecretValues, secretKey, secretNameProblem, SET_SECRET_COMMAND, WINDOW_SCOPE,
@@ -70,7 +71,6 @@ export type Scope = vscode.WorkspaceFolder | undefined;
 
 const scopeOf = (folder: Scope): string => (folder ? folder.uri.toString() : WINDOW_SCOPE);
 const labelOf = (folder: Scope): string => (folder ? `folder "${folder.name}"` : 'this window');
-const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export class SecretVariables implements vscode.Disposable {
 	readonly values: SecretValues;
@@ -138,7 +138,7 @@ export class SecretVariables implements vscode.Disposable {
 						loaded.set(key, value);
 					}
 				} catch (err) {
-					failure ??= reasonOf(err);
+					failure ??= errorText(err);
 					const parsed = parseSecretKey(key);
 					const previous = parsed && this.values.get(parsed.scope, parsed.name);
 					if (previous !== undefined) {
@@ -153,7 +153,7 @@ export class SecretVariables implements vscode.Disposable {
 				this.emitter.fire();
 			}
 		};
-		const run = load().catch((err) => this.options.log(`${SECRET_ENV_SETTING}: could not load the secrets: ${reasonOf(err)}`));
+		const run = load().catch((err) => this.options.log(`${SECRET_ENV_SETTING}: could not load the secrets: ${errorText(err)}`));
 		this.latest = run;
 		return run;
 	}
@@ -210,7 +210,7 @@ export class SecretVariables implements vscode.Disposable {
 		try {
 			await this.options.store.store(key, value);
 		} catch (err) {
-			const reason = value ? reasonOf(err).split(value).join('…') : reasonOf(err);
+			const reason = value ? errorText(err).split(value).join('…') : errorText(err);
 			this.options.log(`${SECRET_ENV_SETTING}: could not store ${name} for ${labelOf(folder)}: ${reason}`);
 			this.notify('error', `Could not store the secret variable ${name}: ${reason}`);
 			return false;
@@ -225,7 +225,7 @@ export class SecretVariables implements vscode.Disposable {
 			try {
 				await this.options.store.delete(key);
 			} catch (err) {
-				this.options.log(`${SECRET_ENV_SETTING}: could not remove ${name} for ${labelOf(folder)} again: ${reasonOf(err)}`);
+				this.options.log(`${SECRET_ENV_SETTING}: could not remove ${name} for ${labelOf(folder)} again: ${errorText(err)}`);
 			}
 			this.wrote(key, undefined);
 			await this.record(key, false);
@@ -244,8 +244,8 @@ export class SecretVariables implements vscode.Disposable {
 		try {
 			await this.options.store.delete(key);
 		} catch (err) {
-			this.options.log(`${SECRET_ENV_SETTING}: could not remove ${name} for ${labelOf(folder)}: ${reasonOf(err)}`);
-			this.notify('error', `Could not remove the secret variable ${name}: ${reasonOf(err)}`);
+			this.options.log(`${SECRET_ENV_SETTING}: could not remove ${name} for ${labelOf(folder)}: ${errorText(err)}`);
+			this.notify('error', `Could not remove the secret variable ${name}: ${errorText(err)}`);
 			return false;
 		}
 		this.wrote(key, undefined);
@@ -317,7 +317,7 @@ export class SecretVariables implements vscode.Disposable {
 				await this.options.store.delete(key);
 			} catch (err) {
 				left.push(key);
-				failure ??= reasonOf(err);
+				failure ??= errorText(err);
 			}
 		}
 		for (const key of keys.filter((k) => !left.includes(k))) {
@@ -487,7 +487,7 @@ export class SecretVariables implements vscode.Disposable {
 	/** Runs `update` after every earlier update of the recorded keys; never rejects. */
 	private serialized(update: () => Promise<void>): Promise<void> {
 		const next = this.recording.then(update).catch((err) => {
-			this.options.log(`${SECRET_ENV_SETTING}: could not record the stored keys: ${reasonOf(err)}`);
+			this.options.log(`${SECRET_ENV_SETTING}: could not record the stored keys: ${errorText(err)}`);
 		});
 		this.recording = next;
 		return next;
@@ -521,7 +521,7 @@ export class SecretVariables implements vscode.Disposable {
 			await this.writeSetting(config, next, target);
 			return undefined;
 		} catch (err) {
-			return reasonOf(err);
+			return errorText(err);
 		}
 	}
 
@@ -545,7 +545,7 @@ export class SecretVariables implements vscode.Disposable {
 		try {
 			await this.writeSetting(used.config, next.length > 0 ? next : undefined, SETTING_TARGETS[used.level]);
 		} catch (err) {
-			return { where, problem: reasonOf(err) };
+			return { where, problem: errorText(err) };
 		}
 		// A folder's emptied list removed: a less specific list (another level's names) now applies to it.
 		const after = next.length === 0 && used.level !== 'user' ? usedSecretList(folder) : undefined;

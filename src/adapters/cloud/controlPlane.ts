@@ -5,6 +5,7 @@
 // Ticket 6.2 (AD-24): the cluster's Kafka address (`kafka_api.seed_brokers`) is kept for its logs.
 // No `vscode` import.
 
+import { errorText } from '../../shared/errorText';
 import { CloudError } from './errors';
 import { type HttpOptions, joinUrl, requestJson } from './http';
 
@@ -131,7 +132,7 @@ export async function listClusters(call: CloudCall, controlPlaneUrl: string): Pr
 			if (err instanceof CloudError && err.kind === 'unauthorized') {
 				throw err;
 			}
-			return { ...base, detailsUnread: err instanceof Error ? err.message : String(err) };
+			return { ...base, detailsUnread: errorText(err) };
 		}
 	}));
 }

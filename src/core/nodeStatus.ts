@@ -3,7 +3,8 @@
 // Error beats warning; a node's severity rolls up to every ancestor (groups and routes). Pure
 // (AD-15) and never throws.
 
-import type { NodeSeverity, NodeStatus, NodeStatusById, PipelineModel, PipelineNode } from '../shared/protocol';
+import { ancestorIds, nodesById } from '../shared/graphModel';
+import type { NodeSeverity, NodeStatus, NodeStatusById, PipelineModel } from '../shared/protocol';
 import { nodeAt } from './nodeAt';
 
 /** A diagnostic's severity, as named by the editor; only `error` and `warning` mark nodes. */
@@ -32,7 +33,8 @@ function worse(a: NodeSeverity | undefined, b: NodeSeverity | undefined): NodeSe
 export function nodeStatusOf(model: PipelineModel | null | undefined, diagnostics: readonly StatusDiagnostic[]): NodeStatusById {
 	try {
 		const nodes = model?.nodes ?? [];
-		const byId = new Map<string, PipelineNode>(nodes.map((n) => [n.id, n]));
+		const byId = nodesById({ nodes });
+		const parentOf = (id: string) => byId.get(id)?.parent;
 		const own = new Map<string, { severity?: NodeSeverity; messages: string[] }>();
 		const below = new Map<string, { severity?: NodeSeverity; messages: string[] }>();
 		const entry = (map: typeof own, id: string) => {
@@ -57,9 +59,10 @@ export function nodeStatusOf(model: PipelineModel | null | undefined, diagnostic
 			const mine = entry(own, id);
 			mine.severity = worse(mine.severity, severity);
 			mine.messages.push(d.message);
-			const seen = new Set<string>([id]);
-			for (let p = byId.get(id)?.parent; p !== undefined && !seen.has(p) && byId.has(p); p = byId.get(p)?.parent) {
-				seen.add(p);
+			for (const p of ancestorIds(parentOf, id)) {
+				if (p === id || !byId.has(p)) {
+					break; // a parent cycle back to the node, or a parent the model does not have
+				}
 				const up = entry(below, p);
 				up.severity = worse(up.severity, severity);
 				up.messages.push(d.message);

@@ -1,6 +1,7 @@
 // The one offset -> node lookup (AD-16): selection (AD-8) and node status (AD-17) both resolve a
 // document offset to a node through `nodeAt`, so they can never disagree. Pure (AD-15).
 
+import { ancestorIds, nodesById } from '../shared/graphModel';
 import type { PipelineModel, PipelineNode } from '../shared/protocol';
 
 /**
@@ -12,33 +13,38 @@ import type { PipelineModel, PipelineNode } from '../shared/protocol';
 export function nodeAt(model: PipelineModel | null | undefined, offset: number): string | undefined {
 	try {
 		const nodes = model?.nodes ?? [];
-		const byId = new Map<string, PipelineNode>();
-		for (const node of nodes) {
-			byId.set(node.id, node);
-		}
+		const byId = nodesById({ nodes });
+		const parentOf = (id: string) => byId.get(id)?.parent;
 		const depths = new Map<string, number>();
 		const depthOf = (node: PipelineNode): number => {
-			// Walk up to the first ancestor with a known depth (or the top), then fill in the path.
-			const path: PipelineNode[] = [];
-			const seen = new Set<string>();
-			let current: PipelineNode | undefined = node;
+			const memo = depths.get(node.id);
+			if (memo !== undefined) {
+				return memo;
+			}
+			// Walk up from the node's own parent to the first ancestor with a known depth (or the top:
+			// a parent the model does not have), then fill in the path.
+			const path: string[] = [node.id];
+			const seen = new Set<string>(path);
 			let base = -1;
-			while (current) {
-				const known = depths.get(current.id);
+			const up = node.parent === undefined ? [] : [node.parent, ...ancestorIds(parentOf, node.parent)];
+			for (const p of up) {
+				if (!byId.has(p)) {
+					break;
+				}
+				const known = depths.get(p);
 				if (known !== undefined) {
 					base = known;
 					break;
 				}
-				if (seen.has(current.id)) {
+				if (seen.has(p)) {
 					break; // a parent cycle: never in a built model; treat the rest as the top
 				}
-				seen.add(current.id);
-				path.push(current);
-				current = current.parent === undefined ? undefined : byId.get(current.parent);
+				seen.add(p);
+				path.push(p);
 			}
 			for (let i = path.length - 1; i >= 0; i--) {
 				base += 1;
-				depths.set(path[i].id, base);
+				depths.set(path[i], base);
 			}
 			return depths.get(node.id) ?? 0;
 		};

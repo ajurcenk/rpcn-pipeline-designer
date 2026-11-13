@@ -95,6 +95,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { errorText } from '../../shared/errorText';
 import {
 	filterActive, filterText, isLiveRange, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
 	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogStrip, type LogsViewState,
@@ -853,7 +854,7 @@ export class LogsPanel implements vscode.WebviewViewProvider, vscode.Disposable 
 			return { kind: 'nothing' };
 		}
 		const failed = (err: unknown): LogsExportResult => {
-			const reason = this.mask(source, err instanceof Error ? err.message : String(err));
+			const reason = this.mask(source, errorText(err));
 			const message = `${EXPORT_FAILED_PREFIX}${reason}`;
 			this.options.log(`Pipeline logs: exporting the records of ${this.mask(source, source.title)} failed: ${reason}`);
 			void this.ui.error(message);

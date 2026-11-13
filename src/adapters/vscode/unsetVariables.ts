@@ -20,6 +20,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { isCloudSecretName, requiredReferences } from '../../core/envUsage';
 import { isEnvName } from '../../shared/bloblangProtocol';
+import { errorText } from '../../shared/errorText';
 import { expandResourceEntry } from '../redpandaConnect/resourceGlob';
 import { BLOBLANG_DEBOUNCE_MS } from './bloblangDiagnostics';
 import { type EnvironmentInputs, unsetNames } from './environmentModel';
@@ -120,7 +121,7 @@ export class UnsetVariables implements vscode.CodeActionProvider, vscode.Disposa
 			const unset = unsetNames(this.options.inputsFor(uri), names);
 			return [...new Set(names.filter((n) => unset.has(n)))];
 		} catch (err) {
-			this.options.log(`Run ${path.basename(uri.fsPath)}: could not check its environment variables: ${err instanceof Error ? err.message : String(err)}`);
+			this.options.log(`Run ${path.basename(uri.fsPath)}: could not check its environment variables: ${errorText(err)}`);
 			return [];
 		}
 	}
@@ -199,7 +200,7 @@ export class UnsetVariables implements vscode.CodeActionProvider, vscode.Disposa
 				}));
 				this.envFiles.set(key, inputs.envFile?.path);
 			} catch (err) {
-				this.options.log(`Unset variables of ${path.basename(uri.fsPath)}: ${err instanceof Error ? err.message : String(err)}`);
+				this.options.log(`Unset variables of ${path.basename(uri.fsPath)}: ${errorText(err)}`);
 				this.collection.delete(uri);
 			}
 		}

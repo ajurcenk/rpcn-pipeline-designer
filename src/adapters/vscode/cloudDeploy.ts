@@ -20,12 +20,13 @@ import { checkAgainstCluster, type ClusterComponents, findingMessage, versionsDi
 import { lineOf } from '../../core/textLines';
 import { componentUses } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
+import { errorText } from '../../shared/errorText';
 import type { LintResult } from '../redpandaConnect/lint';
 import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
 	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON, NOT_CONNECTED_MESSAGE,
-	NOT_STARTED, pollPipeline, reasonOf, refusedText, sentConfigUri, sharedMappingText, stateWord, stillText,
+	NOT_STARTED, pollPipeline, refusedText, sentConfigUri, sharedMappingText, stateWord, stillText,
 } from './cloudShared';
 
 export { sentConfigUri } from './cloudShared';
@@ -104,7 +105,7 @@ export class CloudDeploy {
 		try {
 			await vscode.commands.executeCommand('vscode.diff', left, right, `${pipeline.displayName} (deployed) ↔ ${file} (as sent)`, { preview: true });
 		} catch (err) {
-			this.ctx.log(`Redpanda Cloud: could not open the diff of ${file}: ${reasonOf(err)}`);
+			this.ctx.log(`Redpanda Cloud: could not open the diff of ${file}: ${errorText(err)}`);
 		}
 	}
 
@@ -113,7 +114,7 @@ export class CloudDeploy {
 		try {
 			return await this.deployFile(uri, only);
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: deploy failed: ${message}`);
 			void this.ctx.showError(`Deploy failed: ${message}`);
 			return { kind: 'failed', message };
@@ -441,7 +442,7 @@ export class CloudDeploy {
 			try {
 				lintResult = this.ctx.lint ? await this.ctx.lint(doc) : { kind: 'skipped' };
 			} catch (err) {
-				lintResult = { kind: 'failed', logLine: `Lint ${file}: ${reasonOf(err)}` };
+				lintResult = { kind: 'failed', logLine: `Lint ${file}: ${errorText(err)}` };
 			}
 			report('reading the cluster\'s components…');
 			try {
@@ -553,7 +554,7 @@ export class CloudDeploy {
 		try {
 			local = this.ctx.options.localValues?.(uri, missing.map((s) => s.name)) ?? new Map<string, LocalValue>();
 		} catch (err) {
-			this.ctx.log(`Redpanda Cloud: could not read the local values of ${file}: ${reasonOf(err)}`);
+			this.ctx.log(`Redpanda Cloud: could not read the local values of ${file}: ${errorText(err)}`);
 			local = new Map<string, LocalValue>();
 		}
 		const stopped = (name: string): DeployResult => {
@@ -772,8 +773,8 @@ export class CloudDeploy {
 			await fs.promises.writeFile(file, text, 'utf8');
 			this.ctx.log(`Redpanda Cloud: ${file} maps the config to pipeline ${m.pipelineName ?? m.pipelineId} (${m.pipelineId}) on ${m.clusterName ?? m.clusterId}.`);
 		} catch (err) {
-			this.ctx.log(`Redpanda Cloud: could not write ${file}: ${reasonOf(err)}`);
-			void this.ctx.showError(`Could not write ${path.basename(file)}: ${reasonOf(err)}. The next Deploy will not know the pipeline it went to.`);
+			this.ctx.log(`Redpanda Cloud: could not write ${file}: ${errorText(err)}`);
+			void this.ctx.showError(`Could not write ${path.basename(file)}: ${errorText(err)}. The next Deploy will not know the pipeline it went to.`);
 		}
 	}
 

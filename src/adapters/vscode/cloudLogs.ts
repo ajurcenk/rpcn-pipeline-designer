@@ -13,13 +13,14 @@
 // is masked only in that attempt's messages. A password newly kept masks the tab's rows again.
 
 import * as path from 'path';
+import { errorText } from '../../shared/errorText';
 import type { CloudCluster } from '../cloud/controlPlane';
 import type { CloudPipeline } from '../cloud/dataPlane';
 import { isLogReadError, isSaslMechanism, type LogAccess, LOGS_TOPIC, SASL_MECHANISMS, type SaslMechanism } from '../logs/logReader';
 import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
 import { setUpRunningText, type LogsShowOptions, type LogSource } from './logsPanel';
 import type { CloudContext, CloudNode, LogAccessResult, ShowLogsResult } from './cloudView';
-import { IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription, reasonOf } from './cloudShared';
+import { IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription } from './cloudShared';
 import { maskCredentials } from '../cloud/errors';
 
 /** Ticket 6.5: the Error notification's way to the log. */
@@ -77,7 +78,7 @@ export class CloudLogs {
 		try {
 			text = await this.ctx.options.store.get(logAccessKey(clusterId));
 		} catch (err) {
-			this.ctx.log(`Redpanda Cloud: could not read the secret storage: ${reasonOf(err)}`);
+			this.ctx.log(`Redpanda Cloud: could not read the secret storage: ${errorText(err)}`);
 			return this.logAccesses.get(clusterId);
 		}
 		if (!current()) {
@@ -191,7 +192,7 @@ export class CloudLogs {
 			void this.ctx.showInfo(logAccessForgottenMessage(cluster.name));
 			return { kind: 'forgotten', clusterId: cluster.id };
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: Forget log access failed: ${message}`);
 			void this.ctx.showError(`Could not remove the log access from the secret storage: ${message}`);
 			return LOGS_NOT_STARTED;
@@ -312,8 +313,8 @@ export class CloudLogs {
 			try {
 				await this.ctx.options.store.store(logAccessKey(cluster.id), JSON.stringify(access));
 			} catch (err) {
-				void this.ctx.showError(`Could not store the log access in the secret storage: ${attempt(reasonOf(err))}`);
-				return { kind: 'failed', refused: false, message: attempt(reasonOf(err)) };
+				void this.ctx.showError(`Could not store the log access in the secret storage: ${attempt(errorText(err))}`);
+				return { kind: 'failed', refused: false, message: attempt(errorText(err)) };
 			} finally {
 				this.ctx.writing--;
 			}
@@ -324,7 +325,7 @@ export class CloudLogs {
 			void this.ctx.showInfo(`Log access to ${cluster.name} is set up for ${username}.`);
 			return { kind: 'stored', username };
 		} catch (err) {
-			const message = this.maskError(reasonOf(err));
+			const message = this.maskError(errorText(err));
 			this.ctx.log(`Redpanda Cloud: Set up log access failed: ${message}`);
 			void this.ctx.showError(`Set up log access failed: ${message}`);
 			return LOGS_NOT_STARTED;
@@ -362,7 +363,7 @@ export class CloudLogs {
 			}
 			return await this.openLogs(cluster, pipeline, options);
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: Show logs failed: ${message}`);
 			void this.ctx.showError(`Show logs failed: ${message}`);
 			return LOGS_NOT_STARTED;
@@ -515,7 +516,7 @@ export class CloudLogs {
 				const known = this.ctx.pipelineById(cluster.id, pipelineId);
 				return await this.openLogs(this.ctx.clusterById(cluster.id) ?? cluster, known ?? { id: pipelineId, displayName: name }, { highlightErrors: true });
 			} catch (err) {
-				const reason = this.ctx.mask(reasonOf(err));
+				const reason = this.ctx.mask(errorText(err));
 				this.ctx.log(`Redpanda Cloud: Show logs failed: ${reason}`);
 				void this.ctx.showError(`Show logs failed: ${reason}`);
 				return LOGS_NOT_STARTED;
@@ -553,7 +554,7 @@ export class CloudLogs {
 			this.ctx.log(`Redpanda Cloud: pipeline ${shown} was last deployed at ${new Date(read.value.updateTime).toISOString()}.`);
 			return read.value.updateTime;
 		} catch (err) {
-			const message = this.ctx.mask(reasonOf(err));
+			const message = this.ctx.mask(errorText(err));
 			this.ctx.log(`Redpanda Cloud: reading the last deploy failed: ${message}`);
 			void this.ctx.showError(`Could not read the last deploy: ${message}`);
 			return undefined;
