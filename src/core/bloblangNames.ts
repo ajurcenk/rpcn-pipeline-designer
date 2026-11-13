@@ -5,6 +5,7 @@
 // metadata keys (`meta k =`, `@k`). It knows what the config writes, not what messages contain.
 
 import { bloblangCode, bloblangRegions, BloblangContext, LiteralType, literalTypeAtStart } from './bloblang';
+import { lineOf } from './textLines';
 import type { ParsedYaml } from './yamlPath';
 
 export type NameOrigin = 'set' | 'set-earlier' | 'read';
@@ -33,15 +34,6 @@ export interface KnownNames {
 const KEYWORDS = new Set(['let', 'meta', 'if', 'else', 'match', 'map', 'import', 'from', 'root', 'this', 'true', 'false', 'null']);
 const IDENT = '[A-Za-z_]\\w*';
 const PATH = `${IDENT}(?:\\.${IDENT})*`;
-
-/** 1-based line of `offset`. */
-function lineOf(text: string, offset: number): number {
-	let line = 1;
-	for (let i = text.indexOf('\n'); i >= 0 && i < offset; i = text.indexOf('\n', i + 1)) {
-		line++;
-	}
-	return line;
-}
 
 /** Top-level `"key":` / `key:` names of the `{ … }` object literal starting at `open` in `source`. */
 function objectKeys(source: string, open: number): string[] {

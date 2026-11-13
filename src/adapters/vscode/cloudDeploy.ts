@@ -9,22 +9,23 @@ import * as vscode from 'vscode';
 import type { CloudCluster } from '../cloud/controlPlane';
 import {
 	CONFIG_TAG, type CloudPipeline, type PipelineResources, type PipelineState, type CreatePipeline, createPipeline, FINAL_STATES,
-	createSecret, getComponents, getPipeline, isKnownState, isRunning, listSecretNames, pipelineStateText, resourcesText, sameResources,
-	type UpdatePipeline, updatePipeline,
+	createSecret, getComponents, isKnownState, listSecretNames, sameResources, type UpdatePipeline, updatePipeline,
 } from '../cloud/dataPlane';
+import { isRunning, pipelineStateText, resourcesText } from '../cloud/pipelineText';
 import { asCloudError, describeCloudError, hintLines } from '../cloud/errors';
 import { configTag, type DeployMapping, folderOf, serializeMapping, sidecarPath, tagNames } from '../cloud/sidecar';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
-import { checkAgainstCluster, type ClusterComponents, findingMessage, lineOf, versionsDiffer } from '../../core/cloudCheck';
+import { checkAgainstCluster, type ClusterComponents, findingMessage, versionsDiffer } from '../../core/cloudCheck';
+import { lineOf } from '../../core/textLines';
 import { componentUses } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
 import type { LintResult } from '../redpandaConnect/lint';
 import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
-	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_STARTED, reasonOf,
-	mappedTagOf, refusedText, sentConfigUri, sharedMappingText, sleep, stateWord,
+	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON, NOT_CONNECTED_MESSAGE,
+	NOT_STARTED, pollPipeline, reasonOf, refusedText, sentConfigUri, sharedMappingText, stateWord, stillText,
 } from './cloudShared';
 
 export { sentConfigUri } from './cloudShared';
@@ -724,27 +725,23 @@ export class CloudDeploy {
 			void this.ctx.showError(`Could not read the details of ${cluster.name} (${cluster.detailsUnread}), the cluster ${mappingName} maps ${file} to. Refresh the Cloud view to try again.`);
 			return NOT_STARTED;
 		}
-		const dp = cluster && this.ctx.dataplaneUrlOf(cluster);
-		if (!cluster || !dp) {
-			const named = cluster?.name ?? m.clusterName ?? m.clusterId;
-			this.ctx.log(`Redpanda Cloud: the cluster ${named} (${m.clusterId}) of ${mappingName} is gone or offers no pipeline API.`);
+		const mapped = await mappedPipeline(this.ctx, m);
+		if (mapped.kind === 'clusterGone') {
+			this.ctx.log(`Redpanda Cloud: the cluster ${mapped.named} (${m.clusterId}) of ${mappingName} is gone or offers no pipeline API.`);
 			if (strict) {
-				void this.ctx.showInfo(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Nothing was sent.`);
+				void this.ctx.showInfo(mappingGoneText(mapped, m, mappingName, file, 'Nothing was sent.'));
 				return NOT_STARTED;
 			}
-			const choice = await this.ctx.showInfo(
-				`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API. Create a new pipeline on another cluster?`, CREATE_NEW_PIPELINE_ACTION);
+			const choice = await this.ctx.showInfo(mappingGoneText(mapped, m, mappingName, file, 'Create a new pipeline on another cluster?'), CREATE_NEW_PIPELINE_ACTION);
 			return choice === CREATE_NEW_PIPELINE_ACTION ? this.newTarget(file, config, tag, false) : NOT_STARTED;
 		}
-		const read = await this.ctx.readPipeline(cluster, dp, m.pipelineId, m.pipelineName ?? m.pipelineId);
-		if (read.kind === 'ok') {
-			return { kind: 'update', cluster, dp, pipeline: read.value };
+		if (mapped.kind === 'found') {
+			return { kind: 'update', cluster: mapped.cluster, dp: mapped.dp, pipeline: mapped.pipeline };
 		}
-		if (read.status !== 404) {
-			return { kind: 'failed', message: read.message };
+		if (mapped.kind === 'failed') {
+			return { kind: 'failed', message: mapped.message };
 		}
-		this.ctx.removePipeline(cluster.id, m.pipelineId);
-		return this.goneTarget(file, mappingName, m, cluster, dp, strict);
+		return this.goneTarget(file, mappingName, m, mapped.cluster, mapped.dp, strict);
 	}
 
 	/** The mapped pipeline is gone from `cluster`: offered to be created anew, or (`strict`) explained, nothing sent. */
@@ -753,11 +750,10 @@ export class CloudDeploy {
 	): Promise<Target | DeployResult> {
 		if (strict) {
 			this.ctx.log(`Redpanda Cloud: pipeline ${m.pipelineName ?? m.pipelineId} (${m.pipelineId}) is gone from ${cluster.name}; ${file} was not deployed again.`);
-			void this.ctx.showInfo(`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. ${nothingSent(created, cluster)}`);
+			void this.ctx.showInfo(mappingGoneText({ kind: 'pipelineGone', cluster }, m, mappingName, file, nothingSent(created, cluster)));
 			return NOT_STARTED;
 		}
-		const choice = await this.ctx.showInfo(
-			`Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}. Create a new pipeline?`, CREATE_NEW_PIPELINE_ACTION);
+		const choice = await this.ctx.showInfo(mappingGoneText({ kind: 'pipelineGone', cluster }, m, mappingName, file, 'Create a new pipeline?'), CREATE_NEW_PIPELINE_ACTION);
 		const name = choice === CREATE_NEW_PIPELINE_ACTION ? await this.askName(file, cluster, m.pipelineName) : undefined;
 		if (!name) {
 			this.keptSecrets(created, cluster, 'The pipeline was not sent.');
@@ -841,30 +837,32 @@ export class CloudDeploy {
 		onFailure?: (err: unknown) => void,
 	): Promise<DeployResult> {
 		let current = first;
-		const deadline = Date.now() + this.ctx.timeoutMs;
 		let lastChange = Date.now();
 		let changed = !change || current.state !== change.from;
-		let failures = 0;
 		let graceOver = false;
-		for (;;) {
-			if (!isKnownState(current.state)) {
-				break;
-			}
-			if (changed && FINAL_STATES.includes(current.state)) {
-				break;
-			}
-			if (!changed && Date.now() - lastChange >= this.ctx.restartGraceMs) {
-				graceOver = true;
-				break;
-			}
-			if (Date.now() >= deadline) {
-				return { kind: 'timedOut', pipelineId: current.id, state: current.state };
-			}
-			report(changed || !change ? `${pipelineStateText(current.state)}…` : change.waiting);
-			await sleep(this.ctx.pollMs);
-			try {
-				const next = await getPipeline(this.ctx.call(), dp, current.id);
-				failures = 0;
+		const final = (): DeployResult => ({
+			kind: 'final', state: current.state, pipelineId: current.id, ...(current.error ? { error: current.error } : {}),
+			...(graceOver && current.state === 'STATE_ERROR' ? { errorFromBefore: true as const } : {}),
+		});
+		return pollPipeline<DeployResult>({
+			call: () => this.ctx.call(), dp, id: () => current.id, name, timeoutMs: this.ctx.timeoutMs, pollMs: this.ctx.pollMs,
+			log: (line) => this.ctx.log(line), report,
+			deadline: 'beforeRead',
+			done: () => {
+				if (!isKnownState(current.state)) {
+					return final();
+				}
+				if (changed && FINAL_STATES.includes(current.state)) {
+					return final();
+				}
+				if (!changed && Date.now() - lastChange >= this.ctx.restartGraceMs) {
+					graceOver = true;
+					return final();
+				}
+				return undefined;
+			},
+			progress: () => (changed || !change ? `${pipelineStateText(current.state)}…` : change.waiting),
+			read: (next) => {
 				if (next.state !== current.state) {
 					lastChange = Date.now();
 				}
@@ -873,19 +871,14 @@ export class CloudDeploy {
 					changed = true;
 				}
 				this.ctx.upsertPipeline(cluster.id, current);
-			} catch (err) {
-				const error = asCloudError(err);
-				this.ctx.log(`Redpanda Cloud: could not read the state of ${name}: ${error.message}`);
-				if (error.status === 404 || ++failures >= MAX_POLL_FAILURES) {
-					onFailure?.(err);
-					return { kind: 'failed', message: `could not read its state: ${error.message}`, pipelineId: current.id };
-				}
-			}
-		}
-		return {
-			kind: 'final', state: current.state, pipelineId: current.id, ...(current.error ? { error: current.error } : {}),
-			...(graceOver && current.state === 'STATE_ERROR' ? { errorFromBefore: true as const } : {}),
-		};
+			},
+			notFound: 'failed',
+			failed: (error, err) => {
+				onFailure?.(err);
+				return { kind: 'failed', message: `could not read its state: ${error.message}`, pipelineId: current.id };
+			},
+			timedOut: () => ({ kind: 'timedOut', pipelineId: current.id, state: current.state }),
+		});
 	}
 
 	/** The deploy's outcome as a message and a log line. */
@@ -912,9 +905,9 @@ export class CloudDeploy {
 			}
 			case 'timedOut': {
 				// Bug 45: the last state seen (Stopping is not "starting").
-				const still = result.state ? stateWord(result.state) : 'starting';
-				this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still ${still} after ${Math.round(this.ctx.timeoutMs / 1000)} s.`);
-				void this.ctx.showInfo(`Pipeline ${name} is still ${still} ${on}; the Cloud view shows its state.`);
+				const still = stillText(name, on, this.ctx.timeoutMs, { still: result.state ? stateWord(result.state) : 'starting' });
+				this.ctx.log(still.log);
+				void this.ctx.showInfo(still.info);
 				return;
 			}
 			case 'final': {

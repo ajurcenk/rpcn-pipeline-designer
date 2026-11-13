@@ -4,7 +4,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { CONFIG_TAG, type CloudPipeline, isKnownState, type PipelineState, pipelineStateText } from '../cloud/dataPlane';
+import type { CloudCall, CloudCluster } from '../cloud/controlPlane';
+import { CONFIG_TAG, type CloudPipeline, getPipeline, isKnownState, type PipelineState } from '../cloud/dataPlane';
+import { asCloudError, type CloudError } from '../cloud/errors';
+import { pipelineStateText } from '../cloud/pipelineText';
 import {
 	type DeployMapping, legacyOwnersOf, legacySidecarPath, type ParsedMapping, parseMapping, sidecarPath, tagNames, taggedConfigs, type WorkspaceRoot,
 } from '../cloud/sidecar';
@@ -170,4 +173,147 @@ export function stateWord(state: PipelineState): string {
 		return 'in error';
 	}
 	return isKnownState(state) ? pipelineStateText(state).toLowerCase() : pipelineStateText(state);
+}
+
+/**
+ * How `pollPipeline` follows a pipeline (story 50): what Deploy's follow (and Start's and Stop's, which
+ * reuse it) and Delete's wait differ in. Their timing stays their own (`deadline`), and tests count
+ * the requests of both.
+ */
+export interface PollHow<T> {
+	readonly call: () => CloudCall;
+	readonly dp: string;
+	/** The id each read GETs (Deploy's follow: the id of the pipeline last read). */
+	readonly id: () => string;
+	/** In the log line of a failed read: "could not read the state of <name>: …". */
+	readonly name: string;
+	readonly timeoutMs: number;
+	readonly pollMs: number;
+	readonly log: (line: string) => void;
+	readonly report: (message: string) => void;
+	/**
+	 * Where each round checks the deadline: `beforeRead` (Deploy's follow: the deadline, the progress
+	 * and the wait, then the read) or `afterRead` (Delete's wait: the read first, then the deadline,
+	 * the progress and the wait).
+	 */
+	readonly deadline: 'beforeRead' | 'afterRead';
+	/** Whether what was read so far ends the poll, checked at the start of each round: its end, or `undefined` to go on. */
+	readonly done?: () => T | undefined;
+	/** A pipeline read (the failures in a row start again). */
+	readonly read: (p: CloudPipeline) => void;
+	/** The progress reported before each wait. */
+	readonly progress: () => string;
+	/** What a 404 means: `failed` (a failed read, logged, that ends the poll at once), or its own end (not logged). */
+	readonly notFound: 'failed' | (() => T);
+	/** The end after a 404 that counts as failed, or after `MAX_POLL_FAILURES` failed reads in a row. */
+	readonly failed: (error: CloudError, err: unknown) => T;
+	/** The end at the deadline. */
+	readonly timedOut: () => T;
+}
+
+/** `GET`s pipeline `how.id()` every `pollMs` until `how` says it ended, a 404 or too many failed reads end it, or the deadline passes. */
+export async function pollPipeline<T>(how: PollHow<T>): Promise<T> {
+	const deadline = Date.now() + how.timeoutMs;
+	let failures = 0;
+	const wait = async () => {
+		how.report(how.progress());
+		await sleep(how.pollMs);
+	};
+	for (;;) {
+		const end = how.done?.();
+		if (end !== undefined) {
+			return end;
+		}
+		if (how.deadline === 'beforeRead') {
+			if (Date.now() >= deadline) {
+				return how.timedOut();
+			}
+			await wait();
+		}
+		try {
+			const p = await getPipeline(how.call(), how.dp, how.id());
+			failures = 0;
+			how.read(p);
+		} catch (err) {
+			const error = asCloudError(err);
+			if (error.status === 404 && how.notFound !== 'failed') {
+				return how.notFound();
+			}
+			how.log(`Redpanda Cloud: could not read the state of ${how.name}: ${error.message}`);
+			if (error.status === 404 || ++failures >= MAX_POLL_FAILURES) {
+				return how.failed(error, err);
+			}
+		}
+		if (how.deadline === 'afterRead') {
+			if (Date.now() >= deadline) {
+				return how.timedOut();
+			}
+			await wait();
+		}
+	}
+}
+
+/**
+ * Story 50: the log line and the message of a follow that timed out (`on`: "on <cluster>"): "still
+ * <still> after N s" (Deploy, Start, Stop), or a deleted pipeline still listed (`also`: what the
+ * message adds).
+ */
+export function stillText(
+	name: string, on: string, timeoutMs: number, what: { readonly still: string } | { readonly listedAfterDelete: true; readonly also: string },
+): { readonly log: string; readonly info: string } {
+	const seconds = Math.round(timeoutMs / 1000);
+	if ('still' in what) {
+		return {
+			log: `Redpanda Cloud: pipeline ${name} ${on} is still ${what.still} after ${seconds} s.`,
+			info: `Pipeline ${name} is still ${what.still} ${on}; the Cloud view shows its state.`,
+		};
+	}
+	return {
+		log: `Redpanda Cloud: pipeline ${name} ${on} is still listed ${seconds} s after its delete.`,
+		info: `Pipeline ${name} is being deleted ${on}; the Cloud view shows it until it is gone.${what.also}`,
+	};
+}
+
+/** What a deploy mapping names now (story 50: Deploy's and the palette's resolution). */
+export type MappedPipeline =
+	| { readonly kind: 'found'; readonly cluster: CloudCluster; readonly dp: string; readonly pipeline: CloudPipeline }
+	/** The cluster is gone or offers no pipeline API; `named`: its name (the cluster's, else the mapping's, else its id). */
+	| { readonly kind: 'clusterGone'; readonly named: string }
+	/** A GET answered 404; the pipeline is removed from the view's cache. */
+	| { readonly kind: 'pipelineGone'; readonly cluster: CloudCluster; readonly dp: string }
+	/** The read failed otherwise (`readPipeline` showed it). */
+	| { readonly kind: 'failed'; readonly message: string };
+
+/** The cluster of mapping `m` by its id, its Data Plane address, then its pipeline read now (a 404: removed from the cache). */
+export async function mappedPipeline(
+	ctx: Pick<CloudContext, 'clusterById' | 'dataplaneUrlOf' | 'readPipeline' | 'removePipeline'>, m: DeployMapping,
+): Promise<MappedPipeline> {
+	const cluster = ctx.clusterById(m.clusterId);
+	const dp = cluster && ctx.dataplaneUrlOf(cluster);
+	if (!cluster || !dp) {
+		return { kind: 'clusterGone', named: cluster?.name ?? m.clusterName ?? m.clusterId };
+	}
+	const read = await ctx.readPipeline(cluster, dp, m.pipelineId, m.pipelineName ?? m.pipelineId);
+	if (read.kind === 'ok') {
+		return { kind: 'found', cluster, dp, pipeline: read.value };
+	}
+	if (read.status !== 404) {
+		return { kind: 'failed', message: read.message };
+	}
+	ctx.removePipeline(cluster.id, m.pipelineId);
+	return { kind: 'pipelineGone', cluster, dp };
+}
+
+/**
+ * The message of mapping `m` (the file `mappingName`, for `file`) whose cluster or pipeline is gone,
+ * then each caller's own ending `then` when given (story 50: these texts are built here only).
+ */
+export function mappingGoneText(
+	gone: { readonly kind: 'clusterGone'; readonly named: string } | { readonly kind: 'pipelineGone'; readonly cluster: CloudCluster },
+	m: DeployMapping, mappingName: string, file: string, then?: string,
+): string {
+	const text = gone.kind === 'clusterGone'
+		? `The cluster ${gone.named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`
+		: `Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${gone.cluster.name}.`;
+	return then ? `${text} ${then}` : text;
 }

@@ -16,6 +16,7 @@
 import type { BloblangCall } from './bloblang';
 import type { CategoryCatalog, ComponentCatalog, Slot, SlotCategory, SlotStep } from './catalogue';
 import type { ComponentUse } from './graph';
+import { lineOf } from './textLines';
 
 /** The answer's lists (`components.<key>`) by the category the config uses (the schema's definitions). */
 export const CLUSTER_CATEGORIES: Readonly<Record<string, string>> = {
@@ -179,15 +180,6 @@ function treeSlots(field: Record<string, unknown>, steps: readonly SlotStep[], f
 /** `rate_limit` → `rate limit`. */
 export function categoryText(category: string): string {
 	return category.replace(/_/g, ' ');
-}
-
-/** The 1-based line of `offset` in `text`. */
-export function lineOf(text: string, offset: number): number {
-	let line = 1;
-	for (let i = text.indexOf('\n'); i >= 0 && i < offset; i = text.indexOf('\n', i + 1)) {
-		line++;
-	}
-	return line;
 }
 
 /**

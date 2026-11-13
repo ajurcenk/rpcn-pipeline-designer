@@ -1,8 +1,14 @@
 import * as assert from 'assert';
-import { envReferenceAt, envUsage, isCloudSecretName, requiredReferences } from '../../core/envUsage';
+import { ENV_CALL, envReferenceAt, envUsage, isCloudSecretName, requiredReferences } from '../../core/envUsage';
 
 // Ticket 31: the variables a config uses, for the Environment view's Missing group.
 suite('core/envUsage', () => {
+	test('ENV_CALL (story 50): built from ENV_LITERAL_CALL, the same pattern as the literal it replaced', () => {
+		const before = /\benv\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1\s*\)/g;
+		assert.strictEqual(ENV_CALL.source, before.source);
+		assert.strictEqual(ENV_CALL.flags, before.flags);
+	});
+
 	test('MISSING: ${NAME} and env("NAME") are required; ${NAME:default} is not', () => {
 		const text = [
 			'input:',

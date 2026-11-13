@@ -3,9 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { CloudCall } from '../../../adapters/cloud/controlPlane';
-import {
-	isRunning, pipelineFrom, resourcesOf, resourcesText, sameResources, sizeChoices, unitsOf, updatePipeline,
-} from '../../../adapters/cloud/dataPlane';
+import { pipelineFrom, resourcesOf, sameResources, unitsOf, updatePipeline } from '../../../adapters/cloud/dataPlane';
+import { isRunning, resourcesText, sizeChoices } from '../../../adapters/cloud/pipelineText';
 import { CloudError } from '../../../adapters/cloud/errors';
 import type { FetchLike } from '../../../adapters/cloud/http';
 import { findMapping } from '../../../adapters/vscode/cloudShared';

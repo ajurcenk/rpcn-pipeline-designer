@@ -192,3 +192,9 @@
 - source_plan: `_bmad-output/backlog/bug-deploy-names-the-tag-carries-no-local-path-and-each-file-keeps-its-own-mapping-epic-5-retrospective-plan.md`
   summary: No test asserts the Show pipeline logs pick's "· in more than one folder" description for a pipeline whose tag matches files in two folders.
   evidence: bug 47's thorough review, triage row 22 (`cloudLogs.ts`, the pick's `describe`); the multi-root Cloud suite checks the row and Compare / Deploy again only. Display only; a multi-root logs case would close it.
+- source_plan: none
+  summary: Story 50 group B, the graph and the panels: one ancestor walk and id map in the graph model, `errorText` for every error read, and the graph and Bloblang test panel adapters behind named Source interfaces with unit tests (criteria 5 and 6).
+  evidence: Split from story 50 (user, 2026-11-12, "Split, build A first"); independently shippable from the Cloud adapter and the log panel parts.
+- source_plan: none
+  summary: Story 50 group C, the Pipeline Logs panel: the read held as one value per range with an explicit state, one plural, `pad` and local-time helper, and the 6.6 webview messages renamed as past-tense intents (criteria 7 to 9).
+  evidence: Split from story 50 (user, 2026-11-12, "Split, build A first"); independently shippable, and it touches the same code as bug 53.

@@ -1,8 +1,7 @@
 import * as assert from 'assert';
 import type { CloudCall } from '../../../adapters/cloud/controlPlane';
-import {
-	canStart, canStop, deletePipeline, isKnownState, pipelineStateText, startPipeline, stateKey, stopPipeline,
-} from '../../../adapters/cloud/dataPlane';
+import { deletePipeline, isKnownState, startPipeline, stopPipeline } from '../../../adapters/cloud/dataPlane';
+import { canStart, canStop, pipelineStateText, stateKey } from '../../../adapters/cloud/pipelineText';
 import { CloudError } from '../../../adapters/cloud/errors';
 import type { FetchLike } from '../../../adapters/cloud/http';
 import { configTag, folderLabel, folderOf, tagNames, taggedConfigs } from '../../../adapters/cloud/sidecar';

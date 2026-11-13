@@ -1,5 +1,6 @@
 import * as assert from 'assert';
-import { pipelineFrom, pipelineStateText } from '../../../adapters/cloud/dataPlane';
+import { pipelineFrom } from '../../../adapters/cloud/dataPlane';
+import { pipelineStateText } from '../../../adapters/cloud/pipelineText';
 import {
 	asCloudError, CloudError, cloudErrorFrom, CREDENTIAL_MASK, describeCloudError, hintLines, lintHintsOf, maskCredentials, maskWhole, UNAUTHORIZED_MESSAGE,
 } from '../../../adapters/cloud/errors';

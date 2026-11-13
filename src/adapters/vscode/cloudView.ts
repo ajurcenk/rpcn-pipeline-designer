@@ -113,7 +113,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type CloudCall, type CloudCluster, clusterTypeText, cloudProviderText, listClusters } from '../cloud/controlPlane';
-import { CONFIG_TAG, type CloudPipeline, getPipeline, type PipelineState, listPipelines, type PipelineResources, type SizeChoice, sizeChoices, stateKey } from '../cloud/dataPlane';
+import { CONFIG_TAG, type CloudPipeline, getPipeline, type PipelineState, listPipelines, type PipelineResources } from '../cloud/dataPlane';
+import { type SizeChoice, sizeChoices, stateKey } from '../cloud/pipelineText';
 import { asCloudError, CloudError, maskCredentials } from '../cloud/errors';
 import { defaultFetch, type FetchLike } from '../cloud/http';
 import { type DeployMapping, type WorkspaceRoot } from '../cloud/sidecar';

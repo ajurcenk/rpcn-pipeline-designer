@@ -8,13 +8,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { CloudCluster } from '../cloud/controlPlane';
-import { canStart, canStop, CONFIG_TAG, type CloudPipeline, deletePipeline, getPipeline, pipelineStateText, startPipeline, stopPipeline } from '../cloud/dataPlane';
+import { CONFIG_TAG, type CloudPipeline, deletePipeline, getPipeline, startPipeline, stopPipeline } from '../cloud/dataPlane';
+import { canStart, canStop, pipelineStateText } from '../cloud/pipelineText';
 import { asCloudError, describeCloudError } from '../cloud/errors';
 import { configTag, taggedConfigs } from '../cloud/sidecar';
 import type { CloudContext, CloudNode, DeployResult, PipelineActionResult, PipelineChoice, RowActionResult } from './cloudView';
 import {
-	compareConfigUri, CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedTagOf, MAX_POLL_FAILURES, NO_REASON, NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE,
-	NOT_STARTED, pipelineStateDescription, readMapping, reasonOf, refusedText, sharedMappingText, sleep, stateWord,
+	compareConfigUri, CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON,
+	NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription, pollPipeline, readMapping, reasonOf, refusedText, sharedMappingText, stateWord,
+	stillText,
 } from './cloudShared';
 import { translateForCloud } from '../../core/cloudTranslate';
 /** The delete confirmation's action. */
@@ -164,29 +166,16 @@ export class CloudActions {
 				this.ctx.log(`Redpanda Cloud: ${at.file} could not be read as a deploy mapping: ${read.reason}`);
 				void this.ctx.showInfo(then(`${mappingName} could not be read as a deploy mapping: ${read.reason}.`));
 			} else if (read.kind === 'ok') {
-				const m = read.mapping;
-				const cluster = this.ctx.clusterById(m.clusterId);
-				const dp = cluster && this.ctx.dataplaneUrlOf(cluster);
-				const shown = m.pipelineName ?? m.pipelineId;
-				if (!cluster || !dp) {
-					const named = cluster?.name ?? m.clusterName ?? m.clusterId;
-					void this.ctx.showInfo(then(`The cluster ${named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`));
-					if (!how.pickAfterGone) {
-						return { kind: 'none' };
-					}
-				} else {
-					const got = await this.ctx.readPipeline(cluster, dp, m.pipelineId, shown);
-					if (got.kind === 'ok') {
-						return { kind: 'target', cluster, dp, pipeline: got.value };
-					}
-					if (got.status !== 404) {
-						return { kind: 'failed', message: got.message };
-					}
-					this.ctx.removePipeline(cluster.id, m.pipelineId);
-					void this.ctx.showInfo(then(`Pipeline ${shown}, which ${mappingName} maps ${file} to, is no longer on ${cluster.name}.`));
-					if (!how.pickAfterGone) {
-						return { kind: 'none' };
-					}
+				const mapped = await mappedPipeline(this.ctx, read.mapping);
+				if (mapped.kind === 'found') {
+					return { kind: 'target', cluster: mapped.cluster, dp: mapped.dp, pipeline: mapped.pipeline };
+				}
+				if (mapped.kind === 'failed') {
+					return { kind: 'failed', message: mapped.message };
+				}
+				void this.ctx.showInfo(then(mappingGoneText(mapped, read.mapping, mappingName, file)));
+				if (!how.pickAfterGone) {
+					return { kind: 'none' };
 				}
 			}
 		}
@@ -282,10 +271,12 @@ export class CloudActions {
 				this.ctx.fire();
 				break;
 			}
-			case 'timedOut':
-				this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still ${text.ongoing} after ${Math.round(this.ctx.timeoutMs / 1000)} s.`);
-				void this.ctx.showInfo(`Pipeline ${name} is still ${text.ongoing} ${on}; the Cloud view shows its state.`);
+			case 'timedOut': {
+				const still = stillText(name, on, this.ctx.timeoutMs, { still: text.ongoing });
+				this.ctx.log(still.log);
+				void this.ctx.showInfo(still.info);
 				break;
+			}
 			case 'final':
 				if (result.state === 'STATE_ERROR') {
 					const reason = result.error ?? NO_REASON;
@@ -356,29 +347,16 @@ export class CloudActions {
 			}
 			this.ctx.log(`Redpanda Cloud: deleted pipeline ${name} (${pipeline.id}) ${on}.`);
 			// Followed until a GET answers 404.
-			const deadline = Date.now() + this.ctx.timeoutMs;
-			let failures = 0;
-			for (;;) {
-				try {
-					const still = await getPipeline(this.ctx.call(), dp, pipeline.id);
-					failures = 0;
-					this.ctx.upsertPipeline(cluster.id, still);
-				} catch (err) {
-					const error = asCloudError(err);
-					if (error.status === 404) {
-						return 'deleted';
-					}
-					this.ctx.log(`Redpanda Cloud: could not read the state of ${name}: ${error.message}`);
-					if (++failures >= MAX_POLL_FAILURES) {
-						return { failed: `it was deleted, but its state could not be read: ${error.message}`, sent: true };
-					}
-				}
-				if (Date.now() >= deadline) {
-					return 'timedOut';
-				}
-				report('waiting for it to go…');
-				await sleep(this.ctx.pollMs);
-			}
+			return pollPipeline<'deleted' | 'timedOut' | { failed: string; sent: boolean }>({
+				call: () => this.ctx.call(), dp, id: () => pipeline.id, name, timeoutMs: this.ctx.timeoutMs, pollMs: this.ctx.pollMs,
+				log: (line) => this.ctx.log(line), report,
+				deadline: 'afterRead',
+				read: (still) => this.ctx.upsertPipeline(cluster.id, still),
+				progress: () => 'waiting for it to go…',
+				notFound: () => 'deleted',
+				failed: (error) => ({ failed: `it was deleted, but its state could not be read: ${error.message}`, sent: true }),
+				timedOut: () => 'timedOut',
+			});
 		});
 		if (typeof outcome === 'object' && !outcome.sent) {
 			this.ctx.log(`Redpanda Cloud: could not delete pipeline ${name} ${on}: ${outcome.failed}`);
@@ -403,8 +381,9 @@ export class CloudActions {
 		await this.ctx.loadPipelines(cluster.id, true);
 		this.ctx.fire();
 		if (outcome === 'timedOut') {
-			this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on} is still listed ${Math.round(this.ctx.timeoutMs / 1000)} s after its delete.`);
-			void this.ctx.showInfo(`Pipeline ${name} is being deleted ${on}; the Cloud view shows it until it is gone.${also}`);
+			const still = stillText(name, on, this.ctx.timeoutMs, { listedAfterDelete: true, also });
+			this.ctx.log(still.log);
+			void this.ctx.showInfo(still.info);
 			return { kind: 'timedOut', pipelineId: pipeline.id };
 		}
 		this.ctx.log(`Redpanda Cloud: pipeline ${name} ${on}: ${outcome.failed}`);

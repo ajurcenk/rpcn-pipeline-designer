@@ -13,8 +13,14 @@
  * Cloud translation (`cloudTranslate.ts`). Global: use with `matchAll` or `replace` only.
  */
 export const REFERENCE = /\$\{([0-9A-Za-z_.]+)(:(?:\$\{[^}]+\}|[^}])*)?\}/g;
+/**
+ * The source of `env(` and a quoted literal name (`"NAME"`, `'NAME'`, optionally with `\"` quotes):
+ * group 1 the quote, group 2 the name. Shared with the Cloud translation (`cloudTranslate.ts`), which
+ * builds its own pattern from it.
+ */
+export const ENV_LITERAL_CALL = String.raw`env\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1`;
 /** `env("NAME")`, `env('NAME')`, optionally with `\"` quotes. Global, as `REFERENCE`. */
-export const ENV_CALL = /\benv\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1\s*\)/g;
+export const ENV_CALL = new RegExp(String.raw`\b${ENV_LITERAL_CALL}\s*\)`, 'g');
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface EnvUse {

@@ -6,7 +6,8 @@
 // delete (`DELETE /{id}`, answering `{}`; a GET then answers 404). Ticket 5.7: the cluster's secrets,
 // listed (`GET {dp}/v1/secrets`, paged; ids only, values are never read back) and created (`POST`,
 // 201; an existing id answers 409). Ticket 8: what the cluster runs (`GET {dp}/v1/redpanda-connect/components`,
-// its version and names per category, read by `src/core/cloudCheck.ts`). No `vscode` import.
+// its version and names per category, read by `src/core/cloudCheck.ts`). How a pipeline is presented is in
+// `pipelineText.ts` (story 50). No `vscode` import.
 
 import { clusterComponents, type ClusterComponents } from '../../core/cloudCheck';
 import { authorizedJson, type CloudCall } from './controlPlane';
@@ -36,15 +37,6 @@ export function unitsOf(resources: PipelineResources | undefined): number | unde
 	}
 	const units = Number(cpu[1]) / 100;
 	return Number.isInteger(units) && units > 0 && Number(memory[1]) === units * 400 ? units : undefined;
-}
-
-/** `1 compute unit (0.1 CPU, 400 MB)`; resources that are no whole number of units as written. */
-export function resourcesText(resources: PipelineResources | undefined): string {
-	const units = unitsOf(resources);
-	if (units !== undefined) {
-		return `${units} compute unit${units === 1 ? '' : 's'} (${units / 10} CPU, ${units * 400} MB)`;
-	}
-	return resources ? `CPU ${resources.cpu_shares || '?'}, memory ${resources.memory_shares || '?'}` : 'unknown resources';
 }
 
 export function sameResources(a: PipelineResources | undefined, b: PipelineResources | undefined): boolean {
@@ -99,11 +91,6 @@ export interface UpdatePipeline {
 	readonly tags: Readonly<Record<string, string>>;
 }
 
-/** Running or starting: an update restarts it, so the deploy asks first. */
-export function isRunning(state: PipelineState): boolean {
-	return state === 'STATE_RUNNING' || state === 'STATE_STARTING';
-}
-
 const MAX_PAGES = 20;
 const PIPELINES = '/v1/redpanda-connect/pipelines';
 const SECRETS = '/v1/secrets';
@@ -116,30 +103,6 @@ export const KNOWN_STATES: readonly PipelineState[] = ['STATE_STARTING', 'STATE_
 
 export function isKnownState(state: PipelineState): boolean {
 	return KNOWN_STATES.includes(state);
-}
-
-/** `STATE_RUNNING` → `running`; a state the extension does not know → `unknown` (the view's context value). */
-export function stateKey(state: PipelineState | undefined): string {
-	return state && isKnownState(state) ? state.replace(/^STATE_/, '').toLowerCase() : 'unknown';
-}
-
-/** Start is offered for a stopped, failed or completed pipeline. */
-export function canStart(state: PipelineState): boolean {
-	return state === 'STATE_STOPPED' || state === 'STATE_ERROR' || state === 'STATE_COMPLETED';
-}
-
-/** Stop is offered for a running or starting pipeline. */
-export function canStop(state: PipelineState): boolean {
-	return state === 'STATE_RUNNING' || state === 'STATE_STARTING';
-}
-
-/** `STATE_RUNNING` → `Running`; a state the extension does not know, as the API names it. */
-export function pipelineStateText(state: PipelineState): string {
-	if (!isKnownState(state)) {
-		return state || 'Unknown';
-	}
-	const short = state.replace(/^STATE_/, '').toLowerCase();
-	return short[0].toUpperCase() + short.slice(1);
 }
 
 /** The pipeline object of an answer as the extension keeps it. */
@@ -326,30 +289,4 @@ export async function getComponents(call: CloudCall, dataplaneUrl: string): Prom
 		throw new Error('the cluster answered without its components');
 	}
 	return components;
-}
-
-/** One entry of Deploy's size pick. */
-export interface SizeChoice {
-	readonly label: string;
-	readonly description: string;
-	readonly resources: PipelineResources;
-}
-
-/**
- * Deploy's size pick: 1–15 compute units with their CPU and memory, and the one pre-set (`preset`,
- * an index): `current`, the deployed pipeline's size, marked " · current" (a size that is no whole
- * number of units from 1 to 15 comes first as "Current size"), or 1 unit for a new pipeline.
- */
-export function sizeChoices(current: PipelineResources | undefined): { readonly items: SizeChoice[]; readonly preset: number } {
-	const currentUnits = unitsOf(current);
-	const items: SizeChoice[] = Array.from({ length: MAX_UNITS - MIN_UNITS + 1 }, (_, i) => {
-		const units = MIN_UNITS + i;
-		const resources = resourcesOf(units);
-		return { label: `${units}`, description: `${resourcesText(resources)}${units === currentUnits ? ' · current' : ''}`, resources };
-	});
-	if (current && (currentUnits === undefined || currentUnits > MAX_UNITS)) {
-		items.unshift({ label: 'Current size', description: resourcesText(current), resources: current });
-	}
-	const preset = items.findIndex((i) => sameResources(i.resources, current ?? resourcesOf(MIN_UNITS)));
-	return { items, preset: Math.max(0, preset) };
 }

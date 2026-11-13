@@ -14,7 +14,8 @@
 
 import { Parser } from 'yaml';
 import { bloblangRegions, endsInBloblangComment, type Region } from './bloblang';
-import { CLOUD_SECRET_PREFIX, isCloudSecretName, REFERENCE } from './envUsage';
+import { CLOUD_SECRET_PREFIX, ENV_LITERAL_CALL, isCloudSecretName, REFERENCE } from './envUsage';
+import { lineCounter } from './textLines';
 import { parseYaml } from './yamlPath';
 
 /** Redpanda Cloud's secret id rule (the Data Plane API's documentation). */
@@ -42,8 +43,8 @@ export type CloudTranslation =
 
 /** Any call of Bloblang's `env(` (not `getenv(`, `my_env(` or a method such as `this.env(`). */
 const ANY_ENV_CALL = /(?<![.\w])env\(/g;
-/** A literal first argument (`"NAME"`, `'NAME'`, `\"NAME\"`), other arguments allowed after it. */
-const LITERAL_ARG = /env\(\s*\\?(["'])([A-Za-z_][A-Za-z0-9_]*)\\?\1/y;
+/** A literal first argument (`"NAME"`, `'NAME'`, `\"NAME\"`), other arguments allowed after it. Sticky. */
+const LITERAL_ARG = new RegExp(ENV_LITERAL_CALL, 'y');
 
 /** A `${…}` in a default, other than a Bloblang interpolation `${!…}` (which runs once the config is parsed). */
 const NESTED = /\$\{(?!!)[^}]+\}/;
@@ -88,20 +89,6 @@ function commentTest(text: string): (at: number) => boolean {
 	};
 	return (at) => comments.some(([start, end]) => at >= start && at < end)
 		|| regions.some((r) => at >= r.start && at < r.end && inBloblangComment(r, at));
-}
-
-/** The 1-based line of each offset, by a running count (offsets in increasing order). */
-function lineCounter(text: string): (offset: number) => number {
-	let at = 0;
-	let line = 1;
-	return (offset) => {
-		for (; at < offset; at++) {
-			if (text.charCodeAt(at) === 10) {
-				line++;
-			}
-		}
-		return line;
-	};
 }
 
 /** `text` as sent to Redpanda Cloud, or why it can't be. Pure. */

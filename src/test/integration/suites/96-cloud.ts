@@ -1750,6 +1750,54 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(errors, []);
 	});
 
+	test('DELETE_TIMEOUT (story 50): the DELETE accepted, the pipeline still listed past the timeout: "is being deleted … until it is gone", "still listed N s after its delete"', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_STOPPED');
+		await showPipelines();
+		cloud().timeoutMs = 600;
+		// One wait longer than the timeout: a GET, the wait, a second GET, then the deadline (it is checked after each read).
+		cloud().pollMs = 700;
+		// The DELETE answers 200 `{}` without removing the pipeline: every GET still finds it.
+		fake.failures = [{ when: (r) => r.method === 'DELETE' && r.url === pipelineUrl(id), status: 200, body: {} }];
+		const outputAt = api().outputLines().length;
+		script({ confirms: [DELETE_ACTION] });
+		let result: ActionResult | undefined;
+		try {
+			result = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		} finally {
+			cloud().pollMs = 20;
+		}
+		assert.strictEqual(result?.kind, 'timedOut', errors.join('\n'));
+		assert.strictEqual(result?.pipelineId, id);
+		assert.deepStrictEqual(lifecycle(), [`DELETE ${pipelineUrl(id)}`]);
+		const sinceStart = fake.requests.slice(firstRequest);
+		const afterDelete = sinceStart.slice(sinceStart.findIndex((r) => r.method === 'DELETE' && r.url === pipelineUrl(id)));
+		assert.strictEqual(afterDelete.filter((r) => r.method === 'GET' && r.url === pipelineUrl(id)).length, 2, 'the GETs of the wait');
+		assert.ok(progressReports.includes('waiting for it to go…'), progressReports.join(', '));
+		assert.deepStrictEqual(infos.slice(-1), ['Pipeline orders is being deleted on rpc-vilnius; the Cloud view shows it until it is gone.']);
+		assert.ok(api().outputLines().slice(outputAt).includes('Redpanda Cloud: pipeline orders on rpc-vilnius is still listed 1 s after its delete.'),
+			api().outputLines().slice(outputAt).join('\n'));
+		assert.ok(pipelineRow('orders'), 'the view still shows it');
+		assert.deepStrictEqual(errors, []);
+	});
+
+	test('DELETE_UNREADABLE (story 50): the DELETE accepted, then its state unreadable: "it was deleted, but its state could not be read", never "Could not delete"', async () => {
+		const id = 'p0000000000000orders';
+		seed(id, 'orders', 'STATE_STOPPED');
+		await showPipelines();
+		const deleteSent = () => fake.requests.slice(firstRequest).some((r) => r.method === 'DELETE' && r.url === pipelineUrl(id));
+		fake.failures = [{
+			when: (r) => r.method === 'GET' && r.url === pipelineUrl(id) && deleteSent(),
+			status: 503, body: { code: 'UNAVAILABLE', message: 'the data plane is unavailable', details: [] }, times: 100,
+		}];
+		script({ confirms: [DELETE_ACTION] });
+		const result = await run(DELETE_COMMAND, pipelineRow('orders')!.node);
+		assert.strictEqual(result?.kind, 'failed', errors.join('\n'));
+		assert.deepStrictEqual(lifecycle(), [`DELETE ${pipelineUrl(id)}`]);
+		assert.deepStrictEqual(errors, ['Pipeline orders on rpc-vilnius: it was deleted, but its state could not be read: the data plane is unavailable.']);
+		assert.ok(!errors.some((e) => e.startsWith('Could not delete')), errors.join('\n'));
+	});
+
 	test('STALE: a pipeline deleted in the Cloud meanwhile: Stop shows the API\'s error and the cluster\'s pipelines are read again', async () => {
 		const id = 'p0000000000000orders';
 		seed(id, 'orders', 'STATE_RUNNING');

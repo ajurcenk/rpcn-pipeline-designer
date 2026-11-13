@@ -98,6 +98,15 @@ suite('core/cloudTranslate', () => {
 		]);
 	});
 
+	test('ENV_CALL (story 50, the literal argument built from ENV_LITERAL_CALL): mismatched quotes and a literal that is not the first argument are computed names', () => {
+		const computed = 'reads an environment variable, which Redpanda Cloud pipelines do not have; use "${NAME}" with the variable\'s name';
+		assert.deepStrictEqual(refused(translateForCloud('a: env("K\')\nb: env(x, "K")\nc: env(\t"K")\n')).map((p) => p.message), [
+			`line 1: env(…) ${computed}`,
+			`line 2: env(…) ${computed}`,
+			'line 3: env("K") reads an environment variable, which Redpanda Cloud pipelines do not have; use "${K}"',
+		]);
+	});
+
 	test('ENV_CALL: a name that is no secret id gets the rule in its hint; more arguments after a literal name; a method this.env( is no call', () => {
 		assert.deepStrictEqual(refused(translateForCloud('a: env("my_key")\nb: env("X", no_cache: true)\n')).map((p) => p.message), [
 			'line 1: env("my_key") reads an environment variable, which Redpanda Cloud pipelines do not have; use "${MY_KEY}" (a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$)',
