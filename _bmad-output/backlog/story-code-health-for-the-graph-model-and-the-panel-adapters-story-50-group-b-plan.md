@@ -3,7 +3,7 @@ title: 'Code health for the graph model and the panel adapters (story 50 group B
 type: 'refactor'
 ticket: '55'
 created: '2026-11-13'
-status: 'built'
+status: 'done'
 baseline_revision: 'eb154b8ea9d26a6a7561f1cdcf5fb66b2637ccb5'
 route: 'full'
 route_source: 'auto'
