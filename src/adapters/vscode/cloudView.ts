@@ -337,10 +337,11 @@ export type DeployResult =
 	/** The mapped pipeline already runs this config at this size: no pipeline change was sent (`createdSecrets`: only those). */
 	| { readonly kind: 'unchanged'; readonly pipelineId: string; readonly createdSecrets?: readonly string[] }
 	/**
-	 * Ticket 8: the pre-deploy check found problems (`findings`, as listed) or could not read the
-	 * cluster's components (`listError`), and Deploy anyway was not chosen: nothing was sent.
+	 * Ticket 8: the pre-deploy check found problems (`findings`, as listed), or ticket 43: local-only
+	 * parts (`warnings`, advisory, when any), or could not read the cluster's components (`listError`),
+	 * and Deploy anyway was not chosen: nothing was sent.
 	 */
-	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly listError?: string };
+	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly warnings?: readonly string[]; readonly listError?: string };
 
 
 /** How a Start, Stop or Delete ended (the command's result, for tests). */

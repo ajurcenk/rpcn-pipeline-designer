@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { bloblangCalls, documentBloblangCalls } from '../../core/bloblang';
 import { componentCatalogue, formatSlot, slotsOf, type ComponentCatalog } from '../../core/catalogue';
-import { checkAgainstCluster, clusterComponents, findingMessage, versionsDiffer, type ClusterComponents } from '../../core/cloudCheck';
+import { checkAgainstCluster, checkLocalOnly, clusterComponents, findingMessage, isLocalOnly, LOCAL_ONLY, versionsDiffer, type ClusterComponents } from '../../core/cloudCheck';
 import { lineOf } from '../../core/textLines';
 import { componentUses } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
@@ -195,6 +195,92 @@ suite('core/cloudCheck (ticket 8)', () => {
 				const text = fs.readFileSync(path.join(dir, file), 'utf8');
 				assert.deepStrictEqual(check(text, fromSchema, local), [], `${file} on ${version}`);
 			}
+		}
+	});
+
+	const localOnly = (text: string, flagged?: ReadonlySet<number>) => checkLocalOnly(text, componentUses(parseYaml(text), text, LOCAL), flagged).map(findingMessage);
+
+	test('LOCAL_ONLY (ticket 43): each listed input, output and processor is a finding on its line; the others are not', () => {
+		assert.deepStrictEqual(Object.fromEntries(Object.entries(LOCAL_ONLY).map(([c, n]) => [c, [...n]])), {
+			input: ['stdin', 'file', 'csv', 'parquet', 'socket', 'socket_server', 'subprocess', 'http_server'],
+			output: ['stdout', 'file', 'socket', 'subprocess', 'http_server'],
+			processor: ['command', 'subprocess'],
+		});
+		for (const [category, names] of Object.entries(LOCAL_ONLY)) {
+			for (const name of names) {
+				const text = category === 'input' ? `input:\n  ${name}: {}\noutput:\n  drop: {}\n`
+					: category === 'output' ? `input:\n  generate: {}\noutput:\n  ${name}: {}\n`
+						: `input:\n  generate: {}\npipeline:\n  processors:\n    - ${name}: {}\noutput:\n  drop: {}\n`;
+				const line = category === 'input' ? 2 : category === 'output' ? 4 : 5;
+				assert.deepStrictEqual(localOnly(text), [`line ${line}: ${category} \`${name}\` runs on this machine; on Redpanda Cloud it cannot work as it does locally`], `${category} ${name}`);
+				const [f] = checkLocalOnly(text, componentUses(parseYaml(text), text, LOCAL));
+				assert.strictEqual(text.slice(f.start, f.end), name, 'the range covers the name');
+				assert.strictEqual(f.part, `${category} \`${name}\``);
+			}
+		}
+		// Not local-only: a cache `file`, a `parquet` processor, a `stdout` processor (names local-only in other categories only).
+		assert.strictEqual(isLocalOnly({ category: 'cache', name: 'file' }), false);
+		assert.strictEqual(isLocalOnly({ category: 'processor', name: 'parquet' }), false);
+		assert.strictEqual(isLocalOnly({ category: 'processor', name: 'stdout' }), false);
+	});
+
+	test('LOCAL_ONLY nested: a command processor in a switch case, an input\'s own processors, a broker\'s outputs, a resource; in document order', () => {
+		const text = [
+			'input:', '  stdin: {}', '  processors:', '    - subprocess:', '        name: cat',
+			'pipeline:', '  processors:', '    - switch:', '        - check: this.a == 1', '          processors:', '            - command:', '                name: ls',
+			'output:', '  broker:', '    outputs:', '      - file:', '          path: a.txt', '      - drop: {}',
+			'output_resources:', '  - label: o', '    stdout: {}', '',
+		].join('\n');
+		assert.deepStrictEqual(localOnly(text), [
+			'line 2: input `stdin` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+			'line 4: processor `subprocess` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+			'line 11: processor `command` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+			'line 16: output `file` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+			'line 21: output `stdout` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+		]);
+	});
+
+	test('LOCAL_ONLY quoted keys: the range is the name, without the quotes', () => {
+		const text = 'input:\n  "stdin": {}\noutput:\n  \'file\':\n    path: a.txt\n';
+		const found = checkLocalOnly(text, componentUses(parseYaml(text), text, LOCAL));
+		assert.deepStrictEqual(found.map((f) => `${f.line}:${text.slice(f.start, f.end)}`), ['2:stdin', '4:file']);
+	});
+
+	test('LOCAL_ONLY skips what the cluster check flags; a clean config has none', () => {
+		const text = 'input:\n  stdin: {}\noutput:\n  file:\n    path: a.txt\n';
+		const cluster = clusterComponents(answerOf('4.112.0', { inputs: ['stdin'] }))!;
+		const parsed = parseYaml(text);
+		const usesOf = componentUses(parsed, text, LOCAL);
+		const flagged = new Set(checkAgainstCluster(text, usesOf, [], cluster, 'rpc-vilnius').map((f) => f.start));
+		assert.strictEqual(flagged.size, 1);
+		assert.deepStrictEqual(checkLocalOnly(text, usesOf, flagged).map(findingMessage), [
+			'line 4: output `file` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+		]);
+		assert.deepStrictEqual(localOnly('input:\n  generate:\n    mapping: root = 1\noutput:\n  drop: {}\n'), []);
+		assert.deepStrictEqual(localOnly(NESTED), [
+			'line 2: input `file` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+			'line 21: output `stdout` runs on this machine; on Redpanda Cloud it cannot work as it does locally',
+		]);
+		// No catalogue (no uses) or a YAML error: none.
+		assert.deepStrictEqual(checkLocalOnly(text, componentUses(parsed, text, undefined)), []);
+		assert.deepStrictEqual(localOnly('input: [\n  stdin: {}\n'), []);
+	});
+
+	test('LOCAL_ONLY CORPUS: pinned warnings for named corpus configs (line, category and name)', () => {
+		const dir = path.join(REPO_ROOT, 'test', 'corpus');
+		const pinned: Record<string, string[]> = {
+			'eval.yaml': ['135:output:file'],
+			'jira_input.yaml': ['26:output:stdout'],
+			'awk.yaml': [],
+		};
+		for (const [file, expected] of Object.entries(pinned)) {
+			const text = fs.readFileSync(path.join(dir, file), 'utf8');
+			const usesOf = componentUses(parseYaml(text), text, LOCAL);
+			const found = checkLocalOnly(text, usesOf).map((f) => {
+				const u = usesOf.find((x) => x.offset === f.start)!;
+				return `${f.line}:${u.category}:${u.name}`;
+			});
+			assert.deepStrictEqual(found, expected, file);
 		}
 	});
 

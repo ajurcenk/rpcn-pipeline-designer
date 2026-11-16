@@ -207,3 +207,6 @@
 - source_plan: `_bmad-output/backlog/story-code-health-for-the-graph-model-and-the-panel-adapters-story-50-group-b-plan.md`
   summary: Epic 3 retrospective AI-6, shared test filters for the integration suites, was left out of story 55.
   evidence: Story 55's decision (2026-11-13, the recommended option): they would edit the integration suites, which story 55's criterion 2 keeps unchanged (`git diff eb154b8 -- src/test/integration src/test/integration-multiroot src/test/corpus` empty).
+- source_plan: `_bmad-output/backlog/story-deploy-warns-about-a-configs-local-only-parts-plan.md`
+  summary: The pre-deploy check's Problems entry for a component whose key is quoted (`"stdin": {}`) starts at the quote and cuts off the name's last character (`checkAgainstCluster` in src/core/cloudCheck.ts uses `offset .. offset + name.length`).
+  evidence: Found by story 43's edge-case review (its own local-only warnings were fixed); the 5.8 errors' range is outside that ticket.

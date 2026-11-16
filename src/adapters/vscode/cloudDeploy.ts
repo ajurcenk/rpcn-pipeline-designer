@@ -16,7 +16,7 @@ import { asCloudError, describeCloudError, hintLines } from '../cloud/errors';
 import { configTag, type DeployMapping, folderOf, serializeMapping, sidecarPath, tagNames } from '../cloud/sidecar';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
-import { checkAgainstCluster, type ClusterComponents, findingMessage, versionsDiffer } from '../../core/cloudCheck';
+import { checkAgainstCluster, checkLocalOnly, type ClusterComponents, findingMessage, versionsDiffer } from '../../core/cloudCheck';
 import { lineOf } from '../../core/textLines';
 import { componentUses } from '../../core/graph';
 import { parseYaml } from '../../core/yamlPath';
@@ -432,7 +432,9 @@ export class CloudDeploy {
 	/**
 	 * Ticket 8: the check before sending: the local lint's errors and what `cluster` does not offer of the
 	 * saved file's (`source`) components and Bloblang calls; the components list read once, under one
-	 * progress. Findings go to the Problems panel and one error message offering Deploy anyway. Returns
+	 * progress. Findings go to the Problems panel and one error message offering Deploy anyway; ticket 43:
+	 * the local-only parts it does not already report are Warnings there, named in the same message (an
+	 * information message when they are all it found). Returns
 	 * how the deploy ended (nothing sent), or `undefined`: it goes on (no finding, or Deploy anyway).
 	 */
 	private async checkBeforeSending(doc: vscode.TextDocument, file: string, cluster: CloudCluster, dp: string, source: string): Promise<DeployResult | undefined> {
@@ -465,49 +467,84 @@ export class CloudDeploy {
 				}
 			}
 		}
-		const cloudFindings = components ? (() => {
-			const parsed = parseYaml(source);
-			const catalogue = this.ctx.localCatalogue() ?? components.catalogue;
-			return checkAgainstCluster(source, componentUses(parsed, source, catalogue), documentBloblangCalls(parsed, source), components, cluster.name);
-		})() : [];
+		// One parse and one walk for both checks; the local-only parts need a catalogue to be found, as
+		// the cluster check does (with neither a local schema nor the cluster's list, both stay silent).
+		const parsed = parseYaml(source);
+		const catalogue = this.ctx.localCatalogue() ?? components?.catalogue;
+		const uses = catalogue ? componentUses(parsed, source, catalogue) : [];
+		const cloudFindings = components ? checkAgainstCluster(source, uses, documentBloblangCalls(parsed, source), components, cluster.name) : [];
+		// Ticket 43: a part the cluster check already reports gets no second entry.
+		const localOnly = checkLocalOnly(source, uses, new Set(cloudFindings.map((f) => f.start)));
 		const findings = [
 			...lintErrors.map((f) => ({ line: f.line, text: f.message, range: undefined as [number, number] | undefined })),
 			...cloudFindings.map((f) => ({ line: f.line, text: f.text, range: [f.start, f.end] as [number, number] | undefined })),
 		].sort((a, b) => a.line - b.line);
 		const listMessage = listError ? asCloudError(listError).message : undefined;
-		if (findings.length === 0 && listMessage === undefined) {
+		if (findings.length === 0 && listMessage === undefined && localOnly.length === 0) {
 			return undefined;
 		}
-		this.ctx.checkDiagnostics.set(doc.uri, findings.map((f) => {
-			const diagnostic = new vscode.Diagnostic(f.range ? rangeOf(source, f.range[0], f.range[1]) : lineRange(source, f.line), f.text, vscode.DiagnosticSeverity.Error);
+		const entry = (range: vscode.Range, text: string, severity: vscode.DiagnosticSeverity) => {
+			const diagnostic = new vscode.Diagnostic(range, text, severity);
 			diagnostic.source = CHECK_SOURCE;
 			return diagnostic;
-		}));
+		};
+		// In line order (a stable sort: an error before a warning at the same place).
+		this.ctx.checkDiagnostics.set(doc.uri, [
+			...findings.map((f) => entry(f.range ? rangeOf(source, f.range[0], f.range[1]) : lineRange(source, f.line), f.text, vscode.DiagnosticSeverity.Error)),
+			...localOnly.map((f) => entry(rangeOf(source, f.start, f.end), f.text, vscode.DiagnosticSeverity.Warning)),
+		].sort((a, b) => a.range.start.compareTo(b.range.start)));
 		const messages = findings.map((f) => findingMessage(f));
 		const clusterVersion = components?.version ?? cluster.connectVersion;
 		const localVersion = this.ctx.localVersion();
 		const versions = versionsDiffer(clusterVersion, localVersion)
 			? ` ${cluster.name} runs Redpanda Connect ${clusterVersion}; this machine has ${localVersion}.` : '';
-		const listed = messages.length > MAX_LISTED_FINDINGS
-			? `${messages.slice(0, MAX_LISTED_FINDINGS).join('; ')}; and ${messages.length - MAX_LISTED_FINDINGS} more (see the Problems panel)`
-			: messages.join('; ');
+		// At most MAX_LISTED_FINDINGS listed in all: the errors first, then the local-only parts in the room
+		// left; each list counts the rest it leaves out.
+		const capped = (items: readonly string[], room: number) => items.length > room
+			? `${items.slice(0, room).join('; ')}; and ${items.length - room} more (see the Problems panel)`
+			: items.join('; ');
+		const listed = capped(messages, MAX_LISTED_FINDINGS);
+		const room = Math.max(0, MAX_LISTED_FINDINGS - messages.length);
+		const parts = capped(localOnly.map((f) => `line ${f.line}: ${f.part}`), room);
+		const one = localOnly.length === 1;
+		const runsHere = one ? 'runs on this machine and cannot work on Redpanda Cloud as it does locally'
+			: 'run on this machine and cannot work on Redpanda Cloud as they do locally';
+		const alsoParts = localOnly.length === 0 ? ''
+			: room === 0 ? ` ${one ? 'One part' : `${localOnly.length} parts`} ${runsHere} (see the Problems panel).`
+				: ` ${one ? 'This part' : 'These parts'} ${runsHere}: ${parts}.`;
 		let message: string;
 		if (listMessage !== undefined) {
 			this.ctx.log(`Redpanda Cloud: could not read the components of ${cluster.name}: ${listMessage}`);
 			message = `Could not read the components of ${cluster.name}, so ${file} was not checked against it: ${listMessage}.`
-				+ `${messages.length > 0 ? ` The local lint found: ${listed}.` : ''}${versions} Nothing was sent.`;
+				+ `${messages.length > 0 ? ` The local lint found: ${listed}.` : ''}`
+				+ `${alsoParts}${versions} Nothing was sent.`;
+		} else if (messages.length > 0) {
+			message = `${file} may not run on ${cluster.name}: ${listed}.${alsoParts}${versions} Nothing was sent.`;
 		} else {
-			message = `${file} may not run on ${cluster.name}: ${listed}.${versions} Nothing was sent.`;
+			message = `${file} uses ${one ? 'a part that' : 'parts that'} ${runsHere}: ${parts}.${versions} Nothing was sent.`;
 		}
-		this.ctx.log(`Redpanda Cloud: the check of ${file} against ${cluster.name} found ${messages.length === 1 ? 'one problem' : `${messages.length} problems`}.`);
-		messages.forEach((m) => this.ctx.log(`  ${file}: ${m}`));
-		const choice = await this.ctx.showError(message, DEPLOY_ANYWAY_ACTION);
+		if (messages.length > 0 || localOnly.length === 0 || listMessage !== undefined) {
+			this.ctx.log(`Redpanda Cloud: the check of ${file} against ${cluster.name} found ${messages.length === 1 ? 'one problem' : `${messages.length} problems`}.`);
+			messages.forEach((m) => this.ctx.log(`  ${file}: ${m}`));
+		}
+		const warnings = localOnly.map((f) => findingMessage(f));
+		if (warnings.length > 0) {
+			this.ctx.log(`Redpanda Cloud: ${file} uses ${warnings.length === 1 ? 'one local-only part' : `${warnings.length} local-only parts`}.`);
+			warnings.forEach((m) => this.ctx.log(`  ${file}: ${m}`));
+		}
+		const choice = messages.length > 0 || listMessage !== undefined
+			? await this.ctx.showError(message, DEPLOY_ANYWAY_ACTION)
+			: await this.ctx.showInfo(message, DEPLOY_ANYWAY_ACTION);
 		if (choice === DEPLOY_ANYWAY_ACTION) {
 			this.ctx.log(`Redpanda Cloud: deploying ${file} to ${cluster.name} anyway.`);
 			return undefined;
 		}
 		this.ctx.log(`Redpanda Cloud: ${file} was not deployed to ${cluster.name}; nothing was sent.`);
-		return { kind: 'checkStopped', findings: messages.map((m) => this.ctx.mask(m)), ...(listMessage !== undefined ? { listError: this.ctx.mask(listMessage) } : {}) };
+		return {
+			kind: 'checkStopped', findings: messages.map((m) => this.ctx.mask(m)),
+			...(warnings.length > 0 ? { warnings: warnings.map((m) => this.ctx.mask(m)) } : {}),
+			...(listMessage !== undefined ? { listError: this.ctx.mask(listMessage) } : {}),
+		};
 	}
 
 	/**

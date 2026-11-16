@@ -4,7 +4,8 @@
 // `GET {dp}/v1/redpanda-connect/components` answer, read here by `clusterComponents`), the findings:
 // each component (input, output, processor, cache, rate limit, buffer, metrics, tracer, scanner) and
 // each Bloblang function and method the cluster does not offer, on the local file's line. Component
-// fields are never checked against the cluster's schema.
+// fields are never checked against the cluster's schema. Ticket 43: `checkLocalOnly` finds the parts
+// that run on this machine (`LOCAL_ONLY`), which Deploy warns about even where the cluster lists them.
 //
 // The answer's entries carry a `config` field tree (`{name, type, kind, children}`, as `list --format
 // json-full` prints it), so `clusterComponents` also derives a ComponentCatalog from it (the same slot
@@ -217,4 +218,50 @@ export function versionsDiffer(cluster: string | undefined, local: string | unde
 	const a = norm(cluster);
 	const b = norm(local);
 	return a !== undefined && b !== undefined && a !== b;
+}
+
+/**
+ * Ticket 43: the components that read or write this machine (its stdin, stdout, files, programs and
+ * sockets) or serve on it, by category. A fixed list (the 2026-11-16 decision), chosen from the 4.112.0
+ * catalogue's "Local" tag plus local programs and servers; it does not follow the tags of the schema
+ * loaded. On Redpanda Cloud they cannot work as they do locally, even where the cluster lists them.
+ */
+export const LOCAL_ONLY: Readonly<Record<string, ReadonlySet<string>>> = {
+	input: new Set(['stdin', 'file', 'csv', 'parquet', 'socket', 'socket_server', 'subprocess', 'http_server']),
+	output: new Set(['stdout', 'file', 'socket', 'subprocess', 'http_server']),
+	processor: new Set(['command', 'subprocess']),
+};
+
+/** Whether `use` is a local-only part (`LOCAL_ONLY`). */
+export function isLocalOnly(use: Pick<ComponentUse, 'category' | 'name'>): boolean {
+	return LOCAL_ONLY[use.category]?.has(use.name) ?? false;
+}
+
+/** "input `stdin`": how the deploy message names a local-only part. */
+export function localOnlyName(use: Pick<ComponentUse, 'category' | 'name'>): string {
+	return `${categoryText(use.category)} \`${use.name}\``;
+}
+
+/** A local-only finding's text: "input `stdin` runs on this machine; on Redpanda Cloud it cannot work as it does locally". */
+export function localOnlyText(use: Pick<ComponentUse, 'category' | 'name'>): string {
+	return `${localOnlyName(use)} runs on this machine; on Redpanda Cloud it cannot work as it does locally`;
+}
+
+/** A local-only finding: also the part's name ("input `stdin`"), for the deploy message. */
+export interface LocalOnlyFinding extends CloudFinding {
+	readonly part: string;
+}
+
+/**
+ * Ticket 43: a finding (a warning) for every local-only use of `text` whose offset is not in
+ * `flagged` (the uses the cluster check already reports), in document order.
+ */
+export function checkLocalOnly(text: string, uses: readonly ComponentUse[], flagged: ReadonlySet<number> = new Set()): LocalOnlyFinding[] {
+	return uses.filter((u) => isLocalOnly(u) && !flagged.has(u.offset))
+		.map((u) => {
+			// A quoted key (`"stdin": {}`, `'file': {}`): its offset is the quote's; the range is the name's.
+			const start = text[u.offset] === '"' || text[u.offset] === "'" ? u.offset + 1 : u.offset;
+			return { line: lineOf(text, u.offset), start, end: start + u.name.length, text: localOnlyText(u), part: localOnlyName(u) };
+		})
+		.sort((a, b) => a.start - b.start);
 }
