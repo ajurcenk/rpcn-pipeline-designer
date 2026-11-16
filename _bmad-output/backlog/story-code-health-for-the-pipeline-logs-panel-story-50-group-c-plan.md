@@ -114,3 +114,5 @@ type Older = { kind: 'reading' | 'more' | 'none'; from?: number; count: number; 
 - `git diff ea7ee88 -- src/test/integration src/test/corpus` -- expected: empty
 
 **Result (2026-11-13, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 384, multi-root 15 passing; `git diff ea7ee88 -- src/test/integration src/test/corpus` empty. Stable: the first run took 39 min of wall-clock time with "No ptyHost heartbeat" and failed one Cloud test (BAD_SIDECAR, the deploy follow timed out; the Cloud suite is not touched by this change); rerun: 1509 passing, 1 pending, 0 failing (11 min). The test settings clean; no floor run.
+
+**Manual check result (user, 2026-11-16): tested, no issues.** Dev host 1.143.1 with 8a94337 on the user's cluster: Stop reading, Retry now and Show every level work in the Pipeline logs tab after the renames.

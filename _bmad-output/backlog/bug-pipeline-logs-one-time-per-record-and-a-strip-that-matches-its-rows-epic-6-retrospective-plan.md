@@ -139,3 +139,5 @@ With the Kafka timestamp in `row.time`, every host use that reads `row.time` fol
 - Dev host on the user's cluster (left to the user): a row whose own time differs shows it in its tooltip.
 
 **Result (2026-11-13, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 383, stable 1502 passing, 1 pending, 0 failing (12 min), multi-root 15 passing; the test settings clean; no floor run. Manual check left to the user: on the dev host, a row whose own `time` differs from its Kafka timestamp by a second or more shows it in its tooltip.
+
+**Manual check result (user, 2026-11-16): tested, no issues.** Dev host 1.143.1 with 8a94337 on the user's cluster, a deployed `logs53.yaml` (INFO every 2 s, WARN every 10 s): rows in time order with no own-time mark where the two times agree; a bar's click shows the records it counts; Live after Last 15 minutes puts the new records in the last bar and keeps them when Live goes off; Show records around this one holds its row.

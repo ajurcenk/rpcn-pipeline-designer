@@ -169,3 +169,5 @@ So `\w+\s+\w+` is accepted (`\s` and `\w` cannot meet), `.*a.*b` is refused (`a`
 - same with `--label multiroot` -- expected: 0 failing
 
 **Result (2026-11-13, after review pass 2's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 382, stable 1495 passing, 1 pending, 0 failing (12 min), multi-root 15 passing; the test settings clean; no floor run. Residual risk deferred: alternatives matching the same text under a fixed count after an overlapping repeat (`a+[^x](a|a){2}é{1,3}Z`, about 1.6 s on 10,000 characters).
+
+**Manual check result (user, 2026-11-16): tested, no issues.** Dev host 1.143.1 with 8a94337 on the user's cluster, Pipeline logs of a deployed `logs53.yaml`, regular expressions on: `.*.*x` and `error.*timeout.*retry` refused with "This pattern could take too long; simplify it"; `user=\w+\s+status` and `took \d+ ms` accepted and matching.
