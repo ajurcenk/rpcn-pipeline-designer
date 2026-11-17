@@ -120,3 +120,5 @@ On today's real clusters most local-only parts are already refused by 5.8 as mis
 - Dev host on the user's cluster: deploying a config with an `http_server` input shows its Warning in Problems and the Deploy anyway message; Escape sends nothing.
 
 **Result (2026-11-16, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 385, stable 1538 passing, 1 pending, 0 failing (11 min), multi-root 15 passing; the test settings clean; no floor run.
+
+**Manual check result (user, 2026-11-17): tested, no issues.** Dev host 1.143.1 with fc63a1f on the user's cluster, `http43.yaml` (an `http_server` input the cluster lists): Deploy showed the local-only information message with Deploy anyway and a Warning on line 3 (source "Redpanda Cloud"); Escape sent nothing; an edit cleared the warning.
