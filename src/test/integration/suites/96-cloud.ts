@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { parse } from 'yaml';
 import {
 	CloudView, CLIENT_ID_KEY, CLIENT_SECRET_KEY, NOT_READ_TEXT, CONNECT_ACTION, CONNECT_COMMAND, DEPLOY_COMMAND, DEPLOY_UNTITLED_MESSAGE, DISCONNECT_COMMAND, type CloudItem, type CloudUi,
 	CLOUD_REFRESH_COMMAND, DETAILS_UNREAD, NO_PIPELINE_API, NO_REASON, NOT_CONNECTED_MESSAGE,
@@ -70,6 +71,8 @@ const SECRET_VALUES = {
 	setting49: 'tok-49-setting-Rb8q',
 	/** Ticket 49 (TWO_SOURCES): TWO_49 in the env file, the weaker source. */
 	envFile49: 'tok-49-env-file-Mw2j',
+	/** Story 42 (MERGED): typed for TOKEN, which only the resource file uses. */
+	token42: 'tok-42-token-typed-Dv6s',
 };
 const CONFIG = [
 	'input:',
@@ -348,6 +351,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 
 	teardown(async () => {
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		// Story 42's resource file goes with its test.
+		fs.rmSync(path.join(dir, 'res42.yaml'), { force: true });
 	});
 
 	suiteTeardown(async () => {
@@ -2100,6 +2105,259 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.deepStrictEqual(infos.slice(-1), [`Pipeline orders was deployed from orders.yaml, which is ${NOT_IN_WORKSPACE}, so there is no local file to compare with.`]);
 		assert.strictEqual(diffTabs().length, 0);
 		assert.strictEqual(fake.requests.length, unread, 'nothing requested');
+	});
+
+	// --- story 42: the resource files are sent with the config ---
+
+	/** A config using a cache and a processor resource of `res42.yaml`. */
+	const CONFIG42 = [
+		'# orders, its resources in res42.yaml',
+		'input:',
+		'  generate:',
+		'    interval: 5s',
+		'    mapping: root.n = 1',
+		'pipeline:',
+		'  processors:',
+		'    - resource: enrich42',
+		'    - cache:',
+		'        resource: store42',
+		'        operator: set',
+		'        key: k',
+		'        value: v',
+		'output:',
+		'  drop: {}',
+		'',
+	].join('\n');
+	const RES42 = [
+		'# shared',
+		'cache_resources:',
+		'  - label: store42',
+		'    memory: {}',
+		'processor_resources:',
+		'  # the enrichment',
+		'  - label: enrich42',
+		'    mapping: |',
+		'      root = this',
+		'      root.token = "${TOKEN}"',
+		'',
+	].join('\n');
+	/** What the Cloud is sent: the config as written, then the file's two blocks, translated. */
+	const SENT42 = [
+		CONFIG42,
+		'cache_resources:',
+		'  - label: store42',
+		'    memory: {}',
+		'',
+		'processor_resources:',
+		'  # the enrichment',
+		'  - label: enrich42',
+		'    mapping: |',
+		'      root = this',
+		'      root.token = "${secrets.TOKEN}"',
+		'',
+	].join('\n');
+	const res42 = () => path.join(dir, 'res42.yaml');
+	const shownRes42 = () => vscode.workspace.asRelativePath(res42());
+	/** Runs `body` with `redpandaConnect.resourceFiles` set to `entries` (user settings), then unsets it. */
+	async function withResourceFiles(entries: string[], body: () => Promise<void>): Promise<void> {
+		await rc().update('resourceFiles', entries, vscode.ConfigurationTarget.Global);
+		try {
+			await body();
+		} finally {
+			await rc().update('resourceFiles', undefined, vscode.ConfigurationTarget.Global);
+		}
+	}
+	/** Deploys `doc` and expects it refused before any prompt or request, with `problems` in one error. */
+	async function refused42(doc: vscode.TextDocument, problems: string | RegExp): Promise<void> {
+		const before = fake.requests.length;
+		const outputBefore = api().outputLines().length;
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		assert.strictEqual(await deployNow(doc), 'notStarted');
+		assert.strictEqual(fake.requests.length, before, 'nothing sent');
+		assert.strictEqual(pickedFrom.length + asked.length + unitsAsked + questions.length, 0, 'nothing asked');
+		const shown = errors[errors.length - 1];
+		if (typeof problems === 'string') {
+			assert.strictEqual(shown, `orders.yaml can't be deployed to Redpanda Cloud: ${problems}. Nothing was sent.`);
+		} else {
+			assert.match(shown, problems);
+		}
+		const lines = api().outputLines().slice(outputBefore);
+		assert.ok(lines.some((l) => l.startsWith('Redpanda Cloud: orders.yaml was not deployed: ')), lines.join('\n'));
+		assert.ok(lines.some((l) => l.startsWith('  orders.yaml: ')), lines.join('\n'));
+	}
+
+	test('MERGED 42: the config sent is its own text and the resource file\'s blocks, ${TOKEN} as ${secrets.TOKEN}; TOKEN asked as a missing secret; the local files unchanged', () => withLocal(async () => {
+		fs.writeFileSync(res42(), RES42);
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			const resMtime = fs.statSync(res42()).mtimeMs;
+			script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.token42], choices: [ADD_NOW_ACTION] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+			assert.deepStrictEqual(questions.map((q) => q.choices), [[ADD_NOW_ACTION, STOP_DEPLOY_ACTION]]);
+			assert.ok(questions[0].question.includes('Add TOKEN now?'), questions[0].question);
+			assert.deepStrictEqual(secretPosts().map((r) => (JSON.parse(r.body) as { id: string }).id), ['TOKEN']);
+			assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG42, 'the config is not changed');
+			assert.strictEqual(fs.readFileSync(res42(), 'utf8'), RES42, 'the resource file is not changed');
+			assert.strictEqual(fs.statSync(res42()).mtimeMs, resMtime);
+			assert.strictEqual(vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === CHECK_SOURCE).length, 0, 'the check found nothing');
+		});
+	}));
+
+	test('GLOB_NONE 42: an entry matching no file adds nothing; a glob adds what it matches', async () => {
+		fs.writeFileSync(res42(), RES42);
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		await withResourceFiles([path.join(dir, 'none42-*.yaml'), path.join(dir, 'res4[2].yaml')], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+		});
+	});
+
+	test('UNCHANGED, DIFF and COMPARE 42: deployed again, nothing changed; a changed resource file: the update\'s diff and Compare show the change, and it is sent', async () => {
+		fs.writeFileSync(res42(), RES42);
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		inWorkspace();
+		await withResourceFiles([res42()], async () => {
+			const { doc } = await deployOnce(CONFIG42);
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+			script({});
+			assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
+			assert.strictEqual(puts().length, 0);
+
+			const changedRes = RES42.replace('memory: {}', 'memory:\n      default_ttl: 60s');
+			const changedSent = SENT42.replace('memory: {}', 'memory:\n      default_ttl: 60s');
+			fs.writeFileSync(res42(), changedRes);
+			script({ confirms: [undefined] });
+			assert.strictEqual(await deployNow(doc), 'notStarted');
+			const tabs = diffTabs();
+			assert.strictEqual(tabs.length, 1);
+			const input = tabs[0].input as vscode.TabInputTextDiff;
+			assert.strictEqual((await vscode.workspace.openTextDocument(input.original)).getText(), SENT42);
+			assert.strictEqual((await vscode.workspace.openTextDocument(input.modified)).getText(), changedSent);
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+			assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'opened', errors.join('\n'));
+			const compared = diffTabs()[0].input as vscode.TabInputTextDiff;
+			assert.strictEqual((await vscode.workspace.openTextDocument(compared.original)).getText(), SENT42, 'the deployed config');
+			assert.strictEqual((await vscode.workspace.openTextDocument(compared.modified)).getText(), changedSent, 'the changed resource');
+
+			// A resource file Compare can't use: said as Deploy says it, "Nothing was compared.".
+			fs.writeFileSync(res42(), changedRes.replace('root = this', 'root = env("KEY")'));
+			const before = fake.requests.length;
+			assert.strictEqual((await run(COMPARE_COMMAND, pipelineRow('orders')!.node))?.kind, 'notStarted');
+			assert.deepStrictEqual(errors.slice(-1), [`orders.yaml can't be deployed to Redpanda Cloud: ${shownRes42()}: line 10: env("KEY") reads an environment variable, which Redpanda Cloud pipelines do not have; use "\${KEY}". Nothing was compared.`]);
+			assert.strictEqual(fake.requests.length, before, 'nothing requested');
+			fs.writeFileSync(res42(), changedRes);
+
+			const doc2 = await vscode.workspace.openTextDocument(configFile);
+			script({ confirms: [REPLACE_ACTION] });
+			assert.strictEqual(await deployNow(doc2), 'final', errors.join('\n'));
+			assert.strictEqual((JSON.parse(puts()[0].body) as { config_yaml: string }).config_yaml, changedSent);
+		});
+	});
+
+	test('JOINED 42: the config\'s own cache_resources list gets the file\'s cache; the text sent parses to one list holding both', async () => {
+		const config = [
+			'input:',
+			'  generate:',
+			'    interval: 5s',
+			'    mapping: root.n = 1',
+			'cache_resources:',
+			'  - label: mine42 # the config\'s own',
+			'    memory: {}',
+			'output:',
+			'  drop: {}',
+			'',
+		].join('\n');
+		fs.writeFileSync(res42(), 'cache_resources:\n- label: theirs42\n  memory: {}\n');
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(config);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			const sent = lastCreate()!.config_yaml as string;
+			assert.strictEqual(sent, config.replace('    memory: {}\n', '    memory: {}\n  - label: theirs42\n    memory: {}\n'));
+			assert.deepStrictEqual((parse(sent) as { cache_resources: { label: string }[] }).cache_resources.map((c) => c.label), ['mine42', 'theirs42']);
+		});
+	});
+
+	test('ONCE 42: a file listed twice, and a glob matching the config itself: the file merged once, the config not at all', async () => {
+		fs.writeFileSync(res42(), RES42);
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		await withResourceFiles([res42(), res42(), path.join(dir, 'orders.yam[l]')], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+		});
+	});
+
+	test('ENV_FILE 42: a relative envFile with no workspace folder does not stop a deploy with an absolute resourceFiles entry', async () => {
+		fs.writeFileSync(res42(), RES42);
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		await rc().update('envFile', '.env42', vscode.ConfigurationTarget.Global);
+		try {
+			await withResourceFiles([res42()], async () => {
+				const doc = await openForSecrets(CONFIG42);
+				script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+				assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+				assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+			});
+		} finally {
+			await rc().update('envFile', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('CONFIG_ONLY 42: a local-only input resource and a problem outside the *_resources blocks: deployed with no further prompt; the check reads the config only, and only the blocks are sent', async () => {
+		const resource = 'input_resources:\n  - label: in42\n    stdin: {}\n';
+		fs.writeFileSync(res42(), `logger:\n  level: \${bad_name}\n${resource}`);
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(CONFIG);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, `${CONFIG}\n${resource}`);
+			assert.deepStrictEqual(errors, []);
+			assert.strictEqual(confirmed.length + questions.length, 0, 'no question');
+			assert.ok(infoActions.every((a) => !a.includes(DEPLOY_ANYWAY_ACTION)), 'no check message');
+			assert.strictEqual(vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === CHECK_SOURCE).length, 0);
+		});
+	});
+
+	test('DUP_LABEL, UNREADABLE, BAD_IN_FILE, a flow list, UNSET_SETTING 42: refused before any prompt or request, the file or the resource named and why', async () => {
+		await connect();
+		const doc = await openConfig(configFile, CONFIG42.replace('output:', 'cache_resources:\n  - label: store42\n    memory: {}\noutput:'));
+		assert.ok(await waitFor(() => doc.getText().includes('cache_resources'), 10_000));
+		const shown = shownRes42();
+		await withResourceFiles([res42()], async () => {
+			fs.writeFileSync(res42(), RES42);
+			await refused42(doc, `the cache resource "store42" is defined in orders.yaml (line 15) and in ${shown} (line 3)`);
+
+			await editConfig(doc, CONFIG42);
+			fs.rmSync(res42());
+			await refused42(doc, new RegExp(`^orders\\.yaml can't be deployed to Redpanda Cloud: the resource file ${shown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} could not be read \\(.*ENOENT.*\\)\\. Nothing was sent\\.$`));
+
+			fs.writeFileSync(res42(), 'cache_resources:\n  - [\n');
+			await refused42(doc, new RegExp(`^orders\\.yaml can't be deployed to Redpanda Cloud: ${shown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is not valid YAML \\(line \\d+: .+\\)\\. Nothing was sent\\.$`));
+
+			fs.writeFileSync(res42(), '- a\n- b\n');
+			await refused42(doc, `${shown} is not a YAML map`);
+
+			fs.writeFileSync(res42(), RES42.replace('root = this', 'root = env("my_key")'));
+			await refused42(doc, `${shown}: line 9: env("my_key") reads an environment variable, which Redpanda Cloud pipelines do not have; use "\${MY_KEY}" (a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$)`);
+
+			fs.writeFileSync(res42(), 'processor_resources:\n  - label: p42\n    mapping: root = "${bad_name}"\n');
+			await refused42(doc, `${shown}: bad_name (line 3): a Redpanda Cloud secret name must match ^[A-Z][A-Z0-9_]*$`);
+
+			await editConfig(doc, CONFIG42.replace('output:', 'cache_resources: [{label: own42, memory: {}}]\noutput:'));
+			fs.writeFileSync(res42(), RES42);
+			await refused42(doc, `cache_resources in orders.yaml is a flow list ([…]), so the cache resources of ${shown} can't be added to it; write it as a block list (- …)`);
+		});
+		await editConfig(doc, CONFIG42);
+		await withResourceFiles(['res42.yaml'], async () => {
+			await refused42(doc, 'redpandaConnect.resourceFiles "res42.yaml" is a relative path, but no workspace folder is open');
+		});
+		assert.strictEqual(fs.readFileSync(res42(), 'utf8'), RES42, 'never written');
 	});
 
 	test('COMPARE_APART 48: a Compare run while a Deploy\'s "Replace and restart" diff is open leaves that diff\'s right side as it was', async () => {

@@ -172,16 +172,29 @@ function resolveFileSettingPath(setting: string, env: ArgsEnvironment, folder: s
  * (resources first, so a bad resource setting is the failure reported). Never throws.
  */
 function resolveArgsFiles(env: ArgsEnvironment): ArgsFiles | ArgsFailure {
-	const resourceFiles: string[] = [];
+	const resourceFiles = resolveResourceFiles(env);
+	if (resourceFiles.kind !== 'ok') {
+		return resourceFiles;
+	}
+	const envFile = resolveEnvFile(env);
+	return envFile.kind === 'ok' ? { kind: 'ok', resourceFiles: resourceFiles.files, envFile: envFile.path } : envFile;
+}
+
+/**
+ * The `redpandaConnect.resourceFiles` entries as the `--resources` paths lint and Run pass (normalized,
+ * in the setting's order; globs not expanded). Story 42: Deploy reads them alone, so a bad `envFile`
+ * (which a deploy does not use) does not stop it. Never throws.
+ */
+export function resolveResourceFiles(env: ArgsEnvironment): { readonly kind: 'ok'; readonly files: readonly string[] } | ArgsFailure {
+	const files: string[] = [];
 	for (const raw of stringList(env.resourceFilesSetting)) {
 		const resolved = resolveFileSettingPath(raw, env, env.settingFolders?.resourceFiles);
 		if (resolved.kind === 'relativeWithoutWorkspace') {
 			return { kind: 'unusableSetting', setting: RESOURCE_FILES_SETTING, value: raw, reason: 'relativePathWithoutWorkspace' };
 		}
-		resourceFiles.push(path.normalize(resolved.path));
+		files.push(path.normalize(resolved.path));
 	}
-	const envFile = resolveEnvFile(env);
-	return envFile.kind === 'ok' ? { kind: 'ok', resourceFiles, envFile: envFile.path } : envFile;
+	return { kind: 'ok', files };
 }
 
 /**

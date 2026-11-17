@@ -14,7 +14,7 @@ import {
 import { isRunning, pipelineStateText, resourcesText } from '../cloud/pipelineText';
 import { asCloudError, describeCloudError, hintLines } from '../cloud/errors';
 import { configTag, type DeployMapping, folderOf, serializeMapping, sidecarPath, tagNames } from '../cloud/sidecar';
-import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
+import type { CloudSecretUse } from '../../core/cloudTranslate';
 import { documentBloblangCalls } from '../../core/bloblang';
 import { checkAgainstCluster, checkLocalOnly, type ClusterComponents, findingMessage, versionsDiffer } from '../../core/cloudCheck';
 import { lineOf } from '../../core/textLines';
@@ -26,7 +26,7 @@ import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
 	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON, NOT_CONNECTED_MESSAGE,
-	NOT_STARTED, pollPipeline, refusedText, sentConfigUri, sharedMappingText, stateWord, stillText,
+	NOT_STARTED, pollPipeline, refusedText, sentConfig, sentConfigUri, sharedMappingText, stateWord, stillText,
 } from './cloudShared';
 
 export { sentConfigUri } from './cloudShared';
@@ -407,8 +407,9 @@ export class CloudDeploy {
 	}
 
 	/**
-	 * As Run: a dirty config is saved first; the saved file's text, translated for the Cloud (the file
-	 * itself is never changed). `undefined`: not saved, or refused (each problem shown and logged).
+	 * As Run: a dirty config is saved first; the saved file's text, with the resources of its resource
+	 * files (story 42), translated for the Cloud (no file is ever changed). `undefined`: not saved, or
+	 * refused (each problem shown and logged).
 	 */
 	private async savedAndTranslated(doc: vscode.TextDocument, file: string)
 		: Promise<{ readonly text: string; readonly secrets: readonly CloudSecretUse[]; readonly source: string } | undefined> {
@@ -418,7 +419,8 @@ export class CloudDeploy {
 			return undefined;
 		}
 		const source = await fs.promises.readFile(doc.uri.fsPath, 'utf8');
-		const translation = translateForCloud(source);
+		// Story 42: with its resource files' resources merged in; `source` (the check's) stays the config's own text.
+		const translation = await sentConfig(this.ctx, doc.uri, file, source);
 		if (translation.kind === 'ok') {
 			return { text: translation.text, secrets: translation.secrets, source };
 		}

@@ -11,7 +11,8 @@ import { pipelineStateText } from '../cloud/pipelineText';
 import {
 	type DeployMapping, legacyOwnersOf, legacySidecarPath, type ParsedMapping, parseMapping, sidecarPath, tagNames, taggedConfigs, type WorkspaceRoot,
 } from '../cloud/sidecar';
-import type { TranslateProblem } from '../../core/cloudTranslate';
+import { mergeResources, resourceBlockLines } from '../../core/cloudResources';
+import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { errorText } from '../../shared/errorText';
 import type { CloudContext, DeployResult } from './cloudView';
 
@@ -51,7 +52,7 @@ export function compareConfigUri(clusterId: string, pipelineId: string, name: st
 	return vscode.Uri.from({ scheme: DEPLOYED_SCHEME, path: `/${clusterId}/${pipelineId}/${safe}.compare.yaml` });
 }
 /** Why `file` can't be sent to Redpanda Cloud, each problem with its line (Deploy's message; bug 48: Compare's too). */
-export function refusedText(file: string, problems: readonly TranslateProblem[]): string {
+export function refusedText(file: string, problems: readonly { readonly message: string }[]): string {
 	return `${file} can't be deployed to Redpanda Cloud: ${problems.map((p) => p.message).join('; ')}`;
 }
 export async function readMapping(file: string): Promise<{ readonly kind: 'none' } | ParsedMapping> {
@@ -316,4 +317,59 @@ export function mappingGoneText(
 		? `The cluster ${gone.named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`
 		: `Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${gone.cluster.name}.`;
 	return then ? `${text} ${then}` : text;
+}
+
+/** Story 42: a config's resource files (each `redpandaConnect.resourceFiles` entry expanded), or why the setting can't be used. */
+export type ResourceFiles =
+	| { readonly kind: 'ok'; readonly files: readonly string[] }
+	| { readonly kind: 'unusable'; readonly message: string };
+export const NO_RESOURCE_FILES: ResourceFiles = { kind: 'ok', files: [] };
+
+/** The text sent to Redpanda Cloud and its secrets, or why it can't be (each problem's message names its file). */
+export type SentConfig =
+	| { readonly kind: 'ok'; readonly text: string; readonly secrets: readonly CloudSecretUse[] }
+	| { readonly kind: 'refused'; readonly problems: readonly { readonly message: string }[] };
+
+/**
+ * Story 42: `source` (the text of the config at `uri`, named `file`) as Deploy sends it and Compare shows it:
+ * with the resources of its resource files (read from disk now, as a local run reads them) merged in,
+ * translated for the Cloud. No resource files: `translateForCloud(source)` itself. Refused before the merge:
+ * an unusable setting, the config's own translation problems, a file that can't be read, and each file's
+ * translation problems inside its `*_resources` blocks, the only part sent (named with the file, the line its
+ * own). Never throws; nothing is written.
+ */
+export async function sentConfig(ctx: Pick<CloudContext, 'resourceFiles'>, uri: vscode.Uri, file: string, source: string): Promise<SentConfig> {
+	const resources = ctx.resourceFiles(uri);
+	if (resources.kind === 'unusable') {
+		return { kind: 'refused', problems: [{ message: resources.message.replace(/\.$/, '') }] };
+	}
+	const own = translateForCloud(source);
+	if (resources.files.length === 0 || own.kind === 'refused') {
+		return own;
+	}
+	const problems: { message: string }[] = [];
+	const texts: { path: string; text: string }[] = [];
+	for (const resourceFile of resources.files) {
+		const shown = vscode.workspace.asRelativePath(resourceFile);
+		let text: string;
+		try {
+			text = await fs.promises.readFile(resourceFile, 'utf8');
+		} catch (err) {
+			problems.push({ message: `the resource file ${shown} could not be read (${errorText(err)})` });
+			continue;
+		}
+		const alone = translateForCloud(text);
+		if (alone.kind === 'refused') {
+			// Only the `*_resources` blocks are sent: a problem elsewhere in the file (under `logger:`) is not the Cloud's.
+			const blocks = resourceBlockLines(text);
+			const sent = alone.problems.filter((p) => blocks === undefined || blocks.some((b) => p.line >= b.start && p.line <= b.end));
+			problems.push(...sent.map((p) => ({ message: `${shown}: ${p.message}` })));
+		}
+		texts.push({ path: shown, text });
+	}
+	if (problems.length > 0) {
+		return { kind: 'refused', problems };
+	}
+	const merged = mergeResources(source, texts, file);
+	return merged.kind === 'refused' ? merged : translateForCloud(merged.text);
 }

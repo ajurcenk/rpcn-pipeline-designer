@@ -128,7 +128,9 @@ import type { LintResult } from '../redpandaConnect/lint';
 import { CloudActions, type PaletteTarget, type PaletteTargetHow, type PipelineAction } from './cloudActions';
 import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy';
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
-import { CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription } from './cloudShared';
+import {
+	CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NO_RESOURCE_FILES, NOT_IN_WORKSPACE, pipelineStateDescription, type ResourceFiles,
+} from './cloudShared';
 import type { LocalValue } from './environmentView';
 import type { SecretStore } from './secrets';
 
@@ -392,6 +394,8 @@ export interface CloudContext {
 	readonly lint: ((doc: vscode.TextDocument) => Promise<LintResult>) | undefined;
 	localVersion(): string | undefined;
 	localCatalogue(): ComponentCatalog | undefined;
+	/** Story 42: the config's resource files (as lint and Run get them), sent with it. */
+	resourceFiles(uri: vscode.Uri): ResourceFiles;
 	readonly logReader: LogReaderFactory;
 	readonly nodeVersion: string;
 	errorFollowUp: Promise<ShowLogsResult | undefined> | undefined;
@@ -459,6 +463,11 @@ export interface CloudViewOptions {
 	/** Ticket 8: the local schema's catalogue, when one is loaded (else the cluster's is used). */
 	readonly catalogue?: () => ComponentCatalog | undefined;
 	/**
+	 * Story 42: the resource files lint and Run pass `uri` (each `redpandaConnect.resourceFiles` entry
+	 * expanded as the binary expands a glob), or why the setting can't be used. None: no resource files.
+	 */
+	readonly resourceFiles?: (uri: vscode.Uri) => ResourceFiles;
+	/**
 	 * Ticket 6.2: the Pipeline Logs tab, which Show logs opens on a pipeline. Bug 52: `revoke` stops its
 	 * reading (Forget log access, Disconnect, another account), `remask` masks its rows again (a new password).
 	 */
@@ -501,6 +510,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	lint: ((doc: vscode.TextDocument) => Promise<LintResult>) | undefined;
 	localVersion: () => string | undefined;
 	localCatalogue: () => ComponentCatalog | undefined;
+	/** Story 42: the config's resource files, sent with it (the test seam replaces it). */
+	resourceFiles: (uri: vscode.Uri) => ResourceFiles;
 	/** Ticket 8: the pre-deploy check's Problems entries. */
 	private readonly checkDiagnostics: vscode.DiagnosticCollection;
 	/** Ticket 6.2: how a cluster's logs are read (the test seam replaces it). */
@@ -559,6 +570,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.lint = options.lint;
 		this.localVersion = options.localVersion ?? (() => undefined);
 		this.localCatalogue = options.catalogue ?? (() => undefined);
+		this.resourceFiles = options.resourceFiles ?? (() => NO_RESOURCE_FILES);
 		this.logReader = options.logReader ?? ((target) => new PlatformaticReader(target, loadKafka, { log: (line) => this.log(line) }));
 		this.checkDiagnostics = vscode.languages.createDiagnosticCollection(CHECK_COLLECTION);
 		const context = this.context();
@@ -608,6 +620,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			get lint() { return view.lint; },
 			localVersion: () => view.localVersion(),
 			localCatalogue: () => view.localCatalogue(),
+			resourceFiles: (uri) => view.resourceFiles(uri),
 			get logReader() { return view.logReader; },
 			get nodeVersion() { return view.nodeVersion; },
 			get errorFollowUp() { return view.errorFollowUp; },

@@ -210,3 +210,6 @@
 - source_plan: `_bmad-output/backlog/story-deploy-warns-about-a-configs-local-only-parts-plan.md`
   summary: The pre-deploy check's Problems entry for a component whose key is quoted (`"stdin": {}`) starts at the quote and cuts off the name's last character (`checkAgainstCluster` in src/core/cloudCheck.ts uses `offset .. offset + name.length`).
   evidence: Found by story 43's edge-case review (its own local-only warnings were fixed); the 5.8 errors' range is outside that ticket.
+- source_plan: `_bmad-output/backlog/story-deploy-includes-the-resource-files-or-refuses-with-the-reason-plan.md`
+  summary: No integration test runs Deploy with `redpandaConnect.resourceFiles` set at folder level or relative to a workspace folder, so dropping the config's URI from the Deploy wiring (`defaultArgsEnvironment(uri)`) would go unseen.
+  evidence: Story 42's verification-gap review; folder resolution itself is unit-tested in src/test/adapters/redpandaConnect/args.test.ts.

@@ -1,6 +1,7 @@
 // Composition root (AD-15): creates the single "Redpanda Connect" output channel
 // and wires the adapters. Activated on `onLanguage:yaml`.
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
@@ -24,7 +25,8 @@ import { BloblangLensProvider } from './adapters/vscode/bloblangLens';
 import { SecretVariables } from './adapters/vscode/secrets';
 import { EnvHoverProvider } from './adapters/vscode/envHover';
 import { UnsetVariables } from './adapters/vscode/unsetVariables';
-import { commandSettings, defaultArgsEnvironment } from './adapters/redpandaConnect/args';
+import { commandSettings, defaultArgsEnvironment, describeArgsFailure, resolveResourceFiles } from './adapters/redpandaConnect/args';
+import { expandResourceEntry } from './adapters/redpandaConnect/resourceGlob';
 import { DEFAULT_LICENSE_README_URL, EnvironmentView, LICENSE_README_ANCHOR } from './adapters/vscode/environmentView';
 import { activeSecretValues, setActiveSecretValues } from './adapters/redpandaConnect/secretEnv';
 import { CloudView, PRODUCTION_ENDPOINTS, UNREACHABLE_ENDPOINTS } from './adapters/vscode/cloudView';
@@ -343,6 +345,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		lint: (doc) => lintFile(redpandaConnect.state, doc.uri.fsPath),
 		localVersion: () => (redpandaConnect.state.kind === 'ok' ? redpandaConnect.state.version : undefined),
 		catalogue: () => catalogueOf(schemaStore.current?.json),
+		// Story 42: the resource files lint and Run pass the config, each entry expanded as the binary does (as `UnsetVariables.forRun`).
+		resourceFiles: (uri) => {
+			const files = resolveResourceFiles(defaultArgsEnvironment(uri));
+			if (files.kind !== 'ok') {
+				return { kind: 'unusable', message: describeArgsFailure(files) };
+			}
+			// Each file once (two entries or a glob may name it twice), and never the config itself.
+			const own = path.normalize(uri.fsPath);
+			const expanded = files.files.flatMap((entry) => expandResourceEntry(entry)).map((f) => path.normalize(f));
+			return { kind: 'ok', files: [...new Set(expanded)].filter((f) => f !== own) };
+		},
 		logs: logsPanel,
 	});
 	context.subscriptions.push(cloud, ...cloud.register());

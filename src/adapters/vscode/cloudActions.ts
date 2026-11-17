@@ -15,10 +15,9 @@ import { configTag, taggedConfigs } from '../cloud/sidecar';
 import type { CloudContext, CloudNode, DeployResult, PipelineActionResult, PipelineChoice, RowActionResult } from './cloudView';
 import {
 	compareConfigUri, CONNECT_ACTION, DEPLOYED_SCHEME, deployedConfigUri, findMapping, IN_SEVERAL_FOLDERS, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON,
-	NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription, pollPipeline, readMapping, refusedText, sharedMappingText, stateWord,
-	stillText,
+	NOT_CONNECTED_MESSAGE, NOT_IN_WORKSPACE, NOT_STARTED, pipelineStateDescription, pollPipeline, readMapping, refusedText, sentConfig, sharedMappingText,
+	stateWord, stillText,
 } from './cloudShared';
-import { translateForCloud } from '../../core/cloudTranslate';
 import { errorText } from '../../shared/errorText';
 
 /** The delete confirmation's action. */
@@ -547,7 +546,7 @@ export class CloudActions {
 
 	/**
 	 * Compare with the local file: the deployed config (read now) ↔ the local file as Deploy would send it
-	 * (bug 48: translated, so a `${VAR}` sent as `${secrets.VAR}` is no change), both read-only; the file
+	 * (bug 48: translated, so a `${VAR}` sent as `${secrets.VAR}` is no change; story 42: its resource files merged in), both read-only; the file
 	 * is edited in its own editor. A translation Deploy would refuse is said as Deploy says it, nothing opened.
 	 */
 	private async compare(target: ActionTarget): Promise<RowActionResult> {
@@ -567,7 +566,8 @@ export class CloudActions {
 			void this.ctx.showError(`Could not read ${name}: ${errorText(err)}. Nothing was compared.`);
 			return NOT_STARTED;
 		}
-		const translation = translateForCloud(source);
+		// Story 42: with the resources of its resource files, as Deploy sends it.
+		const translation = await sentConfig(this.ctx, vscode.Uri.file(file), name, source);
 		if (translation.kind === 'refused') {
 			const { problems } = translation;
 			this.ctx.log(`Redpanda Cloud: did not compare ${file}: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);
