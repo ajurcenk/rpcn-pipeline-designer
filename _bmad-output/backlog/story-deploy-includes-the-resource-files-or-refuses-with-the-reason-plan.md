@@ -158,3 +158,5 @@ The merge is text-based so the config's bytes (comments, order, quoting) stay as
 **Result (2026-11-17, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 385, stable 1565 passing, 1 pending, 0 failing (11 min), multi-root 15 passing; the test settings clean; no floor run.
 
 **Result (2026-11-17, the renegotiated Include prompt after review pass 2's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 385, stable 1570 passing, 1 pending, 0 failing (11 min), multi-root 15 passing; the test settings clean; no floor run.
+
+**Manual check result (user, 2026-11-17): tested, no issues.** Dev host 1.143.1 with 84b76b2 on the user's cluster, `res42.yaml` using the `seen` cache and the `tag_it` processor from `res42/resources.yaml` (listed in `redpandaConnect.resourceFiles`): Deploy showed the resources error with Include them and deploy before any other prompt; closing it sent nothing; Include deployed the pipeline to Running with `tagged=true` in its logs; Compare showed no difference; a duplicate `seen` label was refused with no button.
