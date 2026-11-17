@@ -138,7 +138,8 @@ import type { SecretStore } from './secrets';
 export {
 	ADD_NOW_ACTION, CHECK_COLLECTION, CHECK_SOURCE, CREATE_NEW_ACTION, CREATE_NEW_PIPELINE_ACTION, DEPLOY_ANYWAY_ACTION,
 	DEPLOY_NOT_DETECTED_MESSAGE, DEPLOY_NOT_ON_DISK_MESSAGE, DEPLOY_UNTITLED_MESSAGE, ENTER_ANOTHER_ACTION, keepValueAction,
-	DEPLOY_WITHOUT_ACTION, localSourceText, REPLACE_ACTION, sentConfigUri, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION,
+	DEPLOY_WITHOUT_ACTION, INCLUDE_RESOURCES_ACTION, includeResourcesText, localSourceText, REPLACE_ACTION, sentConfigUri, STOP_DEPLOY_ACTION,
+	USE_DEFAULT_ACTION,
 } from './cloudDeploy';
 export { DELETE_ACTION, deployedViewUri } from './cloudActions';
 export {
@@ -343,7 +344,9 @@ export type DeployResult =
 	 * parts (`warnings`, advisory, when any), or could not read the cluster's components (`listError`),
 	 * and Deploy anyway was not chosen: nothing was sent.
 	 */
-	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly warnings?: readonly string[]; readonly listError?: string };
+	| { readonly kind: 'checkStopped'; readonly findings: readonly string[]; readonly warnings?: readonly string[]; readonly listError?: string }
+	/** Story 42: the resource files add resources and Include them and deploy was not chosen: nothing was sent. */
+	| { readonly kind: 'resourcesStopped'; readonly files: readonly string[] };
 
 
 /** How a Start, Stop or Delete ended (the command's result, for tests). */

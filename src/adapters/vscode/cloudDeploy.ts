@@ -26,7 +26,7 @@ import type { CloudContext, DeployResult } from './cloudView';
 import type { LocalValue } from './environmentView';
 import {
 	CONNECT_ACTION, deployedConfigUri, filesOfTag, findMapping, mappedPipeline, mappedTagOf, mappingGoneText, NO_REASON, NOT_CONNECTED_MESSAGE,
-	NOT_STARTED, pollPipeline, refusedText, sentConfig, sentConfigUri, sharedMappingText, stateWord, stillText,
+	NOT_STARTED, pollPipeline, refusedText, sentConfig, type SentConfig, sentConfigUri, sharedMappingText, stateWord, stillText,
 } from './cloudShared';
 
 export { sentConfigUri } from './cloudShared';
@@ -48,6 +48,16 @@ export const ENTER_ANOTHER_ACTION = 'Enter another value…';
 export const USE_DEFAULT_ACTION = "Don't create it (the Cloud uses the default)";
 export const ADD_NOW_ACTION = 'Add it now: enter its value…';
 export const STOP_DEPLOY_ACTION = "Don't deploy";
+/** Story 42: the way forward when the resource files add resources: they are copied into the config sent. */
+export const INCLUDE_RESOURCES_ACTION = 'Include them and deploy';
+/** "a.yaml", "a.yaml and b.yaml", "a.yaml, b.yaml and c.yaml". */
+function listText(names: readonly string[]): string {
+	return names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+/** Story 42: the error a deploy shows before it includes the resource files' resources. */
+export function includeResourcesText(file: string, from: readonly string[]): string {
+	return `${file} uses resources from ${listText(from)}, which Redpanda Cloud does not get. Nothing was sent.`;
+}
 /** Ticket 8: the pre-deploy check's way forward despite its findings. */
 export const DEPLOY_ANYWAY_ACTION = 'Deploy anyway';
 /** Ticket 8: the check's Problems entries (their own collection). */
@@ -74,6 +84,9 @@ export function localSourceText(local: Pick<LocalValue, 'source' | 'level'>): st
 			return 'the extension';
 	}
 }
+
+/** The saved config as sent (story 42: with the resources agreed to) and `source`, its own saved text (the check's). */
+type SavedConfig = Extract<SentConfig, { readonly kind: 'ok' }> & { readonly source: string };
 
 /** Deploy again: the deploy may only update this pipeline (anything else is explained, nothing sent). */
 export interface OnlyPipeline {
@@ -163,8 +176,34 @@ export class CloudDeploy {
 		this.ctx.checkDiagnostics.delete(doc.uri);
 		// Translated before anything is asked or sent, so a refusal costs no prompt and no request; done
 		// again just before sending, so edits made during the prompts are sent.
-		if ((await this.savedAndTranslated(doc, file)) === undefined) {
+		const firstRead = await this.savedAndTranslated(doc, file);
+		if (firstRead === undefined) {
 			return NOT_STARTED;
+		}
+		// Story 42 (renegotiated): resources from the resource files go in only when chosen; the files agreed to
+		// hold for the rest of this deploy, and a file not yet agreed to (it changed during the prompts) is asked about.
+		const agreed = new Set<string>();
+		const include = async (resourcesFrom: readonly string[]): Promise<DeployResult | undefined> => {
+			const asked = resourcesFrom.filter((f) => !agreed.has(f));
+			if (asked.length === 0) {
+				return undefined;
+			}
+			const message = includeResourcesText(file, asked);
+			this.ctx.log(`Redpanda Cloud: ${message}`);
+			if ((await this.ctx.showError(message, INCLUDE_RESOURCES_ACTION)) !== INCLUDE_RESOURCES_ACTION) {
+				this.ctx.log(`Redpanda Cloud: ${file} was not deployed: its resources were not included.`);
+				return { kind: 'resourcesStopped', files: asked };
+			}
+			asked.forEach((f) => agreed.add(f));
+			this.ctx.log(`Redpanda Cloud: the resources of ${listText(asked)} are included in ${file} as sent.`);
+			return undefined;
+		};
+		// Deploy again asks after its mapping refusals (below), so an Include is never followed by "nothing was sent".
+		if (!only) {
+			const notIncluded = await include(firstRead.resourcesFrom);
+			if (notIncluded) {
+				return notIncluded;
+			}
 		}
 		await this.ctx.ready;
 		if (!this.ctx.account) {
@@ -208,6 +247,12 @@ export class CloudDeploy {
 			void this.ctx.showInfo(`${mappingName} no longer maps ${file} to ${only.name}. Nothing was sent.`);
 			return NOT_STARTED;
 		}
+		if (only) {
+			const notIncluded = await include(firstRead.resourcesFrom);
+			if (notIncluded) {
+				return notIncluded;
+			}
+		}
 		if (at.kind === 'shared') {
 			const why = sharedMappingText(at, doc.uri.fsPath);
 			this.ctx.log(`Redpanda Cloud: ${why}.`);
@@ -244,6 +289,15 @@ export class CloudDeploy {
 		const translated = await this.savedAndTranslated(doc, file);
 		if (translated === undefined) {
 			return NOT_STARTED;
+		}
+		// Asked again only for a file not agreed to: a resource file changed during the prompts.
+		const changedFiles = translated.resourcesFrom.filter((f) => !agreed.has(f));
+		if (changedFiles.length > 0) {
+			this.ctx.log(`Redpanda Cloud: the resource files of ${file} changed during the deploy; ${listText(changedFiles)} now ${changedFiles.length === 1 ? 'adds' : 'add'} resources.`);
+		}
+		const stillNotIncluded = await include(translated.resourcesFrom);
+		if (stillNotIncluded) {
+			return stillNotIncluded;
 		}
 		const configYaml = translated.text;
 		// The check first: when it stops the deploy, nothing at all is sent (no secret either).
@@ -411,8 +465,7 @@ export class CloudDeploy {
 	 * files (story 42), translated for the Cloud (no file is ever changed). `undefined`: not saved, or
 	 * refused (each problem shown and logged).
 	 */
-	private async savedAndTranslated(doc: vscode.TextDocument, file: string)
-		: Promise<{ readonly text: string; readonly secrets: readonly CloudSecretUse[]; readonly source: string } | undefined> {
+	private async savedAndTranslated(doc: vscode.TextDocument, file: string): Promise<SavedConfig | undefined> {
 		if (doc.isDirty && !(await doc.save())) {
 			this.ctx.log(`Redpanda Cloud: ${file} could not be saved; not deployed.`);
 			void this.ctx.showError(`${file} could not be saved, so it was not deployed.`);
@@ -422,7 +475,7 @@ export class CloudDeploy {
 		// Story 42: with its resource files' resources merged in; `source` (the check's) stays the config's own text.
 		const translation = await sentConfig(this.ctx, doc.uri, file, source);
 		if (translation.kind === 'ok') {
-			return { text: translation.text, secrets: translation.secrets, source };
+			return { ...translation, source };
 		}
 		const { problems } = translation;
 		this.ctx.log(`Redpanda Cloud: ${file} was not deployed: ${problems.length === 1 ? 'one problem' : `${problems.length} problems`} for Redpanda Cloud.`);

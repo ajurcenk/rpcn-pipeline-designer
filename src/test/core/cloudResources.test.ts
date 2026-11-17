@@ -75,6 +75,13 @@ suite('core/cloudResources', () => {
 			{ path: 'a.yaml', text: 'cache_resources:\n  - label: a\n    memory: {}\n' },
 			{ path: 'b.yaml', text: 'cache_resources:\n- label: b\n  memory: {}\nrate_limit_resources:\n  - label: r\n    local: {}\n' },
 		]));
+		const from = mergeResources('input:\n  stdin: {}\n', [
+			{ path: 'a.yaml', text: 'cache_resources:\n  - label: a\n    memory: {}\n' },
+			{ path: 'n.yaml', text: 'logger: {}\n' },
+			{ path: 'b.yaml', text: 'rate_limit_resources:\n  - label: r\n    local: {}\n' },
+		]);
+		assert.deepStrictEqual(from.kind === 'merged' ? from.from : undefined, ['a.yaml', 'b.yaml'], 'only the files that added resources, in order');
+		assert.deepStrictEqual(mergeResources('a: 1\n', []), { kind: 'merged', text: 'a: 1\n', from: [] });
 		const value = parse(text) as Record<string, { label: string }[]>;
 		assert.deepStrictEqual(value.cache_resources.map((r) => r.label), ['a', 'b']);
 		assert.deepStrictEqual(value.rate_limit_resources.map((r) => r.label), ['r']);

@@ -327,7 +327,8 @@ export const NO_RESOURCE_FILES: ResourceFiles = { kind: 'ok', files: [] };
 
 /** The text sent to Redpanda Cloud and its secrets, or why it can't be (each problem's message names its file). */
 export type SentConfig =
-	| { readonly kind: 'ok'; readonly text: string; readonly secrets: readonly CloudSecretUse[] }
+	/** `resourcesFrom`: the resource files whose resources `text` includes (none: the config alone). */
+	| { readonly kind: 'ok'; readonly text: string; readonly secrets: readonly CloudSecretUse[]; readonly resourcesFrom: readonly string[] }
 	| { readonly kind: 'refused'; readonly problems: readonly { readonly message: string }[] };
 
 /**
@@ -345,7 +346,7 @@ export async function sentConfig(ctx: Pick<CloudContext, 'resourceFiles'>, uri: 
 	}
 	const own = translateForCloud(source);
 	if (resources.files.length === 0 || own.kind === 'refused') {
-		return own;
+		return own.kind === 'ok' ? { ...own, resourcesFrom: [] } : own;
 	}
 	const problems: { message: string }[] = [];
 	const texts: { path: string; text: string }[] = [];
@@ -371,5 +372,9 @@ export async function sentConfig(ctx: Pick<CloudContext, 'resourceFiles'>, uri: 
 		return { kind: 'refused', problems };
 	}
 	const merged = mergeResources(source, texts, file);
-	return merged.kind === 'refused' ? merged : translateForCloud(merged.text);
+	if (merged.kind === 'refused') {
+		return merged;
+	}
+	const translated = translateForCloud(merged.text);
+	return translated.kind === 'ok' ? { ...translated, resourcesFrom: merged.from } : translated;
 }

@@ -39,7 +39,8 @@ export interface MergeProblem {
 }
 
 export type MergedResources =
-	| { readonly kind: 'merged'; readonly text: string }
+	/** `from`: the files that added resources (none: `text` is the config's). */
+	| { readonly kind: 'merged'; readonly text: string; readonly from: readonly string[] }
 	| { readonly kind: 'refused'; readonly problems: readonly MergeProblem[] };
 
 /** `cache_resources` → `cache`, `rate_limit_resources` → `rate limit`. */
@@ -168,7 +169,7 @@ export function resourceBlockLines(text: string): { readonly start: number; read
  */
 export function mergeResources(config: string, files: readonly ResourceFileText[], configName = 'the config'): MergedResources {
 	if (files.length === 0) {
-		return { kind: 'merged', text: config };
+		return { kind: 'merged', text: config, from: [] };
 	}
 	const eol = config.includes('\r\n') ? '\r\n' : '\n';
 	const withEol = (block: string) => {
@@ -212,6 +213,7 @@ export function mergeResources(config: string, files: readonly ResourceFileText[
 		}
 	}
 	let text = config;
+	const from: string[] = [];
 	/** Who wrote each kind's list in `text` now (the config, or the file whose block was appended). */
 	const owner = new Map<string, string>(RESOURCE_KEYS.map((k) => [k, configName]));
 	for (const file of files) {
@@ -308,6 +310,7 @@ export function mergeResources(config: string, files: readonly ResourceFileText[
 		if (problems.length > 0 || contributed.length === 0) {
 			continue;
 		}
+		from.push(file.path);
 		for (const key of contributed) {
 			const own = expected[key];
 			expected[key] = [...(Array.isArray(own) ? own : []), ...(fileValue.value[key] as unknown[])];
@@ -317,7 +320,7 @@ export function mergeResources(config: string, files: readonly ResourceFileText[
 			refuse(`${file.path}'s resources could not be added to ${configName} without changing it: ${changed}`);
 		}
 	}
-	return problems.length > 0 ? { kind: 'refused', problems } : { kind: 'merged', text };
+	return problems.length > 0 ? { kind: 'refused', problems } : { kind: 'merged', text, from };
 }
 
 /** How `text` does not read as `expected` (the first key that differs), or `undefined` when it does. */

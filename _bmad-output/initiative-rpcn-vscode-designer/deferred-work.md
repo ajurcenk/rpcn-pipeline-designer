@@ -213,3 +213,6 @@
 - source_plan: `_bmad-output/backlog/story-deploy-includes-the-resource-files-or-refuses-with-the-reason-plan.md`
   summary: No integration test runs Deploy with `redpandaConnect.resourceFiles` set at folder level or relative to a workspace folder, so dropping the config's URI from the Deploy wiring (`defaultArgsEnvironment(uri)`) would go unseen.
   evidence: Story 42's verification-gap review; folder resolution itself is unit-tested in src/test/adapters/redpandaConnect/args.test.ts.
+- source_plan: `_bmad-output/backlog/story-deploy-includes-the-resource-files-or-refuses-with-the-reason-plan.md`
+  summary: Deploy's questions (the pre-deploy check's Deploy anyway, story 42's Include them and deploy) are non-modal notifications; hidden with Escape or by the notification timeout they leave the deploy waiting, and its per-file guard (bug 45) ignores a second Deploy of that file until the message is closed.
+  evidence: Story 42's review pass 2 (edge-case and blind-hunter lenses); a modal dialog would change every Deploy prompt's look, so it is left for a decision of its own.

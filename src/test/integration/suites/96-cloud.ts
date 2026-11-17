@@ -26,7 +26,7 @@ import {
 	DELETE_ACTION, DELETE_COMMAND, START_COMMAND, STOP_COMMAND, type PipelineChoice,
 	COMPARE_COMMAND, COPY_ID_COMMAND, DEPLOY_AGAIN_COMMAND, NOT_IN_WORKSPACE, OPEN_DEPLOYED_COMMAND,
 	ADD_NOW_ACTION, ENTER_ANOTHER_ACTION, STOP_DEPLOY_ACTION, USE_DEFAULT_ACTION, CHECK_SOURCE, DEPLOY_ANYWAY_ACTION,
-	SET_UP_LOG_ACCESS_ACTION,
+	SET_UP_LOG_ACCESS_ACTION, INCLUDE_RESOURCES_ACTION, includeResourcesText,
 } from '../../../adapters/vscode/cloudView';
 import type { LintResult } from '../../../adapters/redpandaConnect/lint';
 import { componentCatalogue } from '../../../core/catalogue';
@@ -203,10 +203,10 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 	}
 
 	/** Connects and deploys `orders.yaml` once as `orders` on rpc-vilnius (running); its pipeline id. */
-	async function deployOnce(text = CONFIG): Promise<{ doc: vscode.TextDocument; id: string }> {
+	async function deployOnce(text = CONFIG, actions?: (string | undefined)[]): Promise<{ doc: vscode.TextDocument; id: string }> {
 		await connect();
 		const doc = await openConfig(configFile, text);
-		script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+		script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions });
 		const result = await vscode.commands.executeCommand<{ kind: string; pipelineId?: string }>(DEPLOY_COMMAND, doc.uri);
 		assert.strictEqual(result?.kind, 'final', errors.join('\n'));
 		assert.ok(fs.existsSync(sidecarFile()));
@@ -353,6 +353,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		// Story 42's resource file goes with its test.
 		fs.rmSync(path.join(dir, 'res42.yaml'), { force: true });
+		fs.rmSync(path.join(dir, 'res42b.yaml'), { force: true });
 	});
 
 	suiteTeardown(async () => {
@@ -2176,6 +2177,8 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		assert.strictEqual(fake.requests.length, before, 'nothing sent');
 		assert.strictEqual(pickedFrom.length + asked.length + unitsAsked + questions.length, 0, 'nothing asked');
 		const shown = errors[errors.length - 1];
+		assert.deepStrictEqual(errorActions[errorActions.length - 1], [], 'a refusal offers no button');
+		assert.ok(!errors.some((e) => e.includes(' uses resources from ')), 'not asked to include them');
 		if (typeof problems === 'string') {
 			assert.strictEqual(shown, `orders.yaml can't be deployed to Redpanda Cloud: ${problems}. Nothing was sent.`);
 		} else {
@@ -2191,7 +2194,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		await withResourceFiles([res42()], async () => {
 			const doc = await openForSecrets(CONFIG42);
 			const resMtime = fs.statSync(res42()).mtimeMs;
-			script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.token42], choices: [ADD_NOW_ACTION] });
+			script({ picks: ['rpc-vilnius'], inputs: ['orders', SECRET_VALUES.token42], choices: [ADD_NOW_ACTION], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
 			assert.deepStrictEqual(questions.map((q) => q.choices), [[ADD_NOW_ACTION, STOP_DEPLOY_ACTION]]);
@@ -2204,12 +2207,116 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		});
 	}));
 
+	test('PROMPT 42: resources from the resource files: an error naming them, before any other prompt, with one button; Escape sends nothing; Deploy again asks the same', async () => {
+		fs.writeFileSync(res42(), RES42);
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		inWorkspace();
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			const before = fake.requests.length;
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+			const result = await vscode.commands.executeCommand<{ kind: string; files?: string[] }>(DEPLOY_COMMAND, doc.uri);
+			assert.deepStrictEqual(result, { kind: 'resourcesStopped', files: [shownRes42()] });
+			assert.deepStrictEqual(errors, [`orders.yaml uses resources from ${shownRes42()}, which Redpanda Cloud does not get. Nothing was sent.`]);
+			assert.deepStrictEqual(errorActions, [[INCLUDE_RESOURCES_ACTION]]);
+			assert.strictEqual(pickedFrom.length + asked.length + unitsAsked + questions.length + confirmed.length, 0, 'asked first');
+			assert.strictEqual(fake.requests.length, before, 'nothing requested or sent');
+			assert.strictEqual(fs.readFileSync(res42(), 'utf8'), RES42);
+
+			// Include: the merged text sent; asked once in that deploy, though it reads the files again after the size pick.
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+			assert.strictEqual(errors.filter((e) => e.includes(' uses resources from ')).length, 2, 'once in this deploy');
+			assert.strictEqual(fs.readFileSync(configFile, 'utf8'), CONFIG42, 'the config is not changed');
+
+			// The next deploy asks again; so does Deploy again from the row (Escape: nothing sent).
+			const again = fake.requests.length;
+			script({ actions: [undefined] });
+			assert.strictEqual(await deployNow(doc), 'resourcesStopped');
+			script({ actions: [undefined] });
+			assert.strictEqual((await run(DEPLOY_AGAIN_COMMAND, pipelineRow('orders')!.node))?.kind, 'resourcesStopped');
+			assert.strictEqual(errors.filter((e) => e.includes(' uses resources from ')).length, 4);
+			assert.ok(fake.requests.slice(again).every((r) => r.method === 'GET' || r.url === '/oauth/token'), 'nothing sent');
+		});
+	});
+
+	test('NONE 42: no resource files, or files without resources: no question, the config sent as before', async () => {
+		fs.writeFileSync(res42(), 'logger:\n  level: INFO\n');
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(CONFIG);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, CONFIG);
+			assert.deepStrictEqual(errors, []);
+		});
+		// No resourceFiles at all: no question either (the pipeline already runs this config).
+		script({});
+		assert.strictEqual(await deployNow(await vscode.workspace.openTextDocument(configFile)), 'unchanged', errors.join('\n'));
+		assert.deepStrictEqual(errors, []);
+		assert.ok(errorActions.every((a) => !a.includes(INCLUDE_RESOURCES_ACTION)), 'no include button');
+	});
+
+	const res42b = () => path.join(dir, 'res42b.yaml');
+	const RES42B = 'rate_limit_resources:\n  - label: other42\n    local: {}\n';
+	const includeErrors = () => errors.filter((e) => e.includes(' uses resources from '));
+
+	test('RACE 42: a resource file that gains resources during the prompts is asked about then; Escape sends nothing; Include sends them', async () => {
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		fs.writeFileSync(res42(), 'logger:\n  level: INFO\n');
+		await withResourceFiles([res42()], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			const outputBefore = api().outputLines().length;
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [undefined] });
+			duringUnits = async () => fs.writeFileSync(res42(), RES42);
+			assert.strictEqual(await deployNow(doc), 'resourcesStopped');
+			assert.strictEqual(unitsAsked, 1, 'asked after the size pick');
+			assert.deepStrictEqual(includeErrors(), [includeResourcesText('orders.yaml', [shownRes42()])]);
+			assert.strictEqual(puts().length + posts().length, 0, 'nothing sent');
+			assert.ok(api().outputLines().slice(outputBefore).some((l) => l.startsWith('Redpanda Cloud: the resource files of orders.yaml changed during the deploy;')));
+
+			fs.writeFileSync(res42(), 'logger:\n  level: INFO\n');
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
+			duringUnits = async () => fs.writeFileSync(res42(), RES42);
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
+		});
+	});
+
+	test('NEW_FILE 42: after Include, a listed file that gains resources during the prompts is asked about, naming only it', async () => {
+		vilnius().secrets!.set('TOKEN', 'tok-42-present');
+		fs.writeFileSync(res42(), RES42);
+		fs.writeFileSync(res42b(), '# none yet\n');
+		await withResourceFiles([res42(), res42b()], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION, INCLUDE_RESOURCES_ACTION] });
+			duringUnits = async () => fs.writeFileSync(res42b(), RES42B);
+			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
+			const shownB = vscode.workspace.asRelativePath(res42b());
+			assert.deepStrictEqual(includeErrors(), [includeResourcesText('orders.yaml', [shownRes42()]), includeResourcesText('orders.yaml', [shownB])]);
+			assert.strictEqual(lastCreate()!.config_yaml, `${SENT42}\n${RES42B}`);
+		});
+	});
+
+	test('TWO_FILES 42: two files adding resources: the error names both, in order; Escape lists both', async () => {
+		fs.writeFileSync(res42(), RES42);
+		fs.writeFileSync(res42b(), RES42B);
+		await withResourceFiles([res42(), res42b()], async () => {
+			const doc = await openForSecrets(CONFIG42);
+			const shownB = vscode.workspace.asRelativePath(res42b());
+			script({ actions: [undefined] });
+			const result = await vscode.commands.executeCommand<{ kind: string; files?: string[] }>(DEPLOY_COMMAND, doc.uri);
+			assert.deepStrictEqual(result, { kind: 'resourcesStopped', files: [shownRes42(), shownB] });
+			assert.deepStrictEqual(errors, [`orders.yaml uses resources from ${shownRes42()} and ${shownB}, which Redpanda Cloud does not get. Nothing was sent.`]);
+		});
+	});
+
 	test('GLOB_NONE 42: an entry matching no file adds nothing; a glob adds what it matches', async () => {
 		fs.writeFileSync(res42(), RES42);
 		vilnius().secrets!.set('TOKEN', 'tok-42-present');
 		await withResourceFiles([path.join(dir, 'none42-*.yaml'), path.join(dir, 'res4[2].yaml')], async () => {
 			const doc = await openForSecrets(CONFIG42);
-			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
 		});
@@ -2220,16 +2327,16 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		vilnius().secrets!.set('TOKEN', 'tok-42-present');
 		inWorkspace();
 		await withResourceFiles([res42()], async () => {
-			const { doc } = await deployOnce(CONFIG42);
+			const { doc } = await deployOnce(CONFIG42, [INCLUDE_RESOURCES_ACTION]);
 			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
-			script({});
+			script({ actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'unchanged', errors.join('\n'));
 			assert.strictEqual(puts().length, 0);
 
 			const changedRes = RES42.replace('memory: {}', 'memory:\n      default_ttl: 60s');
 			const changedSent = SENT42.replace('memory: {}', 'memory:\n      default_ttl: 60s');
 			fs.writeFileSync(res42(), changedRes);
-			script({ confirms: [undefined] });
+			script({ confirms: [undefined], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'notStarted');
 			const tabs = diffTabs();
 			assert.strictEqual(tabs.length, 1);
@@ -2252,7 +2359,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 			fs.writeFileSync(res42(), changedRes);
 
 			const doc2 = await vscode.workspace.openTextDocument(configFile);
-			script({ confirms: [REPLACE_ACTION] });
+			script({ confirms: [REPLACE_ACTION], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc2), 'final', errors.join('\n'));
 			assert.strictEqual((JSON.parse(puts()[0].body) as { config_yaml: string }).config_yaml, changedSent);
 		});
@@ -2274,7 +2381,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fs.writeFileSync(res42(), 'cache_resources:\n- label: theirs42\n  memory: {}\n');
 		await withResourceFiles([res42()], async () => {
 			const doc = await openForSecrets(config);
-			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 			const sent = lastCreate()!.config_yaml as string;
 			assert.strictEqual(sent, config.replace('    memory: {}\n', '    memory: {}\n  - label: theirs42\n    memory: {}\n'));
@@ -2287,7 +2394,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		vilnius().secrets!.set('TOKEN', 'tok-42-present');
 		await withResourceFiles([res42(), res42(), path.join(dir, 'orders.yam[l]')], async () => {
 			const doc = await openForSecrets(CONFIG42);
-			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 			assert.strictEqual(lastCreate()!.config_yaml, SENT42);
 		});
@@ -2300,7 +2407,7 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		try {
 			await withResourceFiles([res42()], async () => {
 				const doc = await openForSecrets(CONFIG42);
-				script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+				script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
 				assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 				assert.strictEqual(lastCreate()!.config_yaml, SENT42);
 			});
@@ -2314,10 +2421,10 @@ suite('Cloud view and Deploy (integration, ticket 5.2)', function () {
 		fs.writeFileSync(res42(), `logger:\n  level: \${bad_name}\n${resource}`);
 		await withResourceFiles([res42()], async () => {
 			const doc = await openForSecrets(CONFIG);
-			script({ picks: ['rpc-vilnius'], inputs: ['orders'] });
+			script({ picks: ['rpc-vilnius'], inputs: ['orders'], actions: [INCLUDE_RESOURCES_ACTION] });
 			assert.strictEqual(await deployNow(doc), 'final', errors.join('\n'));
 			assert.strictEqual(lastCreate()!.config_yaml, `${CONFIG}\n${resource}`);
-			assert.deepStrictEqual(errors, []);
+			assert.deepStrictEqual(errors, [includeResourcesText('orders.yaml', [shownRes42()])], 'only the include question');
 			assert.strictEqual(confirmed.length + questions.length, 0, 'no question');
 			assert.ok(infoActions.every((a) => !a.includes(DEPLOY_ANYWAY_ACTION)), 'no check message');
 			assert.strictEqual(vscode.languages.getDiagnostics(doc.uri).filter((d) => d.source === CHECK_SOURCE).length, 0);

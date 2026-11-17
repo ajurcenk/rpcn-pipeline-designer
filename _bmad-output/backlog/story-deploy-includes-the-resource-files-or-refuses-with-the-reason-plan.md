@@ -26,6 +26,8 @@ context: []
 
 **Decisions (user, 2026-11-17, the recommended options):** the resources go in as the config's top-level `*_resources` lists (`cache_resources`, `rate_limit_resources`, `processor_resources`, `input_resources`, `output_resources`), the standard Redpanda Connect form; the user's dev-host check on their cluster confirms the Cloud runs it. Every resource in the config's resource files is sent, as a local run with `--resources` loads them all (no reference scan). When the config has its own list of a kind, the files' items join that list; a label defined in the config and a file, or in two files, is refused, naming the label and where each is defined.
 
+**Decision (user, 2026-11-17, after the first build; the recommended options):** Deploy no longer merges on its own. When the config's resource files hold resources (and the merge would succeed), Deploy first shows an error, before any other prompt: "<config> uses resources from <files>, which Redpanda Cloud does not get. Nothing was sent." with one button, **Include them and deploy**; Escape sends nothing. Include copies the resources only into the config sent (the local files are never written) and the deploy goes on with that merged text; the choice holds for the rest of that deploy and is asked again on the next. A merge that would be refused shows its refusal instead, with no button. Compare with local file shows the text Include would send (the config with its resources, translated).
+
 ## Boundaries & Constraints
 
 **Always:** The resource files a config gets are the ones lint and Run get (`defaultArgsEnvironment(uri)` → `commandSettings(...).files().resourceFiles`, each entry expanded with `expandResourceEntry`, as `UnsetVariables.forRun` does); the config's own bytes are kept in the text sent, the resources appended; the merged text translated by the unchanged `translateForCloud` (variables as secrets, the secrets questions covering the resources' variables too); one merged text for the create, the update, "Nothing changed", the update's diff and Compare; the pre-deploy check (5.8, and story 43's warnings) still gets the unmerged config text, so its Problems ranges stay in the config document; the local files never written; refusals logged and shown in the existing "… Nothing was sent." / "Nothing was compared." style, before any prompt.
@@ -71,6 +73,8 @@ context: []
 - [x] `src/test/integration/suites/96-cloud.ts` -- MERGED (config sent, TOKEN asked, files unchanged), JOINED, DUP_LABEL, UNREADABLE, BAD_IN_FILE, UNSET_SETTING, UNCHANGED, DIFF and COMPARE with a changed resource file, NONE covered by the existing tests unchanged.
 - [x] `README.md` -- the Deploy section: resource files are sent with the config, and the refusals.
 
+- [x] `src/adapters/vscode/cloudDeploy.ts` (renegotiated) -- after the first translate and before any other prompt: when resource files add resources, show the error with **Include them and deploy** (`ctx.showError`); Escape → a new result kind (e.g. `resourcesStopped`) and nothing sent; Include → the deploy uses the merged text, and the second translate after the size pick reuses the choice without asking again; Deploy again from a row asks the same; a refused merge shows the refusal with no button. Tests: the error text and button, Escape sends nothing (no request after the components read), Include sends the merged text, asked once per deploy, asked again on the next deploy; the existing story-42 deploy tests choose Include. README states the prompt.
+
 **Acceptance Criteria:**
 - Given the matrix rows, when the unit and integration tests run, then each row is covered and passes.
 - Given compile with lint, corpus, webview, stable and multi-root runs, when they run, then all pass, and no existing 96-cloud assertion changed.
@@ -82,7 +86,13 @@ context: []
 - Shared step `sentConfig(ctx, uri, file, source)` in `cloudShared.ts` used by `savedAndTranslated` (Deploy) and `compare()`: unusable setting → the config's own translation (its messages unchanged) → each file read from disk and translated alone (`<file>: <problem>`) → merge → `translateForCloud(merged)`. No files: `translateForCloud(source)` exactly as before. Files are named with `vscode.workspace.asRelativePath`.
 - `refusedText` now takes any `{ message }[]`.
 
+- Renegotiated prompt (after b951261): `mergeResources` now also returns `from` (the files that added resources) and `sentConfig`'s ok result carries it as `resourcesFrom`. `deployDoc` asks with `ctx.showError(includeResourcesText(file, from), INCLUDE_RESOURCES_ACTION)` right after the first translate, before the account check or any prompt; Escape returns the new `DeployResult` `{ kind: 'resourcesStopped', files }`. The choice is kept in a local `included` flag for that deploy: the second translate after the size pick asks only if the first had no resources and this one has (a resource file changed meanwhile). Refusals still come from `savedAndTranslated` with no button. Compare is unchanged (the merged text). Files that hold no resources (`from` empty) ask nothing. Tests: the story-42 deploys choose Include (`deployOnce` takes the actions); new PROMPT 42 (text, one button, asked first, Escape sends nothing, Include sends the merged text, once per deploy, again on the next deploy and on Deploy again) and NONE 42; `refused42` asserts no button. Ran: the cloudResources unit tests and the 96-cloud story-42 block.
+
+- Review fixes to the prompt: consent is the set of files agreed to; the second read asks again naming only the files not yet agreed (Escape: `resourcesStopped` with those files) and logs that the resource files changed during the deploy. Deploy again asks after its shared-mapping and mapping-changed refusals; a plain Deploy still asks first. `savedAndTranslated` returns the named `SavedConfig` (`SentConfig`'s ok arm plus `source`). Tests: RACE 42, NEW_FILE 42, TWO_FILES 42, NONE 42 with no setting, `from` with two contributing files; ran the cloudResources unit tests and the story-42 block (32 passing).
+
 ## Plan Change Log
+
+- **2026-11-17, renegotiated by the user after the first build (b951261).** Trigger: the user asked that Deploy show an error and offer to copy the resources in, instead of merging on its own. Amended: the frozen block (a new decision), and the tasks below (the prompt). KEEP: `mergeResources` and its semantic check, the refusals, `sentConfig`'s steps, the resource-files hook with its de-duplication, Compare's merged text, the README's gaps; the code is not reverted, only the Deploy flow gains the prompt.
 
 ## Review Triage Log
 
@@ -113,6 +123,23 @@ Thorough review (2026-11-17; blind-hunter, edge-case-hunter, verification-gap, i
 | 21 | IA | Whether a real cluster runs the merged config is outside the tests | low | reject | The user's dev-host check settles it, as decided. |
 | 22 | EC | An unusable `resourceFiles` now refuses a deploy that used to ignore it | false | reject | The setting is set, so "no resource files" (AC3) does not apply; lint and Run refuse the same setting. |
 
+Review pass 2 (2026-11-17, the renegotiated Include prompt; same four lenses). Verdicts: 1 high, 3 medium, 7 low (3 patched, 4 rejected), 1 deferred. Routes: 8 patch, 1 defer, 0 loopback.
+
+| # | Lens | Finding | Verdict | Route | Evidence / action |
+|---|------|---------|---------|-------|-------------------|
+| 23 | BH, EC, IA | Consent is one boolean: a file gaining resources after Include is sent without being shown | high | patch | The second read's list is not compared with the one agreed; ask again for the new files. |
+| 24 | EC | Deploy again asks Include before the shared / only-mapping refusals | medium | patch | The user approves, then is told nothing was sent; the refusals moved first. |
+| 25 | VG, BH | The late ask (resources appear during the prompts) is untested | medium | patch | RACE 42; a log line says the files changed; the README states the exception. |
+| 26 | VG, BH | Two or three files: the wording and `from` untested; an empty `from` would skip the question | medium | patch | TWO_FILES 42 and unit cases. |
+| 27 | BH | NONE 42 does not cover the no-files case | low | patch | Added. |
+| 28 | BH | The README says Escape closes the message | low | patch | Reworded. |
+| 29 | BH | `savedAndTranslated`'s long inline return type | low | patch | Named. |
+| 30 | BH, EC | A non-modal notification hidden by Escape leaves the deploy waiting (and its per-file guard held) | low | defer | The same as 5.8's Deploy anyway; a modal changes every Deploy prompt's look; recorded. |
+| 31 | BH | "Nothing was sent." in a message that offers to send | low | reject | The user chose this text (2026-11-17). |
+| 32 | BH | Compare's title does not say the resources are included | low | reject | The user chose Compare to show the text Include would send; the README says so. |
+| 33 | BH | `from` pushed before the refusal check; dedup only upstream | low | reject | A refusal discards `from`; ONCE 42 pins the dedup. |
+| 34 | EC | "No existing 96-cloud assertion changed": CONFIG_ONLY 42 changed | false | reject | It is this story's own test from the first build, renegotiated by the user; no pre-story assertion changed. |
+
 ## Design Notes
 
 The merge is text-based so the config's bytes (comments, order, quoting) stay as written and the 5.8 ranges keep meaning; a file's block is sliced from its own text by the key's node range, so its comments go too. Translating each resource file alone before the merge names a problem with the file it is in; the merged text is then translated once for the secrets and the text sent, which keeps one source for create, update, "Nothing changed", the diff and Compare. The Cloud's acceptance of top-level `*_resources` in `config_yaml` was not recorded by the spike; the dev-host check on the user's cluster settles it.
@@ -129,3 +156,5 @@ The merge is text-based so the config's bytes (comments, order, quoting) stay as
 - Dev host on the user's cluster: a config using a cache resource from a resource file deploys, the pipeline runs (Running, no config error), and Compare shows the resource in the text sent.
 
 **Result (2026-11-17, after the review's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 385, stable 1565 passing, 1 pending, 0 failing (11 min), multi-root 15 passing; the test settings clean; no floor run.
+
+**Result (2026-11-17, the renegotiated Include prompt after review pass 2's patches, run by the orchestrator):** compile (lint included) 0, corpus 182, webview 385, stable 1570 passing, 1 pending, 0 failing (11 min), multi-root 15 passing; the test settings clean; no floor run.
