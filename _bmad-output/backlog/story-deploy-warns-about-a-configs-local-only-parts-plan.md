@@ -3,7 +3,7 @@ title: "Deploy warns about a config's local-only parts"
 type: 'feature'
 ticket: '43'
 created: '2026-11-16'
-status: 'built'
+status: 'done'
 baseline_revision: 'a7b31033f07415fa739f470f9c5987cb06822746'
 route: 'full'
 route_source: 'auto'
