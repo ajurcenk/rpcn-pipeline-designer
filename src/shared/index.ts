@@ -4,3 +4,4 @@
 export * from './protocol';
 export * from './bloblangProtocol';
 export * from './logsProtocol';
+export * from './metricsProtocol';

@@ -153,7 +153,22 @@ async function main() {
 			'process.env.NODE_ENV': production ? '"production"' : '"development"',
 		},
 	});
-	const contexts = [extension, webview, bloblang, logs];
+	// The Pipeline Metrics tab's webview bundle (browser, one IIFE script; ticket 7.2).
+	const metrics = await esbuild.context({
+		...shared,
+		entryPoints: [
+			'webview/src/metrics/main.tsx'
+		],
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2022',
+		jsx: 'automatic',
+		outfile: 'dist/metrics.js',
+		define: {
+			'process.env.NODE_ENV': production ? '"production"' : '"development"',
+		},
+	});
+	const contexts = [extension, webview, bloblang, logs, metrics];
 	if (watch) {
 		await Promise.all(contexts.map((ctx) => ctx.watch()));
 	} else {

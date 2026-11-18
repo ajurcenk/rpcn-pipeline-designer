@@ -76,6 +76,12 @@ suite('adapters/redpandaConnect args', () => {
 		assert.strictEqual(result.env.NO_COLOR, '1');
 	});
 
+	test('ticket 7.2 RUN_PORT: httpPort turns the HTTP server on at 127.0.0.1:<port>', () => {
+		const result = ok(buildRunCommand(rpk, { targets: [A], httpPort: 41873 }, environment()));
+		assert.deepStrictEqual([result.command, ...result.args],
+			[RPK, 'connect', 'run', '--set', 'http.enabled=true', '--set', 'http.address=127.0.0.1:41873', A]);
+	});
+
 	test('RUN_PLAIN under rpk', () => {
 		const result = ok(buildRunCommand(rpk, { targets: [A] }, environment()));
 		assert.deepStrictEqual([result.command, ...result.args], [RPK, 'connect', 'run', '--set', 'http.enabled=false', A]);

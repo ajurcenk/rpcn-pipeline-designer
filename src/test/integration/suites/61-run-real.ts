@@ -264,4 +264,97 @@ suite('Run and Stop with a real binary (integration, ticket 9)', function () {
 			}
 		});
 	}
+	// Ticket 7.2 (AD-25): a real run serves its metrics on 127.0.0.1 at its own port, and the Pipeline
+	// Metrics tab reads them through the real local source: generate → 2 processors → drop gives 4 rows
+	// whose rates rise; two runs at once get different ports.
+	const METRICS_CONFIG = [
+		'input:',
+		'  generate:',
+		'    mapping: root = "tick"',
+		'    interval: 20ms',
+		'pipeline:',
+		'  processors:',
+		'    - label: fast',
+		'      mapping: root = this',
+		'    - sleep:',
+		'        duration: 1ms',
+		'output:',
+		'  drop: {}',
+		'logger:',
+		'  level: warn',
+		'',
+	].join('\n');
+	for (const ver of VERSIONS) {
+		test(`ticket 7.2 METRICS with Redpanda Connect ${ver}: 4 rows with rising rates, read from 127.0.0.1:<port>; two runs on different ports`, async function () {
+			const bin = binaryOf(ver);
+			if (!hasBinary(ver)) {
+				const message = `no cached executable Redpanda Connect ${ver} at ${bin}: run scripts/spike/fetch-binaries.sh`;
+				if (IN_CI) {
+					assert.fail(message);
+				}
+				console.warn(`skipped: ${message}`);
+				this.skip();
+			}
+			const dir = makeTempDir(`rpcn-run-metrics-${ver}-`);
+			const names = ['metrics_a.yaml', 'metrics_b.yaml'];
+			const terminalsOf = () => vscode.window.terminals.filter((t) => names.some((n) => t.name === `Redpanda Connect: ${n}`));
+			try {
+				await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
+				assert.ok(await waitFor(() => {
+					const state = api().redpandaConnect.state;
+					return state.kind === 'ok' && state.path === bin && state.version === ver;
+				}, 30_000), `the extension resolved ${bin}: ${JSON.stringify(api().redpandaConnect.state)}`);
+				assert.ok(await waitFor(() => api().schemaStore.current !== undefined, 30_000), 'the schema (for the model) is there');
+				const docs: vscode.TextDocument[] = [];
+				for (const name of names) {
+					const file = path.join(dir, name);
+					fs.writeFileSync(file, METRICS_CONFIG);
+					const doc = await vscode.workspace.openTextDocument(file);
+					await vscode.window.showTextDocument(doc);
+					assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 5_000));
+					await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
+					assert.ok(await waitFor(() => api().run.portOf(doc.uri) !== undefined, 15_000));
+					docs.push(doc);
+				}
+				const ports = docs.map((d) => api().run.portOf(d.uri)!);
+				assert.notStrictEqual(ports[0], ports[1], 'two runs, two ports');
+				for (const [i, doc] of docs.entries()) {
+					assert.ok(await waitFor(() => (api().run.outputOf(doc.uri) ?? '').includes(`--set http.enabled=true --set http.address=127.0.0.1:${ports[i]} `), 10_000),
+						`the argv: ${api().run.outputOf(doc.uri)}`);
+				}
+				// The tab on the active editor's file (the first).
+				await vscode.window.showTextDocument(docs[0]);
+				await vscode.commands.executeCommand('redpandaConnect.showPipelineMetrics');
+				const metrics = api().metrics!;
+				const rowsOk = () => metrics.rows().length === 4 && metrics.state.kind === 'live';
+				assert.ok(await waitFor(rowsOk, 30_000), `${JSON.stringify(metrics.state)} ${JSON.stringify(metrics.rows())}`);
+				assert.strictEqual(metrics.posted.at(-1)?.port, ports[0]);
+				assert.deepStrictEqual(metrics.rows().map((r) => [r.kind, r.name, r.path]), [
+					['input', 'generate', 'input'],
+					['processor', 'fast', 'pipeline.processors[0]'],
+					['processor', 'sleep', 'pipeline.processors[1]'],
+					['output', 'drop', 'output'],
+				]);
+				// Rates come with the second reading: about 50 messages a second.
+				assert.ok(await waitFor(() => rowsOk() && metrics.rows().every((r) => (r.outRate ?? 0) > 5), 30_000), JSON.stringify(metrics.rows()));
+				assert.ok((metrics.rows()[2].p50 ?? 0) >= 900_000, `the sleep's p50 (${metrics.rows()[2].p50} ns) is about 1 ms`);
+				// The other run is read on its own port.
+				await vscode.window.showTextDocument(docs[1]);
+				await vscode.commands.executeCommand('redpandaConnect.showPipelineMetrics');
+				assert.ok(await waitFor(() => metrics.file === docs[1].uri.toString() && rowsOk() && metrics.posted.at(-1)?.port === ports[1], 30_000),
+					JSON.stringify(metrics.state));
+				for (const doc of docs) {
+					await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
+					assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', STOP_GRACE_MS + 5_000));
+				}
+				assert.ok(await waitFor(() => metrics.state.kind === 'stopped', 5_000), JSON.stringify(metrics.state));
+			} finally {
+				await vscode.commands.executeCommand('workbench.action.closePanel');
+				await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+				terminalsOf().forEach((t) => t.dispose());
+				await waitFor(() => terminalsOf().length === 0, 10_000);
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
 });

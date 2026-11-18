@@ -18,7 +18,11 @@ suite('Run and Stop (integration)', function () {
 	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
 	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
 	const runTerminals = (name: string) => vscode.window.terminals.filter((t) => t.name === `Redpanda Connect: ${name}`);
-	const eventLines = () => (fs.existsSync(events) ? fs.readFileSync(events, 'utf8').split('\n').filter(Boolean) : []);
+	/** The binary's start lines, each run's metrics port (ticket 7.2) written `<port>`. */
+	const eventLines = () => (fs.existsSync(events) ? fs.readFileSync(events, 'utf8').split('\n').filter(Boolean) : [])
+		.map((l) => l.replace(/http\.address=127\.0\.0\.1:\d+/g, 'http.address=127.0.0.1:<port>'));
+	/** Ticket 7.2 (AD-25): a Run's flags, the HTTP server on at its port on 127.0.0.1. */
+	const RUN = 'run --set http.enabled=true --set http.address=127.0.0.1:<port>';
 
 	async function open(name: string, text: string): Promise<vscode.TextDocument> {
 		const file = path.join(dir, name);
@@ -67,7 +71,9 @@ suite('Run and Stop (integration)', function () {
 		await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
 		assert.ok(await waitFor(() => eventLines().length === 1, 15_000), 'the binary was not started');
 		// The builder's argv exactly: no other flags (no --chilled / --verbose).
-		assert.strictEqual(eventLines()[0], `started cwd=${fs.realpathSync(dir)} argv=run --set http.enabled=false ${doc.uri.fsPath}`);
+		assert.strictEqual(eventLines()[0], `started cwd=${fs.realpathSync(dir)} argv=${RUN} ${doc.uri.fsPath}`);
+		const port = api().run.portOf(doc.uri);
+		assert.ok(port !== undefined && fs.readFileSync(events, 'utf8').includes(`http.address=127.0.0.1:${port} `), `the argv names the run's port ${port}`);
 		assert.strictEqual(runTerminals('pipe.yaml').length, 1);
 		assert.strictEqual(api().run.phaseOf(doc.uri), 'running');
 
@@ -103,7 +109,7 @@ suite('Run and Stop (integration)', function () {
 			const generated = /--env-file (\S+) --env-file (\S+) /.exec(first);
 			assert.ok(generated, first);
 			assert.strictEqual(generated[1], envFile, 'envFile\'s file first');
-			assert.ok(first.endsWith(`argv=run --set http.enabled=false --env-file ${envFile} --env-file ${generated[2]} ${doc.uri.fsPath}`), first);
+			assert.ok(first.endsWith(`argv=${RUN} --env-file ${envFile} --env-file ${generated[2]} ${doc.uri.fsPath}`), first);
 			assert.strictEqual(fs.readFileSync(generated[2], 'utf8'), 'API_TOKEN="tok-29-secret-a"\n');
 			folder = path.dirname(generated[2]);
 			assert.strictEqual(path.basename(folder), 'env-setting');
@@ -143,7 +149,7 @@ suite('Run and Stop (integration)', function () {
 			const before = eventLines().length;
 			await vscode.commands.executeCommand('redpandaConnect.run', doc.uri);
 			assert.ok(await waitFor(() => eventLines().length > before, 15_000));
-			assert.ok(eventLines()[before].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), eventLines()[before]);
+			assert.ok(eventLines()[before].endsWith(`argv=${RUN} ${doc.uri.fsPath}`), eventLines()[before]);
 			await vscode.commands.executeCommand('redpandaConnect.stop', doc.uri);
 			assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
 		} finally {
@@ -173,7 +179,7 @@ suite('Run and Stop (integration)', function () {
 			// EMPTY: no declared secret, the argv as before.
 			const plainStarts = eventLines().length;
 			assert.strictEqual(await runOnce(), 'SECRET_30=<unset> CLASH_30=<unset>');
-			assert.ok(eventLines()[plainStarts].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), eventLines()[plainStarts]);
+			assert.ok(eventLines()[plainStarts].endsWith(`argv=${RUN} ${doc.uri.fsPath}`), eventLines()[plainStarts]);
 
 			// SET: no folder is open, so the value is the window's and the name goes to the user settings.
 			assert.strictEqual(await secrets.set(undefined, 'SECRET_30', 'tok-30-secret-a'), true);
@@ -181,7 +187,7 @@ suite('Run and Stop (integration)', function () {
 			assert.ok(secrets.recordedKeys().includes('redpandaConnect.secret:window:SECRET_30'), JSON.stringify(secrets.recordedKeys()));
 			const starts = eventLines().length;
 			assert.strictEqual(await runOnce(), 'SECRET_30=tok-30-secret-a CLASH_30=<unset>');
-			assert.ok(eventLines()[starts].endsWith(`argv=run --set http.enabled=false ${doc.uri.fsPath}`), 'the argv is unchanged');
+			assert.ok(eventLines()[starts].endsWith(`argv=${RUN} ${doc.uri.fsPath}`), 'the argv is unchanged');
 
 			// CHANGE: the next run gets the new value, no restart.
 			await secrets.set(undefined, 'SECRET_30', 'tok-30-secret-b');

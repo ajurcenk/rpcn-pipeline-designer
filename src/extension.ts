@@ -1,6 +1,7 @@
 // Composition root (AD-15): creates the single "Redpanda Connect" output channel
 // and wires the adapters. Activated on `onLanguage:yaml`.
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
@@ -34,6 +35,11 @@ import { LogsPanel } from './adapters/vscode/logsPanel';
 import { checkClient } from './adapters/logs/platformaticReader';
 import type { JsonObject } from './core/schema';
 import { catalogueOf } from './adapters/graphPanel/status';
+import { MetricsPanel, type MetricsConfig } from './adapters/vscode/metricsPanel';
+import { parsedDocument } from './adapters/vscode/parseCache';
+import { buildPipelineModel, componentPaths } from './core/graph';
+import { metricsTypeOf } from './core/metrics';
+import { parseYaml } from './core/yamlPath';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -117,6 +123,11 @@ export interface ExtensionApi {
 	 */
 	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'errorWindowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention' | 'setFilter' | 'around' | 'copyJson' | 'panelState' | 'retryDelaysMs' | 'retry' | 'stopReading' | 'setUpAccess' | 'chooseSlot' | 'exportShown' | 'ui'>
 		& { checkClient: typeof checkClient };
+	/**
+	 * The Pipeline Metrics tab (ticket 7.2): its state, rows and posted messages, and the source seam
+	 * the integration tests replace with the in-memory fake. Only in `ExtensionMode.Test`.
+	 */
+	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory'>;
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -258,6 +269,28 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	let unsetVariables: UnsetVariables | undefined;
 	const run = new RunController({ binary: redpandaConnect, detection, log, unsetVariables: (uri) => unsetVariables?.forRun(uri) ?? [] });
 	context.subscriptions.push(run, ...run.registerCommands());
+	// The Pipeline Metrics tab (ticket 7.2, AD-25): the run's `/metrics` on its port, in the bottom panel next to Pipeline Logs.
+	const metricsPanel = new MetricsPanel({
+		extensionUri: context.extensionUri,
+		log,
+		run,
+		configFor: (uri): MetricsConfig => {
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+			const { text, parsed } = doc ? parsedDocument(doc) : ((t: string) => ({ text: t, parsed: parseYaml(t) }))(fs.readFileSync(uri.fsPath, 'utf8'));
+			const catalogue = catalogueOf(schemaStore.current?.json);
+			// The run runs the saved file: its `metrics` section is read from disk, not from unsaved edits.
+			let saved = parsed;
+			if (doc) {
+				try {
+					saved = parseYaml(fs.readFileSync(uri.fsPath, 'utf8'));
+				} catch {
+					saved = undefined;
+				}
+			}
+			return { model: buildPipelineModel(parsed, text, catalogue), paths: componentPaths(parsed, text, catalogue), metricsType: metricsTypeOf(saved) };
+		},
+	});
+	context.subscriptions.push(metricsPanel, ...metricsPanel.register());
 
 	const graphPanels = new GraphPanels({
 		extensionUri: context.extensionUri,
@@ -373,7 +406,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }) } : {}),
+		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: metricsPanel } : {}),
 		outputLines: () => [...lines],
 	};
 }

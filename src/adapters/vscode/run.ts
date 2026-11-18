@@ -8,6 +8,11 @@
 // 0 on SIGINT), and a Stop during a re-run's wait cancels the restart (user, 2026-10-07 review).
 // The editor-title buttons follow each editor's own file through path lists (`resourcePath in …`,
 // which also matches in remote windows); the palette follows the focused editor.
+// Ticket 7.2 (AD-25): each run gets a port picked free on 127.0.0.1 (`freePort`) and serves its
+// metrics there (`portOf`); `onDidChangeRun` fires when a run starts, stops or changes port. A run
+// whose output says `address already in use` within its first seconds (the port was taken between the
+// check and the child's bind; Redpanda Connect then runs on without its HTTP server) is restarted once
+// with a new free port; a second time, the error is shown and the run goes on.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -15,6 +20,7 @@ import { ArgsResult, buildRunCommand, describeArgsFailure } from '../redpandaCon
 import { BinaryState } from '../redpandaConnect/binary';
 import { runStreaming, StreamingChild, StreamingExit } from '../redpandaConnect/process';
 import { activeSecretValues } from '../redpandaConnect/secretEnv';
+import { freePort } from '../metrics/source';
 import { isCloudSecretName } from '../../core/envUsage';
 import { isEnvName } from '../../shared/bloblangProtocol';
 import { SET_MISSING_COMMAND } from './environmentView';
@@ -52,6 +58,30 @@ export function unsetVariablesReminder(fileName: string, names: readonly string[
 }
 /** SIGINT, then SIGKILL after this long (user decision 2026-10-07, ticket 2.7). */
 export const STOP_GRACE_MS = 10_000;
+/** Ticket 7.2: how long after the start a bind failure in the output restarts the run with a new port. */
+export const BIND_WINDOW_MS = 10_000;
+/**
+ * Ticket 7.2: what Redpanda Connect writes when its HTTP server cannot bind the run's metrics port
+ * (`HTTP Server error: listen tcp 127.0.0.1:<port>: bind: address already in use`). Another address's
+ * bind error (a component's own server) is not the metrics port's.
+ */
+export function addressInUse(port: number): RegExp {
+	return new RegExp(`127\\.0\\.0\\.1:${port}(?!\\d)[^\\n]*address already in use`, 'i');
+}
+
+/** Ticket 7.2: the error shown when a run's metrics port was taken twice. */
+export function portTakenMessage(fileName: string, port: number): string {
+	return `${fileName} runs without metrics: 127.0.0.1:${port} was already in use, also after a restart with another port.`;
+}
+
+/** Ticket 7.2: a run's change, as `onDidChangeRun` gives it. */
+export interface RunChange {
+	/** The file's URI string (AD-1 key). */
+	readonly uri: string;
+	readonly phase: RunPhase | undefined;
+	/** The metrics port while the run lives. */
+	readonly port: number | undefined;
+}
 
 export const terminalName = (fsPath: string) => `Redpanda Connect: ${path.basename(fsPath)}`;
 
@@ -129,8 +159,11 @@ export interface RunOptions {
 	readonly detection: RunDetection;
 	readonly log: (line: string) => void;
 	readonly host?: RunHost;
-	readonly build?: (state: BinaryState, fsPath: string) => ArgsResult;
+	/** The run's command line; `httpPort` is the port picked for its metrics (ticket 7.2). */
+	readonly build?: (state: BinaryState, fsPath: string, httpPort: number | undefined) => ArgsResult;
 	readonly spawn?: typeof runStreaming;
+	/** Ticket 7.2: a port free on 127.0.0.1 (default: `freePort`); a rejection runs without metrics. */
+	readonly freePort?: () => Promise<number>;
 	readonly graceMs?: number;
 	/** Ticket 46: the variables a run of `uri` would stop on (none: no check). */
 	readonly unsetVariables?: (uri: vscode.Uri) => readonly string[];
@@ -206,6 +239,8 @@ interface Session {
 	stopRequested: boolean;
 	/** A Stop or close during a re-run's wait: the restart is cancelled. */
 	restartCancelled: boolean;
+	/** Ticket 7.2: the 127.0.0.1 port the current child serves its metrics on. */
+	port?: number;
 }
 
 export function defaultRunHost(): RunHost {
@@ -234,6 +269,9 @@ export class RunController implements vscode.Disposable {
 	/** Whether the status bar item is shown (`statusBarText`). */
 	private statusShown = false;
 	private disposed = false;
+	private readonly runChanged = new vscode.EventEmitter<RunChange>();
+	/** Ticket 7.2: a run started, stopped or got another port. */
+	readonly onDidChangeRun = this.runChanged.event;
 
 	constructor(private readonly options: RunOptions) {
 		this.host = options.host ?? defaultRunHost();
@@ -241,6 +279,7 @@ export class RunController implements vscode.Disposable {
 		this.status = this.host.createStatusBarItem();
 		this.subscriptions.push(
 			this.status,
+			this.runChanged,
 			this.host.onDidChangeActiveTextEditor(() => this.refreshUi()),
 			options.detection.onDidChangeDetection(() => this.refreshUi()),
 		);
@@ -270,6 +309,12 @@ export class RunController implements vscode.Disposable {
 	/** The phase of `uri`'s run, or `undefined` if it has not run this session (tests, epic 3). */
 	phaseOf(uri: vscode.Uri): RunPhase | undefined {
 		return this.sessions.get(uri.toString())?.phase;
+	}
+
+	/** Ticket 7.2: the 127.0.0.1 port `uri`'s run serves its metrics on, while it runs (or stops). */
+	portOf(uri: vscode.Uri | string): number | undefined {
+		const session = this.sessions.get(uri.toString());
+		return session?.phase === 'running' || session?.phase === 'stopping' ? session.port : undefined;
 	}
 
 	/** Runs `uri` (default: the active editor's file). Never throws. */
@@ -324,14 +369,36 @@ export class RunController implements vscode.Disposable {
 		if (session.phase === 'running') {
 			session.phase = 'stopping';
 			void session.child.stop(this.graceMs);
+			this.fireChange(session);
 		} else if (session.phase === 'stopping') {
 			session.child.kill('SIGKILL');
 		}
 		this.refreshUi();
 	}
 
+	private fireChange(session: Session): void {
+		if (!this.disposed) {
+			this.runChanged.fire({ uri: session.key, phase: session.phase, port: this.portOf(session.key) });
+		}
+	}
+
+	/** Ticket 7.2: a free port, or none (the run then goes without metrics; logged). */
+	private async pickPort(name: string): Promise<number | undefined> {
+		try {
+			return await (this.options.freePort ?? freePort)();
+		} catch (err) {
+			this.options.log(`Run ${name}: no free port for its metrics (${String(err)}); running without them.`);
+			return undefined;
+		}
+	}
+
+	private buildFor(state: BinaryState, fsPath: string, port: number | undefined): ArgsResult {
+		return (this.options.build ?? ((s, p, httpPort) => buildRunCommand(s, { targets: [p], httpPort })))(state, fsPath, port);
+	}
+
 	dispose(): void {
 		this.disposed = true;
+		this.runChanged.dispose();
 		for (const session of this.sessions.values()) {
 			session.child?.kill('SIGKILL');
 			session.terminal?.dispose();
@@ -367,7 +434,8 @@ export class RunController implements vscode.Disposable {
 			this.options.binary.showBinaryWarning();
 			return;
 		}
-		const built = (this.options.build ?? ((s, p) => buildRunCommand(s, { targets: [p] })))(state, session.fsPath);
+		const port = await this.pickPort(name);
+		const built = this.buildFor(state, session.fsPath, port);
 		if (built.kind !== 'ok') {
 			const message = describeArgsFailure(built);
 			this.options.log(`Run ${name}: ${message}`);
@@ -402,28 +470,93 @@ export class RunController implements vscode.Disposable {
 		if (this.disposed || session.restartCancelled) {
 			return;
 		}
+		this.launch(session, doc, built, port, state);
+	}
+
+	/**
+	 * Spawns `built` in the session's terminal. With `rebindState` (the first try), a bind failure in
+	 * the output within `BIND_WINDOW_MS` restarts the run once with a new free port (ticket 7.2).
+	 */
+	private launch(session: Session, doc: vscode.TextDocument, built: ArgsResult & { readonly kind: 'ok' }, port: number | undefined, rebindState: BinaryState | undefined): void {
+		const name = path.basename(session.fsPath);
 		const pty = this.terminalFor(session);
 		pty.write(`\x1b[2m$ ${[built.command, ...built.args].map(shellQuote).join(' ')}\x1b[0m\n`);
 		const spawn = this.options.spawn ?? runStreaming;
-		const child = spawn([built.command], built.args, { onStdout: (c) => pty.write(c), onStderr: (c) => pty.write(c) },
+		const startedAt = Date.now();
+		let early = '';
+		const inUse = port === undefined ? undefined : addressInUse(port);
+		/** The bind failure was seen: the run is being restarted (or the error shown). */
+		let bindFailed = false;
+		// Declared before the spawn: a handler called during it sees no child yet.
+		let child: StreamingChild | undefined;
+		const onOutput = (chunk: string) => {
+			pty.write(chunk);
+			if (port === undefined || bindFailed || Date.now() - startedAt > BIND_WINDOW_MS) {
+				return;
+			}
+			early = (early + chunk).slice(-4096);
+			if (!child || !inUse?.test(early) || session.child !== child) {
+				return;
+			}
+			bindFailed = true;
+			if (rebindState) {
+				void this.rebind(session, doc, child, port, rebindState);
+			} else {
+				this.options.log(`Run ${name}: 127.0.0.1:${port} was in use again; running without metrics.`);
+				this.host.showErrorMessage(portTakenMessage(name, port));
+			}
+		};
+		const spawned = spawn([built.command], built.args, { onStdout: onOutput, onStderr: onOutput },
 			{ env: built.env, cwd: this.host.cwdFor(doc.uri) });
-		session.child = child;
+		child = spawned;
+		session.child = spawned;
+		session.port = port;
 		session.phase = 'running';
 		session.exit = undefined;
 		session.stopRequested = false;
 		this.refreshUi();
-		void child.exited.then((exit) => {
-			if (session.child !== child) {
+		this.fireChange(session);
+		void spawned.exited.then((exit) => {
+			// A child being replaced by `rebind` ends without a phase change (unless the user stopped it).
+			if (session.child !== spawned || (bindFailed && rebindState && !session.stopRequested)) {
 				return;
 			}
-			session.phase = 'exited';
-			session.exit = exit;
-			session.pty?.write(`${exitLine(exit, session.stopRequested)}\n`);
-			if (exit.kind !== 'exited') {
-				this.options.log(`Run ${name}: ${exitLine(exit)}`);
-			}
-			this.refreshUi();
+			this.exited(session, exit);
 		});
+	}
+
+	private exited(session: Session, exit: StreamingExit): void {
+		session.phase = 'exited';
+		session.exit = exit;
+		session.pty?.write(`${exitLine(exit, session.stopRequested)}\n`);
+		if (exit.kind !== 'exited') {
+			this.options.log(`Run ${path.basename(session.fsPath)}: ${exitLine(exit)}`);
+		}
+		this.refreshUi();
+		this.fireChange(session);
+	}
+
+	/** Ticket 7.2: stops `old` (its port was taken) and runs the file again once, with a new free port. */
+	private async rebind(session: Session, doc: vscode.TextDocument, old: StreamingChild, port: number, state: BinaryState): Promise<void> {
+		const name = path.basename(session.fsPath);
+		this.options.log(`Run ${name}: 127.0.0.1:${port} was already in use; restarting with another port.`);
+		session.pty?.write(`\x1b[2m127.0.0.1:${port} was already in use; restarting with another port.\x1b[0m\n`);
+		const exit = await old.stop(this.graceMs);
+		if (this.disposed || session.child !== old || session.stopRequested) {
+			return; // stopped, closed or run again meanwhile: that path took over
+		}
+		const next = await this.pickPort(name);
+		const built = this.buildFor(state, session.fsPath, next);
+		if (this.disposed || session.child !== old || session.stopRequested || built.kind !== 'ok') {
+			if (session.child === old && !this.disposed) {
+				if (built.kind !== 'ok') {
+					this.host.showErrorMessage(`Can't run ${name}: ${describeArgsFailure(built)}`);
+				}
+				this.exited(session, exit);
+			}
+			return;
+		}
+		this.launch(session, doc, built, next, undefined);
 	}
 
 	/** Ticket 46: names the unset variables; "Set…" (when one is a name the settings take) sets each in turn; Escape, or a variable still unset after its set, stops. */

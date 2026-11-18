@@ -1,5 +1,6 @@
 // TOKENS (ticket 3.4, DESIGN Colors): every colour in webview/src/*.css (and the Bloblang panel's
-// webview/src/bloblang/*.css, ticket 4.2) is a VS Code theme variable. No hex, rgb(), hsl() or named colour outside `var(--vscode-…)`.
+// webview/src/bloblang/*.css, ticket 4.2, and the Pipeline Metrics tab's webview/src/metrics/*.css,
+// ticket 7.2) is a VS Code theme variable. No hex, rgb(), hsl() or named colour outside `var(--vscode-…)`.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +9,7 @@ const DIR = new URL('./', import.meta.url);
 const SHEETS = [
 	...readdirSync(DIR).filter((f) => f.endsWith('.css')),
 	...readdirSync(new URL('bloblang/', DIR)).filter((f) => f.endsWith('.css')).map((f) => `bloblang/${f}`),
+	...readdirSync(new URL('metrics/', DIR)).filter((f) => f.endsWith('.css')).map((f) => `metrics/${f}`),
 ];
 
 // CSS named colours (CSS Color 4), plus the system colours that would bypass the theme.

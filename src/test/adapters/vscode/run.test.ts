@@ -4,7 +4,7 @@ import { ArgsResult } from '../../../adapters/redpandaConnect/args';
 import { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import { SpawnOptions, StreamingChild, StreamingExit, StreamingHandlers } from '../../../adapters/redpandaConnect/process';
 import {
-	ACTIVE_DETECTED_KEY, ACTIVE_RUNNING_KEY, DETECTED_PATHS_KEY, exitLine, NOT_DETECTED_MESSAGE, NOT_ON_DISK_MESSAGE, RunController, RunHost,
+	ACTIVE_DETECTED_KEY, ACTIVE_RUNNING_KEY, DETECTED_PATHS_KEY, exitLine, NOT_DETECTED_MESSAGE, NOT_ON_DISK_MESSAGE, portTakenMessage, RunChange, RunController, RunHost,
 	SET_VARIABLES_ACTION, STOP_GRACE_MS, statusText, UNTITLED_MESSAGE, unsetVariablesMessage, unsetVariablesReminder,
 } from '../../../adapters/vscode/run';
 
@@ -73,7 +73,11 @@ suite('adapters/vscode RunController', () => {
 	let detected: Set<string>;
 	let honoursInt: boolean;
 	let status: { text: string; tooltip?: string; command?: vscode.Command; visible: boolean };
-	let built: (s: BinaryState, p: string) => ArgsResult;
+	let built: (s: BinaryState, p: string, port: number | undefined) => ArgsResult;
+	/** Ticket 7.2: the ports `freePort` gives, in turn, and the run changes heard. */
+	let nextPort: number;
+	let portFails: boolean;
+	let changes: RunChange[];
 	/** Ticket 46: what the unset check returns, the prompts shown, their answer and the variables set. */
 	let unset: string[];
 	let prompts: [string, string][];
@@ -139,7 +143,13 @@ suite('adapters/vscode RunController', () => {
 			},
 			log: (l) => logs.push(l),
 			host,
-			build: (s, p) => built(s, p),
+			build: (s, p, port) => built(s, p, port),
+			freePort: async () => {
+				if (portFails) {
+					throw new Error('no port');
+				}
+				return nextPort++;
+			},
 			spawn: (invocation, args, handlers, options) => {
 				const child = new FakeChild(handlers ?? {}, options ?? {}, honoursInt, intDelayMs);
 				children.push(child);
@@ -148,6 +158,7 @@ suite('adapters/vscode RunController', () => {
 			graceMs,
 			unsetVariables: (uri) => { unsetChecks.push(uri.toString()); return unset; },
 		});
+		controller.onDidChangeRun((c) => changes.push(c));
 	}
 	let unsetChecks: string[];
 	let graceMs: number | undefined;
@@ -178,7 +189,14 @@ suite('adapters/vscode RunController', () => {
 		setCalls = [];
 		setAnswer = (n) => n;
 		unsetChecks = [];
-		built = (_s, p) => ({ kind: 'ok', command: BIN, args: ['run', '--set', 'http.enabled=false', p], env: { NO_COLOR: '1', FOO: 'x' } });
+		nextPort = 41001;
+		portFails = false;
+		changes = [];
+		built = (_s, p, port) => ({
+			kind: 'ok', command: BIN,
+			args: ['run', ...(port === undefined ? ['--set', 'http.enabled=false'] : ['--set', 'http.enabled=true', '--set', `http.address=127.0.0.1:${port}`]), p],
+			env: { NO_COLOR: '1', FOO: 'x' },
+		});
 		make();
 	});
 
@@ -192,7 +210,7 @@ suite('adapters/vscode RunController', () => {
 		children[0].handlers.onStdout?.('tick\n');
 		children[0].handlers.onStderr?.('level=info msg=x\n');
 		assert.strictEqual(terminals[0].output,
-			`\x1b[2m$ ${BIN} run --set http.enabled=false /ws/a.yaml\x1b[0m\r\ntick\r\nlevel=info msg=x\r\n`);
+			`\x1b[2m$ ${BIN} run --set http.enabled=true --set http.address=127.0.0.1:41001 /ws/a.yaml\x1b[0m\r\ntick\r\nlevel=info msg=x\r\n`);
 		assert.deepStrictEqual([status.text, status.visible, status.command?.command], ['$(debug-stop) Stop pipeline', true, 'redpandaConnect.stop']);
 		assert.strictEqual(contexts.get(ACTIVE_DETECTED_KEY), true);
 		assert.strictEqual(contexts.get(ACTIVE_RUNNING_KEY), true);
@@ -378,7 +396,90 @@ suite('adapters/vscode RunController', () => {
 		children[0].handlers.onStdout?.('early\n');
 		assert.strictEqual(terminals[0].output, '');
 		await tick();
-		assert.strictEqual(terminals[0].output, `\x1b[2m$ ${BIN} run --set http.enabled=false /ws/a.yaml\x1b[0m\r\nearly\r\n`);
+		assert.strictEqual(terminals[0].output, `\x1b[2m$ ${BIN} run --set http.enabled=true --set http.address=127.0.0.1:41001 /ws/a.yaml\x1b[0m\r\nearly\r\n`);
+	});
+
+	suite('ticket 7.2: the metrics port', () => {
+		const argvOf = (child: FakeChild | undefined) => terminals[0]?.output ?? String(child);
+
+		test('PORT: each run gets a free port in its argv; portOf while it lives; onDidChangeRun on start, stop and exit', async () => {
+			await controller.run();
+			assert.strictEqual(controller.portOf(docs[0].uri), 41001);
+			assert.ok(argvOf(children[0]).includes('http.address=127.0.0.1:41001'), argvOf(children[0]));
+			assert.deepStrictEqual(changes, [{ uri: docs[0].uri.toString(), phase: 'running', port: 41001 }]);
+			controller.stop();
+			assert.deepStrictEqual(changes[1], { uri: docs[0].uri.toString(), phase: 'stopping', port: 41001 });
+			await tick();
+			assert.deepStrictEqual(changes[2], { uri: docs[0].uri.toString(), phase: 'exited', port: undefined });
+			assert.strictEqual(controller.portOf(docs[0].uri), undefined);
+		});
+
+		test('TWO_RUNS: parallel runs get different ports', async () => {
+			await controller.run(docs[0].uri);
+			await controller.run(docs[1].uri);
+			assert.deepStrictEqual([controller.portOf(docs[0].uri), controller.portOf(docs[1].uri)], [41001, 41002]);
+		});
+
+		test('NO_PORT: when no port can be had, the run goes without metrics (http off)', async () => {
+			portFails = true;
+			await controller.run();
+			assert.strictEqual(controller.portOf(docs[0].uri), undefined);
+			assert.ok(terminals[0].output.includes('--set http.enabled=false'), terminals[0].output);
+			assert.ok(logs.some((l) => l.startsWith('Run a.yaml: no free port for its metrics')), JSON.stringify(logs));
+		});
+
+		test('PORT_TAKEN: "address already in use" at the start restarts once with a new port; a second time shows the error', async () => {
+			await controller.run();
+			children[0].handlers.onStderr?.('level=error msg="HTTP Server error: listen tcp 127.0.0.1:41001: bind: address ');
+			children[0].handlers.onStderr?.('already in use"\n');
+			await tick();
+			assert.deepStrictEqual(children[0].stops, [50], 'the first child is stopped');
+			assert.strictEqual(children.length, 2, 'and the file run again');
+			assert.strictEqual(controller.portOf(docs[0].uri), 41002);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running');
+			assert.ok(terminals[0].output.includes('127.0.0.1:41001 was already in use; restarting with another port.'), terminals[0].output);
+			assert.ok(terminals[0].output.includes('http.address=127.0.0.1:41002'));
+			assert.ok(!terminals[0].output.includes('Redpanda Connect stopped'), 'no exit line for the replaced child');
+			assert.strictEqual(terminals.length, 1);
+			assert.ok(!changes.some((c) => c.phase === 'exited'), JSON.stringify(changes));
+			children[1].handlers.onStderr?.('listen tcp 127.0.0.1:41002: bind: address already in use\n');
+			await tick();
+			assert.strictEqual(children.length, 2, 'no second restart');
+			assert.deepStrictEqual(errors, [portTakenMessage('a.yaml', 41002)]);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running', 'the run goes on');
+		});
+
+		test('PORT_TAKEN: a Stop during the restart ends the run; no new child', async () => {
+			intDelayMs = 30;
+			await controller.run();
+			children[0].handlers.onStderr?.('listen tcp 127.0.0.1:41001: bind: address already in use\n');
+			controller.stop();
+			await new Promise((r) => setTimeout(r, 60));
+			assert.strictEqual(children.length, 1);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'exited');
+			assert.strictEqual(status.text, '$(circle-slash) Pipeline stopped');
+		});
+
+		test('another address\'s bind error (a component\'s own server) restarts nothing', async () => {
+			await controller.run();
+			children[0].handlers.onStderr?.('level=error msg="Failed to connect: listen tcp 0.0.0.0:4196: bind: address already in use"\n');
+			children[0].handlers.onStderr?.('listen tcp 127.0.0.1:410011: bind: address already in use\n');
+			children[0].handlers.onStderr?.('address already in use\n');
+			await tick();
+			assert.strictEqual(children.length, 1);
+			assert.deepStrictEqual(children[0].stops, []);
+			assert.deepStrictEqual(errors, []);
+			assert.strictEqual(controller.portOf(docs[0].uri), 41001);
+		});
+
+		test('with no port, the same text restarts nothing', async () => {
+			portFails = true;
+			await controller.run();
+			children[0].handlers.onStderr?.('address already in use\n');
+			await tick();
+			assert.strictEqual(children.length, 1);
+			assert.deepStrictEqual(errors, []);
+		});
 	});
 
 	test('Stop during a re-run\'s wait cancels the restart', async () => {

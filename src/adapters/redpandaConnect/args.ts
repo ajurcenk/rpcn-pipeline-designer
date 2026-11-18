@@ -60,6 +60,8 @@ export interface ArgsEnvironment {
 export interface ArgsRequest {
 	/** Absolute target config paths. Lint: at least one. Run: exactly one. */
 	readonly targets: readonly string[];
+	/** Run only (AD-25): the 127.0.0.1 port the run serves its metrics on; absent, the HTTP server is off. */
+	readonly httpPort?: number;
 }
 
 /** Builds the `lint` command line (the settings of its first target's folder, ticket 4). Never throws. */
@@ -69,7 +71,9 @@ export function buildLintCommand(state: BinaryState, request: ArgsRequest, env: 
 
 /** Builds the `run` command line (the settings of its target's folder, ticket 4). Never throws. */
 export function buildRunCommand(state: BinaryState, request: ArgsRequest, env: ArgsEnvironment = defaultArgsEnvironment(targetUri(request))): ArgsResult {
-	return buildCommandLine(buildRunArgs, state, request.targets, commandSettings(() => env));
+	const httpPort = request.httpPort;
+	const argv = httpPort === undefined ? buildRunArgs : (input: Parameters<typeof buildRunArgs>[0]) => buildRunArgs({ ...input, httpPort });
+	return buildCommandLine(argv, state, request.targets, commandSettings(() => env));
 }
 
 /** The first target as a URI, for reading its folder's settings; none for a relative one (reported as such). */

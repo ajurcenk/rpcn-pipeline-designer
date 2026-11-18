@@ -114,6 +114,12 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "redpandaConnect.showPipelineMetrics",
+        "title": "Show Pipeline Metrics",
+        "category": "Redpanda Connect",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "redpandaConnect.runUntitled",
         "title": "Save the file to run it.",
         "category": "Redpanda Connect",
@@ -325,6 +331,10 @@
         {
           "command": "redpandaConnect.stop",
           "when": "redpandaConnect.activeEditorRunning"
+        },
+        {
+          "command": "redpandaConnect.showPipelineMetrics",
+          "when": "redpandaConnect.activeEditorDetected && resourceScheme == file"
         },
         {
           "command": "redpandaConnect.runUntitled",
@@ -736,6 +746,11 @@
           "id": "redpandaConnectLogs",
           "title": "Pipeline Logs",
           "icon": "$(list-flat)"
+        },
+        {
+          "id": "redpandaConnectMetrics",
+          "title": "Pipeline Metrics",
+          "icon": "$(pulse)"
         }
       ]
     },
@@ -760,6 +775,14 @@
           "id": "redpandaConnect.pipelineLogs",
           "name": "Pipeline Logs",
           "contextualTitle": "Pipeline Logs"
+        }
+      ],
+      "redpandaConnectMetrics": [
+        {
+          "type": "webview",
+          "id": "redpandaConnect.pipelineMetrics",
+          "name": "Pipeline Metrics",
+          "contextualTitle": "Pipeline Metrics"
         }
       ]
     },

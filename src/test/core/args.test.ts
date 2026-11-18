@@ -24,6 +24,18 @@ suite('core/args', () => {
 		});
 	});
 
+	test('ticket 7.2 (AD-25): run with httpPort serves metrics on 127.0.0.1:<port> in place of http.enabled=false', () => {
+		assert.deepStrictEqual(buildRunArgs({
+			invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: ['/w/r1.yaml'], httpPort: 41873,
+		}), {
+			kind: 'ok',
+			argv: [BIN, 'run', '--set', 'http.enabled=true', '--set', 'http.address=127.0.0.1:41873', '--resources', '/w/r1.yaml', '/w/a.yaml'],
+		});
+		// Lint ignores it.
+		assert.deepStrictEqual(buildLintArgs({ invocation: [BIN], targets: ['/w/a.yaml'], resourceFiles: [], httpPort: 41873 }),
+			{ kind: 'ok', argv: [BIN, 'lint', '--deprecated', '--skip-env-var-check', '/w/a.yaml'] });
+	});
+
 	test('ticket 29 EVERY_COMMAND: several env files are passed in order, the generated one last; empty ones are skipped', () => {
 		const envFiles = ['/w/.env', '/s/env-setting/env-1.env'];
 		const flags = ['--env-file', '/w/.env', '--env-file', '/s/env-setting/env-1.env'];

@@ -3,14 +3,24 @@
 //   - rpk consumes `-v`, `--verbose` and a bare `-`, so they are never passed.
 //   - `lint` with no paths exits 0 silently, so lint always gets at least one path.
 //   - `run` refuses configs with lint errors; `--chilled` would hide them, so it is never passed.
-//   - Every run binds 0.0.0.0:4195; `--set http.enabled=false` keeps per-file runs from colliding.
+//   - Every run binds 0.0.0.0:4195 by default. A Run (AD-25, ticket 7.2) passes the port the extension
+//     picked free for it, so its HTTP server serves `/metrics` on 127.0.0.1 only and parallel runs
+//     never collide; every other `run` (the Bloblang test run, the license check) keeps it off.
 //   - Lint echoes paths as given, so every path passed here is expected to be absolute.
 // Long flag forms only.
 
 /** Lint flags: deprecations become warnings (AD-17); env vars are not required to be set. */
 export const LINT_FLAGS: readonly string[] = ['--deprecated', '--skip-env-var-check'];
-/** Run flags: the local HTTP server is off so concurrent per-file runs never collide on port 4195. */
+/** Run flags without a metrics port: the local HTTP server is off, so concurrent runs never collide on port 4195. */
 export const RUN_FLAGS: readonly string[] = ['--set', 'http.enabled=false'];
+
+/**
+ * Run flags with a metrics port (AD-25): the HTTP server on, on 127.0.0.1 at `port` only. A config's
+ * own `http` section is always overridden (ticket 7.2 decision).
+ */
+export function metricsRunFlags(port: number): string[] {
+	return ['--set', 'http.enabled=true', '--set', `http.address=127.0.0.1:${port}`];
+}
 /** Never part of a built argv (spike 1.1). */
 export const FORBIDDEN_ARGS: readonly string[] = ['--verbose', '-v', '-', '--chilled'];
 
@@ -28,6 +38,11 @@ export interface ArgvInput {
 	readonly envFiles?: readonly (string | undefined)[];
 	/** `process.platform`; on anything but `win32`, lint targets are glob-escaped. Default: POSIX. */
 	readonly platform?: string;
+	/**
+	 * `run` only (AD-25): the 127.0.0.1 port the run serves its metrics on. Absent: the HTTP server
+	 * stays off (`RUN_FLAGS`).
+	 */
+	readonly httpPort?: number;
 }
 
 export type ArgvResult =
@@ -55,12 +70,15 @@ export function escapeGlob(value: string): string {
 	return value.replace(/[\\*?[]/g, (c) => `\\${c}`);
 }
 
-/** `[...invocation, 'run', --set, http.enabled=false, …resources/env…, target]`. */
+/**
+ * `[...invocation, 'run', --set, http.enabled=false, …resources/env…, target]`; with `httpPort`,
+ * `--set http.enabled=true --set http.address=127.0.0.1:<port>` in place of the first `--set`.
+ */
 export function buildRunArgs(input: ArgvInput): ArgvResult {
 	if (input.targets.length !== 1) {
 		return { kind: 'targetCount', expected: 'exactlyOne', actual: input.targets.length };
 	}
-	return build('run', RUN_FLAGS, input);
+	return build('run', input.httpPort === undefined ? RUN_FLAGS : metricsRunFlags(input.httpPort), input);
 }
 
 export interface BloblArgvInput {

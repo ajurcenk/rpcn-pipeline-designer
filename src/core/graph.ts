@@ -118,6 +118,24 @@ export interface ComponentUse {
 	readonly offset: number;
 }
 
+/**
+ * Ticket 7.2: the YAML path (AD-7's form, `pipeline.processors[0]`) of every component node of the
+ * model `buildPipelineModel` gives for the same input, by node id; routes have none. Empty for what
+ * gives the empty model. Never throws.
+ */
+export function componentPaths(parsed: ParsedYaml | undefined, text: string, catalogue: ComponentCatalog | undefined): ReadonlyMap<string, string> {
+	const paths = new Map<string, string>();
+	try {
+		const doc = parsed?.docs[0];
+		if (catalogue && doc && doc.errors.length === 0 && isMap(doc.contents)) {
+			new Builder(text, catalogue, undefined, paths).build(doc.contents);
+		}
+	} catch {
+		paths.clear();
+	}
+	return paths;
+}
+
 /** The categories of the top-level single components the model does not show. */
 const TOP_LEVEL_COMPONENTS = ['buffer', 'metrics', 'tracer'] as const;
 
@@ -185,7 +203,12 @@ class Builder {
 	/** Edge lists in the order they were started (pre-order); the main chain is first. */
 	private readonly edgeBlocks: Array<() => PipelineEdge[]> = [];
 
-	constructor(private readonly text: string, private readonly catalogue: ComponentCatalog, private readonly uses?: ComponentUse[]) {}
+	constructor(
+		private readonly text: string,
+		private readonly catalogue: ComponentCatalog,
+		private readonly uses?: ComponentUse[],
+		private readonly paths?: Map<string, string>,
+	) {}
 
 	build(root: YAMLMap): PipelineModel {
 		const input: string[] = [];
@@ -257,6 +280,7 @@ class Builder {
 		this.recordUse(category, name, keyPair);
 		const label = labelOf(value);
 		const { id, duplicateLabel } = componentId(label, place.resource, path, this.used);
+		this.paths?.set(id, path);
 		const node: MutableNode = {
 			id,
 			role: place.role,

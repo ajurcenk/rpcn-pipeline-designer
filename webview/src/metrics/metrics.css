@@ -1,0 +1,146 @@
+/* The Pipeline Metrics tab inherits the VS Code theme (DESIGN.md, board 1): every colour is a theme
+   variable, no branding. It sits in the bottom panel, so it uses the panel's background. */
+html, body, #root {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+}
+body {
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+}
+.rpcn-metrics {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+}
+.rpcn-metrics-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-metrics-title {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	font-size: 1em;
+	font-weight: 600;
+}
+.rpcn-metrics-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-dot-live {
+	background: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+}
+.rpcn-metrics-dot-unreachable,
+.rpcn-metrics-dot-notServed {
+	background: var(--vscode-editorWarning-foreground);
+}
+.rpcn-metrics-address {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-state {
+	margin: 0;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.rpcn-metrics-state-notServed,
+.rpcn-metrics-state-unreachable {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-metrics-state-stopped,
+.rpcn-metrics-state-waiting,
+.rpcn-metrics-state-none {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-scroll {
+	flex: 1;
+	overflow: auto;
+}
+.rpcn-metrics-empty {
+	margin: 8px 12px;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+.rpcn-metrics-table th {
+	position: sticky;
+	top: 0;
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
+	text-align: left;
+	font-weight: 500;
+	padding: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+.rpcn-metrics-sort {
+	width: 100%;
+	padding: 6px 8px;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
+	text-align: inherit;
+	cursor: pointer;
+}
+.rpcn-metrics-sort:hover {
+	color: var(--vscode-foreground);
+}
+.rpcn-metrics-sort:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+.rpcn-metrics-table td {
+	padding: 5px 8px;
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+	white-space: nowrap;
+}
+.rpcn-metrics-table th:first-child .rpcn-metrics-sort,
+.rpcn-metrics-table td:first-child {
+	padding-left: 12px;
+}
+.rpcn-metrics-num {
+	text-align: right;
+}
+.rpcn-metrics-component {
+	display: inline-flex;
+	gap: 8px;
+	align-items: baseline;
+}
+.rpcn-metrics-kind {
+	min-width: 5.5em;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+}
+.rpcn-metrics-path {
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size);
+}
+.rpcn-metrics-unmatched .rpcn-metrics-name {
+	font-style: italic;
+}
+.rpcn-metrics-footer {
+	padding: 4px 12px;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+}
