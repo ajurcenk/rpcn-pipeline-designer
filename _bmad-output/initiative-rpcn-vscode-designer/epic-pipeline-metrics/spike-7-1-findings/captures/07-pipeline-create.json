@@ -1,0 +1,43 @@
+{
+  "step": "pipeline-create",
+  "request": {
+    "method": "POST",
+    "url": "https://<dataplane-host>/v1/redpanda-connect/pipelines",
+    "body": {
+      "display_name": "vscode-spike-metrics-<run>",
+      "description": "vscode spike 7.1 metrics probe, safe to delete",
+      "config_yaml": "input:\n  generate:\n    interval: 100ms\n    mapping: 'root = {\"n\": counter()}'\npipeline:\n  processors:\n    - label: fast\n      mapping: 'root = this'\n    - label: slow\n      sleep:\n        duration: 5ms\n    - label: erratic\n      mapping: 'root = if this.n % 10 == 0 { throw(\"erratic failure\") } else { this }'\noutput:\n  drop: {}\n",
+      "resources": {
+        "cpu_shares": "100m",
+        "memory_shares": "400M"
+      },
+      "tags": {
+        "vscode-spike": "metrics"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "pipeline": {
+        "id": "<pipeline-id>",
+        "display_name": "vscode-spike-metrics-<run>",
+        "description": "vscode spike 7.1 metrics probe, safe to delete",
+        "config_yaml": "input:\n  generate:\n    interval: 100ms\n    mapping: 'root = {\"n\": counter()}'\npipeline:\n  processors:\n    - label: fast\n      mapping: 'root = this'\n    - label: slow\n      sleep:\n        duration: 5ms\n    - label: erratic\n      mapping: 'root = if this.n % 10 == 0 { throw(\"erratic failure\") } else { this }'\noutput:\n  drop: {}\n",
+        "resources": {
+          "memory_shares": "400M",
+          "cpu_shares": "100m"
+        },
+        "state": "STATE_STARTING",
+        "url": "",
+        "tags": {
+          "vscode-spike": "metrics"
+        },
+        "created_by": "<redacted>",
+        "create_time": "2026-11-18T15:38:37Z",
+        "update_time": "2026-11-18T15:38:37.402253672Z"
+      }
+    }
+  },
+  "ms": 518
+}

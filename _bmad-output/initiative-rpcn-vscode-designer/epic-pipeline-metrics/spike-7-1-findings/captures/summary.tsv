@@ -1,0 +1,53 @@
+n	step	outcome	ms
+01	token	200	395
+02	clusters-list	200	189
+03	cluster-get	200	154
+04	prom-auth-none	401	155
+05	prom-auth-wrong-password	401	40
+06	prom-auth-ok-before-pipeline	200 series 9436 own 0	271
+07	pipeline-create	200	518
+08	pipeline-wait-running-final	200	170
+09	prom-openmetrics	200 series 9488 own 52	415
+10	prom-identity-encoding	200 series 9488 own 52	243
+11	read-01	200 series 9488 own 52	49
+12	read-02	200 series 9488 own 52	393
+13	read-03	200 series 9488 own 52	459
+14	read-04	200 series 9488 own 52	401
+15	read-05	200 series 9488 own 52	603
+16	read-06	200 series 9488 own 52	386
+17	read-07	200 series 9488 own 52	408
+18	read-08	200 series 9488 own 52	384
+19	read-09	200 series 9488 own 52	361
+20	read-10	200 series 9488 own 52	376
+21	read-11	200 series 9488 own 52	482
+22	read-12	200 series 9488 own 52	347
+23	read-13	200 series 9488 own 52	431
+24	burst-1	200 series 9488 own 52	219
+25	burst-2	200 series 9488 own 52	252
+26	burst-3	200 series 9488 own 52	297
+27	burst-4	200 series 9488 own 52	222
+28	burst-5	200 series 9488 own 52	193
+29	read-14	200 series 9488 own 52	315
+30	read-15	200 series 9488 own 52	369
+31	read-16	200 series 9488 own 52	380
+32	read-17	200 series 9488 own 52	429
+33	read-18	200 series 9488 own 52	345
+34	read-19	200 series 9488 own 52	344
+35	read-20	200 series 9488 own 52	410
+36	read-21	200 series 9488 own 52	348
+37	read-22	200 series 9488 own 52	409
+38	read-23	200 series 9488 own 52	348
+39	read-24	200 series 9488 own 52	385
+40	read-25	200 series 9488 own 52	377
+41	pipeline-state-after-reads	200	160
+42	pipeline-stop	200	150
+43	after-stop-01	200 series 9488 own 52	74
+44	after-stop-02	200 series 9436 own 0	3387
+45	after-stop-03	200 series 9436 own 0	461
+46	after-stop-04	200 series 9436 own 0	374
+47	main-pipeline-delete	200	183
+48	main-pipeline-gone-final	404	138
+49	after-delete-01	200 series 9436 own 0	46
+50	after-delete-02	200 series 9436 own 0	354
+51	after-delete-03	200 series 9436 own 0	426
+52	cleanup-check-pipelines	200	187

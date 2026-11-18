@@ -1,0 +1,42 @@
+{
+  "step": "prom-auth-none",
+  "request": {
+    "method": "GET",
+    "url": "https://<prometheus-host>/api/cloud/prometheus/public_metrics",
+    "auth": "none",
+    "headers": [
+      "user-agent",
+      "accept-encoding"
+    ],
+    "accept": null,
+    "accept_encoding": "gzip"
+  },
+  "ms": 155,
+  "response": {
+    "status": 401,
+    "headers": {
+      "names": [
+        "connection",
+        "content-length",
+        "date",
+        "strict-transport-security",
+        "vary",
+        "www-authenticate"
+      ],
+      "values": {
+        "content-length": "0",
+        "vary": "Origin",
+        "www-authenticate": "Basic <redacted>\"Redpanda Cloud\""
+      }
+    },
+    "raw_bytes": 0,
+    "bytes": 0,
+    "truncated": false,
+    "first_byte_ms": null,
+    "decode_error": null,
+    "body": {
+      "kind": "empty",
+      "bytes": 0
+    }
+  }
+}

@@ -1,0 +1,732 @@
+{
+  "step": "read-11",
+  "request": {
+    "method": "GET",
+    "url": "https://<prometheus-host>/api/cloud/prometheus/public_metrics",
+    "auth": "basic, the file's user",
+    "headers": [
+      "user-agent",
+      "accept-encoding",
+      "authorization"
+    ],
+    "accept": null,
+    "accept_encoding": "gzip"
+  },
+  "ms": 482,
+  "response": {
+    "status": 200,
+    "headers": {
+      "names": [
+        "connection",
+        "content-encoding",
+        "content-type",
+        "date",
+        "strict-transport-security",
+        "transfer-encoding",
+        "vary"
+      ],
+      "values": {
+        "content-type": "text/plain; version=0.0.4; charset=utf-8",
+        "transfer-encoding": "chunked",
+        "content-encoding": "gzip",
+        "vary": "Origin, Accept-Encoding"
+      }
+    },
+    "raw_bytes": 84105,
+    "bytes": 1544194,
+    "truncated": false,
+    "first_byte_ms": 410,
+    "decode_error": null,
+    "metrics": {
+      "series": 9488,
+      "families": 521,
+      "bad_lines": 0,
+      "openmetrics_eof": false,
+      "samples_with_timestamps": 0,
+      "id_label": [
+        "pipeline_id"
+      ],
+      "id_label_value_containing_pid": [
+        "pod"
+      ],
+      "own": {
+        "series": 52,
+        "families": [
+          "input_connection_failed",
+          "input_connection_lost",
+          "input_connection_up",
+          "input_latency_ns",
+          "input_received",
+          "output_batch_sent",
+          "output_connection_failed",
+          "output_connection_lost",
+          "output_connection_up",
+          "output_error",
+          "output_latency_ns",
+          "output_rejected",
+          "output_sent",
+          "processor_batch_received",
+          "processor_batch_sent",
+          "processor_error",
+          "processor_latency_ns",
+          "processor_received",
+          "processor_sent",
+          "redpanda_cluster_features_enterprise_license_expiry_sec"
+        ],
+        "non_component_label_sets": 1,
+        "non_component_label_forms": [
+          {
+            "instance": "<ip>:9",
+            "pipeline_id": "<pipeline-id>",
+            "pod": "a-<pipeline-id>-9a9a9a-9a9a"
+          }
+        ],
+        "samples": [
+          {
+            "name": "processor_sent",
+            "family": "processor_sent",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_sent",
+            "family": "processor_sent",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_sent",
+            "family": "processor_sent",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "output_latency_ns",
+            "family": "output_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.5"
+            },
+            "value": 364
+          },
+          {
+            "name": "output_latency_ns",
+            "family": "output_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.9"
+            },
+            "value": 571
+          },
+          {
+            "name": "output_latency_ns",
+            "family": "output_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.99"
+            },
+            "value": 919
+          },
+          {
+            "name": "output_latency_ns_sum",
+            "family": "output_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 433175
+          },
+          {
+            "name": "output_latency_ns_count",
+            "family": "output_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "input_connection_lost",
+            "family": "input_connection_lost",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "output_connection_up",
+            "family": "output_connection_up",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.5"
+            },
+            "value": 10724
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.9"
+            },
+            "value": 31307
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.99"
+            },
+            "value": 92349
+          },
+          {
+            "name": "processor_latency_ns_sum",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 18551852
+          },
+          {
+            "name": "processor_latency_ns_count",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.5"
+            },
+            "value": 4968
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.9"
+            },
+            "value": 8238
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.99"
+            },
+            "value": 18434
+          },
+          {
+            "name": "processor_latency_ns_sum",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 5829312
+          },
+          {
+            "name": "processor_latency_ns_count",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.5"
+            },
+            "value": 5146414
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.9"
+            },
+            "value": 5159208
+          },
+          {
+            "name": "processor_latency_ns",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.99"
+            },
+            "value": 5216582
+          },
+          {
+            "name": "processor_latency_ns_sum",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 5437648048
+          },
+          {
+            "name": "processor_latency_ns_count",
+            "family": "processor_latency_ns",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "input_latency_ns",
+            "family": "input_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.5"
+            },
+            "value": 5210422
+          },
+          {
+            "name": "input_latency_ns",
+            "family": "input_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.9"
+            },
+            "value": 5243201
+          },
+          {
+            "name": "input_latency_ns",
+            "family": "input_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>",
+              "quantile": "0.99"
+            },
+            "value": 5399099
+          },
+          {
+            "name": "input_latency_ns_sum",
+            "family": "input_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 5509896580
+          },
+          {
+            "name": "input_latency_ns_count",
+            "family": "input_latency_ns",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_error",
+            "family": "processor_error",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 105
+          },
+          {
+            "name": "processor_error",
+            "family": "processor_error",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "processor_error",
+            "family": "processor_error",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "input_connection_up",
+            "family": "input_connection_up",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1
+          },
+          {
+            "name": "processor_batch_sent",
+            "family": "processor_batch_sent",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_batch_sent",
+            "family": "processor_batch_sent",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_batch_sent",
+            "family": "processor_batch_sent",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "input_connection_failed",
+            "family": "input_connection_failed",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "processor_received",
+            "family": "processor_received",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_received",
+            "family": "processor_received",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_received",
+            "family": "processor_received",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "output_rejected",
+            "family": "output_rejected",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "output_connection_lost",
+            "family": "output_connection_lost",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "output_sent",
+            "family": "output_sent",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "input_received",
+            "family": "input_received",
+            "labels": {
+              "label": "",
+              "path": "root.input",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "output_batch_sent",
+            "family": "output_batch_sent",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "output_error",
+            "family": "output_error",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "processor_batch_received",
+            "family": "processor_batch_received",
+            "labels": {
+              "label": "erratic",
+              "path": "root.pipeline.processors.2",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_batch_received",
+            "family": "processor_batch_received",
+            "labels": {
+              "label": "fast",
+              "path": "root.pipeline.processors.0",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "processor_batch_received",
+            "family": "processor_batch_received",
+            "labels": {
+              "label": "slow",
+              "path": "root.pipeline.processors.1",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 1056
+          },
+          {
+            "name": "output_connection_failed",
+            "family": "output_connection_failed",
+            "labels": {
+              "label": "",
+              "path": "root.output",
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 0
+          },
+          {
+            "name": "redpanda_cluster_features_enterprise_license_expiry_sec",
+            "family": "redpanda_cluster_features_enterprise_license_expiry_sec",
+            "labels": {
+              "instance": "<form: <ip>:9>",
+              "pipeline_id": "<pipeline-id>",
+              "pod": "<form: a-<pipeline-id>-9a9a9a-9a9a>"
+            },
+            "value": 17366833
+          }
+        ]
+      },
+      "others": {
+        "id_label_used": "pipeline_id",
+        "pipelines": 1,
+        "connect_series": 82,
+        "other_series": 9354
+      }
+    }
+  }
+}

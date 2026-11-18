@@ -1,0 +1,63 @@
+{
+  "step": "after-delete-01",
+  "request": {
+    "method": "GET",
+    "url": "https://<prometheus-host>/api/cloud/prometheus/public_metrics",
+    "auth": "basic, the file's user",
+    "headers": [
+      "user-agent",
+      "accept-encoding",
+      "authorization"
+    ],
+    "accept": null,
+    "accept_encoding": "gzip"
+  },
+  "ms": 46,
+  "response": {
+    "status": 200,
+    "headers": {
+      "names": [
+        "connection",
+        "content-encoding",
+        "content-type",
+        "date",
+        "strict-transport-security",
+        "transfer-encoding",
+        "vary"
+      ],
+      "values": {
+        "content-type": "text/plain; version=0.0.4; charset=utf-8",
+        "transfer-encoding": "chunked",
+        "content-encoding": "gzip",
+        "vary": "Origin, Accept-Encoding"
+      }
+    },
+    "raw_bytes": 83030,
+    "bytes": 1534505,
+    "truncated": false,
+    "first_byte_ms": 41,
+    "decode_error": null,
+    "metrics": {
+      "series": 9436,
+      "families": 521,
+      "bad_lines": 0,
+      "openmetrics_eof": false,
+      "samples_with_timestamps": 0,
+      "id_label": [],
+      "id_label_value_containing_pid": [],
+      "own": {
+        "series": 0,
+        "families": [],
+        "non_component_label_sets": 0,
+        "non_component_label_forms": [],
+        "samples": []
+      },
+      "others": {
+        "id_label_used": "pipeline_id",
+        "pipelines": 1,
+        "connect_series": 82,
+        "other_series": 9354
+      }
+    }
+  }
+}

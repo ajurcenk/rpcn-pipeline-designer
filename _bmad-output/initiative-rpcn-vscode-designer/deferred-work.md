@@ -216,3 +216,6 @@
 - source_plan: `_bmad-output/backlog/story-deploy-includes-the-resource-files-or-refuses-with-the-reason-plan.md`
   summary: Deploy's questions (the pre-deploy check's Deploy anyway, story 42's Include them and deploy) are non-modal notifications; hidden with Escape or by the notification timeout they leave the deploy waiting, and its per-file guard (bug 45) ignores a second Deploy of that file until the message is closed.
   evidence: Story 42's review pass 2 (edge-case and blind-hunter lenses); a modal dialog would change every Deploy prompt's look, so it is left for a decision of its own.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-metrics/spike-probe-the-cloud-prometheus-endpoint-on-a-real-cluster-plan.md`
+  summary: Committed spike 5.1 and 6.1 captures keep the pipeline's `created_by` (the creating service account's id before `@<cluster-host>`) unredacted; the logs and cloud probes do not redact `created_by`.
+  evidence: spike 7.1 review row 1; four committed capture files under epic-pipeline-logs/spike-6-1-findings and epic-deploy-to-redpanda-cloud match `"created_by": "<20-char id>@`; already pushed, so removing it from history is the user's decision.

@@ -1,0 +1,55 @@
+{
+  "step": "cluster-get",
+  "request": {
+    "method": "GET",
+    "url": "https://api.redpanda.com/v1/clusters/<cluster-id>"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "cluster": {
+        "name": "rpc-vilnius",
+        "type": "TYPE_DEDICATED",
+        "state": "STATE_READY",
+        "cloud_provider": "CLOUD_PROVIDER_AWS",
+        "region": "us-east-2",
+        "redpanda_connect": {
+          "version": "4.118.0"
+        },
+        "prometheus": {
+          "url": "string (108 chars)"
+        },
+        "<fields with prometheus, metric or monitor in their name>": {},
+        "<other fields>": [
+          "api_gateway_access",
+          "cloud_provider_tags",
+          "cluster_configuration",
+          "connection_type",
+          "created_at",
+          "current_redpanda_version",
+          "dataplane_api",
+          "desired_redpanda_version",
+          "http_proxy",
+          "id",
+          "kafka_api",
+          "kafka_connect",
+          "maintenance_window_config",
+          "nat_gateways",
+          "network_id",
+          "read_replica_cluster_ids",
+          "redpanda_cloud_provider_tags",
+          "redpanda_console",
+          "redpanda_node_count",
+          "resource_group_id",
+          "rpsql",
+          "schema_registry",
+          "state_description",
+          "throughput_tier",
+          "updated_at",
+          "zones"
+        ]
+      }
+    }
+  },
+  "ms": 154
+}

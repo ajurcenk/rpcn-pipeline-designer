@@ -1,0 +1,2746 @@
+{
+  "step": "prom-auth-ok-before-pipeline",
+  "request": {
+    "method": "GET",
+    "url": "https://<prometheus-host>/api/cloud/prometheus/public_metrics",
+    "auth": "basic, the file's user",
+    "headers": [
+      "user-agent",
+      "accept-encoding",
+      "authorization"
+    ],
+    "accept": null,
+    "accept_encoding": "gzip"
+  },
+  "ms": 271,
+  "response": {
+    "status": 200,
+    "headers": {
+      "names": [
+        "connection",
+        "content-encoding",
+        "content-type",
+        "date",
+        "strict-transport-security",
+        "transfer-encoding",
+        "vary"
+      ],
+      "values": {
+        "content-type": "text/plain; version=0.0.4; charset=utf-8",
+        "transfer-encoding": "chunked",
+        "content-encoding": "gzip",
+        "vary": "Origin, Accept-Encoding"
+      }
+    },
+    "raw_bytes": 82299,
+    "bytes": 1534506,
+    "truncated": false,
+    "first_byte_ms": 198,
+    "decode_error": null,
+    "metrics": {
+      "series": 9436,
+      "families": 521,
+      "bad_lines": 0,
+      "openmetrics_eof": false,
+      "samples_with_timestamps": 0,
+      "id_label": [],
+      "id_label_value_containing_pid": [],
+      "own": {
+        "series": 0,
+        "families": [],
+        "non_component_label_sets": 0,
+        "non_component_label_forms": [],
+        "samples": []
+      },
+      "others": {
+        "id_label_used": "pipeline_id",
+        "pipelines": 1,
+        "connect_series": 82,
+        "other_series": 9354
+      },
+      "label_names": [
+        "area",
+        "cache_device",
+        "cache_disk",
+        "cache_resolved",
+        "class",
+        "clientId",
+        "cloud_provider",
+        "commit_id",
+        "context",
+        "data_device",
+        "data_disk",
+        "data_has_io_queue",
+        "data_resolved",
+        "deleted",
+        "detail",
+        "device",
+        "disk",
+        "gc",
+        "group",
+        "group_id",
+        "handler",
+        "id",
+        "instance",
+        "instance_has_capacity",
+        "instance_type",
+        "iogroup",
+        "label",
+        "le",
+        "mountpoint",
+        "name",
+        "nodeId",
+        "operation",
+        "partition",
+        "path",
+        "pipeline_id",
+        "pod",
+        "pool",
+        "quantile",
+        "redpanda_cmd_group",
+        "redpanda_direction",
+        "redpanda_domain",
+        "redpanda_endpoint",
+        "redpanda_group",
+        "redpanda_mechanism",
+        "redpanda_namespace",
+        "redpanda_partition",
+        "redpanda_quota_rule",
+        "redpanda_quota_type",
+        "redpanda_region",
+        "redpanda_request",
+        "redpanda_revision",
+        "redpanda_scheduling_group",
+        "redpanda_server",
+        "redpanda_status",
+        "redpanda_topic",
+        "redpanda_version",
+        "runtime",
+        "same_partition",
+        "shard",
+        "state",
+        "stream",
+        "subject",
+        "topic",
+        "type",
+        "underlying",
+        "vendor",
+        "version"
+      ],
+      "family_list": [
+        {
+          "name": "cache_duplicate",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "cache_error",
+          "type": "counter",
+          "series": 4
+        },
+        {
+          "name": "cache_latency_ns",
+          "type": "summary",
+          "series": 20
+        },
+        {
+          "name": "cache_not_found",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "cache_success",
+          "type": "counter",
+          "series": 4
+        },
+        {
+          "name": "input_connection_failed",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "input_connection_lost",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "input_connection_up",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "input_latency_ns",
+          "type": "summary",
+          "series": 5
+        },
+        {
+          "name": "input_received",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jmx_config_reload_failure_created",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jmx_config_reload_failure_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jmx_config_reload_success_created",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jmx_config_reload_success_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jmx_exporter_build_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jmx_scrape_cached_beans",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jmx_scrape_duration_seconds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jmx_scrape_error",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_buffer_pool_capacity_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_buffer_pool_used_buffers",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_buffer_pool_used_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_classes_currently_loaded",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_classes_loaded_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jvm_classes_unloaded_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jvm_gc_collection_seconds",
+          "type": "summary",
+          "series": 6
+        },
+        {
+          "name": "jvm_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_memory_bytes_committed",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "jvm_memory_bytes_init",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "jvm_memory_bytes_max",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "jvm_memory_bytes_used",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "jvm_memory_objects_pending_finalization",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_memory_pool_allocated_bytes_created",
+          "type": "gauge",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_allocated_bytes_total",
+          "type": "counter",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_bytes_committed",
+          "type": "gauge",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_bytes_init",
+          "type": "gauge",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_bytes_max",
+          "type": "gauge",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_bytes_used",
+          "type": "gauge",
+          "series": 8
+        },
+        {
+          "name": "jvm_memory_pool_collection_committed_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_memory_pool_collection_init_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_memory_pool_collection_max_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_memory_pool_collection_used_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "jvm_threads_current",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_daemon",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_deadlocked",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_deadlocked_monitor",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_peak",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_started_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "jvm_threads_state",
+          "type": "gauge",
+          "series": 7
+        },
+        {
+          "name": "kafka_admin_client_commit_id_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_connection_close_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_connection_count",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_connection_creation_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_failed_authentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_failed_reauthentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_incoming_byte_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_ratio",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_time_ns_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_time_ns_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_wait_ratio",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_wait_time_ns_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_io_wait_time_ns_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_network_io_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_node_incoming_byte_total",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_node_outgoing_byte_total",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_node_request_latency_avg",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_node_request_size_avg",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_node_request_total",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_node_response_total",
+          "type": "untyped",
+          "series": 4
+        },
+        {
+          "name": "kafka_admin_client_outgoing_byte_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_reauthentication_latency_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_request_size_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_request_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_response_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_select_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_start_time_seconds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_successful_authentication_no_reauth_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_successful_authentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_successful_reauthentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_admin_client_version_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_commit_id_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_connection_close_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_connection_count",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_connection_creation_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_assigned_connectors",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_assigned_tasks",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_failed_rebalance_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_heartbeat_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_join_time_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_join_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_last_heartbeat_seconds_ago",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_last_rebalance_seconds_ago",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_rebalance_latency_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_rebalance_latency_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_rebalance_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_sync_time_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_coordinator_sync_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_failed_authentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_failed_reauthentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_incoming_byte_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_ratio",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_time_ns_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_time_ns_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_wait_ratio",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_wait_time_ns_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_io_wait_time_ns_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_network_io_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_node_incoming_byte_total",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_node_outgoing_byte_total",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_node_request_latency_avg",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_node_request_size_avg",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_node_request_total",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_node_response_total",
+          "type": "untyped",
+          "series": 5
+        },
+        {
+          "name": "kafka_connect_outgoing_byte_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_reauthentication_latency_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_request_size_avg",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_request_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_response_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_select_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_start_time_seconds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_successful_authentication_no_reauth_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_successful_authentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_successful_reauthentication_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_version_info",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_count",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_startup_attempts_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_startup_failure_percentage",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_startup_failure_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_startup_success_percentage",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_connector_startup_success_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_completed_rebalances_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_epoch",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_rebalance_avg_time_ms",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_rebalance_max_time_ms",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_rebalancing",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_rebalance_time_since_last_rebalance_ms",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_count",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_startup_attempts_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_startup_failure_percentage",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_startup_failure_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_startup_success_percentage",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_connect_worker_task_startup_success_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_consumer_commit_id_info",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_commit_sync_time_ns_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_committed_time_ns_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_connection_close_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_connection_count",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_connection_creation_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_commit_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_commit_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_failed_rebalance_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_heartbeat_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_join_time_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_join_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_last_heartbeat_seconds_ago",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_last_rebalance_seconds_ago",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_partition_assigned_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_partition_lost_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_partition_revoked_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_rebalance_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_rebalance_latency_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_rebalance_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_sync_time_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_coordinator_sync_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_failed_authentication_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_failed_reauthentication_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_bytes_consumed_total",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_fetch_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_fetch_size_avg",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_fetch_throttle_time_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_fetch_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_preferred_read_replica",
+          "type": "gauge",
+          "series": 31
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_consumed_total",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_lag",
+          "type": "gauge",
+          "series": 31
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_lag_avg",
+          "type": "gauge",
+          "series": 31
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_lead",
+          "type": "gauge",
+          "series": 31
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_lead_avg",
+          "type": "gauge",
+          "series": 31
+        },
+        {
+          "name": "kafka_consumer_fetch_manager_records_per_request_avg",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "kafka_consumer_incoming_byte_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_time_ns_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_time_ns_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_wait_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_wait_time_ns_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_io_wait_time_ns_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_last_poll_seconds_ago",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_network_io_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_node_incoming_byte_total",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_node_outgoing_byte_total",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_node_request_latency_avg",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_node_request_size_avg",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_node_request_total",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_node_response_total",
+          "type": "untyped",
+          "series": 12
+        },
+        {
+          "name": "kafka_consumer_outgoing_byte_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_poll_idle_ratio_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_reauthentication_latency_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_request_size_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_request_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_response_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_select_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_start_time_seconds",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_successful_authentication_no_reauth_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_successful_authentication_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_successful_reauthentication_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_time_between_poll_avg",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_consumer_version_info",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "kafka_producer_batch_size_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_batch_split_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_buffer_available_bytes",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_buffer_exhausted_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_buffer_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_bufferpool_wait_ratio",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_bufferpool_wait_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_commit_id_info",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_compression_rate_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_connection_close_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_connection_count",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_connection_creation_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_failed_authentication_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_failed_reauthentication_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_flush_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_incoming_byte_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_ratio",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_time_ns_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_wait_ratio",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_wait_time_ns_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_io_wait_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_metadata_age",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_metadata_wait_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_network_io_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_node_incoming_byte_total",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_node_outgoing_byte_total",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_node_request_latency_avg",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_node_request_size_avg",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_node_request_total",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_node_response_total",
+          "type": "untyped",
+          "series": 16
+        },
+        {
+          "name": "kafka_producer_outgoing_byte_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_produce_throttle_time_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_reauthentication_latency_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_record_error_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_record_queue_time_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_record_retry_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_record_send_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_record_size_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_records_per_request_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_request_latency_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_request_size_avg",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_request_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_requests_in_flight",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_response_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_select_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_start_time_seconds",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_successful_authentication_no_reauth_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_successful_authentication_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_successful_reauthentication_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_topic_byte_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_producer_topic_compression_rate",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_producer_topic_record_error_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_producer_topic_record_retry_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_producer_topic_record_send_total",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "kafka_producer_txn_abort_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_txn_begin_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_txn_commit_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_txn_init_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_txn_prepare_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_txn_send_offsets_time_ns_total",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_version_info",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "kafka_producer_waiting_threads",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "output_batch_sent",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_connection_failed",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_connection_lost",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_connection_up",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_error",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_latency_ns",
+          "type": "summary",
+          "series": 5
+        },
+        {
+          "name": "output_rejected",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "output_sent",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "process_cpu_seconds_total",
+          "type": "counter",
+          "series": 1
+        },
+        {
+          "name": "process_max_fds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "process_open_fds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "process_resident_memory_bytes",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "process_start_time_seconds",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "process_virtual_memory_bytes",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "processor_batch_received",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "processor_batch_sent",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "processor_error",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "processor_latency_ns",
+          "type": "summary",
+          "series": 15
+        },
+        {
+          "name": "processor_received",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "processor_sent",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_application_build",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_application_fips_mode",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_application_uptime_seconds_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_authorization_result",
+          "type": "counter",
+          "series": 9
+        },
+        {
+          "name": "redpanda_cloud_client_backoff",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_client_pool_utilization",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_download_backoff",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_downloads",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_lease_duration",
+          "type": "histogram",
+          "series": 63
+        },
+        {
+          "name": "redpanda_cloud_client_lease_timeouts_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_not_found",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_num_borrows",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_upload_backoff",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_client_uploads",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_io_admission_control_available_slots",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_io_admission_control_in_flight",
+          "type": "gauge",
+          "series": 12
+        },
+        {
+          "name": "redpanda_cloud_io_admission_control_total_capacity",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_io_admission_control_waiters",
+          "type": "gauge",
+          "series": 12
+        },
+        {
+          "name": "redpanda_cloud_storage_active_segments",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_ghost_hit_bytes",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_ghost_hits",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_op_hit",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_op_in_progress_files",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_op_miss",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_op_put",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_files",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_hwm_files",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_hwm_size_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_lru_tail_age_seconds",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_size_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_tracker_size",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_space_tracker_syncs",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_trim_exhaustive_trims",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_trim_failed_trims",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_trim_fast_trims",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cache_trim_in_mem_trims",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_cloud_log_size",
+          "type": "gauge",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_storage_deleted_segments",
+          "type": "counter",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_storage_errors_total",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_drains",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_jobs_completed",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_jobs_failed",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_jobs_skipped",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_pauses",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_requests_throttled_average_rate",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_resumes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_housekeeping_rounds",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_jobs_cloud_segment_reuploads",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_jobs_local_segment_reuploads",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_jobs_manifest_reuploads",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_jobs_metadata_syncs",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_jobs_segment_deletions",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_limits_downloads_throttled_sum",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_partition_manifest_uploads_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_partition_readers",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_partition_readers_delayed",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_paused_archivers",
+          "type": "gauge",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_storage_readers",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_segment_index_uploads_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_segment_materializations_delayed",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_segment_readers_delayed",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_segment_uploads_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_segments",
+          "type": "gauge",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_storage_segments_pending_deletion",
+          "type": "gauge",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_storage_spillover_manifest_uploads_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_spillover_manifests_materialized_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_spillover_manifests_materialized_count",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cloud_storage_uploaded_bytes",
+          "type": "counter",
+          "series": 60
+        },
+        {
+          "name": "redpanda_cloud_topics_pipeline_bytes_processed",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_cloud_topics_pipeline_current_memory_usage",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "redpanda_cloud_topics_pipeline_requests_error",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_cloud_topics_pipeline_requests_in",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_cluster_brokers",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cluster_controller_log_limit_requests_available_rps",
+          "type": "gauge",
+          "series": 15
+        },
+        {
+          "name": "redpanda_cluster_controller_log_limit_requests_dropped",
+          "type": "counter",
+          "series": 15
+        },
+        {
+          "name": "redpanda_cluster_features_enterprise_license_expiry_sec",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "redpanda_cluster_latest_cluster_metadata_manifest_age",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cluster_members_backend_queued_node_operations",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cluster_non_homogenous_fips_mode",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cluster_partition_moving_from_node",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cluster_partition_moving_to_node",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cluster_partition_node_cancelling_movements",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cluster_partition_num_with_broken_rack_constraint",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_cluster_partitions",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cluster_topics",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cluster_unavailable_partitions",
+          "type": "gauge",
+          "series": 1
+        },
+        {
+          "name": "redpanda_cpu_busy_seconds_total",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_debug_bundle_failed_generation_count",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_debug_bundle_last_failed_bundle_timestamp_seconds",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_debug_bundle_last_successful_bundle_timestamp_seconds",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_debug_bundle_successful_generation_count",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_bytes_discarded",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_bytes_read",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_bytes_written",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_discards",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_discards_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_discards_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_flushes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_flushes_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_io_in_progress",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_io_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_io_weighted_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_reads",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_reads_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_reads_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_sectors_discarded",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_sectors_read",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_sectors_written",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_bytes_discarded",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_bytes_read",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_bytes_written",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_discards",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_discards_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_discards_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_flushes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_flushes_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_io_in_progress",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_io_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_io_weighted_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_reads",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_reads_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_reads_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_sectors_discarded",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_sectors_read",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_sectors_written",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_writes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_writes_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_underlying_writes_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_writes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_writes_merged",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_diskstats_writes_ms",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_metrics_info",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_netstat_bytes_received",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_netstat_bytes_sent",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_snmp_packets_received",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_snmp_packets_sent",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_host_snmp_tcp_established",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_disk_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_info",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_memory_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_network_bytes_per_sec",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_read_iops",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_vcpus",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_instance_write_iops",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_duplex",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_max_cost_function",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_read_bytes_rate",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_read_req_rate",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_write_bytes_rate",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_config_write_req_rate",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_io_queue_consumption",
+          "type": "counter",
+          "series": 27
+        },
+        {
+          "name": "redpanda_io_queue_disk_queue_length",
+          "type": "gauge",
+          "series": 27
+        },
+        {
+          "name": "redpanda_io_queue_total_bytes",
+          "type": "counter",
+          "series": 27
+        },
+        {
+          "name": "redpanda_io_queue_total_read_ops",
+          "type": "counter",
+          "series": 27
+        },
+        {
+          "name": "redpanda_io_queue_total_write_ops",
+          "type": "counter",
+          "series": 27
+        },
+        {
+          "name": "redpanda_kafka_consumer_group_committed_offset",
+          "type": "gauge",
+          "series": 4
+        },
+        {
+          "name": "redpanda_kafka_consumer_group_consumers",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "redpanda_kafka_consumer_group_lag_max",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "redpanda_kafka_consumer_group_lag_sum",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "redpanda_kafka_consumer_group_topics",
+          "type": "gauge",
+          "series": 2
+        },
+        {
+          "name": "redpanda_kafka_handler_latency_seconds",
+          "type": "histogram",
+          "series": 126
+        },
+        {
+          "name": "redpanda_kafka_max_offset",
+          "type": "gauge",
+          "series": 273
+        },
+        {
+          "name": "redpanda_kafka_partitions",
+          "type": "gauge",
+          "series": 78
+        },
+        {
+          "name": "redpanda_kafka_quotas_client_quota_throttle_time",
+          "type": "histogram",
+          "series": 1944
+        },
+        {
+          "name": "redpanda_kafka_quotas_client_quota_throughput",
+          "type": "histogram",
+          "series": 3132
+        },
+        {
+          "name": "redpanda_kafka_records_fetched_total",
+          "type": "counter",
+          "series": 81
+        },
+        {
+          "name": "redpanda_kafka_records_produced_total",
+          "type": "counter",
+          "series": 81
+        },
+        {
+          "name": "redpanda_kafka_replicas",
+          "type": "gauge",
+          "series": 78
+        },
+        {
+          "name": "redpanda_kafka_request_bytes_total",
+          "type": "counter",
+          "series": 243
+        },
+        {
+          "name": "redpanda_kafka_request_latency_seconds",
+          "type": "histogram",
+          "series": 126
+        },
+        {
+          "name": "redpanda_kafka_rpc_sasl_session_expiration_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_kafka_rpc_sasl_session_reauth_attempts_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_kafka_rpc_sasl_session_revoked_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_kafka_under_replicated_replicas",
+          "type": "gauge",
+          "series": 273
+        },
+        {
+          "name": "redpanda_memory_allocated_memory",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_memory_available_memory",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_memory_available_memory_low_water_mark",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_memory_free_memory",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_network_bytes_received",
+          "type": "counter",
+          "series": 63
+        },
+        {
+          "name": "redpanda_network_bytes_sent",
+          "type": "counter",
+          "series": 63
+        },
+        {
+          "name": "redpanda_node_status_rpcs_received",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_node_status_rpcs_sent",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_node_status_rpcs_timed_out",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_leader_for",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_leadership_changes",
+          "type": "counter",
+          "series": 81
+        },
+        {
+          "name": "redpanda_raft_learners_gap_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_recovery_offsets_pending",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_recovery_partition_movement_available_bandwidth",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_recovery_partition_movement_consumed_bandwidth",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_recovery_partitions_active",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_raft_recovery_partitions_to_recover",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_reactor_aio_bytes_read",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_reactor_aio_bytes_write",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_reactor_aio_reads",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_reactor_aio_writes",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_rest_proxy_inflight_requests_memory_usage_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_rest_proxy_inflight_requests_usage_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_rest_proxy_queued_requests_memory_blocked",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_rest_proxy_request_errors_total",
+          "type": "counter",
+          "series": 9
+        },
+        {
+          "name": "redpanda_rest_proxy_request_latency_seconds",
+          "type": "histogram",
+          "series": 63
+        },
+        {
+          "name": "redpanda_rpc_active_connections",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "redpanda_rpc_received_bytes",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_rpc_request_errors_total",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_rpc_request_latency_seconds",
+          "type": "histogram",
+          "series": 126
+        },
+        {
+          "name": "redpanda_rpc_sent_bytes",
+          "type": "counter",
+          "series": 6
+        },
+        {
+          "name": "redpanda_scheduler_runtime_seconds_total",
+          "type": "counter",
+          "series": 60
+        },
+        {
+          "name": "redpanda_schema_registry_cache_schema_count",
+          "type": "gauge",
+          "series": 9
+        },
+        {
+          "name": "redpanda_schema_registry_cache_schema_memory_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_schema_registry_cache_subject_count",
+          "type": "gauge",
+          "series": 6
+        },
+        {
+          "name": "redpanda_schema_registry_cache_subject_version_count",
+          "type": "gauge",
+          "series": 48
+        },
+        {
+          "name": "redpanda_schema_registry_inflight_requests_memory_usage_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_schema_registry_inflight_requests_usage_ratio",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_schema_registry_loaded_offset",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_schema_registry_queued_requests_memory_blocked",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_schema_registry_request_errors_total",
+          "type": "counter",
+          "series": 9
+        },
+        {
+          "name": "redpanda_schema_registry_request_latency_seconds",
+          "type": "histogram",
+          "series": 63
+        },
+        {
+          "name": "redpanda_security_audit_errors_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_security_audit_last_event_timestamp_seconds",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_security_idp_errors_total",
+          "type": "counter",
+          "series": 3
+        },
+        {
+          "name": "redpanda_security_idp_latency_seconds",
+          "type": "histogram",
+          "series": 63
+        },
+        {
+          "name": "redpanda_storage_cache_disk_free_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_storage_cache_disk_free_space_alert",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_storage_cache_disk_total_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_storage_disk_free_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_storage_disk_free_space_alert",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_storage_disk_total_bytes",
+          "type": "gauge",
+          "series": 3
+        },
+        {
+          "name": "redpanda_tls_certificate_expires_at_timestamp_seconds",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_tls_certificate_serial",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_tls_certificate_valid",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_tls_loaded_at_timestamp_seconds",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_tls_trust_file_crc32c",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_tls_truststore_expires_at_timestamp_seconds",
+          "type": "gauge",
+          "series": 18
+        },
+        {
+          "name": "redpanda_wasm_binary_executable_memory_usage",
+          "type": "gauge",
+          "series": 3
+        }
+      ],
+      "type_counts": {
+        "counter": 97,
+        "gauge": 386,
+        "untyped": 24,
+        "summary": 5,
+        "histogram": 9
+      }
+    }
+  }
+}
