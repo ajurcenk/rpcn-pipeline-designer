@@ -3,7 +3,7 @@ title: 'Probe the Cloud Prometheus endpoint on a real cluster'
 type: 'chore'
 ticket: '1'
 created: '2026-11-18'
-status: 'built'
+status: done
 baseline_revision: 'ea09368fd872bd4170bf4c58c21f2f18ad3d8505'
 route: 'full'
 route_source: 'auto'
@@ -133,3 +133,5 @@ context:
 
 - 2026-11-18: run 1 done with the user's approval (see Implementation Notes); `--dry-run` passes 257 checks after the self-scan and review fixes; the scan of `spike-7-1-findings/` (52 step captures + summary.tsv + run.json, and `findings.md`) for the endpoint host and its long host labels, the password and its first 6 characters, and the cluster ids and Data Plane hosts in `~/.config/rpk/rpk.yaml` (read in memory, never printed) found no match. Awaiting: the user's approval or amendment of AD-25.
 
+
+**Result (user, 2026-11-18):** findings accepted and AD-25 adopted when the user said "AD-25 approved and mark 7.1 done".
