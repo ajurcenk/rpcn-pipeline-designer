@@ -52,6 +52,7 @@ A new `metrics` adapter (the scrape of a local run and of the Cloud endpoint) an
 ## References
 
 - parent — _bmad-output/initiative-rpcn-vscode-designer/initiative-rpcn-vscode-designer.md
+- design — https://claude.ai/artifact/SvTxhp5NAdysThrmB7ZRY9 (boards 1–5: the Pipeline Metrics tab for a local run, the figures on the graph, Cloud metrics access and a Cloud pipeline, the empty and error states, the entry points; example figures are illustrative)
 - architecture — _bmad-output/initiative-rpcn-vscode-designer/architecture-rpcn-vscode-designer/architecture-rpcn-vscode-designer.md, AD-3, AD-9, AD-13, AD-15, AD-17, AD-23, AD-24 (the logs reader and its in-memory fake, which the metrics source follows), and Deferred ("metrics … will build on the RedpandaConnect adapter")
 - constraint — _bmad-output/initiative-rpcn-vscode-designer/spec-rpcn-vscode-designer/spec-rpcn-vscode-designer.md, section Constraints (theme only, no Redpanda branding, stable APIs, `^1.100.0`)
 - prior — _bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-logs/epic-pipeline-logs.md (the per-cluster access in secret storage, the bottom-panel tab and its states, which this epic follows)
