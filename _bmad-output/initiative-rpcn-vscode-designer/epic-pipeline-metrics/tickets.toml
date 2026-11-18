@@ -1,0 +1,116 @@
+# tickets.toml — epic 7, Pipeline metrics. The order of the tables is the build order.
+# Lanes: 1 spike; 2 the tracer (local run → model → tab); then 3 the graph lane beside 4 the Cloud access;
+# 5 joins them; 6 → 7 → 8 → 9 are one lane, because each touches the metrics panel host and webview
+# (and 9 also package.json, cloudView.ts and the graph toolbar); 10 the refactor sweep.
+
+[[entry]]
+id = 1
+type = "spike"
+title = "Probe the Cloud Prometheus endpoint on a real cluster"
+description = "On the user's cluster, with the Prometheus password the user copies from the Cloud UI into a local file only they read, reads the cluster's Prometheus endpoint with a running pipeline and records, redacted, the pipeline-id label, whether `path` and `label` are kept, the series and their types, the response size and time, the auth failures, and how often it may be read; it proposes the architecture decision for the metrics source and its in-memory fake (as spike 6.1 proposed AD-24), which entries 2, 4 and 5 build to."
+verify = "A findings file beside the spike answers each question with a redacted capture, names the label and the read interval entries 4 and 5 use, and the proposed decision is in the architecture document after the user agrees it."
+covers = ["R2"]
+after = []
+hitl = true
+risk = "high"
+unknown = "Whether the endpoint keeps `path` per component; if not, the Cloud figures are per pipeline only and R5 and R6 shrink for the Cloud."
+
+[[entry]]
+id = 2
+type = "story"
+title = "Metrics of a local run in the Pipeline Metrics tab"
+description = "The tracer: each local run gets a free 127.0.0.1 port with its HTTP server on (amending AD-13's run arguments, and README line 68); a pure core model parses the Prometheus text into each component's rate, errors per second and latency p50 and p99; a metrics adapter behind a source interface reads the run's `/metrics` every few seconds; and a Pipeline Metrics tab beside Pipeline Logs, opened by a minimal Show pipeline metrics command for the active config's run, shows one row per component in config order (nested processors and resources under their parent), sortable by each figure, reading only while the tab is open. It owns the parser, the model, the source interface, the panel protocol and the tab, which entries 3 to 9 extend, and records with the user how a config's own `metrics` or `http` section is handled, for entry 8."
+verify = "Running a config with a generate input, two processors and a drop output, the tab shows four rows whose rates and latency change while it runs; two runs at once both work; the run's server listens on 127.0.0.1 only (a test reads the address it was given); unit tests cover the parser, the model and the free port."
+covers = ["R1", "R3", "R4", "R8"]
+after = [1, "epic-smart-yaml-editing", "epic-pipeline-logs"]
+hitl = false
+risk = "medium"
+unknown = "How a config's own `metrics` or `http` section is handled (Open question in the epic's Notes); settled with the user in this entry's plan."
+
+[[entry]]
+id = 3
+type = "story"
+title = "Figures on the graph's nodes"
+description = "The host maps each component's path and label from entry 2's model onto the graph's node ids and sends a figures message beside `nodeStatus` (amending AD-17); each node shows its rate, latency and errors while its config's local run is live, and nothing when none is; entries 5 and 7 send their figures and marks through this message."
+verify = "With the graph of a running config open, each input, processor and output node shows figures that follow the tab's; a labelled processor, a resource processor and a nested processor each get theirs, and stopping the run clears them."
+covers = ["R5"]
+after = [2, "epic-pipeline-graph"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "Metrics access for a cluster"
+description = "Per cluster, Set metrics access asks for the Prometheus password (user `prometheus`), keeps it in secret storage, checks it with a test read of the endpoint from the cluster details (a Cloud reader behind entry 2's source interface, to entry 1's findings), and shows it on the cluster row; clearing and a refused password are handled; no password in a setting, a file, argv, a message or a log line. It builds the in-memory fake Cloud Prometheus endpoint that entries 5 and 8 test against."
+verify = "Against the fake endpoint, a right password is kept and the row shows it, a wrong one is refused with its reason and not kept, and a secret-scan test finds the password nowhere outside the secret storage."
+covers = ["R2", "R9"]
+after = [1, 2, "epic-deploy-to-redpanda-cloud", "epic-pipeline-logs"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Metrics of a Cloud pipeline in the tab and on the graph"
+description = "A Show metrics item on the pipeline row's menu reads the cluster's endpoint at entry 1's interval with entry 4's reader, keeps the series with that pipeline's id, and shows them in entry 2's tab (its source named) and on the graph of its mapped file through entry 3's figures message; README line 112 is updated."
+verify = "Against entry 4's fake endpoint serving two pipelines' series, Show metrics on one shows only its components in the tab and on its mapped file's graph, and the password appears nowhere in the panel; a manual check on the user's cluster shows a running pipeline's figures."
+covers = ["R2", "R4", "R5", "R8"]
+after = [3, 4, "epic-deploy-to-redpanda-cloud"]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 6
+type = "story"
+title = "The live window, trend lines and the full figures"
+description = "The tab keeps the readings of the last 1, 5 or 15 minutes in memory while it is open, computes each figure over the chosen window, adds batches, the error share, p90 and the mean latency to entry 2's model, starts a new count when a counter goes back, and draws a trend line per component; nothing is kept after the tab closes; entry 7 marks the bottleneck from these windowed figures."
+verify = "With a fake source feeding readings over a simulated 15 minutes, each window shows its own rates and trend, a counter reset mid-window shows no negative rate, and closing the tab drops the readings."
+covers = ["R3", "R7"]
+after = [5]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Mark the bottleneck"
+description = "From entry 6's windowed figures, the component with the largest share of the pipeline's time is marked the slowest in the tab and on its graph node (through entry 3's message), components with errors are marked, and a gap between the input's and the output's rates is named."
+verify = "In a config with a `sleep` processor (`duration: 5ms`) and a `mapping`, the sleep processor is marked the slowest in the tab and on the graph; a processor that errors is marked; a slow output shows the rate gap."
+covers = ["R6"]
+after = [6]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 8
+type = "story"
+title = "The tab's empty and error states"
+description = "The tab's states for not running, no metrics served (by entry 2's recorded decision on a config's own `metrics` or `http` section), no access set, password refused, no series yet for the pipeline and endpoint unreachable (retried), each saying what to do and offering the action (entry 4's Set metrics access, Run, Retry), tested against entry 4's fake endpoint; no password in any state's text."
+verify = "Each state is reached through the fake sources and the run, shows its text and its action, and the action leads on (Set metrics access opens the prompt, Run starts the run, Retry reads again)."
+covers = ["R9"]
+after = [7]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 9
+type = "story"
+title = "Entry points for metrics"
+description = "Extends entry 2's command (the active config's local run when one runs, else its mapped Cloud pipeline, else a pick) and entry 5's row menu item (adding the inline item), and adds the Run's status bar item or terminal and the graph's toolbar, all opening the tab on entry 2's and entry 5's sources."
+verify = "Each entry point opens the tab on the right source in the integration tests: a running file, a mapped file with no run, a pipeline row inline and in its menu, and the graph toolbar; with neither, the command offers the pick."
+covers = ["R8"]
+after = [8]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 10
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup only, scoped when it starts from the epic's build records and the review findings deferred during it."
+verify = "The full verification passes unchanged in behaviour and the deferred items it takes are recorded as resolved."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+hitl = false
+risk = "low"

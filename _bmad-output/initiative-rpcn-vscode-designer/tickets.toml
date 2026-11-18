@@ -40,3 +40,10 @@ slug = "epic-pipeline-logs"
 title = "Pipeline logs"
 covers = []   # no spec capability: the spec lists debugging and Cloud work as non-goals (Source conflict, settled by the user 2026-11-05)
 after = [{ epic = 5, needs = "the cloud adapter (token, Control Plane cluster details), the Cloud view's cluster and pipeline rows, the .cloud.json mapping and the deploy's Error notifications (5.2-5.5)" }]
+
+[[epic]]
+id = 7
+slug = "epic-pipeline-metrics"
+title = "Pipeline metrics"
+covers = []   # no spec capability: the spec lists metrics as a non-goal (Source conflict, settled by the user 2026-11-18)
+after = [{ epic = 2, needs = "the local Run, its argument builder and its per-file sessions (AD-13)" }, { epic = 3, needs = "the graph panel, its node ids and the nodeStatus message (AD-7, AD-17)" }, { epic = 5, needs = "the cloud adapter (token, cluster details), the Cloud view's cluster and pipeline rows and the .cloud.json mapping" }, { epic = 6, needs = "the bottom-panel tab pattern, the per-cluster access in secret storage and the in-memory fake pattern (AD-24)" }]
