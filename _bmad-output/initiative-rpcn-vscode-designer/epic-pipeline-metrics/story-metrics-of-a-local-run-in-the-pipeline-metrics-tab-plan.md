@@ -3,7 +3,7 @@ title: 'Metrics of a local run in the Pipeline Metrics tab'
 type: 'feature'
 ticket: '2'
 created: '2026-11-18'
-status: 'built'
+status: done
 baseline_revision: '58023558752269c6b4494bd08dbd13fdf095c824'
 route: 'full'
 route_source: 'auto'
