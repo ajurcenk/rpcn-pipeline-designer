@@ -130,3 +130,7 @@ context:
 | 6 | `layout.ts` `toElkGraph`: every leaf grows while live, to 250 px, above `MAX_NODE_WIDTH` 220 | low | reject | Consistent with the "taller while live" Decision (one uniform re-layout, none per reading). The width is what the line needs; cosmetic. |
 
 All three patches applied by the implementer. Verified after them: `npm run compile`, `test:webview` 401, `test:corpus` 182, stable 1614 passing / 1 pending / 0 failing, multiroot 15 passing; no `vscode` import in `src/core`, `src/shared` or `src/adapters/metrics`.
+
+## Manual Check
+
+- 2026-11-19, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, workspace `.vscode-test/story-7-2/`, extension at `b27b060`): "tested, no issues".
