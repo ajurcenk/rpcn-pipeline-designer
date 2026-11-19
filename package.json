@@ -302,6 +302,18 @@
         "icon": "$(trash)"
       },
       {
+        "command": "redpandaConnect.cloud.setUpMetricsAccess",
+        "title": "Set up metrics access…",
+        "category": "Redpanda Connect",
+        "icon": "$(key)"
+      },
+      {
+        "command": "redpandaConnect.cloud.forgetMetricsAccess",
+        "title": "Forget metrics access",
+        "category": "Redpanda Connect",
+        "icon": "$(trash)"
+      },
+      {
         "command": "redpandaConnect.cloud.showLogs",
         "title": "Show pipeline logs",
         "category": "Redpanda Connect",
@@ -450,6 +462,13 @@
         },
         {
           "command": "redpandaConnect.cloud.forgetLogAccess"
+        },
+        {
+          "command": "redpandaConnect.cloud.setUpMetricsAccess",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.cloud.forgetMetricsAccess"
         },
         {
           "command": "redpandaConnect.cloud.showLogs"
@@ -621,7 +640,7 @@
         },
         {
           "command": "redpandaConnect.cloud.refresh",
-          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?( metrics)?$/",
           "group": "inline"
         },
         {
@@ -631,7 +650,7 @@
         },
         {
           "command": "redpandaConnect.cloud.refresh",
-          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?( metrics)?$/",
           "group": "1_actions@1"
         },
         {
@@ -691,13 +710,23 @@
         },
         {
           "command": "redpandaConnect.cloud.setUpLogAccess",
-          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?$/",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?( metrics)?$/",
           "group": "1_actions@2"
         },
         {
           "command": "redpandaConnect.cloud.forgetLogAccess",
-          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster logs$/",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster logs( metrics)?$/",
           "group": "1_actions@3"
+        },
+        {
+          "command": "redpandaConnect.cloud.setUpMetricsAccess",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)?( metrics)?$/",
+          "group": "1_actions@4"
+        },
+        {
+          "command": "redpandaConnect.cloud.forgetMetricsAccess",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudCluster( logs)? metrics$/",
+          "group": "1_actions@5"
         },
         {
           "command": "redpandaConnect.cloud.showLogs",

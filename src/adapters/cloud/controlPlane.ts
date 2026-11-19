@@ -61,6 +61,8 @@ export interface CloudCluster {
 	readonly connectVersion?: string;
 	/** Ticket 6.2: its Kafka API's seed brokers (`host:port`), where its logs topic is read; none: unknown. */
 	readonly seedBrokers?: readonly string[];
+	/** Ticket 7.4 (AD-25): its Prometheus endpoint (`prometheus.url`), where its pipelines' metrics are read; none: unknown. */
+	readonly prometheusUrl?: string;
 	/** Why the cluster has no usable Data Plane address although it may have one (not https). */
 	readonly detailError?: string;
 	/** Why the cluster's details could not be read (`GET /v1/clusters/{id}` failed): its pipeline API is unknown. */
@@ -118,6 +120,7 @@ export async function listClusters(call: CloudCall, controlPlaneUrl: string): Pr
 			const connectVersion = str(sub(detail.redpanda_connect, 'version'));
 			const seeds = sub(detail.kafka_api, 'seed_brokers');
 			const seedBrokers = Array.isArray(seeds) ? seeds.map(str).filter(Boolean) : [];
+			const prometheusUrl = str(sub(detail.prometheus, 'url'));
 			return {
 				...base,
 				name: str(detail.name) || base.name,
@@ -127,6 +130,7 @@ export async function listClusters(call: CloudCall, controlPlaneUrl: string): Pr
 				...(dataplaneUrl ? { dataplaneUrl } : {}),
 				...(connectVersion ? { connectVersion } : {}),
 				...(seedBrokers.length > 0 ? { seedBrokers } : {}),
+				...(prometheusUrl ? { prometheusUrl } : {}),
 			};
 		} catch (err) {
 			if (err instanceof CloudError && err.kind === 'unauthorized') {

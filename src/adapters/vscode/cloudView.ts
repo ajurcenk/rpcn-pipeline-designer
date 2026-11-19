@@ -103,10 +103,11 @@
 //
 // Every message, log line and view item masks the client secret, the token and Authorization values.
 //
-// The code is in four modules (ticket 5.9): this one (the account, Connect and Disconnect, the clusters and
+// The code is in five modules (ticket 5.9): this one (the account, Connect and Disconnect, the clusters and
 // pipelines cache, the tree), `cloudDeploy.ts` (the deploy flow), `cloudActions.ts` (Start, Stop, Delete and a
-// row's actions) and `cloudLogs.ts` (the log access and the log entry points). `CloudView` builds the other
-// three and gives them one `CloudContext`; they import nothing of it but types, and its exports stay here.
+// row's actions), `cloudLogs.ts` (the log access and the log entry points) and (ticket 7.4) `cloudMetrics.ts`
+// (the metrics access). `CloudView` builds the other four and gives them one `CloudContext`; they import
+// nothing of it but types, and its exports stay here.
 // What they share without state (constants, texts, pure helpers) is in `cloudShared.ts`; no feature module
 // imports another.
 
@@ -129,6 +130,10 @@ import { CloudActions, type PaletteTarget, type PaletteTargetHow, type PipelineA
 import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy';
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
 import {
+	CloudMetricsAccess, FORGET_METRICS_ACCESS_COMMAND, type ForgetMetricsAccessResult, METRICS_ACCESS_PREFIX, type MetricsAccessResult, SET_UP_METRICS_ACCESS_COMMAND,
+} from './cloudMetrics';
+import { CLOUD_READ_TIMEOUT_MS } from '../metrics/source';
+import {
 	CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NO_RESOURCE_FILES, NOT_IN_WORKSPACE, pipelineStateDescription, type ResourceFiles,
 } from './cloudShared';
 import type { LocalValue } from './environmentView';
@@ -149,6 +154,11 @@ export {
 	FORGET_LOG_ACCESS_COMMAND, LOG_ACCESS_PREFIX, logAccessForgottenMessage, logAccessKey, NO_CLUSTER_WITH_LOG_ACCESS, NO_LOG_ACCESS_SET, noLogAccessMessage,
 	SET_UP_LOG_ACCESS_ACTION, SHOW_LOGS_ACTION, signInRefusedMessage, type ForgetLogAccessResult,
 } from './cloudLogs';
+export {
+	FORGET_METRICS_ACCESS_COMMAND, METRICS_ACCESS_PREFIX, metricsAccessForgottenMessage, metricsAccessKey, metricsAccessSetMessage, metricsRefusedMessage,
+	metricsUnreachableMessage, NO_CLUSTER_WITH_METRICS_ACCESS, noPrometheusEndpointMessage, SET_UP_METRICS_ACCESS_COMMAND, type ForgetMetricsAccessResult,
+	type MetricsAccessResult,
+} from './cloudMetrics';
 
 export const CLOUD_VIEW_ID = 'redpandaConnect.cloud';
 export const CONNECT_COMMAND = 'redpandaConnect.cloud.connect';
@@ -181,6 +191,8 @@ export const CLIENT_SECRET_KEY = 'redpandaConnect.cloud.clientSecret';
 
 export const NO_CLUSTERS_TEXT = 'No BYOC or Dedicated cluster in this organization.';
 export const NO_PIPELINE_API = 'no pipeline API';
+/** Ticket 7.4 (design board 3): a cluster row with a Prometheus endpoint and no metrics access. */
+export const NO_METRICS_ACCESS = 'no metrics access';
 /** A cluster whose details (`GET /v1/clusters/{id}`) could not be read: its pipeline API is unknown. */
 export const DETAILS_UNREAD = 'could not read its details';
 /** A stored account's row until the user asks for the clusters (nothing is requested on its own). */
@@ -431,6 +443,10 @@ export interface CloudContext {
 	clusterById(id: string): CloudCluster | undefined;
 	pipelineById(clusterId: string, id: string): CloudPipeline | undefined;
 	dataplaneUrlOf(c: CloudCluster): string | undefined;
+	/** Ticket 7.4: the cluster's Prometheus endpoint, `https://` only when the endpoints require it; none: it serves none. */
+	prometheusUrlOf(c: CloudCluster): string | undefined;
+	/** Ticket 7.4: a Cloud metrics read's timeout (the test seam shortens it). */
+	readonly metricsTimeoutMs: number;
 	localFileOf(p: CloudPipeline | undefined): LocalFile;
 	readPipeline(cluster: CloudCluster, dp: string, id: string, shown: string)
 		: Promise<{ readonly kind: 'ok'; readonly value: CloudPipeline } | { readonly kind: 'error'; readonly message: string; readonly status?: number }>;
@@ -509,6 +525,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	pollMs = POLL_MS;
 	timeoutMs = DEPLOY_TIMEOUT_MS;
 	restartGraceMs = RESTART_GRACE_MS;
+	/** Ticket 7.4: a Cloud metrics read's timeout (the test seam shortens it). */
+	metricsTimeoutMs = CLOUD_READ_TIMEOUT_MS;
 	/** Ticket 8: the pre-deploy lint, the local version and the local catalogue (the test seam replaces them). */
 	lint: ((doc: vscode.TextDocument) => Promise<LintResult>) | undefined;
 	localVersion: () => string | undefined;
@@ -564,6 +582,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	private readonly deployFlow: CloudDeploy;
 	private readonly actions: CloudActions;
 	private readonly logAccess: CloudLogs;
+	/** Ticket 7.4: the metrics access, built here only. */
+	private readonly metricsAccess: CloudMetricsAccess;
 
 	readonly onDidChangeTreeData: vscode.Event<CloudNode | undefined> = this.changeEmitter.event;
 
@@ -580,6 +600,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		this.deployFlow = new CloudDeploy(context);
 		this.actions = new CloudActions(context);
 		this.logAccess = new CloudLogs(context);
+		this.metricsAccess = new CloudMetricsAccess(context);
 		const fetch = options.fetch ?? defaultFetch;
 		this.tokens = new TokenCache({
 			fetch,
@@ -606,6 +627,10 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				if (e.key.startsWith(LOG_ACCESS_PREFIX) && this.writing === 0 && this.account) {
 					void this.logAccess.readLogAccess(e.key.slice(LOG_ACCESS_PREFIX.length)).then(() => this.fire());
 				}
+				// Ticket 7.4: another window set up or forgot a cluster's metrics access: its row follows.
+				if (e.key.startsWith(METRICS_ACCESS_PREFIX) && this.writing === 0 && this.account) {
+					void this.metricsAccess.readAccess(e.key.slice(METRICS_ACCESS_PREFIX.length)).then(() => this.fire());
+				}
 			}),
 		);
 		this.ready = this.readAccount();
@@ -620,6 +645,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			get pollMs() { return view.pollMs; },
 			get timeoutMs() { return view.timeoutMs; },
 			get restartGraceMs() { return view.restartGraceMs; },
+			get metricsTimeoutMs() { return view.metricsTimeoutMs; },
 			get lint() { return view.lint; },
 			localVersion: () => view.localVersion(),
 			localCatalogue: () => view.localCatalogue(),
@@ -658,6 +684,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			clusterById: (id) => view.clusterById(id),
 			pipelineById: (clusterId, id) => view.pipelineById(clusterId, id),
 			dataplaneUrlOf: (c) => view.dataplaneUrlOf(c),
+			prometheusUrlOf: (c) => view.prometheusUrlOf(c),
 			localFileOf: (p) => view.localFileOf(p),
 			readPipeline: (cluster, dp, id, shown) => view.readPipeline(cluster, dp, id, shown),
 			deploy: (uri, only) => view.deployFlow.deploy(uri, only),
@@ -690,6 +717,9 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(SET_UP_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.setUpLogAccess(node)),
 			// Bug 52: from a cluster row, or the palette (no argument: a pick).
 			vscode.commands.registerCommand(FORGET_LOG_ACCESS_COMMAND, (node?: CloudNode) => this.forgetLogAccess(node)),
+			// Ticket 7.4: from a cluster row; Forget also from the palette (no argument: a pick).
+			vscode.commands.registerCommand(SET_UP_METRICS_ACCESS_COMMAND, (node?: CloudNode) => this.setUpMetricsAccess(node)),
+			vscode.commands.registerCommand(FORGET_METRICS_ACCESS_COMMAND, (node?: CloudNode) => this.forgetMetricsAccess(node)),
 			// From the palette (ticket 6.5) it gets no argument: the mapped pipeline, else a pick.
 			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
 			vscode.commands.registerCommand(SHOW_LOGS_AROUND_ERROR_COMMAND, (node?: CloudNode) => this.showLogsAroundError(node)),
@@ -717,15 +747,17 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	private secrets(): (string | undefined)[] {
-		return [...this.seenSecrets, ...this.logAccess.passwords(), ...this.tokens.values()];
+		return [...this.seenSecrets, ...this.logAccess.passwords(), ...this.metricsAccess.passwords(), ...this.tokens.values()];
 	}
 
 	/**
 	 * Bug 52: the account is gone (Disconnect, another account here or in another window): the log
-	 * accesses held in memory are dropped and the Pipeline Logs tab stops, saying `reason`.
+	 * accesses held in memory are dropped and the Pipeline Logs tab stops, saying `reason`. Ticket 7.4: the
+	 * metrics accesses held in memory are dropped too (the stored records stay).
 	 */
 	private accountGone(reason: string): void {
 		this.logAccess.clear();
+		this.metricsAccess.clear();
 		this.options.logs?.revoke?.((source) => source.clusterId !== undefined, reason);
 	}
 
@@ -976,6 +1008,14 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		return !this.endpoints.requireHttps || c.dataplaneUrl.startsWith('https://') ? c.dataplaneUrl : undefined;
 	}
 
+	/** Ticket 7.4 (AD-25): the cluster's Prometheus endpoint, as `dataplaneUrlOf` checks the Data Plane's. */
+	private prometheusUrlOf(c: CloudCluster): string | undefined {
+		if (!c.prometheusUrl) {
+			return undefined;
+		}
+		return !this.endpoints.requireHttps || c.prometheusUrl.startsWith('https://') ? c.prometheusUrl : undefined;
+	}
+
 	private clusterById(id: string): CloudCluster | undefined {
 		return this.clusters?.kind === 'ok' ? this.clusters.value.find((c) => c.id === id) : undefined;
 	}
@@ -1000,7 +1040,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				// Ticket 6.2: which clusters have log access (the secret storage only; nothing is requested). Bug 52:
 				// not for a load an account change made stale (its accesses were dropped).
 				if (generation === this.generation) {
-					await Promise.all(checked.map((c) => this.logAccess.readLogAccess(c.id, () => generation === this.generation)));
+					await Promise.all(checked.flatMap((c) => [
+						this.logAccess.readLogAccess(c.id, () => generation === this.generation),
+						// Ticket 7.4: which clusters have metrics access (the secret storage only).
+						this.metricsAccess.readAccess(c.id, () => generation === this.generation),
+					]));
 				}
 				if (generation === this.generation) {
 					this.clusters = { kind: 'ok', value: checked };
@@ -1219,15 +1263,23 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 				const item = new vscode.TreeItem(c?.name ?? node.id, hasApi ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 				item.id = `cluster:${node.id}`;
 				const logs = this.logAccess.logUsers.get(node.id);
-				item.description = c ? `${clusterDescription(c)}${logs ? ` · logs: ${logs.username}` : ''}` : '';
+				const metrics = this.metricsAccess.metricsUsers.get(node.id);
+				// Design board 3: a cluster with a Prometheus endpoint says whether metrics access is set.
+				const metricsText = metrics ? ' · metrics' : c && this.prometheusUrlOf(c) ? ` · ${NO_METRICS_ACCESS}` : '';
+				item.description = c ? `${clusterDescription(c)}${logs ? ` · logs: ${logs.username}` : ''}${metricsText}` : '';
 				item.iconPath = new vscode.ThemeIcon('server');
-				// ` logs`: log access is set (ticket 6.2).
-				item.contextValue = hasApi ? `cloudCluster${logs ? ' logs' : ''}` : c?.detailsUnread ? 'cloudCluster detailsUnread' : 'cloudCluster noPipelineApi';
+				// ` logs`: log access is set (ticket 6.2); ` metrics`: metrics access is set (ticket 7.4), always last.
+				item.contextValue = hasApi ? `cloudCluster${logs ? ' logs' : ''}${metrics ? ' metrics' : ''}` : c?.detailsUnread ? 'cloudCluster detailsUnread' : 'cloudCluster noPipelineApi';
 				item.tooltip = c
 					? `${c.name} (${c.id}): ${clusterDescription(c)}${c.detailError ? `. ${c.detailError}` : ''}${hasApi ? '' : c.detailsUnread ? '. Refresh to read them again.' : '. Pipelines cannot be deployed to it.'}`
 					: node.id;
 				if (c && logs) {
 					item.tooltip += ` Its pipeline logs are read as ${logs.username} (${logs.mechanism}).`;
+				}
+				if (c && metrics) {
+					item.tooltip += ` Its pipeline metrics are read from its Prometheus endpoint as ${metrics}.`;
+				} else if (c && this.prometheusUrlOf(c)) {
+					item.tooltip += ' It has no metrics access set (Set up metrics access…).';
 				}
 				item.accessibilityInformation = { label: `Cluster ${c?.name ?? node.id}, ${item.description}` };
 				return item;
@@ -1375,6 +1427,26 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	/** Set up log access… on a cluster row (one at a time per cluster). Never throws. */
 	setUpLogAccess(node?: CloudNode): Promise<LogAccessResult> {
 		return this.logAccess.setUpLogAccess(node);
+	}
+
+	/** Ticket 7.4: Set up metrics access… on a cluster row (one at a time per cluster). Never throws. */
+	setUpMetricsAccess(node?: CloudNode): Promise<MetricsAccessResult> {
+		return this.metricsAccess.setUpAccess(node);
+	}
+
+	/** Ticket 7.4: Forget metrics access, a cluster row's, or from the palette a picked cluster's. Never throws. */
+	forgetMetricsAccess(node?: CloudNode): Promise<ForgetMetricsAccessResult> {
+		return this.metricsAccess.forgetAccess(node);
+	}
+
+	/** Ticket 7.4: removes a cluster's metrics access, as Forget metrics access does, quietly (the test seam). */
+	removeMetricsAccess(clusterId: string): Promise<void> {
+		return this.metricsAccess.removeAccess(clusterId);
+	}
+
+	/** Ticket 7.4: a cluster's stored metrics user, without its password (the test seam). */
+	storedMetricsAccess(clusterId: string): Promise<{ readonly username: string } | undefined> {
+		return this.metricsAccess.storedAccess(clusterId);
 	}
 
 	/** Show logs: a pipeline row's, or from the palette the mapped pipeline's, else a picked one's. Never throws. */

@@ -109,13 +109,14 @@ export interface ExtensionApi {
 	 * The Cloud view and deploy (ticket 5.2): its items, its prompts to replace, the three hosts' base
 	 * URLs (production otherwise; unreachable in test mode until a suite sets its fake's), the deploy's
 	 * poll interval, timeout and restart grace, the token cache, and the workspace folders a pipeline's tag
-	 * is resolved in (ticket 5.5), and the pre-deploy check's lint, local version and catalogue (ticket 8).
+	 * is resolved in (ticket 5.5), and the pre-deploy check's lint, local version and catalogue (ticket 8),
+	 * and (ticket 7.4) the metrics access and the Cloud metrics read's timeout.
 	 * Only in `ExtensionMode.Test`.
 	 */
 	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
 		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue' | 'showLogsAroundError' | 'errorFollowUp'
-		| 'forgetLogAccess' | 'storeAsAnotherWindow'>;
+		| 'forgetLogAccess' | 'storeAsAnotherWindow' | 'setUpMetricsAccess' | 'forgetMetricsAccess' | 'removeMetricsAccess' | 'storedMetricsAccess' | 'metricsTimeoutMs'>;
 	/**
 	 * The Pipeline Logs tab (tickets 6.2, 6.3, 6.8): the shown pipeline, its kept rows and status, whether it
 	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions, Export…

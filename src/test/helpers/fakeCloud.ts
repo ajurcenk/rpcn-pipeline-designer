@@ -20,6 +20,12 @@
 //     json-full`, with its config trees), `version` the cluster's Connect version; `missingComponents`
 //     leaves chosen names out, `componentsError` answers an error instead.
 //   - (ticket 6.2) a cluster's `kafka_api.seed_brokers` in its `GET /v1/clusters/{id}` (spike 6.1, 03).
+//   - (ticket 7.4) a cluster's Prometheus endpoint (spike 7.1), for a cluster with `prometheus: true`: `prometheus.url` in its details, and
+//     `GET /prom/{cluster id}/api/cloud/prometheus/public_metrics` behind basic auth (the cluster's
+//     `prometheusUser`, default `prometheus`, and `prometheusPassword`): a missing or wrong one is a 401
+//     with an empty body and `www-authenticate` (04, 05); else 200 with the cluster's `metricsBody`
+//     (Prometheus text 0.0.4; `cloudMetricsBody` scripts one of several pipelines and cluster series),
+//     gzip when asked for (`prometheusGzip`, default on). `prometheusFailure` answers a status instead.
 // `failures` answers a chosen request with an error instead (one call, or every matching call).
 // A Bearer token other than the one it issued is refused (401, 08). Every request is recorded, for
 // the no-leak checks.
@@ -78,6 +84,15 @@ export interface FakeCluster {
 	readonly dataplane?: boolean;
 	/** Ticket 6.2: its `kafka_api.seed_brokers`; none: no `kafka_api`. */
 	readonly seedBrokers?: readonly string[];
+	/** Ticket 7.4: whether its details carry `prometheus.url` (and its endpoint answers). Default false, so the other suites' rows are unchanged. */
+	prometheus?: boolean;
+	/** Ticket 7.4: its Prometheus endpoint's basic auth user (default `prometheus`) and password (none: every read is refused). */
+	prometheusUser?: string;
+	prometheusPassword?: string;
+	/** Ticket 7.4: what its Prometheus endpoint answers (default: `cloudMetricsBody` of its pipelines). */
+	metricsBody?: string;
+	/** Ticket 7.4: when set, its Prometheus endpoint answers this status (empty body) to a read with the right password. */
+	prometheusFailure?: number;
 	pipelines: FakePipeline[];
 	/** When set, the pipelines list answers this error. */
 	pipelinesError?: { readonly status: number; readonly body: unknown };
@@ -159,6 +174,8 @@ export class FakeCloud {
 	secretsPageSize = 100;
 	/** Error answers for chosen requests, checked before every other route (after the token check). */
 	failures: FakeFailure[] = [];
+	/** Ticket 7.4: whether the Prometheus endpoint answers gzip when asked for it. */
+	prometheusGzip = true;
 	/** How long to hold the answer to a request (ticket 6.3: a slow GET); none: at once. */
 	delay: ((req: FakeRequest) => number) | undefined;
 	private server: http.Server | undefined;
@@ -176,6 +193,11 @@ export class FakeCloud {
 
 	dataplaneUrl(clusterId: string): string {
 		return `${this.url}/dp/${clusterId}`;
+	}
+
+	/** Ticket 7.4: a cluster's `prometheus.url` (the real one's path form). */
+	prometheusUrl(clusterId: string): string {
+		return `${this.url}/prom/${clusterId}/api/cloud/prometheus/public_metrics`;
 	}
 
 	cluster(id: string): FakeCluster {
@@ -204,8 +226,14 @@ export class FakeCloud {
 				const body = Buffer.concat(chunks).toString('utf8');
 				const recorded: FakeRequest = { method: req.method ?? '', url: req.url ?? '', headers: req.headers, body };
 				this.requests.push(recorded);
-				const [status, answer] = this.answer(recorded);
+				const raw = recorded.url.startsWith('/prom/') ? this.prometheusAnswer(recorded) : undefined;
+				const [status, answer] = raw ? [raw.status, undefined] : this.answer(recorded);
 				const send = () => {
+					if (raw) {
+						res.writeHead(raw.status, raw.headers);
+						res.end(raw.body);
+						return;
+					}
 					res.writeHead(status, { 'content-type': 'application/json' });
 					res.end(JSON.stringify(answer));
 				};
@@ -298,6 +326,7 @@ export class FakeCloud {
 					...(c.dataplane === false ? {} : { dataplane_api: { url: this.dataplaneUrl(c.id) } }),
 					...(c.connectVersion ? { redpanda_connect: { version: c.connectVersion } } : {}),
 					...(c.seedBrokers ? { kafka_api: { seed_brokers: c.seedBrokers, sasl: { enabled: true }, mtls: { enabled: false } } } : {}),
+					...(c.prometheus ? { prometheus: { url: this.prometheusUrl(c.id) } } : {}),
 				},
 			}];
 		}
@@ -337,6 +366,34 @@ export class FakeCloud {
 			return this.pipelines(c, req, dp[2] ? decodeURIComponent(dp[2]) : undefined);
 		}
 		return [404, { code: 'NOT_FOUND', message: `no fake route ${req.method} ${url.pathname}`, details: [] }];
+	}
+
+	/**
+	 * Ticket 7.4: `GET /prom/{id}/api/cloud/prometheus/public_metrics`, as spike 7.1 saw it: basic auth
+	 * (401 with an empty body for a missing or wrong user or password), Prometheus text, gzip when asked.
+	 */
+	private prometheusAnswer(req: FakeRequest): { readonly status: number; readonly headers: http.OutgoingHttpHeaders; readonly body: Buffer } {
+		const empty = Buffer.alloc(0);
+		const m = /^\/prom\/([^/]+)\/api\/cloud\/prometheus\/public_metrics$/.exec(new URL(req.url, 'http://fake').pathname);
+		const c = m ? this.options.clusters.find((x) => x.id === decodeURIComponent(m[1]) && x.prometheus === true) : undefined;
+		if (!c || req.method !== 'GET') {
+			return { status: 404, headers: { 'content-length': 0 }, body: empty };
+		}
+		const auth = req.headers.authorization ?? '';
+		const presented = auth.startsWith('Basic ') ? Buffer.from(auth.slice('Basic '.length), 'base64').toString('utf8') : undefined;
+		if (c.prometheusPassword === undefined || presented !== `${c.prometheusUser ?? 'prometheus'}:${c.prometheusPassword}`) {
+			return { status: 401, headers: { 'content-length': 0, 'www-authenticate': 'Basic realm="Redpanda Cloud"' }, body: empty };
+		}
+		if (c.prometheusFailure !== undefined) {
+			return { status: c.prometheusFailure, headers: { 'content-length': 0 }, body: empty };
+		}
+		const text = Buffer.from(c.metricsBody ?? cloudMetricsBody(c.pipelines.map((p) => p.id)), 'utf8');
+		const gzip = this.prometheusGzip && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
+		const headers: http.OutgoingHttpHeaders = { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', vary: 'Origin, Accept-Encoding' };
+		if (gzip) {
+			headers['content-encoding'] = 'gzip';
+		}
+		return { status: 200, headers, body: gzip ? zlib.gzipSync(text) : text };
 	}
 
 	private shown(p: FakePipeline): unknown {
@@ -551,4 +608,35 @@ export class FakeCloud {
 		p.sequence = rest.length > 0 ? rest : [{ state: p.state, ...(p.status ? { error: p.status.error } : {}) }];
 		return [200, { pipeline: this.shown(p) }];
 	}
+}
+
+/**
+ * Ticket 7.4: a cluster's Prometheus text as spike 7.1 saw it: cluster series without `pipeline_id`, and
+ * for each of `pipelineIds` its input, one processor (`fast`) and output series, with `pipeline_id`,
+ * `instance` and `pod`; each pipeline's counts differ (`n` times its index + 1), so a reading tells them apart.
+ */
+export function cloudMetricsBody(pipelineIds: readonly string[], n = 100): string {
+	const labels = (id: string, i: number, path: string, label = '') =>
+		`instance="10.0.0.${i + 1}:9",label="${label}",path="${path}",pipeline_id="${id}",pod="a-${id}-1a1a1a-1a1a"`;
+	const lines = [
+		'# HELP redpanda_kafka_partitions Configured number of partitions for the topic',
+		'# TYPE redpanda_kafka_partitions gauge',
+		'redpanda_kafka_partitions{redpanda_namespace="kafka",redpanda_topic="orders"} 3',
+		'# TYPE input_received counter',
+		...pipelineIds.map((id, i) => `input_received{${labels(id, i, 'root.input')}} ${n * (i + 1)}`),
+		'# TYPE processor_received counter',
+		...pipelineIds.map((id, i) => `processor_received{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} ${n * (i + 1)}`),
+		'# TYPE processor_latency_ns summary',
+		...pipelineIds.flatMap((id, i) => [
+			`processor_latency_ns{${labels(id, i, 'root.pipeline.processors.0', 'fast')},quantile="0.5"} ${4700 * (i + 1)}`,
+			`processor_latency_ns_sum{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} 5.163878e+06`,
+			`processor_latency_ns_count{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} ${n * (i + 1)}`,
+		]),
+		'# TYPE output_sent counter',
+		...pipelineIds.map((id, i) => `output_sent{${labels(id, i, 'root.output')}} ${n * (i + 1)}`),
+		'# TYPE redpanda_cluster_features_enterprise_license_expiry_sec gauge',
+		...pipelineIds.map((id) => `redpanda_cluster_features_enterprise_license_expiry_sec{pipeline_id="${id}"} 1e+07`),
+		'',
+	];
+	return lines.join('\n');
 }

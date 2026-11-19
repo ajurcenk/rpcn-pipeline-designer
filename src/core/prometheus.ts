@@ -174,3 +174,22 @@ export function familyOf(name: string, types: ReadonlyMap<string, MetricType>): 
 	}
 	return { family: name, type: name.endsWith('_latency_ns') ? 'summary' : 'counter' };
 }
+
+/**
+ * Ticket 7.4 (AD-25, the Cloud source): `text` (a whole cluster's metrics) with only the `#` lines and
+ * the sample lines whose `pipeline_id` label is `pipelineId`; every other sample line (another
+ * pipeline's, or a cluster series with no `pipeline_id`) is dropped before parsing. A line is parsed
+ * only when it holds the id's text, so the cluster's other series cost a substring search each.
+ */
+export function onlyPipeline(text: string, pipelineId: string): string {
+	const kept: string[] = [];
+	for (const raw of text.split('\n')) {
+		const line = raw.replace(/\r$/, '').trim();
+		if (line.startsWith('#')) {
+			kept.push(line);
+		} else if (line.includes(pipelineId) && parseSample(line)?.labels.pipeline_id === pipelineId) {
+			kept.push(line);
+		}
+	}
+	return kept.length > 0 ? `${kept.join('\n')}\n` : '';
+}
