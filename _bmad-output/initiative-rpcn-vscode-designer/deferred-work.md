@@ -219,3 +219,7 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-metrics/spike-probe-the-cloud-prometheus-endpoint-on-a-real-cluster-plan.md`
   summary: Committed spike 5.1 and 6.1 captures keep the pipeline's `created_by` (the creating service account's id before `@<cluster-host>`) unredacted; the logs and cloud probes do not redact `created_by`.
   evidence: spike 7.1 review row 1; four committed capture files under epic-pipeline-logs/spike-6-1-findings and epic-deploy-to-redpanda-cloud match `"created_by": "<20-char id>@`; already pushed, so removing it from history is the user's decision.
+
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-pipeline-metrics/story-metrics-of-a-local-run-in-the-pipeline-metrics-tab-plan.md`
+  summary: Opening the Pipeline Metrics tab directly (clicking it) before Show Pipeline Metrics shows nothing; it could bind to the active config, or to the only running one (entry 9, entry points). Also whether the tab comes back to the front when its file is run again (Run focuses its terminal).
+  evidence: Seen in the story 7.2 manual check, 2026-11-18: the run served /metrics on 127.0.0.1 while the tab, opened by clicking, showed the "Run a Redpanda Connect config, then use Show Pipeline Metrics on it." state.

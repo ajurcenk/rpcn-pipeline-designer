@@ -136,3 +136,8 @@ context:
 | 5 | `extension.ts` `configFor`: the `metrics` type comes from the unsaved buffer, not the file the run started with | low | patch | Confirmed: `parsedDocument(doc)` reads the buffer; Run saves before it starts, so the disk text is what runs. Direct fix: take `metricsType` from the file on disk. |
 
 All four patches applied by the implementer. Verified after them: `npm run compile`, `test:webview` 394, `test:corpus` 182, stable 1606 passing / 1 pending / 0 failing, multiroot 15 passing; no `vscode` import in `src/core`, `src/shared` or `src/adapters/metrics`.
+
+## Manual Check
+
+- 2026-11-18, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, workspace `.vscode-test/story-7-2/`): "tested, no issues".
+- Noted during the check (not a defect of the plan): opening the Pipeline Metrics tab by clicking it, before Show Pipeline Metrics has run, shows only "Run a Redpanda Connect config, then use Show Pipeline Metrics on it."; the tab does not pick the active or running config by itself. Recorded in deferred-work.md for entry 9 (entry points). The user did not choose to change it in 7.2.
