@@ -3,7 +3,7 @@ title: "Figures on the graph's nodes"
 type: 'feature'
 ticket: '3'
 created: '2026-11-18'
-status: 'built'
+status: done
 baseline_revision: 'cc0f23c9001630b00b63ab5e43557e2aaa4c3c1b'
 route: 'full'
 route_source: 'auto'
