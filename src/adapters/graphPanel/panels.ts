@@ -34,7 +34,7 @@ import { errorText } from '../../shared/errorText';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import type { DetectionRegistry } from '../vscode/detection';
 import type { LintDiagnostics } from '../vscode/diagnostics';
-import { GraphPanel, type GraphPanelHandle } from './graphPanel';
+import { GraphPanel, type GraphMetrics, type GraphPanelHandle } from './graphPanel';
 import { GRAPH_VIEW_TYPE, newGroupNextTo, onlyTestPanels, returnFocusTo, vscodeSource, type GraphPanelSource, type PanelSource } from './groups';
 import { graphHtml } from './html';
 import { catalogueOf, hostStatusOf, type GraphBinary, type GraphSchema } from './status';
@@ -157,6 +157,11 @@ export interface GraphPanelsOptions {
 	readonly saveAsCloseMs?: number;
 	/** The VS Code API the registry reaches (story 55). `undefined`: the real one. */
 	readonly source?: GraphPanelsSource;
+	/**
+	 * Ticket 7.3: the files' metrics feeds, for the node figures (each panel holds its file's feed,
+	 * visible while the panel is). `undefined`: no figures.
+	 */
+	readonly metrics?: GraphMetrics;
 }
 
 /** What the graph needs of detection (ticket 3.10). */
@@ -844,6 +849,9 @@ export class GraphPanels implements vscode.Disposable {
 		);
 		graph.hadTab = hasTextTab(key, this.source.window.tabGroups);
 		this.panels.set(key, graph);
+		if (this.options.metrics) {
+			graph.connectMetrics(this.options.metrics);
+		}
 		panel.onDidDispose(() => {
 			graph.dispose();
 			const current = graph.uri.toString();

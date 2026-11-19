@@ -6,12 +6,18 @@
 // read), HIDDEN (no read while hidden, one at once when shown), STOP / RERUN (last figures kept and
 // marked stopped; the rerun's new port read), NOT_SERVED (a `metrics: none` config is not read),
 // UNREACHABLE (quiet until 3 failures, then said, and read on). The real binary's case is in 61-run-real.ts.
+// Ticket 7.3, the graph's figures through the same feed: LIVE (the graph alone reads; with the tab open
+// too, each node's line has its row's numbers), LABELLED / RESOURCE / NESTED (each on its own node, no
+// line on the group), HIDDEN (graph hidden and tab closed: no read), REOPENED (the snapshot carries
+// the figures), STOP (the lines cleared).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { METRICS_INTERVAL_MS, METRICS_VIEW_ID, SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
 import { type ExtensionApi } from '../../../extension';
+import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
+import type { NodeFiguresById } from '../../../shared/protocol';
 import { connectScript, fixtureBodies, makeTempDir, writeFakeBinary } from '../../helpers/fakeBinary';
 import { connectText, FakeMetrics } from '../../helpers/fakeMetrics';
 import { EXTENSION_ID, waitFor } from '../helpers';
@@ -185,5 +191,210 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		assert.ok(await waitFor(() => metrics().state.kind === 'unreachable', METRICS_INTERVAL_MS * 4), JSON.stringify(metrics().state));
 		assert.ok(await waitFor(() => metrics().state.kind === 'live', METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().state));
 		await stop(doc);
+	});
+
+	test('GRAPH FIGURES (7.3): the graph alone reads; lines match the tab\'s rows; labelled, resource and nested nodes; hidden stops reads; stop clears', async () => {
+		const FIGURES_CONFIG = [
+			'input:',
+			'  generate:',
+			'    mapping: root = "tick"',
+			'pipeline:',
+			'  processors:',
+			'    - label: slow_one',
+			'      sleep:',
+			'        duration: 5ms',
+			'    - resource: res_one',
+			'    - branch:',
+			'        processors:',
+			'          - mapping: root = this',
+			'output:',
+			'  drop: {}',
+			'processor_resources:',
+			'  - label: res_one',
+			'    mapping: root = this',
+			'',
+		].join('\n');
+		const series = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', label: 'slow_one', received: n, sent: n, errors: 0, p50: 5_170_000, p99: 5_620_000 },
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, errors: 0, p50: 7700, p99: 21_000 },
+			{ family: 'processor', path: 'root.pipeline.processors.2', received: n, sent: n, errors: 0, p50: 9000, p99: 9900 },
+			{ family: 'processor', path: 'root.pipeline.processors.2.branch.processors.0', received: n, sent: n, errors: n / 100, p50: 900, p99: 1200 },
+			{ family: 'output', path: 'root.output', sent: n, errors: 0, p50: 87, p99: 4061 },
+			{ family: 'processor', path: 'root.nowhere', label: 'ghost', received: n },
+		]);
+		const NESTED = 'path:pipeline.processors[2].branch.processors[0]';
+		const figuresOf = (handle: GraphPanelHandle): NodeFiguresById[] =>
+			handle.posted.flatMap((m) => (m.type === 'nodeFigures' ? [m.byId] : []));
+		const lastFigures = (handle: GraphPanelHandle) => figuresOf(handle).at(-1) ?? {};
+		const outRate = (f: NodeFiguresById[string] | undefined) => f?.outRate ?? null;
+
+		// The tab closed: only the graph shows the readings.
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !metrics().visible, 10_000));
+		const doc = await open('figures.yaml', FIGURES_CONFIG);
+		const port = await runAndWait(doc);
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		let n = 1000;
+		fake.serve(port, series(n));
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.ok(handle, 'a graph panel');
+		assert.ok(await waitFor(() => Object.keys(lastFigures(handle)).length > 0, METRICS_INTERVAL_MS + 5_000),
+			`the graph alone reads: ${JSON.stringify(fake.readsOf(port).length)} ${JSON.stringify(handle.posted.map((m) => m.type))}`);
+		assert.ok(!metrics().visible, 'the tab is closed');
+		assert.deepStrictEqual(Object.keys(lastFigures(handle)).sort(), ['label:slow_one', 'path:input', 'path:output', NESTED, 'res:processor:res_one'].sort());
+		assert.deepStrictEqual(lastFigures(handle)['path:input'], { kind: 'input', outRate: null }, 'the first reading: no rate');
+		assert.deepStrictEqual(lastFigures(handle)['label:slow_one'], { kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 5_170_000, p99: 5_620_000 });
+		n = 1400;
+		fake.serve(port, series(n));
+		assert.ok(await waitFor(() => (outRate(lastFigures(handle)['path:input']) ?? 0) > 0, METRICS_INTERVAL_MS * 3), JSON.stringify(lastFigures(handle)));
+
+		// The tab open too, on the same file: the same reading, the same numbers.
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+		// Show restarts the readings: the counters rise again after its first one.
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', METRICS_INTERVAL_MS * 2), JSON.stringify(metrics().state));
+		n = 1700;
+		fake.serve(port, series(n));
+		assert.ok(await waitFor(() => metrics().visible && metrics().file === doc.uri.toString() && (metrics().rows()[1]?.outRate ?? 0) > 0, METRICS_INTERVAL_MS * 3),
+			JSON.stringify(metrics().rows()));
+		n = 2000;
+		fake.serve(port, series(n));
+		const readsBefore = fake.readsOf(port).length;
+		assert.ok(await waitFor(() => fake.readsOf(port).length > readsBefore + 1, METRICS_INTERVAL_MS * 4));
+		const byId = lastFigures(handle);
+		const rows = metrics().rows();
+		for (const row of rows) {
+			const f = row.nodeId === null ? undefined : byId[row.nodeId];
+			if (row.nodeId === null || row.id === 'path:pipeline.processors[2]' || row.id === 'path:pipeline.processors[1]') {
+				assert.strictEqual(f, undefined, `no line for ${row.id}`);
+			} else if (f?.kind === 'input') {
+				assert.strictEqual(f.outRate, row.outRate, row.id);
+			} else {
+				assert.ok(f, `a line for ${row.id}`);
+				assert.deepStrictEqual([f.inRate, f.outRate, f.errorRate, f.p50, f.p99], [row.inRate, row.outRate, row.errorRate, row.p50, row.p99], row.id);
+			}
+		}
+		assert.ok(rows.some((r) => r.nodeId === null && r.name === 'ghost'), 'the unmatched series is in the tab');
+
+		// REOPENED: a recreated webview's snapshot carries the current figures.
+		await handle.receive({ type: 'ready' });
+		const snapshot = handle.posted.filter((m) => m.type === 'snapshot').at(-1);
+		assert.ok(snapshot?.type === 'snapshot');
+		assert.deepStrictEqual(snapshot.nodeFigures, lastFigures(handle));
+
+		// HIDDEN: the tab closed and the graph hidden behind another editor: no read.
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !metrics().visible, 10_000));
+		const other = await vscode.workspace.openTextDocument({ language: 'plaintext', content: 'hide the graph' });
+		await vscode.window.showTextDocument(other, { viewColumn: handle.panel.viewColumn, preview: false });
+		assert.ok(await waitFor(() => !handle.panel.visible, 10_000), 'the graph is hidden');
+		await new Promise((r) => setTimeout(r, 300));
+		const hiddenAt = fake.readsOf(port).length;
+		await new Promise((r) => setTimeout(r, METRICS_INTERVAL_MS * 1.5));
+		assert.strictEqual(fake.readsOf(port).length, hiddenAt, 'no read while the graph is hidden and the tab closed');
+		assert.deepStrictEqual(lastFigures(handle), {}, 'nothing shown while unseen');
+
+		// Shown again: the graph reads; STOP clears the lines.
+		// The untitled editor has text (dirty): reverted, so closing it asks nothing.
+		await vscode.window.showTextDocument(other, { viewColumn: handle.panel.viewColumn, preview: false });
+		await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		handle.panel.reveal(undefined, true);
+		assert.ok(await waitFor(() => handle.panel.visible && Object.keys(lastFigures(handle)).length > 0, METRICS_INTERVAL_MS + 5_000),
+			JSON.stringify(handle.posted.map((m) => m.type).slice(-5)));
+		await stop(doc);
+		assert.ok(await waitFor(() => Object.keys(lastFigures(handle)).length === 0, 5_000), 'the lines cleared on stop');
+		handle.panel.dispose();
+	});
+
+	test('GRAPH FIGURES (7.3) BROKEN / EDIT: figures frozen while the YAML does not parse, let through once it does; an edit re-maps them on the next reading', async () => {
+		const CONFIG_EDIT = [
+			'input:',
+			'  generate:',
+			'    mapping: root = "tick"',
+			'pipeline:',
+			'  processors:',
+			'    - mapping: root = this',
+			'    - sleep:',
+			'        duration: 5ms',
+			'output:',
+			'  drop: {}',
+			'',
+		].join('\n');
+		const series = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n, errors: 0, p50: 7700, p99: 21_000 },
+			{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, errors: 0, p50: 5_170_000, p99: 5_620_000 },
+			{ family: 'output', path: 'root.output', sent: n, errors: 0, p50: 87, p99: 4061 },
+		]);
+		const figuresPosted = (handle: GraphPanelHandle): NodeFiguresById[] =>
+			handle.posted.flatMap((m) => (m.type === 'nodeFigures' ? [m.byId] : []));
+		const last = (handle: GraphPanelHandle) => figuresPosted(handle).at(-1) ?? {};
+		const edit = async (doc: vscode.TextDocument, from: string, to: string) => {
+			const at = doc.getText().indexOf(from);
+			assert.ok(at >= 0, from);
+			const e = new vscode.WorkspaceEdit();
+			e.replace(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + from.length)), to);
+			assert.ok(await vscode.workspace.applyEdit(e));
+		};
+
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		const doc = await open('figures-edit.yaml', CONFIG_EDIT);
+		const port = await runAndWait(doc);
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		let n = 100;
+		fake.serve(port, series(n));
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.ok(handle, 'a graph panel');
+		assert.ok(await waitFor(() => last(handle)['path:pipeline.processors[1]'] !== undefined, METRICS_INTERVAL_MS + 5_000),
+			JSON.stringify(handle.posted.map((m) => m.type)));
+		const readsNow = () => fake.readsOf(port).length;
+		const nextReading = async (count: number) => {
+			const from = readsNow();
+			n += 100;
+			fake.serve(port, series(n));
+			assert.ok(await waitFor(() => readsNow() >= from + count, METRICS_INTERVAL_MS * (count + 2)), `${count} more reading(s)`);
+			await new Promise((r) => setTimeout(r, 200));
+		};
+
+		// BROKEN: the YAML does not parse: no nodeFigures is posted over the next readings (frozen).
+		await edit(doc, '  drop: {}', '  drop: {\n  bad: [');
+		assert.ok(await waitFor(() => handle.posted.some((m) => m.type === 'parseError'), 5_000), 'the parse error');
+		const frozenAt = figuresPosted(handle).length;
+		const frozen = last(handle);
+		await nextReading(2);
+		assert.strictEqual(figuresPosted(handle).length, frozenAt, 'no nodeFigures while the YAML does not parse');
+		assert.deepStrictEqual(last(handle), frozen);
+		// Fixed: the next reading's figures come through.
+		await edit(doc, '  drop: {\n  bad: [', '  drop: {}');
+		await nextReading(1);
+		assert.ok(await waitFor(() => figuresPosted(handle).length > frozenAt, METRICS_INTERVAL_MS * 2), 'figures again once it parses');
+		assert.ok(last(handle)['path:pipeline.processors[1]'] !== undefined);
+
+		// EDIT: a label on the first processor re-ids it, and the second is deleted: on the next reading
+		// the first's series is on its new node and the deleted node has no entry.
+		// Right after a reading, so the next one is about an interval away: the re-map comes with the model.
+		await nextReading(1);
+		const kept = last(handle)['path:pipeline.processors[0]'];
+		const readsAtEdit = readsNow();
+		await edit(doc, '    - mapping: root = this\n    - sleep:\n        duration: 5ms\n', '    - label: renamed\n      mapping: root = this\n');
+		assert.ok(await waitFor(() => last(handle)['label:renamed'] !== undefined, 1_000), `re-mapped with the model: ${JSON.stringify(last(handle))}`);
+		assert.strictEqual(readsNow(), readsAtEdit, 'no new reading was needed');
+		assert.deepStrictEqual(last(handle)['label:renamed'], kept, 'the last reading\'s figures, on the new id');
+		assert.ok(handle.posted.some((m) => m.type === 'model' && m.model.nodes.some((x) => x.id === 'label:renamed')), 'the new model');
+		await nextReading(1);
+		const byId = last(handle);
+		assert.deepStrictEqual(Object.keys(byId).sort(), ['label:renamed', 'path:input', 'path:output']);
+		assert.strictEqual(byId['path:pipeline.processors[0]'], undefined, 'the old id is gone');
+		assert.strictEqual(byId['path:pipeline.processors[1]'], undefined, 'the deleted node has no entry');
+		const renamed = byId['label:renamed'];
+		assert.ok(renamed?.kind === 'component' && renamed.p50 === 7700 && renamed.p99 === 21_000, JSON.stringify(renamed));
+
+		await stop(doc);
+		// The edits are not saved: reverted, so closing the editor later asks nothing.
+		await vscode.window.showTextDocument(doc);
+		await vscode.commands.executeCommand('workbench.action.files.revert');
+		handle.panel.dispose();
 	});
 });

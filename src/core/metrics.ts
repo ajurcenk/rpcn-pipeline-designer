@@ -10,7 +10,7 @@
 // (several pods) are summed for counters, and the highest quantile is kept.
 
 import { isMap, isScalar, type Pair } from 'yaml';
-import type { PipelineModel } from '../shared/protocol';
+import type { NodeFigures, NodeFiguresById, PipelineModel } from '../shared/protocol';
 import type { MetricKind, MetricRow, MetricsSort } from '../shared/metricsProtocol';
 import { familyOf, type PromText } from './prometheus';
 import type { ParsedYaml } from './yamlPath';
@@ -192,14 +192,14 @@ export function pathToNodeId(model: PipelineModel, paths: ReadonlyMap<string, st
 	return model.nodes.some((n) => n.id === id) ? id : undefined;
 }
 
-const EMPTY_FIGURES = { inRate: null, outRate: null, errorRate: null, p50: null, p99: null } as const;
-
 /**
- * The tab's rows: one per component node of `model` in config order (the model's pre-order), at its
- * depth under its parent components (routes do not count), with the figures of the series that maps
- * to it; then every series with no node (or a second one on a node), by path.
+ * Each series' figures on the node it maps to (`pathToNodeId`, AD-25), the first series of a node
+ * winning; the series with no node (or a second one on a node) are `unmatched`, in reading order.
  */
-export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): MetricRow[] {
+export function figuresByNode(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): {
+	readonly byNode: ReadonlyMap<string, ComponentFigures>;
+	readonly unmatched: ComponentFigures[];
+} {
 	const byNode = new Map<string, ComponentFigures>();
 	const unmatched: ComponentFigures[] = [];
 	for (const f of all.values()) {
@@ -210,6 +210,38 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 			unmatched.push(f);
 		}
 	}
+	return { byNode, unmatched };
+}
+
+/**
+ * The graph's figures by node id (ticket 7.3, AD-17, AD-25): the same mapping as the tab's rows
+ * (`figuresByNode`), for each component node drawn as a box (not a route, not a group); the input's
+ * series gives only its Out/s (its latency is end-to-end). A node with no series has no entry.
+ */
+export function nodeFiguresOf(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): NodeFiguresById {
+	const { byNode } = figuresByNode(model, paths, all);
+	const out: Record<string, NodeFigures> = {};
+	for (const node of model.nodes) {
+		const f = byNode.get(node.id);
+		if (!f || node.role === 'route' || node.group === true) {
+			continue;
+		}
+		out[node.id] = f.kind === 'input'
+			? { kind: 'input', outRate: f.outRate }
+			: { kind: 'component', inRate: f.inRate, outRate: f.outRate, errorRate: f.errorRate, p50: f.p50, p99: f.p99 };
+	}
+	return out;
+}
+
+const EMPTY_FIGURES = { inRate: null, outRate: null, errorRate: null, p50: null, p99: null } as const;
+
+/**
+ * The tab's rows: one per component node of `model` in config order (the model's pre-order), at its
+ * depth under its parent components (routes do not count), with the figures of the series that maps
+ * to it; then every series with no node (or a second one on a node), by path.
+ */
+export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): MetricRow[] {
+	const { byNode, unmatched } = figuresByNode(model, paths, all);
 	const nodes = new Map(model.nodes.map((n) => [n.id, n]));
 	const depthOf = (id: string): number => {
 		let depth = 0;

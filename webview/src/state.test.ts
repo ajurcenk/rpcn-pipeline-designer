@@ -295,3 +295,23 @@ describe('LIVE (ticket 11): what the polite live region announces', () => {
 		});
 	});
 });
+
+describe('NODE_FIGURES (ticket 7.3): stored, replaced, cleared; never announced', () => {
+	const FIGURES = { 'path:input': { kind: 'input', outRate: 200 } } as const;
+	it('a nodeFigures replaces them; {} clears them; a model and a parse error keep them; a snapshot carries them', () => {
+		const view = fold([snapshot(A), { type: 'nodeFigures', byId: FIGURES }]);
+		expect(view.nodeFigures).toEqual(FIGURES);
+		expect(fold([{ type: 'model', model: B }, { type: 'parseError', ...ERROR }], view).nodeFigures).toEqual(FIGURES);
+		const cleared = reduce(view, { type: 'nodeFigures', byId: {} });
+		expect(cleared.nodeFigures).toBeUndefined();
+		expect(reduce(cleared, { type: 'nodeFigures', byId: {} })).toBe(cleared);
+		expect(reduce(view, snapshot(A)).nodeFigures).toBeUndefined();
+		expect(reduce(INITIAL_VIEW, { ...snapshot(A), nodeFigures: FIGURES } as HostMessage).nodeFigures).toEqual(FIGURES);
+	});
+	it('figures are never announced', () => {
+		const shown = [snapshot(A)].reduce(reduceLive, INITIAL_LIVE_VIEW);
+		const next = reduceLive(shown, { type: 'nodeFigures', byId: FIGURES });
+		expect(next.live).toBe(shown.live);
+		expect(next.view.nodeFigures).toEqual(FIGURES);
+	});
+});

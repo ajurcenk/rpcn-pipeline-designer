@@ -6,7 +6,8 @@
 // in the driving editor (`data.selected`, 3.7) gets DESIGN's pipeline-node-selected style. A node
 // with a marker (`data.marker`, 3.8) gets DESIGN's pipeline-node-error / -warning treatment: a 2px
 // border and its own codicon in the top-right corner, never colour alone, and its hover text lists
-// the messages verbatim.
+// the messages verbatim. While a local run is live (7.3), a component box shows its figures line
+// (`data.figures`) under its name, and its hover text carries it too.
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { createContext, useContext, type MouseEvent } from 'react';
@@ -50,9 +51,10 @@ function Handles({ node }: { readonly node: PipelineNode }) {
 }
 
 function ComponentView({ data }: NodeProps<ViewNode>) {
-	const { node, selected, marker } = data;
+	const { node, selected, marker, figures } = data;
+	const base = `${nodeKind(node)}: ${nodeName(node)}`;
 	return (
-		<div className={boxClass('rpcn-node', selected, ` rpcn-node-${node.role}`, marker)} title={nodeTitle(`${nodeKind(node)}: ${nodeName(node)}`, marker)}>
+		<div className={boxClass('rpcn-node', selected, ` rpcn-node-${node.role}`, marker)} title={nodeTitle(figures === undefined ? base : `${base}\n${figures}`, marker)}>
 			<Handles node={node} />
 			<MarkerIcon marker={marker} />
 			<div className="rpcn-node-kind">
@@ -60,6 +62,7 @@ function ComponentView({ data }: NodeProps<ViewNode>) {
 				{node.label !== undefined && <> · <span className="rpcn-node-label">{node.label}</span></>}
 			</div>
 			<div className="rpcn-node-name">{nodeName(node)}</div>
+			{figures !== undefined && <div className="rpcn-node-figures">{figures}</div>}
 		</div>
 	);
 }

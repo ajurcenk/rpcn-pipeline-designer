@@ -22,14 +22,17 @@
 // panned or zoomed since the last fit (a move started by pointer, wheel or touch; a fit, a restore
 // or a keyboard reveal is not one). That mark is saved with the viewport. The Fit to view button,
 // after the graph region in the Tab order, fits the graph and clears the mark.
+// Node figures (ticket 7.3): each component box shows the figures line the host mapped for it
+// (`markFigures`, node identity kept when its line is unchanged). The graph is laid out again only
+// when figures start or stop (the boxes are taller while a run is live), never on each reading.
 
 import { Background, ReactFlow, type AriaLabelConfig, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MutableRefObject } from 'react';
-import type { ActivationVia, NodeStatusById, PipelineModel } from '../../src/shared/protocol';
+import type { ActivationVia, NodeFiguresById, NodeStatusById, PipelineModel } from '../../src/shared/protocol';
 import { loadViewState, saveViewState } from './host';
 import {
-	focusChain, focusTarget, highlightDrawn, layout, markStatus, motionDuration, nextFocus, nodeAnnouncement, pruneCollapsed,
-	toggleCollapsed, type ArrowKey, type Collapsed, type Drawn, type ViewNode,
+	focusChain, focusTarget, hasFigures, highlightDrawn, layout, markFigures, markStatus, motionDuration, nextFocus, nodeAnnouncement, pruneCollapsed,
+	toggleCollapsed, type ArrowKey, type Collapsed, type Drawn, type Figured, type ViewNode,
 } from './layout';
 import { ActivateContext, nodeTypes, ToggleContext } from './nodes';
 import { firstView, GRAPH_NAME } from './state';
@@ -83,12 +86,14 @@ function fitReadable(instance: ReactFlowInstance<ViewNode, Edge>, width: number)
 	});
 }
 
-export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor, describedBy, broken = false, focusReturn }: {
+export function Graph({ model, selection, nodeStatus, nodeFigures, onActivate, onFocusEditor, describedBy, broken = false, focusReturn }: {
 	readonly model: PipelineModel;
 	/** The node under the cursor in the driving editor (`null`: none). */
 	readonly selection: string | null;
 	/** The error and warning markers by node id (3.8). */
 	readonly nodeStatus: NodeStatusById;
+	/** Each node's figures, while the config's local run is live (7.3); absent or empty: none. */
+	readonly nodeFigures?: NodeFiguresById;
 	readonly onActivate: (nodeId: string, via: ActivationVia) => void;
 	/** Esc on the graph container (ticket 3.11): the host focuses the YAML editor. */
 	readonly onFocusEditor: () => void;
@@ -111,9 +116,11 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	const toggle = useCallback((id: string) => setCollapsedState((current) => toggleCollapsed(pruneCollapsed(current, model), id)), [model]);
 
 	const [laidOut, setLaidOut] = useState<Drawn | undefined>(undefined);
+	// Laid out again when figures start or stop only (7.3).
+	const live = hasFigures(nodeFigures);
 	useEffect(() => {
 		let current = true;
-		layout(model, collapsed).then((l) => current && setLaidOut({ ...l, model, collapsed }), (error: unknown) => {
+		layout(model, collapsed, live).then((l) => current && setLaidOut({ ...l, model, collapsed }), (error: unknown) => {
 			console.error('Graph layout failed:', error);
 			if (current) {
 				setLaidOut({ nodes: [], edges: [], model, collapsed });
@@ -122,7 +129,7 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 		return () => {
 			current = false;
 		};
-	}, [model, collapsed]);
+	}, [model, collapsed, live]);
 
 	const [instance, setInstance] = useState<ReactFlowInstance<ViewNode, Edge> | undefined>(undefined);
 	const [savedViewport] = useState(() => loadViewState().viewport);
@@ -153,7 +160,14 @@ export function Graph({ model, selection, nodeStatus, onActivate, onFocusEditor,
 	// The drawn node to highlight (VIEW_HIGHLIGHT), against the model and collapse state drawn.
 	// The markers (VIEW_MARKERS), against the same drawing.
 	const marked = useMemo(() => (laidOut ? markStatus(laidOut, nodeStatus) : []), [laidOut, nodeStatus]);
-	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection, marked) : []), [laidOut, selection, marked]);
+	// The figures lines (7.3), against the same drawing; a node whose line is unchanged keeps its object.
+	const lastFigured = useRef<Figured | undefined>(undefined);
+	const figured = useMemo(() => {
+		const nodes = markFigures(marked, nodeFigures, lastFigured.current);
+		lastFigured.current = { base: marked, nodes };
+		return nodes;
+	}, [marked, nodeFigures]);
+	const highlighted = useMemo(() => (laidOut ? highlightDrawn(laidOut, selection, figured) : []), [laidOut, selection, figured]);
 
 	// Keyboard focus (ticket 3.11): the last focused node and its ancestors, nearest first.
 	const container = useRef<HTMLDivElement>(null);

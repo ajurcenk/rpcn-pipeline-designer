@@ -8,8 +8,9 @@ import type { PipelineModel } from '../../src/shared/protocol';
 import {
 	collapsedSummary, focusChain, focusTarget, highlightDrawn, isContainer, layout, MAX_TITLE_MESSAGES, markerClass, markerIcon, markerOf,
 	errorKeys, markSelected, markStatus, motionDuration, newErrorAnnouncements, nextFocus, nodeAnnouncement, nodeSpokenName, nodeTitle, pruneCollapsed,
-	toElkGraph, toggleCollapsed, visibleAncestor, visibleNodes,
+	toElkGraph, toggleCollapsed, visibleAncestor, visibleNodes, FIGURES_LINE, FIGURES_WIDTH, hasFigures, markFigures, NODE_HEIGHT,
 } from './layout';
+import { figuresLine } from '../../src/shared/metricsProtocol';
 
 const FIXTURES = new URL('../../src/test/fixtures/models/', import.meta.url);
 
@@ -472,5 +473,74 @@ describe('KEYBOARD (ticket 11)', () => {
 		expect(newErrorAnnouncements(shifted, errorKeys(model, status), moved)).toEqual([]);
 		const another = { 'path:shifted': { severity: 'error' as const, messages: ['field x is required', 'field y is required'] } };
 		expect(newErrorAnnouncements(shifted, errorKeys(model, status), another)).toEqual(['New error: Processor mapping']);
+	});
+});
+
+describe('NODE_FIGURES (ticket 7.3): the figures line on the component boxes', () => {
+	const model = fixture('switch-processor');
+	const LEAF = `${BRANCH}.switch[0].processors[1]`;
+	const figures = {
+		'path:input': { kind: 'input', outRate: 200 },
+		[LEAF]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
+		// A group never shows one, even when given.
+		[BRANCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1 },
+	} as const;
+
+	it('the line text: out · p50 / p99 · errors; the input its Out/s only; rates "—" before a second reading', () => {
+		expect(figuresLine({ kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 })).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+		expect(figuresLine({ kind: 'input', outRate: 200 })).toBe('200.0/s');
+		expect(figuresLine({ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061 })).toBe('— · 87 ns / 4.06 µs · — errors');
+		expect(figuresLine({ kind: 'input', outRate: null })).toBe('—');
+	});
+
+	it('marks the component boxes with figures only; keeps unchanged nodes; clears', async () => {
+		const drawn = await layout(model, new Set(), true);
+		const marked = markFigures(drawn.nodes, figures);
+		const lines = Object.fromEntries(marked.filter((n) => n.data.figures !== undefined).map((n) => [n.id, n.data.figures]));
+		expect(lines).toEqual({ 'path:input': '200.0/s', [LEAF]: '200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors' });
+		expect(marked.filter((n, i) => n !== drawn.nodes[i]).map((n) => n.id).sort()).toEqual(['path:input', LEAF].sort());
+		// The same figures again (a new reading with the same numbers) changes no node.
+		const again = markFigures(marked, { ...figures });
+		expect(again.every((n, i) => n === marked[i])).toBe(true);
+		// Another reading changes only the node whose line changed.
+		const next = markFigures(marked, { ...figures, 'path:input': { kind: 'input', outRate: 210 } });
+		expect(next.filter((n, i) => n !== marked[i]).map((n) => n.id)).toEqual(['path:input']);
+		// None: no line on any node.
+		expect(markFigures(marked, {}).some((n) => n.data.figures !== undefined)).toBe(false);
+		expect(markFigures(marked, undefined).some((n) => 'figures' in n.data)).toBe(false);
+		expect(hasFigures({})).toBe(false);
+		expect(hasFigures(undefined)).toBe(false);
+		expect(hasFigures(figures)).toBe(true);
+	});
+
+	it('through Graph\'s path (base from markStatus, the previous result kept): the same lines on two readings keep every node object', async () => {
+		const drawn = { ...(await layout(model, new Set(), true)), model, collapsed: new Set<string>() };
+		const status = { [LEAF]: { severity: 'error', messages: ['x'] } } as const;
+		const base1 = markStatus(drawn, status);
+		const first = markFigures(base1, figures);
+		// A second reading: a new figures object, the same numbers; the status unchanged, so Graph's
+		// markStatus memo gives the same base.
+		const base2 = base1;
+		const second = markFigures(base2, { ...figures }, { base: base1, nodes: first });
+		expect(second.every((n, i) => n === first[i])).toBe(true);
+		// A changed line: only that node is a new object.
+		const third = markFigures(base2, { ...figures, 'path:input': { kind: 'input', outRate: 210 } }, { base: base2, nodes: second });
+		expect(third.filter((n, i) => n !== second[i]).map((n) => n.id)).toEqual(['path:input']);
+		// A changed marker (a new base node): that node is rebuilt, with its line.
+		const base3 = markStatus(drawn, {});
+		const fourth = markFigures(base3, figures, { base: base2, nodes: second });
+		const leaf = fourth.find((n) => n.id === LEAF)!;
+		expect(leaf).not.toBe(second.find((n) => n.id === LEAF));
+		expect(leaf.data.marker).toBeUndefined();
+		expect(leaf.data.figures).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+	});
+
+	it('while live, component boxes are taller and wide enough for the line; groups and routes are not resized', () => {
+		const plain = walk(toElkGraph(model)).nodes;
+		const live = walk(toElkGraph(model, new Set(), true)).nodes;
+		expect(plain.get(LEAF)!.height).toBe(NODE_HEIGHT);
+		expect(live.get(LEAF)!.height).toBe(NODE_HEIGHT + FIGURES_LINE);
+		expect(live.get(LEAF)!.width).toBeGreaterThanOrEqual(FIGURES_WIDTH);
+		expect(live.get(BRANCH)!.layoutOptions).toEqual(plain.get(BRANCH)!.layoutOptions);
 	});
 });

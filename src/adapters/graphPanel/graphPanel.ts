@@ -1,18 +1,25 @@
 // One file's graph panel (tickets 3.1, 3.6, 3.7, 3.8, 3.9, 3.11; split out of panels.ts in
 // ticket 3.12): the webview's messages, the model, the selection, the node status and the host
-// status of one file. See panels.ts for the whole picture.
+// status of one file. See panels.ts for the whole picture. Node figures (ticket 7.3, AD-17, AD-25):
+// the panel holds the file's metrics feed (shared with its Pipeline Metrics tab) while it lives,
+// visible while the panel is; each reading of a live run, and the last one again after each new
+// model, is mapped onto the panel's current model (`nodeFiguresOf`, the tab's mapping) and sent as
+// `nodeFigures` when it changed; while the YAML does
+// not parse the figures are frozen, and with no live run (stopped, not running, hidden) they are `{}`.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { ComponentCatalog } from '../../core/catalogue';
-import { buildPipelineModel, nodeAt } from '../../core/graph';
+import { buildPipelineModel, componentPaths, nodeAt } from '../../core/graph';
+import { nodeFiguresOf } from '../../core/metrics';
 import { nodeStatusOf } from '../../core/nodeStatus';
 import { errorSelection, parseErrorOf } from '../../core/parseError';
 import type { BinaryActions } from '../redpandaConnect/notify';
 import { errorText } from '../../shared/errorText';
 import {
-	parseWebviewMessage, type HostMessage, type HostStatus, type NodeStatusById, type ParseError, type PipelineModel,
+	parseWebviewMessage, type HostMessage, type HostStatus, type NodeFiguresById, type NodeStatusById, type ParseError, type PipelineModel,
 } from '../../shared/protocol';
+import type { MetricsFeeds, MetricsSubscription, MetricsUpdate } from '../vscode/metricsFeed';
 import { parsedDocument } from '../vscode/parseCache';
 import { statusDiagnostics } from './status';
 import type { GraphPanelSource } from './groups';
@@ -20,6 +27,16 @@ import { openDocument } from './tabs';
 
 /** How many of a panel's posted messages `posted` keeps (test seam; a bound, not a log). */
 export const MAX_POSTED = 50;
+
+/** What a graph panel needs of the metrics feeds (ticket 7.3). */
+export type GraphMetrics = Pick<MetricsFeeds, 'subscribe'>;
+
+/** A built document: its model and its components' paths (AD-25), or its parse error. */
+interface BuiltState {
+	readonly model?: PipelineModel;
+	readonly paths?: ReadonlyMap<string, string>;
+	readonly parseError?: ParseError;
+}
 
 /** One file's panel, as seen by tests (the host-side seam; tests don't drive the webview DOM). */
 export interface GraphPanelHandle {
@@ -62,7 +79,7 @@ export class GraphPanel implements GraphPanelHandle {
 		readonly doc: vscode.TextDocument;
 		readonly version: number;
 		readonly catalogue: ComponentCatalog | undefined;
-		readonly state: { readonly model?: PipelineModel; readonly parseError?: ParseError };
+		readonly state: BuiltState;
 	};
 	/**
 	 * The selection the webview was last sent (in a snapshot or a `selection`), only so that an
@@ -96,10 +113,19 @@ export class GraphPanel implements GraphPanelHandle {
 	 * `undefined` while the webview has no model built with a schema it still shows.
 	 */
 	private modelCatalogue: ComponentCatalog | undefined;
+	/** The metrics feeds (ticket 7.3), once connected, and the hold on this file's feed. */
+	private metrics: GraphMetrics | undefined;
+	private metricsSubscription: MetricsSubscription | undefined;
+	/** The feed's last update. */
+	private metricsUpdate: MetricsUpdate | undefined;
+	/** The node figures last mapped and sent (in a snapshot or a `nodeFigures`), with its serialisation. */
+	private figures: NodeFiguresById = {};
+	private sentFigures = '{}';
+	private fileUri: vscode.Uri;
 
 	constructor(
 		/** The file's URI; a rename (`onDidRenameFiles`) replaces it. */
-		public uri: vscode.Uri,
+		uri: vscode.Uri,
 		readonly panel: vscode.WebviewPanel,
 		private readonly log: (line: string) => void,
 		private readonly catalogue: () => ComponentCatalog | undefined,
@@ -116,6 +142,7 @@ export class GraphPanel implements GraphPanelHandle {
 		/** Test seam (`GraphPanelsOptions.ignoreWebviewMessages`): the webview's own messages are not handled. */
 		ignoreWebviewMessages = false,
 	) {
+		this.fileUri = uri;
 		if (!ignoreWebviewMessages) {
 			this.subscriptions.push(panel.webview.onDidReceiveMessage(async (m) => {
 				await this.receive(m);
@@ -124,6 +151,75 @@ export class GraphPanel implements GraphPanelHandle {
 				}
 			}));
 		}
+	}
+
+	/** The file's URI; a rename replaces it, and the panel then holds the new file's metrics feed. */
+	get uri(): vscode.Uri {
+		return this.fileUri;
+	}
+
+	set uri(uri: vscode.Uri) {
+		const changed = uri.toString() !== this.fileUri.toString();
+		this.fileUri = uri;
+		if (changed && this.metrics) {
+			this.subscribeMetrics();
+		}
+	}
+
+	/**
+	 * Ticket 7.3: holds the file's metrics feed while the panel lives, visible while the panel is (the
+	 * feed reads while its tab or its graph is visible).
+	 */
+	connectMetrics(metrics: GraphMetrics): void {
+		if (this.disposed || this.metrics) {
+			return;
+		}
+		this.metrics = metrics;
+		this.subscribeMetrics();
+		this.subscriptions.push(this.panel.onDidChangeViewState(() => this.metricsSubscription?.setVisible(this.panel.visible)));
+	}
+
+	private subscribeMetrics(): void {
+		this.metricsSubscription?.dispose();
+		const sub = this.metrics!.subscribe(this.fileUri, (update) => {
+			if (this.metricsSubscription === sub) {
+				this.metricsUpdated(update);
+			}
+		}, this.panel.visible);
+		this.metricsSubscription = sub;
+		this.metricsUpdated(sub.feed.update);
+	}
+
+	private metricsUpdated(update: MetricsUpdate): void {
+		this.metricsUpdate = update;
+		void this.sendFigures().catch((e: unknown) => this.fail(e));
+	}
+
+	/**
+	 * Maps the feed's last reading onto the current model and posts `nodeFigures` when it changed:
+	 * `{}` without a live run (the figures of a stopped run are not shown) or an open document; frozen
+	 * while the YAML does not parse (as the node status, AD-17).
+	 */
+	private async sendFigures(): Promise<void> {
+		const update = this.metricsUpdate;
+		let figures: NodeFiguresById = {};
+		if (update?.state.kind === 'live' && update.figures) {
+			const doc = openDocument(this.uri.toString(), this.source.workspace.textDocuments);
+			const state = doc ? this.state(doc) : undefined;
+			if (state?.parseError) {
+				return;
+			}
+			if (state?.model) {
+				figures = nodeFiguresOf(state.model, state.paths ?? new Map(), update.figures);
+			}
+		}
+		this.figures = figures;
+		const serialised = JSON.stringify(figures);
+		if (serialised === this.sentFigures) {
+			return;
+		}
+		this.sentFigures = serialised;
+		await this.post({ type: 'nodeFigures', byId: figures });
 	}
 
 	async receive(message: unknown): Promise<void> {
@@ -183,6 +279,9 @@ export class GraphPanel implements GraphPanelHandle {
 		const serialised = status ?? JSON.stringify(this.status);
 		const seq = ++this.statusPosts;
 		this.postingStatus = serialised;
+		// The current figures (GRAPH_REOPENED), only when there are any.
+		const figures = this.figures;
+		this.sentFigures = JSON.stringify(figures);
 		const delivered = await this.post({
 			type: 'snapshot',
 			model,
@@ -190,6 +289,7 @@ export class GraphPanel implements GraphPanelHandle {
 			nodeStatus: this.status,
 			selection,
 			hostStatus,
+			...(Object.keys(figures).length > 0 ? { nodeFigures: figures } : {}),
 		});
 		this.statusPosted(seq, serialised, delivered);
 	}
@@ -317,6 +417,8 @@ export class GraphPanel implements GraphPanelHandle {
 
 	dispose(): void {
 		this.disposed = true;
+		this.metricsSubscription?.dispose();
+		this.metricsSubscription = undefined;
 		this.settle();
 		this.subscriptions.forEach((d) => d.dispose());
 	}
@@ -394,6 +496,8 @@ export class GraphPanel implements GraphPanelHandle {
 		await this.sendSelection(model);
 		// Red Hat's diagnostics in the view are held at their shifted ranges until it republishes (story 13).
 		await this.sendStatus(doc, model);
+		// Ticket 7.3: the last reading's figures on the new model's ids (a node gone loses its line).
+		await this.sendFigures();
 	}
 
 	/** Sends `selection` for the cursor in `model`, unless the webview already has it. */
@@ -429,7 +533,7 @@ export class GraphPanel implements GraphPanelHandle {
 	 * A valid model becomes the panel's last valid model. With no schema there is neither (AD-20):
 	 * the webview shows an empty state, and the last valid model is kept.
 	 */
-	private state(doc: vscode.TextDocument): { readonly model?: PipelineModel; readonly parseError?: ParseError } {
+	private state(doc: vscode.TextDocument): BuiltState {
 		const catalogue = this.catalogue();
 		if (this.built?.doc === doc && this.built.version === doc.version && this.built.catalogue === catalogue) {
 			return this.built.state;
@@ -440,16 +544,16 @@ export class GraphPanel implements GraphPanelHandle {
 	}
 
 	/** The model with `catalogue`, which becomes the last valid model, or the parse error. */
-	private build(doc: vscode.TextDocument, catalogue: ComponentCatalog): { readonly model?: PipelineModel; readonly parseError?: ParseError } {
+	private build(doc: vscode.TextDocument, catalogue: ComponentCatalog): BuiltState {
 		const { text, parsed } = parsedDocument(doc);
 		const parseError = parseErrorOf(parsed);
-		let state: { readonly model?: PipelineModel; readonly parseError?: ParseError };
+		let state: BuiltState;
 		if (parseError) {
 			state = { parseError };
 		} else {
 			const model = buildPipelineModel(parsed, text, catalogue);
 			this.lastModel = model;
-			state = { model };
+			state = { model, paths: componentPaths(parsed, text, catalogue) };
 		}
 		return state;
 	}

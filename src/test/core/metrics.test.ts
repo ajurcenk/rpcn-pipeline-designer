@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { componentCatalogue } from '../../core/catalogue';
 import { buildPipelineModel, componentPaths } from '../../core/graph';
 import {
-	componentReadings, figures, hasComponentSeries, metricRows, metricsTypeOf, pathToNodeId, rate, sortRows, yamlPathOf, type MetricsReading,
+	componentReadings, figures, hasComponentSeries, metricRows, metricsTypeOf, nodeFiguresOf, pathToNodeId, rate, sortRows, yamlPathOf, type MetricsReading,
 } from '../../core/metrics';
 import { parsePrometheus } from '../../core/prometheus';
 import { parseYaml } from '../../core/yamlPath';
@@ -164,6 +164,35 @@ suite('core/metrics', () => {
 			['series:root.zzz:ghost', 'processor', 'ghost', 'zzz', 0],
 		]);
 		assert.deepStrictEqual(rows.filter((r) => r.nodeId === null).map((r) => r.id), ['series:root.aaa:', 'series:root.zzz:ghost']);
+	});
+
+	test('NODE_FIGURES (7.3): the rows\' mapping by node id; the input\'s Out/s only; no group, route or unmatched series', () => {
+		const { model, paths } = configOf(NESTED);
+		const series = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', label: 'dup', received: n, sent: n, errors: 0, p50: 7700, p99: 21_000 },
+			{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, p50: 9000, p99: 9000 },
+			{ family: 'processor', path: 'root.pipeline.processors.1.branch.processors.0', received: n, sent: n, errors: n, p50: 100, p99: 200 },
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, p50: 5, p99: 6 },
+			{ family: 'processor', path: 'root.zzz', label: 'ghost', received: n },
+		]);
+		const all = figures(reading(0, series(100)), reading(2000, series(500)));
+		const byId = nodeFiguresOf(model, paths, all);
+		assert.deepStrictEqual(Object.keys(byId), [
+			'path:input', 'label:dup', 'path:pipeline.processors[1].branch.processors[0]', 'res:processor:res_one',
+		]);
+		assert.deepStrictEqual(byId['path:input'], { kind: 'input', outRate: 200 });
+		assert.deepStrictEqual(byId['label:dup'], { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 });
+		// The same numbers as the tab's rows.
+		for (const row of metricRows(model, paths, all)) {
+			const f = row.nodeId === null ? undefined : byId[row.nodeId];
+			if (f?.kind === 'component') {
+				assert.deepStrictEqual([f.inRate, f.outRate, f.errorRate, f.p50, f.p99], [row.inRate, row.outRate, row.errorRate, row.p50, row.p99], row.id);
+			}
+		}
+		// The first reading: latencies, no rates.
+		assert.deepStrictEqual(nodeFiguresOf(model, paths, figures(undefined, reading(0, series(1))))['label:dup'],
+			{ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 7700, p99: 21_000 });
 	});
 
 	test('NO_MODEL: without a model every series is listed, by path', () => {

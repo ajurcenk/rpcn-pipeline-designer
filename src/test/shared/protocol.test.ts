@@ -49,6 +49,15 @@ const HOST_MESSAGES: readonly HostMessage[] = [
 	{ type: 'selection', nodeId: 'path:output' },
 	{ type: 'selection', nodeId: null },
 	{ type: 'hostStatus', binary: 'invalid', schema: 'ok' },
+	// Ticket 7.3: the node figures, the input's Out/s only, and a snapshot that carries them.
+	{ type: 'nodeFigures', byId: {} },
+	{ type: 'nodeFigures', byId: {
+		'path:input': { kind: 'input', outRate: 200 },
+		'label:fast': { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
+		'path:output': { kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061 },
+	} },
+	{ type: 'snapshot', model: EMPTY_MODEL, nodeStatus: {}, selection: null, hostStatus: { binary: 'ok', schema: 'ok' },
+		nodeFigures: { 'path:input': { kind: 'input', outRate: null } } },
 ];
 
 const WEBVIEW_MESSAGES: readonly WebviewMessage[] = [
@@ -128,6 +137,16 @@ suite('shared/protocol (3.2)', () => {
 			{ type: 'selection' },
 			{ type: 'selection', nodeId: 1 },
 			{ type: 'hostStatus', binary: 'ok', schema: 'stale' },
+			// Ticket 7.3: malformed node figures.
+			{ type: 'nodeFigures' },
+			{ type: 'nodeFigures', byId: [] },
+			{ type: 'nodeFigures', byId: { a: null } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'input' } } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'input', outRate: '200' } } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'output', outRate: 1 } } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1 } } },
+			{ ...snapshot, nodeFigures: { a: { kind: 'component' } } },
+			{ ...snapshot, nodeFigures: [] },
 		];
 		for (const message of hostBad) {
 			assert.strictEqual(parseHostMessage(message), undefined, JSON.stringify(message));

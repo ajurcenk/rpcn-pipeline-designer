@@ -143,6 +143,7 @@ export function App() {
 					model={view.model}
 					selection={view.selection}
 					nodeStatus={view.nodeStatus}
+					nodeFigures={view.nodeFigures}
 					onActivate={(nodeId, via) => post({ type: 'nodeActivated', nodeId, via })}
 					onFocusEditor={() => post({ type: 'focusEditorRequested' })}
 					broken={view.parseError !== null}

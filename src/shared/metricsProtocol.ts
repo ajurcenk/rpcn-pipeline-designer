@@ -3,7 +3,9 @@
 // `logsProtocol.ts` (host messages checked and returned unchanged, webview messages copied with only
 // their own fields, malformed input `undefined`, never a throw), and the texts both sides show. The
 // host computes every figure (rates, latencies, the order); the webview only formats and renders them.
-// Imports nothing (AD-15).
+// Imports nothing but types of `protocol.ts` (AD-15).
+
+import type { NodeFigures } from './protocol';
 
 /** What a row stands for: a model node's role, or, for a series with no node, its family's. */
 export type MetricKind = 'input' | 'processor' | 'output' | 'resource';
@@ -134,6 +136,23 @@ export function formatNs(value: number | null): string {
 		: value < 1_000_000_000 ? [value / 1_000_000, 'ms'] : [value / 1_000_000_000, 's'];
 	const digits = unit === 'ns' ? 0 : scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
 	return `${scaled.toFixed(digits)} ${unit}`;
+}
+
+/** A rate on a node's figures line: "200.0/s", `—` for none. */
+function rateText(value: number | null): string {
+	const text = formatRate(value);
+	return text === '—' ? text : `${text}/s`;
+}
+
+/**
+ * A graph node's figures line (ticket 7.3, design board 2): `<out>/s · <p50> / <p99> · <errors>/s
+ * errors` for a processor or an output, `<out>/s` only for the input (its latency is end-to-end).
+ */
+export function figuresLine(f: NodeFigures): string {
+	if (f.kind === 'input') {
+		return rateText(f.outRate);
+	}
+	return `${rateText(f.outRate)} · ${formatNs(f.p50)} / ${formatNs(f.p99)} · ${rateText(f.errorRate)} errors`;
 }
 
 /** The sort a click on `column` gives after `current`: ascending, then descending, then config order. */

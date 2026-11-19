@@ -51,6 +51,15 @@ body {
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+/* The figures line of a live run (ticket 7.3, design board 2): muted, one line, tabular digits. */
+.rpcn-node-figures {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
 
 /* Group box (DESIGN group-box): transparent, {colors.group-border} outline, {rounded.md}; the
    header row is {typography.ui-muted}; children sit {spacing.3} inside (ELK padding). */

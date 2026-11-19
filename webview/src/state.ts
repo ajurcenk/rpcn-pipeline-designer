@@ -15,9 +15,11 @@
 // `nodeStatus` newly gives an error. A snapshot announces nothing and is the baseline of both (a
 // recreated webview repeats nothing); the host sends one when the schema returns while the YAML
 // does not parse, so a schema drop and return repeats nothing either.
+// Node figures (ticket 7.3, AD-17, AD-25): a `nodeFigures` replaces them, a snapshot carries them (absent:
+// none); a model and a parse error keep them. They are never announced: they change every reading.
 // Pure: no DOM, no React (vitest runs it in plain Node).
 
-import type { HostMessage, HostStatus, NodeStatusById, ParseError, PipelineModel, WebviewMessage } from '../../src/shared/protocol';
+import type { HostMessage, HostStatus, NodeFiguresById, NodeStatusById, ParseError, PipelineModel, WebviewMessage } from '../../src/shared/protocol';
 import { errorKeys, newErrorAnnouncements } from './layout';
 
 export interface ViewModel {
@@ -31,6 +33,8 @@ export interface ViewModel {
 	readonly nodeStatus: NodeStatusById;
 	/** The binary and schema status, as the host reported it. */
 	readonly hostStatus: HostStatus;
+	/** Each node's figures line, as the host mapped the run's metrics (7.3); absent or empty: none. */
+	readonly nodeFigures?: NodeFiguresById;
 }
 
 export const INITIAL_VIEW: ViewModel = {
@@ -87,6 +91,7 @@ export function reduce(state: ViewModel, message: HostMessage): ViewModel {
 				selection: message.selection,
 				nodeStatus: message.nodeStatus,
 				hostStatus: message.hostStatus,
+				...(message.nodeFigures && Object.keys(message.nodeFigures).length > 0 ? { nodeFigures: message.nodeFigures } : {}),
 			};
 		case 'model':
 			return { ...state, model: message.model, parseError: null };
@@ -94,6 +99,16 @@ export function reduce(state: ViewModel, message: HostMessage): ViewModel {
 			return { ...state, parseError: { message: message.message, range: message.range } };
 		case 'nodeStatus':
 			return { ...state, nodeStatus: message.byId };
+		case 'nodeFigures': {
+			if (Object.keys(message.byId).length === 0) {
+				if (state.nodeFigures === undefined) {
+					return state;
+				}
+				const { nodeFigures: _, ...rest } = state;
+				return rest;
+			}
+			return { ...state, nodeFigures: message.byId };
+		}
 		case 'selection':
 			return message.nodeId === state.selection ? state : { ...state, selection: message.nodeId };
 		case 'hostStatus': {

@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import { MetricsFeeds } from '../../../adapters/vscode/metricsFeed';
 import { MetricsPanel, NO_SERIES_READS, QUIET_FAILURES } from '../../../adapters/vscode/metricsPanel';
 import type { RunChange } from '../../../adapters/vscode/run';
 import { parsePrometheus } from '../../../core/prometheus';
@@ -9,6 +10,7 @@ import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
 // answers with no series counted apart, in a row; hiding the tab drops its readings.
 const PORT = 41500;
 const URI = vscode.Uri.file('/ws/m.yaml');
+const OTHER = vscode.Uri.file('/ws/m2.yaml');
 const INTERVAL = 15;
 const tick = (ms = INTERVAL * 2) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,6 +38,7 @@ function fakeView() {
 suite('adapters/vscode MetricsPanel', () => {
 	let reads: number;
 	let panel: MetricsPanel;
+	let feeds: MetricsFeeds;
 	let script: ('ok' | 'unreachable' | 'noSeries')[];
 	let view: ReturnType<typeof fakeView>;
 	const runChanged = new vscode.EventEmitter<RunChange>();
@@ -43,12 +46,16 @@ suite('adapters/vscode MetricsPanel', () => {
 	setup(async () => {
 		reads = 0;
 		script = [];
-		panel = new MetricsPanel({
-			extensionUri: vscode.Uri.file('/ext'),
+		feeds = new MetricsFeeds({
 			log: () => undefined,
 			run: { portOf: () => PORT, onDidChangeRun: runChanged.event },
 			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined }),
 			intervalMs: INTERVAL,
+		});
+		panel = new MetricsPanel({
+			extensionUri: vscode.Uri.file('/ext'),
+			log: () => undefined,
+			feeds,
 			focus: async () => undefined,
 		});
 		// Each read takes the next scripted answer; once the script is done, the counters' text.
@@ -71,7 +78,10 @@ suite('adapters/vscode MetricsPanel', () => {
 		panel.resolveWebviewView(view.view as unknown as vscode.WebviewView);
 	});
 
-	teardown(() => panel.dispose());
+	teardown(() => {
+		panel.dispose();
+		feeds.dispose();
+	});
 
 	async function showAndRead(count: number): Promise<void> {
 		await panel.show(URI);
@@ -85,10 +95,11 @@ suite('adapters/vscode MetricsPanel', () => {
 		script = ['unreachable', 'unreachable', 'noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries'];
 		await showAndRead(5);
 		assert.strictEqual(panel.state.kind, 'waiting', JSON.stringify(panel.state));
-		// Five in a row of their own are "not served", and reading stops.
+		// Five in a row of their own are "not served", and reading stops. Another file's feed starts
+		// its readings anew (showing the same file again keeps a feed that is reading, 7.3).
 		script = Array<'noSeries'>(NO_SERIES_READS).fill('noSeries');
 		const before = reads;
-		await panel.show(URI);
+		await panel.show(OTHER);
 		for (let i = 0; i < 200 && (panel.state.kind as string) !== 'notServed'; i++) {
 			await tick(5);
 		}
@@ -107,6 +118,15 @@ suite('adapters/vscode MetricsPanel', () => {
 		}
 		await tick(5);
 		assert.strictEqual(panel.state.kind, 'unreachable', JSON.stringify(panel.state));
+	});
+
+	test('SHOW_AGAIN (7.3): showing the file again while its feed reads keeps the readings, no restart', async () => {
+		await showAndRead(2);
+		const rows = panel.rows();
+		assert.ok(rows[0]?.inRate !== null, JSON.stringify(rows));
+		await panel.show(URI);
+		assert.strictEqual(panel.state.kind, 'live');
+		assert.deepStrictEqual(panel.rows(), rows, 'the feed\'s current rows, not a restart');
 	});
 
 	test('HIDDEN: hiding drops the readings; the first reading after showing again gives no rates', async () => {

@@ -6,11 +6,18 @@ import type { Edge, Node } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api';
 import { ancestorIds, nodesById } from '../../src/shared/graphModel';
+import { figuresLine } from '../../src/shared/metricsProtocol';
 import type {
-	NodeSeverity, NodeStatus, NodeStatusById, PipelineEdge, PipelineModel, PipelineNode,
+	NodeFiguresById, NodeSeverity, NodeStatus, NodeStatusById, PipelineEdge, PipelineModel, PipelineNode,
 } from '../../src/shared/protocol';
 
 export const NODE_HEIGHT = 48;
+/**
+ * Ticket 7.3: while the graph shows figures, a component box is this much taller (its figures line)
+ * and at least FIGURES_WIDTH wide; the graph is laid out again only when figures start or stop.
+ */
+export const FIGURES_LINE = 16;
+export const FIGURES_WIDTH = 250;
 /** Readable sizes (mockup key-editor-and-graph.html: nodes about 100-210 px wide at 100%). */
 const MIN_NODE_WIDTH = 110;
 const MAX_NODE_WIDTH = 220;
@@ -41,6 +48,8 @@ export interface ViewData extends Record<string, unknown> {
 	readonly selected?: boolean;
 	/** The error or warning marker drawn on this box (3.8), from the host's node status. */
 	readonly marker?: Marker;
+	/** The figures line drawn on this box (7.3), from the host's node figures. */
+	readonly figures?: string;
 }
 
 /** What a box shows of its node status (DESIGN pipeline-node-error / -warning): a border plus an icon, and the messages on hover. */
@@ -232,6 +241,43 @@ export function markStatus(drawn: Drawn, status: NodeStatusById): ViewNode[] {
 		}
 		return { ...n, data: { ...n.data, marker } };
 	});
+}
+
+/** A `markFigures` result with the nodes it was made from, so the next call can keep its objects. */
+export interface Figured {
+	readonly base: readonly ViewNode[];
+	readonly nodes: readonly ViewNode[];
+}
+
+/**
+ * The drawn nodes with their figures lines (`data.figures`, ticket 7.3): a component box whose node
+ * has figures gets its line; a group or route never does. A node whose base (the same object in
+ * `previous.base`) and line are unchanged keeps the object `previous` gave it.
+ */
+export function markFigures(nodes: readonly ViewNode[], figures: NodeFiguresById | undefined, previous?: Figured): ViewNode[] {
+	const before = new Map<string, { readonly base: ViewNode; readonly node: ViewNode }>();
+	previous?.base.forEach((b, i) => before.set(b.id, { base: b, node: previous.nodes[i] }));
+	return nodes.map((n) => {
+		const f = n.type === 'component' ? figures?.[n.id] : undefined;
+		const line = f === undefined ? undefined : figuresLine(f);
+		const prev = before.get(n.id);
+		if (prev && prev.base === n && prev.node.data.figures === line) {
+			return prev.node;
+		}
+		if (line === n.data.figures) {
+			return n;
+		}
+		if (line === undefined) {
+			const { figures: _, ...data } = n.data;
+			return { ...n, data };
+		}
+		return { ...n, data: { ...n.data, figures: line } };
+	});
+}
+
+/** Whether the graph shows figures (a live run): its component boxes are then taller (7.3). */
+export function hasFigures(figures: NodeFiguresById | undefined): boolean {
+	return figures !== undefined && Object.keys(figures).length > 0;
 }
 
 /** The most messages a hover lists; the rest are counted on one last line. */
@@ -430,7 +476,7 @@ const ROOT_ID = 'root';
  * a collapsed group is a node-sized leaf, and its descendants and their edges are left out.
  * Each edge sits in the deepest node that contains both its ends.
  */
-export function toElkGraph(model: PipelineModel, collapsed: Collapsed = new Set()): ElkNode {
+export function toElkGraph(model: PipelineModel, collapsed: Collapsed = new Set(), figures = false): ElkNode {
 	const nodes = visibleNodes(model, collapsed);
 	const ids = new Set(nodes.map((n) => n.id));
 	const parentOf = new Map(nodes.map((n) => [n.id, n.parent !== undefined && ids.has(n.parent) ? n.parent : undefined]));
@@ -475,7 +521,9 @@ export function toElkGraph(model: PipelineModel, collapsed: Collapsed = new Set(
 				elkNode.height = minHeight;
 			}
 		} else {
-			elkNode = { id: node.id, width: nodeWidth(node), height: NODE_HEIGHT };
+			elkNode = figures
+				? { id: node.id, width: Math.max(nodeWidth(node), FIGURES_WIDTH), height: NODE_HEIGHT + FIGURES_LINE }
+				: { id: node.id, width: nodeWidth(node), height: NODE_HEIGHT };
 		}
 		elkById.set(node.id, elkNode);
 		const parent = elkById.get(parentOf.get(node.id)) ?? root;
@@ -555,10 +603,10 @@ const RESOURCE_ROW_GAP = 40;
 /**
  * Lays the model out with ELK and maps the result to xyflow nodes and edges. The main flow is laid
  * out without the top-level resources, which then sit in one row below it (DESIGN: "a separate
- * area outside the main flow").
+ * area outside the main flow"). With `figures` (a live run, 7.3) the component boxes are taller.
  */
-export async function layout(model: PipelineModel, collapsed: Collapsed = new Set()): Promise<Layout> {
-	const graph = toElkGraph(model, collapsed);
+export async function layout(model: PipelineModel, collapsed: Collapsed = new Set(), figures = false): Promise<Layout> {
+	const graph = toElkGraph(model, collapsed, figures);
 	const roles = new Map(model.nodes.map((n) => [n.id, n.role]));
 	const isResource = (id: string) => roles.get(id) === 'resource';
 	const resources = (graph.children ?? []).filter((c) => isResource(c.id));

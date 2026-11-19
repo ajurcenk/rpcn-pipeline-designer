@@ -87,6 +87,25 @@ export interface NodeStatus {
 /** Node status by node id (AD-17). */
 export type NodeStatusById = Readonly<Record<string, NodeStatus>>;
 
+/**
+ * A node's figures line (ticket 7.3, AD-25), from the host's mapping of a metrics reading: rates per
+ * second, latencies in nanoseconds, `null` for none ("—", the first reading's rates). The input shows
+ * its Out/s only (its latency is end-to-end).
+ */
+export type NodeFigures =
+	| { readonly kind: 'input'; readonly outRate: number | null }
+	| {
+		readonly kind: 'component';
+		readonly inRate: number | null;
+		readonly outRate: number | null;
+		readonly errorRate: number | null;
+		readonly p50: number | null;
+		readonly p99: number | null;
+	};
+
+/** Node figures by node id; empty while no local run of the config is live. */
+export type NodeFiguresById = Readonly<Record<string, NodeFigures>>;
+
 export type BinaryStatus = 'ok' | 'missing' | 'invalid' | 'unresolved';
 export type SchemaStatus = 'ok' | 'loading' | 'none';
 
@@ -106,6 +125,8 @@ export interface SnapshotMessage {
 	readonly nodeStatus: NodeStatusById;
 	readonly selection: string | null;
 	readonly hostStatus: HostStatus;
+	/** The current node figures (ticket 7.3); absent: none. */
+	readonly nodeFigures?: NodeFiguresById;
 }
 
 /** Messages from the host to the webview. */
@@ -119,6 +140,8 @@ export type HostMessage =
 	 */
 	| ({ readonly type: 'parseError' } & ParseError)
 	| { readonly type: 'nodeStatus'; readonly byId: NodeStatusById }
+	/** Ticket 7.3: the figures of each node, beside `nodeStatus` (AD-17); `{}` clears them. */
+	| { readonly type: 'nodeFigures'; readonly byId: NodeFiguresById }
 	| { readonly type: 'selection'; readonly nodeId: string | null }
 	| ({ readonly type: 'hostStatus' } & HostStatus);
 
@@ -221,6 +244,23 @@ function isHostStatus(value: unknown): value is HostStatus {
 		&& (value.schema === 'ok' || value.schema === 'loading' || value.schema === 'none');
 }
 
+const isFigure = (v: unknown): boolean => v === null || (typeof v === 'number' && Number.isFinite(v));
+
+function isNodeFigures(f: unknown): f is NodeFigures {
+	if (!isObject(f)) {
+		return false;
+	}
+	if (f.kind === 'input') {
+		return isFigure(f.outRate);
+	}
+	return f.kind === 'component'
+		&& isFigure(f.inRate) && isFigure(f.outRate) && isFigure(f.errorRate) && isFigure(f.p50) && isFigure(f.p99);
+}
+
+function isNodeFiguresById(value: unknown): value is NodeFiguresById {
+	return isObject(value) && Object.values(value).every(isNodeFigures);
+}
+
 const isNodeIdOrNull = (v: unknown): boolean => v === null || isString(v);
 
 function isValidHostMessage(m: Obj): boolean {
@@ -230,13 +270,16 @@ function isValidHostMessage(m: Obj): boolean {
 				&& isOptional(m.parseError, (e) => isObject(e) && isParseError(e))
 				&& isNodeStatusById(m.nodeStatus)
 				&& isNodeIdOrNull(m.selection)
-				&& isHostStatus(m.hostStatus);
+				&& isHostStatus(m.hostStatus)
+				&& isOptional(m.nodeFigures, isNodeFiguresById);
 		case 'model':
 			return isPipelineModel(m.model);
 		case 'parseError':
 			return isParseError(m);
 		case 'nodeStatus':
 			return isNodeStatusById(m.byId);
+		case 'nodeFigures':
+			return isNodeFiguresById(m.byId);
 		case 'selection':
 			return isNodeIdOrNull(m.nodeId);
 		case 'hostStatus':

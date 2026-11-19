@@ -488,3 +488,28 @@ describe('F3_ESC / F5_FOCUS / LIVE follow-ups', () => {
 		expect(live().firstElementChild).not.toBe(spoken);
 	});
 });
+
+describe('NODE_FIGURES (ticket 7.3): the figures line on the drawn boxes', () => {
+	const figuresOf = (id: string) => node(id)?.querySelector('.rpcn-node-figures')?.textContent ?? undefined;
+	it('a line on each component node with figures, in its tooltip too; none on a group; never in the live region; cleared by {}', async () => {
+		await showGraph(MODEL, {});
+		expect(nodes().some((n) => n.querySelector('.rpcn-node-figures'))).toBe(false);
+		const announced = live().textContent;
+		await send({ type: 'nodeFigures', byId: {
+			[INPUT]: { kind: 'input', outRate: 200 },
+			[MAPPING]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
+			[SWITCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1 },
+		} });
+		await until(() => figuresOf(MAPPING) !== undefined, 'the figures line');
+		expect(figuresOf(INPUT)).toBe('200.0/s');
+		expect(figuresOf(MAPPING)).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+		expect(node(MAPPING)!.querySelector('.rpcn-node')!.getAttribute('title')).toContain('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+		expect(figuresOf(LOG)).toBeUndefined();
+		expect(node(SWITCH)!.querySelector('.rpcn-node-figures')).toBeNull();
+		expect(label(MAPPING)).not.toContain('200.0');
+		expect(live().textContent).toBe(announced);
+		await send({ type: 'nodeFigures', byId: {} });
+		await until(() => figuresOf(MAPPING) === undefined, 'the lines cleared');
+		expect(nodes().some((n) => n.querySelector('.rpcn-node-figures'))).toBe(false);
+	});
+});

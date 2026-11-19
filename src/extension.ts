@@ -35,7 +35,8 @@ import { LogsPanel } from './adapters/vscode/logsPanel';
 import { checkClient } from './adapters/logs/platformaticReader';
 import type { JsonObject } from './core/schema';
 import { catalogueOf } from './adapters/graphPanel/status';
-import { MetricsPanel, type MetricsConfig } from './adapters/vscode/metricsPanel';
+import { MetricsFeeds, type MetricsConfig } from './adapters/vscode/metricsFeed';
+import { MetricsPanel } from './adapters/vscode/metricsPanel';
 import { parsedDocument } from './adapters/vscode/parseCache';
 import { buildPipelineModel, componentPaths } from './core/graph';
 import { metricsTypeOf } from './core/metrics';
@@ -125,9 +126,11 @@ export interface ExtensionApi {
 		& { checkClient: typeof checkClient };
 	/**
 	 * The Pipeline Metrics tab (ticket 7.2): its state, rows and posted messages, and the source seam
-	 * the integration tests replace with the in-memory fake. Only in `ExtensionMode.Test`.
+	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
+	 * graph shares. Only in `ExtensionMode.Test`.
 	 */
-	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory'>;
+	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory'>
+		& { feeds: Pick<MetricsFeeds, 'feedOf'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -269,9 +272,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	let unsetVariables: UnsetVariables | undefined;
 	const run = new RunController({ binary: redpandaConnect, detection, log, unsetVariables: (uri) => unsetVariables?.forRun(uri) ?? [] });
 	context.subscriptions.push(run, ...run.registerCommands());
-	// The Pipeline Metrics tab (ticket 7.2, AD-25): the run's `/metrics` on its port, in the bottom panel next to Pipeline Logs.
-	const metricsPanel = new MetricsPanel({
-		extensionUri: context.extensionUri,
+	// The metrics feeds (tickets 7.2, 7.3, AD-25): one reader of the run's `/metrics` per file, shared by its
+	// Pipeline Metrics tab and its graph, reading while either is visible.
+	const metricsFeeds = new MetricsFeeds({
 		log,
 		run,
 		configFor: (uri): MetricsConfig => {
@@ -290,7 +293,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 			return { model: buildPipelineModel(parsed, text, catalogue), paths: componentPaths(parsed, text, catalogue), metricsType: metricsTypeOf(saved) };
 		},
 	});
-	context.subscriptions.push(metricsPanel, ...metricsPanel.register());
+	// The Pipeline Metrics tab (ticket 7.2, AD-25): in the bottom panel next to Pipeline Logs.
+	const metricsPanel = new MetricsPanel({ extensionUri: context.extensionUri, log, feeds: metricsFeeds });
+	context.subscriptions.push(metricsFeeds, metricsPanel, ...metricsPanel.register());
 
 	const graphPanels = new GraphPanels({
 		extensionUri: context.extensionUri,
@@ -303,6 +308,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		detection,
 		memento: context.workspaceState,
 		autoOpen: () => vscode.workspace.getConfiguration('redpandaConnect').get<boolean>('autoOpenGraph', true) !== false,
+		// Ticket 7.3: the node figures, from the file's metrics feed.
+		metrics: metricsFeeds,
 	});
 	context.subscriptions.push(graphPanels, ...graphPanels.registerCommands());
 
@@ -406,7 +413,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: metricsPanel } : {}),
+		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: Object.assign(metricsPanel, { feeds: metricsFeeds }) } : {}),
 		outputLines: () => [...lines],
 	};
 }
