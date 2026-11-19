@@ -3,7 +3,7 @@ title: 'Metrics access for a cluster'
 type: 'feature'
 ticket: '4'
 created: '2026-11-19'
-status: 'built'
+status: done
 baseline_revision: 'ab11e3f182521d3069f76d03590eb7ff6c9338a6'
 route: 'full'
 route_source: 'auto'
