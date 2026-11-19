@@ -130,3 +130,7 @@ context:
 | 5 | The "VS Code restarts" acceptance criterion is tested by a reconnect only | low | reject | The restart path ends in the same `loadClusters` → `readAccess` the reconnect test covers; a real restart test needs a second `CloudView` (more than a direct fix). The manual check restarts the dev host. |
 
 All four patches applied by the implementer. Verified after them: `npm run compile`, `test:webview` 401, `test:corpus` 182, stable 1640 passing / 1 pending / 0 failing, multiroot 15 passing; no `vscode` import in `src/core`, `src/shared` or `src/adapters/metrics`.
+
+## Manual Check
+
+- 2026-11-19, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `0fc3f0b`, after a window reload) on their Redpanda Cloud cluster: "tested, no issues".
