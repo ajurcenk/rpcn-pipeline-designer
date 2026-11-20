@@ -8,7 +8,7 @@ import type { PipelineModel } from '../../src/shared/protocol';
 import {
 	collapsedSummary, focusChain, focusTarget, highlightDrawn, isContainer, layout, MAX_TITLE_MESSAGES, markerClass, markerIcon, markerOf,
 	errorKeys, markSelected, markStatus, motionDuration, newErrorAnnouncements, nextFocus, nodeAnnouncement, nodeSpokenName, nodeTitle, pruneCollapsed,
-	toElkGraph, toggleCollapsed, visibleAncestor, visibleNodes, FIGURES_LINE, FIGURES_WIDTH, hasFigures, markFigures, NODE_HEIGHT,
+	toElkGraph, toggleCollapsed, visibleAncestor, visibleNodes, BAND_LINE, FIGURES_LINE, FIGURES_WIDTH, hasFigures, markFigures, NODE_HEIGHT,
 } from './layout';
 import { figuresLine } from '../../src/shared/metricsProtocol';
 
@@ -481,15 +481,15 @@ describe('NODE_FIGURES (ticket 7.3): the figures line on the component boxes', (
 	const LEAF = `${BRANCH}.switch[0].processors[1]`;
 	const figures = {
 		'path:input': { kind: 'input', outRate: 200 },
-		[LEAF]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
+		[LEAF]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000, share: null },
 		// A group never shows one, even when given.
-		[BRANCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1 },
+		[BRANCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1, share: null },
 	} as const;
 
 	it('the line text: out · p50 / p99 · errors; the input its Out/s only; rates "—" before a second reading', () => {
-		expect(figuresLine({ kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 })).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+		expect(figuresLine({ kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000, share: null })).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
 		expect(figuresLine({ kind: 'input', outRate: 200 })).toBe('200.0/s');
-		expect(figuresLine({ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061 })).toBe('— · 87 ns / 4.06 µs · — errors');
+		expect(figuresLine({ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061, share: null })).toBe('— · 87 ns / 4.06 µs · — errors');
 		expect(figuresLine({ kind: 'input', outRate: null })).toBe('—');
 	});
 
@@ -539,8 +539,31 @@ describe('NODE_FIGURES (ticket 7.3): the figures line on the component boxes', (
 		const plain = walk(toElkGraph(model)).nodes;
 		const live = walk(toElkGraph(model, new Set(), true)).nodes;
 		expect(plain.get(LEAF)!.height).toBe(NODE_HEIGHT);
-		expect(live.get(LEAF)!.height).toBe(NODE_HEIGHT + FIGURES_LINE);
+		// Ticket 7.7: the band's row is laid out once, on every component box, while figures show.
+		expect(live.get(LEAF)!.height).toBe(NODE_HEIGHT + FIGURES_LINE + BAND_LINE);
 		expect(live.get(LEAF)!.width).toBeGreaterThanOrEqual(FIGURES_WIDTH);
 		expect(live.get(BRANCH)!.layoutOptions).toEqual(plain.get(BRANCH)!.layoutOptions);
+	});
+
+	it('MARKS (ticket 7.7): the slowest box gets its band, a box with errors its mark; a mark that moves rebuilds only those two nodes', async () => {
+		const drawn = await layout(model, new Set(), true);
+		const slow = { ...figures, [LEAF]: { ...figures[LEAF], share: 0.996, slowest: true, hasErrors: true } } as const;
+		const marked = markFigures(drawn.nodes, slow);
+		const leaf = marked.find((n) => n.id === LEAF)!;
+		expect(leaf.data.slowest).toBe('SLOWEST · 99.6% of the time');
+		expect(leaf.data.metricErrors).toBe(true);
+		// A group never shows a mark, even when given.
+		const group = { ...figures, [BRANCH]: { ...figures[BRANCH], share: 1, slowest: true, hasErrors: true } } as const;
+		expect(markFigures(drawn.nodes, group).find((n) => n.id === BRANCH)!.data.slowest).toBeUndefined();
+		// The same marks again keep every node.
+		expect(markFigures(marked, { ...slow }).every((n, i) => n === marked[i])).toBe(true);
+		// The marks cleared (the same line): only the leaf is rebuilt, with no mark left.
+		const cleared = markFigures(marked, figures);
+		expect(cleared.filter((n, i) => n !== marked[i]).map((n) => n.id)).toEqual([LEAF]);
+		const plainLeaf = cleared.find((n) => n.id === LEAF)!;
+		expect('slowest' in plainLeaf.data || 'metricErrors' in plainLeaf.data).toBe(false);
+		expect(plainLeaf.data.figures).toBe('200.0/s · 7.70 µs / 21.0 µs · 0.0/s errors');
+		// No figures: no marks.
+		expect(markFigures(marked, {}).some((n) => 'slowest' in n.data || 'metricErrors' in n.data)).toBe(false);
 	});
 });

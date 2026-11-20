@@ -308,6 +308,13 @@ describe('NODE_FIGURES (ticket 7.3): stored, replaced, cleared; never announced'
 		expect(reduce(view, snapshot(A)).nodeFigures).toBeUndefined();
 		expect(reduce(INITIAL_VIEW, { ...snapshot(A), nodeFigures: FIGURES } as HostMessage).nodeFigures).toEqual(FIGURES);
 	});
+	it('MARKS (ticket 7.7): the slowest and errors marks are stored with the figures', () => {
+		const marked = { 'label:slow': { kind: 'component', inRate: 1, outRate: 1, errorRate: 1, p50: 1, p99: 1, share: 1, slowest: true, hasErrors: true } } as const;
+		const view = fold([snapshot(A), { type: 'nodeFigures', byId: marked }]);
+		expect(view.nodeFigures).toEqual(marked);
+		const shown = [snapshot(A)].reduce(reduceLive, INITIAL_LIVE_VIEW);
+		expect(reduceLive(shown, { type: 'nodeFigures', byId: marked }).live).toBe(shown.live);
+	});
 	it('figures are never announced', () => {
 		const shown = [snapshot(A)].reduce(reduceLive, INITIAL_LIVE_VIEW);
 		const next = reduceLive(shown, { type: 'nodeFigures', byId: FIGURES });

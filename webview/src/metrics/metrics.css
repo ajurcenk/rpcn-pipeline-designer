@@ -88,6 +88,7 @@ body {
 .rpcn-metrics-table th {
 	position: sticky;
 	top: 0;
+	z-index: 2;
 	background: var(--vscode-panel-background, var(--vscode-editor-background));
 	text-align: left;
 	font-weight: 500;
@@ -197,4 +198,67 @@ body {
 }
 .rpcn-metrics-trend-none {
 	color: var(--vscode-descriptionForeground);
+}
+/* Ticket 7.7 (board 1): the summary line under the state line; the gap is neutral text. */
+.rpcn-metrics-summary {
+	margin: 0;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	font-variant-numeric: tabular-nums;
+}
+.rpcn-metrics-summary-sep {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-summary-slowest {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-metrics-summary-errors {
+	color: var(--vscode-errorForeground);
+}
+/* Ticket 7.7: the Component column stays pinned on the left while the others scroll sideways, on an
+   opaque background with a separator edge; its header cell (the corner) stays above both. */
+.rpcn-metrics-table .rpcn-metrics-pinned {
+	position: sticky;
+	left: 0;
+	z-index: 1;
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
+	box-shadow: inset -1px 0 0 var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
+}
+.rpcn-metrics-table th.rpcn-metrics-pinned {
+	z-index: 3;
+}
+/* The slowest row (a warning-like colour) and rows with errors (an error-like one): a tinted row, a
+   bar on the pinned cell's left edge and a text tag; never the graph's lint marker classes. */
+.rpcn-metrics-slowest td {
+	background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent);
+}
+.rpcn-metrics-table .rpcn-metrics-slowest td.rpcn-metrics-pinned {
+	background: linear-gradient(color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent), color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent)),
+		var(--vscode-panel-background, var(--vscode-editor-background));
+	box-shadow: inset 3px 0 0 var(--vscode-editorWarning-foreground), inset -1px 0 0 var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
+}
+.rpcn-metrics-slowest td[data-column="share"],
+.rpcn-metrics-slowest td[data-column="p50"] {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-metrics-errors td[data-column="errors"],
+.rpcn-metrics-errors td[data-column="errorShare"] {
+	color: var(--vscode-errorForeground);
+}
+.rpcn-metrics-table .rpcn-metrics-errors:not(.rpcn-metrics-slowest) td.rpcn-metrics-pinned {
+	box-shadow: inset 3px 0 0 var(--vscode-errorForeground), inset -1px 0 0 var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
+}
+.rpcn-metrics-tag {
+	padding: 0 4px;
+	border: 1px solid currentColor;
+	border-radius: 2px;
+	font-size: 0.8em;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+.rpcn-metrics-tag-slowest {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-metrics-tag-errors {
+	color: var(--vscode-errorForeground);
 }

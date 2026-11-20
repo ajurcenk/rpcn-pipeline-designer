@@ -629,7 +629,7 @@ export function cloudMetricsBody(pipelineIds: readonly string[], n = 100): strin
 		'# TYPE processor_latency_ns summary',
 		...pipelineIds.flatMap((id, i) => [
 			`processor_latency_ns{${labels(id, i, 'root.pipeline.processors.0', 'fast')},quantile="0.5"} ${4700 * (i + 1)}`,
-			`processor_latency_ns_sum{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} 5.163878e+06`,
+			`processor_latency_ns_sum{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} ${4700 * (i + 1) * n}`,
 			`processor_latency_ns_count{${labels(id, i, 'root.pipeline.processors.0', 'fast')}} ${n * (i + 1)}`,
 		]),
 		'# TYPE output_sent counter',

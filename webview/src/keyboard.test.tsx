@@ -497,8 +497,8 @@ describe('NODE_FIGURES (ticket 7.3): the figures line on the drawn boxes', () =>
 		const announced = live().textContent;
 		await send({ type: 'nodeFigures', byId: {
 			[INPUT]: { kind: 'input', outRate: 200 },
-			[MAPPING]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
-			[SWITCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1 },
+			[MAPPING]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000, share: null },
+			[SWITCH]: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1, share: null },
 		} });
 		await until(() => figuresOf(MAPPING) !== undefined, 'the figures line');
 		expect(figuresOf(INPUT)).toBe('200.0/s');
@@ -511,5 +511,31 @@ describe('NODE_FIGURES (ticket 7.3): the figures line on the drawn boxes', () =>
 		await send({ type: 'nodeFigures', byId: {} });
 		await until(() => figuresOf(MAPPING) === undefined, 'the lines cleared');
 		expect(nodes().some((n) => n.querySelector('.rpcn-node-figures'))).toBe(false);
+	});
+
+	it('MARKS (ticket 7.7): the slowest box\'s band and border, an errors mark; never the lint marker classes; never announced', async () => {
+		await showGraph(MODEL, {});
+		const announced = live().textContent;
+		await send({ type: 'nodeFigures', byId: {
+			[INPUT]: { kind: 'input', outRate: 200 },
+			[MAPPING]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 2, p50: 5_170_000, p99: 5_620_000, share: 0.996, slowest: true, hasErrors: true },
+			[LOG]: { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 1, p99: 1, share: 0.004 },
+		} });
+		await until(() => Boolean(node(MAPPING)?.querySelector('.rpcn-node-band')), 'the band');
+		const box = node(MAPPING)!.querySelector('.rpcn-node')!;
+		expect(box.classList.contains('rpcn-node-slowest')).toBe(true);
+		expect(box.classList.contains('rpcn-node-metric-errors')).toBe(true);
+		expect(box.classList.contains('pipeline-node-error') || box.classList.contains('pipeline-node-warning')).toBe(false);
+		expect(box.querySelector('.rpcn-node-band-slowest')!.textContent).toBe('SLOWEST · 99.6% of the time');
+		expect(box.querySelector('.rpcn-node-band-errors')!.textContent).toBe('ERRORS');
+		expect(box.querySelector('.rpcn-node-figures-latency')!.textContent).toBe('5.17 ms / 5.62 ms');
+		expect(box.getAttribute('title')).toContain('SLOWEST · 99.6% of the time · ERRORS');
+		const other = node(LOG)!.querySelector('.rpcn-node')!;
+		expect(other.classList.contains('rpcn-node-slowest')).toBe(false);
+		expect(other.querySelector('.rpcn-node-band')).toBeNull();
+		expect(live().textContent).toBe(announced);
+		await send({ type: 'nodeFigures', byId: {} });
+		await until(() => !node(MAPPING)?.querySelector('.rpcn-node-band'), 'the marks cleared');
+		expect(node(MAPPING)!.querySelector('.rpcn-node')!.classList.contains('rpcn-node-slowest')).toBe(false);
 	});
 });

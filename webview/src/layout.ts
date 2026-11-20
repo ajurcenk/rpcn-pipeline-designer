@@ -6,7 +6,7 @@ import type { Edge, Node } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api';
 import { ancestorIds, nodesById } from '../../src/shared/graphModel';
-import { figuresLine } from '../../src/shared/metricsProtocol';
+import { figuresLine, slowestBandText } from '../../src/shared/metricsProtocol';
 import type {
 	NodeFiguresById, NodeSeverity, NodeStatus, NodeStatusById, PipelineEdge, PipelineModel, PipelineNode,
 } from '../../src/shared/protocol';
@@ -18,6 +18,11 @@ export const NODE_HEIGHT = 48;
  */
 export const FIGURES_LINE = 16;
 export const FIGURES_WIDTH = 250;
+/**
+ * Ticket 7.7: while the graph shows figures, a component box also has room for its marks' band (board
+ * 2's "SLOWEST · N% of the time", or the errors mark), so the slowest can move with no new layout.
+ */
+export const BAND_LINE = 16;
 /** Readable sizes (mockup key-editor-and-graph.html: nodes about 100-210 px wide at 100%). */
 const MIN_NODE_WIDTH = 110;
 const MAX_NODE_WIDTH = 220;
@@ -50,6 +55,10 @@ export interface ViewData extends Record<string, unknown> {
 	readonly marker?: Marker;
 	/** The figures line drawn on this box (7.3), from the host's node figures. */
 	readonly figures?: string;
+	/** Ticket 7.7: the slowest box's band ("SLOWEST · N% of the time"). */
+	readonly slowest?: string;
+	/** Ticket 7.7: the box's component had errors over the window. */
+	readonly metricErrors?: true;
 }
 
 /** What a box shows of its node status (DESIGN pipeline-node-error / -warning): a border plus an icon, and the messages on hover. */
@@ -251,27 +260,37 @@ export interface Figured {
 
 /**
  * The drawn nodes with their figures lines (`data.figures`, ticket 7.3): a component box whose node
- * has figures gets its line; a group or route never does. A node whose base (the same object in
- * `previous.base`) and line are unchanged keeps the object `previous` gave it.
+ * has figures gets its line; a group or route never does. Ticket 7.7: the slowest box gets its band
+ * (`data.slowest`) and a box whose component had errors `data.metricErrors`. A node whose base (the
+ * same object in `previous.base`), line and marks are unchanged keeps the object `previous` gave it.
  */
 export function markFigures(nodes: readonly ViewNode[], figures: NodeFiguresById | undefined, previous?: Figured): ViewNode[] {
 	const before = new Map<string, { readonly base: ViewNode; readonly node: ViewNode }>();
 	previous?.base.forEach((b, i) => before.set(b.id, { base: b, node: previous.nodes[i] }));
+	const same = (data: ViewData, line: string | undefined, slowest: string | undefined, errors: true | undefined) =>
+		data.figures === line && data.slowest === slowest && data.metricErrors === errors;
 	return nodes.map((n) => {
 		const f = n.type === 'component' ? figures?.[n.id] : undefined;
 		const line = f === undefined ? undefined : figuresLine(f);
+		const slowest = f?.kind === 'component' && f.slowest === true ? slowestBandText(f.share) : undefined;
+		const errors = f?.kind === 'component' && f.hasErrors === true ? true : undefined;
 		const prev = before.get(n.id);
-		if (prev && prev.base === n && prev.node.data.figures === line) {
+		if (prev && prev.base === n && same(prev.node.data, line, slowest, errors)) {
 			return prev.node;
 		}
-		if (line === n.data.figures) {
+		if (same(n.data, line, slowest, errors)) {
 			return n;
 		}
-		if (line === undefined) {
-			const { figures: _, ...data } = n.data;
-			return { ...n, data };
-		}
-		return { ...n, data: { ...n.data, figures: line } };
+		const { figures: _f, slowest: _s, metricErrors: _e, ...data } = n.data;
+		return {
+			...n,
+			data: {
+				...data,
+				...(line !== undefined ? { figures: line } : {}),
+				...(slowest !== undefined ? { slowest } : {}),
+				...(errors ? { metricErrors: errors } : {}),
+			},
+		};
 	});
 }
 
@@ -522,7 +541,7 @@ export function toElkGraph(model: PipelineModel, collapsed: Collapsed = new Set(
 			}
 		} else {
 			elkNode = figures
-				? { id: node.id, width: Math.max(nodeWidth(node), FIGURES_WIDTH), height: NODE_HEIGHT + FIGURES_LINE }
+				? { id: node.id, width: Math.max(nodeWidth(node), FIGURES_WIDTH), height: NODE_HEIGHT + FIGURES_LINE + BAND_LINE }
 				: { id: node.id, width: nodeWidth(node), height: NODE_HEIGHT };
 		}
 		elkById.set(node.id, elkNode);

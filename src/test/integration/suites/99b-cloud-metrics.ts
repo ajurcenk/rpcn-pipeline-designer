@@ -241,6 +241,14 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		assert.ok(await waitFor(() => (lastFigures(handle)['label:fast'] as { p50?: number } | undefined)?.p50 === 4700, 10_000), JSON.stringify(lastFigures(handle)));
 		assert.ok(await waitFor(() => (lastFigures(handle)['path:input']?.outRate ?? 0) > 0, 10_000), JSON.stringify(lastFigures(handle)));
 		assert.deepStrictEqual(Object.keys(lastFigures(handle)).sort(), ['label:fast', 'path:input', 'path:output']);
+		// Ticket 7.7: the same marks from the Cloud readings: `fast`, the only one spending time, is the slowest in both.
+		assert.ok(await waitFor(() => metrics().rows()[1]?.slowest === true, 10_000), JSON.stringify(metrics().rows()));
+		assert.deepStrictEqual(metrics().rows().map((r) => [r.id, r.share, r.slowest]), [['path:input', null, false], ['label:fast', 1, true], ['path:output', null, false]]);
+		assert.ok(await waitFor(() => {
+			const fast = lastFigures(handle)['label:fast'];
+			return fast?.kind === 'component' && fast.slowest === true && fast.share === 1;
+		}, 10_000), JSON.stringify(lastFigures(handle)));
+		assert.strictEqual(lastPosted().summary?.slowest?.name, 'fast');
 		// Each read carries the access as basic auth.
 		const read = fake.requestsTo('/prom/').at(-1)!;
 		assert.strictEqual(read.headers.authorization, `Basic ${Buffer.from(`prometheus:${PASSWORD}`).toString('base64')}`);

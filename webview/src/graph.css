@@ -173,6 +173,39 @@ body {
 	color: inherit;
 }
 
+/* Ticket 7.7 (board 2): the metrics marks, never the lint marker classes below. The slowest box: a
+   warning-like halo and border (the lint marker's 2px border and the selection's border win), its latency in the
+   same colour, and its band under the figures; a box with errors: its errors and the ERRORS mark in an
+   error-like colour. The band's row is in the layout while figures show (BAND_LINE), so no box resizes. */
+.rpcn-node-slowest {
+	box-shadow: 0 0 0 1px var(--vscode-editorWarning-foreground);
+}
+.rpcn-node-slowest:not(.pipeline-node-error):not(.pipeline-node-warning):not(.rpcn-node-selected) {
+	border-color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-node-slowest .rpcn-node-figures-latency {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-node-metric-errors .rpcn-node-figures-errors {
+	color: var(--vscode-errorForeground);
+}
+.rpcn-node-band {
+	display: flex;
+	gap: 6px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.rpcn-node-band-slowest {
+	color: var(--vscode-editorWarning-foreground);
+}
+.rpcn-node-band-errors {
+	color: var(--vscode-errorForeground);
+}
+
 /* Error and warning markers (DESIGN pipeline-node-error / pipeline-node-warning, ticket 3.8): a
    2px border in {colors.error-border} / {colors.warning-border} plus the matching codicon in
    {colors.error} / {colors.warning} in the top-right corner, never colour alone. They come after

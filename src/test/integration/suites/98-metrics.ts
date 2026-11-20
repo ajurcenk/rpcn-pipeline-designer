@@ -12,6 +12,9 @@
 // the figures), STOP (the lines cleared).
 // Ticket 7.6, the live window: WINDOW (the 1 / 5 / 15 min choice recomputes the rows, the trends and the
 // footer at once, with no read brought forward; the new columns are filled).
+// Ticket 7.7, the bottleneck: in GRAPH FIGURES the sleep (`slow_one`) is marked slowest in the tab and
+// on its graph node with the same share, the summary names it, and the nested processor with errors is
+// marked with errors in both; the marks clear with the figures on stop.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -276,11 +279,11 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		].join('\n');
 		const series = (n: number) => connectText([
 			{ family: 'input', path: 'root.input', received: n },
-			{ family: 'processor', path: 'root.pipeline.processors.0', label: 'slow_one', received: n, sent: n, errors: 0, p50: 5_170_000, p99: 5_620_000 },
-			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, errors: 0, p50: 7700, p99: 21_000 },
-			{ family: 'processor', path: 'root.pipeline.processors.2', received: n, sent: n, errors: 0, p50: 9000, p99: 9900 },
-			{ family: 'processor', path: 'root.pipeline.processors.2.branch.processors.0', received: n, sent: n, errors: n / 100, p50: 900, p99: 1200 },
-			{ family: 'output', path: 'root.output', sent: n, errors: 0, p50: 87, p99: 4061 },
+			{ family: 'processor', path: 'root.pipeline.processors.0', label: 'slow_one', received: n, sent: n, errors: 0, p50: 5_170_000, p99: 5_620_000, sum: n * 5_170_000, count: n },
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, errors: 0, p50: 7700, p99: 21_000, sum: n * 7700, count: n },
+			{ family: 'processor', path: 'root.pipeline.processors.2', received: n, sent: n, errors: 0, p50: 9000, p99: 9900, sum: n * 9000, count: n },
+			{ family: 'processor', path: 'root.pipeline.processors.2.branch.processors.0', received: n, sent: n, errors: n / 100, p50: 900, p99: 1200, sum: n * 900, count: n },
+			{ family: 'output', path: 'root.output', sent: n, errors: 0, p50: 87, p99: 4061, sum: n * 87, count: n },
 			{ family: 'processor', path: 'root.nowhere', label: 'ghost', received: n },
 		]);
 		const NESTED = 'path:pipeline.processors[2].branch.processors[0]';
@@ -305,7 +308,8 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		assert.ok(!metrics().visible, 'the tab is closed');
 		assert.deepStrictEqual(Object.keys(lastFigures(handle)).sort(), ['label:slow_one', 'path:input', 'path:output', NESTED, 'res:processor:res_one'].sort());
 		assert.deepStrictEqual(lastFigures(handle)['path:input'], { kind: 'input', outRate: null }, 'the first reading: no rate');
-		assert.deepStrictEqual(lastFigures(handle)['label:slow_one'], { kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 5_170_000, p99: 5_620_000 });
+		assert.deepStrictEqual(lastFigures(handle)['label:slow_one'],
+			{ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 5_170_000, p99: 5_620_000, share: null }, 'the first reading: no share, no mark');
 		n = 1400;
 		fake.serve(port, series(n));
 		assert.ok(await waitFor(() => (outRate(lastFigures(handle)['path:input']) ?? 0) > 0, METRICS_INTERVAL_MS * 3), JSON.stringify(lastFigures(handle)));
@@ -333,9 +337,34 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 			} else {
 				assert.ok(f, `a line for ${row.id}`);
 				assert.deepStrictEqual([f.inRate, f.outRate, f.errorRate, f.p50, f.p99], [row.inRate, row.outRate, row.errorRate, row.p50, row.p99], row.id);
+				// Ticket 7.7: the same share and marks.
+				assert.deepStrictEqual([f.share, f.slowest === true, f.hasErrors === true], [row.share, row.slowest, row.hasErrors], row.id);
 			}
 		}
 		assert.ok(rows.some((r) => r.nodeId === null && r.name === 'ghost'), 'the unmatched series is in the tab');
+		// Ticket 7.7: the sleep is the slowest in the tab and on its node, with the same share; the nested
+		// processor with errors is marked in both; the summary names them.
+		// The resource's time counts in the total (its `resource:` processor reports no series).
+		const TOTAL = 5_170_000 + 7700 + 9000 + 87;
+		assert.deepStrictEqual(rows.filter((r) => r.slowest).map((r) => r.id), ['label:slow_one']);
+		const slow = rows.find((r) => r.id === 'label:slow_one')!;
+		assert.ok(Math.abs(slow.share! - 5_170_000 / TOTAL) < 1e-9, String(slow.share));
+		const slowFigures = byId['label:slow_one'];
+		assert.ok(slowFigures?.kind === 'component' && slowFigures.slowest === true && slowFigures.share === slow.share, JSON.stringify(slowFigures));
+		assert.deepStrictEqual(Object.entries(byId).filter(([, f]) => f.kind === 'component' && f.slowest).map(([id]) => id), ['label:slow_one']);
+		assert.deepStrictEqual(rows.filter((r) => r.hasErrors).map((r) => r.id), [NESTED]);
+		const nested = byId[NESTED];
+		assert.ok(nested?.kind === 'component' && nested.hasErrors === true && nested.slowest === undefined, JSON.stringify(nested));
+		const summary = metrics().posted.at(-1)!.summary!;
+		assert.deepStrictEqual([summary.slowest?.name, summary.slowest?.path, summary.slowest?.share], ['slow_one', 'pipeline.processors[0]', slow.share]);
+		assert.deepStrictEqual(summary.errors.map((e) => e.name), ['mapping']);
+		assert.deepStrictEqual([summary.inputRate, summary.outputRate, summary.gap], [rows[0].outRate, rows.find((r) => r.id === 'path:output')!.outRate, null]);
+		// Sorted by Share: the input last.
+		await metrics().receive({ type: 'sort', sort: { column: 'share', dir: 'desc' } });
+		assert.strictEqual(metrics().rows()[0].id, 'label:slow_one');
+		assert.ok(metrics().rows().at(-1)!.share === null);
+		assert.ok(metrics().rows().findIndex((r) => r.kind === 'input') > metrics().rows().findIndex((r) => r.id === 'path:output'), 'the input after every share');
+		await metrics().receive({ type: 'sort', sort: null });
 
 		// REOPENED: a recreated webview's snapshot carries the current figures.
 		await handle.receive({ type: 'ready' });

@@ -101,6 +101,12 @@ export type NodeFigures =
 		readonly errorRate: number | null;
 		readonly p50: number | null;
 		readonly p99: number | null;
+		/** Ticket 7.7: its share of the pipeline's time over the window, 0–1; `null`: none yet. */
+		readonly share: number | null;
+		/** Ticket 7.7: present on the slowest component (board 2's band). */
+		readonly slowest?: true;
+		/** Ticket 7.7: present when it had errors over the window. */
+		readonly hasErrors?: true;
 	};
 
 /** Node figures by node id; empty while no local run of the config is live. */
@@ -254,7 +260,8 @@ function isNodeFigures(f: unknown): f is NodeFigures {
 		return isFigure(f.outRate);
 	}
 	return f.kind === 'component'
-		&& isFigure(f.inRate) && isFigure(f.outRate) && isFigure(f.errorRate) && isFigure(f.p50) && isFigure(f.p99);
+		&& isFigure(f.inRate) && isFigure(f.outRate) && isFigure(f.errorRate) && isFigure(f.p50) && isFigure(f.p99) && isFigure(f.share)
+		&& (f.slowest === undefined || f.slowest === true) && (f.hasErrors === undefined || f.hasErrors === true);
 }
 
 function isNodeFiguresById(value: unknown): value is NodeFiguresById {

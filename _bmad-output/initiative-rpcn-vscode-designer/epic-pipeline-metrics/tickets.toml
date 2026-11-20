@@ -81,6 +81,7 @@ covers = ["R6"]
 after = [6]
 hitl = false
 risk = "medium"
+notes = ["Decision (user, 2026-11-20): folded in from a request after 7.6: in the Pipeline Metrics tab the Component column stays pinned on the left while the path and figure columns scroll sideways, and the header row stays fixed when the rows scroll; only the Component column is pinned (not Path)."]
 
 [[entry]]
 id = 8

@@ -2,8 +2,8 @@ import * as assert from 'assert';
 import { componentCatalogue } from '../../core/catalogue';
 import { buildPipelineModel, componentPaths } from '../../core/graph';
 import {
-	compactReading, componentReadings, figures, hasComponentSeries, increase, keepReading, MAX_WINDOW_MS, metricRows, metricsTypeOf, nodeFiguresOf, pathToNodeId,
-	sortRows, yamlPathOf, type CompactReading, type MetricsReading,
+	bottleneck, compactReading, componentReadings, figures, gapOf, hasComponentSeries, increase, keepReading, MAX_WINDOW_MS, metricRows, metricsSummary, metricsTypeOf,
+	nodeFiguresOf, pathToNodeId, sortRows, yamlPathOf, type CompactReading, type MetricsReading,
 } from '../../core/metrics';
 import { parsePrometheus } from '../../core/prometheus';
 import { parseYaml } from '../../core/yamlPath';
@@ -284,7 +284,10 @@ suite('core/metrics', () => {
 			'path:input', 'label:dup', 'path:pipeline.processors[1].branch.processors[0]', 'res:processor:res_one',
 		]);
 		assert.deepStrictEqual(byId['path:input'], { kind: 'input', outRate: 200 });
-		assert.deepStrictEqual(byId['label:dup'], { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 });
+		assert.deepStrictEqual(byId['label:dup'], { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000, share: null });
+		// Ticket 7.7: a component with errors is marked (no `_sum` here, so no share and no slowest).
+		assert.deepStrictEqual(byId['path:pipeline.processors[1].branch.processors[0]'],
+			{ kind: 'component', inRate: 200, outRate: 200, errorRate: 200, p50: 100, p99: 200, share: null, hasErrors: true });
 		// The same numbers as the tab's rows.
 		for (const row of metricRows(model, paths, all)) {
 			const f = row.nodeId === null ? undefined : byId[row.nodeId];
@@ -294,7 +297,205 @@ suite('core/metrics', () => {
 		}
 		// The first reading: latencies, no rates.
 		assert.deepStrictEqual(nodeFiguresOf(model, paths, fig(reading(0, series(1))))['label:dup'],
-			{ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 7700, p99: 21_000 });
+			{ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 7700, p99: 21_000, share: null });
+	});
+
+	// Ticket 7.7 (E7 R6): the bottleneck. Each component spends its p50 per message (`_sum` grows by it).
+	const timedText = (n: number, opts: { readonly out?: number; readonly fastErrors?: number; readonly fastNs?: number } = {}) => connectText([
+		{ family: 'input', path: 'root.input', received: n },
+		{ family: 'processor', path: 'root.pipeline.processors.0', label: 'fast', received: n, sent: n, errors: opts.fastErrors ?? 0, p50: 7700, sum: n * (opts.fastNs ?? 7700), count: n },
+		{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, errors: 0, p50: 5_170_000, sum: n * 5_170_000, count: n },
+		{ family: 'output', path: 'root.output', sent: opts.out ?? n, errors: 0, p50: 87, sum: n * 87, count: n },
+	]);
+	const TOTAL = 7700 + 5_170_000 + 87;
+
+	test('SLEEP (7.7): the sleep is the slowest, with its share of the pipeline\'s time; the tab, the graph and the summary agree', () => {
+		const { model, paths } = configOf(HAPPY);
+		const all = fig(reading(0, timedText(100)), reading(2000, timedText(500)));
+		const rows = metricRows(model, paths, all);
+		assert.deepStrictEqual(rows.map((r) => [r.name, r.share, r.slowest, r.hasErrors]), [
+			['generate', null, false, false],
+			['fast', 7700 / TOTAL, false, false],
+			['sleep', 5_170_000 / TOTAL, true, false],
+			['drop', 87 / TOTAL, false, false],
+		]);
+		const byId = nodeFiguresOf(model, paths, all);
+		assert.deepStrictEqual(byId['path:pipeline.processors[1]'], {
+			kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 5_170_000, p99: 0, share: 5_170_000 / TOTAL, slowest: true,
+		});
+		assert.deepStrictEqual(Object.entries(byId).filter(([, f]) => f.kind === 'component' && f.slowest).map(([id]) => id), ['path:pipeline.processors[1]']);
+		assert.deepStrictEqual(byId['path:input'], { kind: 'input', outRate: 200 });
+		assert.strictEqual(bottleneck(model, paths, all).slowest, 'root.pipeline.processors.1\u0000');
+		assert.deepStrictEqual(metricsSummary(rows), {
+			slowest: { name: 'sleep', path: 'pipeline.processors[1]', share: 5_170_000 / TOTAL, p50: 5_170_000 },
+			inputRate: 200, outputRate: 200, gap: null, errors: [],
+		});
+	});
+
+	test('NESTED (7.7): a sleep inside a branch is marked, not the branch; every component\'s share is of the same total', () => {
+		const config = [
+			'input:', '  generate:', '    mapping: root = 1',
+			'pipeline:', '  processors:', '    - mapping: root = this', '    - branch:', '        processors:', '          - sleep:', '              duration: 5ms',
+			'output:', '  drop: {}', '',
+		].join('\n');
+		const { model, paths } = configOf(config);
+		const text = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n, sum: n * 1000, count: n },
+			{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, sum: n * 6000, count: n },
+			{ family: 'processor', path: 'root.pipeline.processors.1.branch.processors.0', received: n, sent: n, sum: n * 5000, count: n },
+			{ family: 'output', path: 'root.output', sent: n, sum: n * 3000, count: n },
+		]);
+		const all = fig(reading(0, text(10)), reading(1000, text(20)));
+		const rows = metricRows(model, paths, all);
+		assert.deepStrictEqual(rows.map((r) => [r.path, r.share, r.slowest]), [
+			['input', null, false],
+			['pipeline.processors[0]', 0.1, false],
+			['pipeline.processors[1]', 0.6, false],
+			['pipeline.processors[1].branch.processors[0]', 0.5, true],
+			['output', 0.3, false],
+		]);
+		const sleep = nodeFiguresOf(model, paths, all)['path:pipeline.processors[1].branch.processors[0]'];
+		assert.ok(sleep?.kind === 'component' && sleep.slowest === true && sleep.share === 0.5);
+		// The top-level shares make the whole.
+		assert.ok(Math.abs(0.1 + 0.6 + 0.3 - 1) < 1e-9);
+	});
+
+	// The shapes a real binary (4.100.0) reports: a `resource:` processor has no series of its own; the
+	// resource's are at `root.processor_resources` (with its label), its children's under it with no label.
+	test('RESOURCE (7.7): the resource\'s time is in the total (its `resource:` user reports none); shares sum to at most 1; the sleeping resource is the slowest', () => {
+		const config = [
+			'input:', '  generate:', '    mapping: root = 1',
+			'pipeline:', '  processors:', '    - mapping: root = this', '    - resource: res_one',
+			'output:', '  drop: {}',
+			'processor_resources:', '  - label: res_one', '    sleep:', '      duration: 5ms', '',
+		].join('\n');
+		const { model, paths } = configOf(config);
+		const text = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n, sum: n * 1000, count: n },
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, sum: n * 5000, count: n },
+			{ family: 'output', path: 'root.output', sent: n, sum: n * 100, count: n },
+		]);
+		const all = fig(reading(0, text(10)), reading(1000, text(20)));
+		const rows = metricRows(model, paths, all);
+		const shares = rows.map((r) => r.share ?? 0);
+		assert.ok(shares.reduce((a, b) => a + b, 0) <= 1 + 1e-9, String(shares));
+		assert.ok(shares.every((x) => x <= 1));
+		assert.deepStrictEqual(rows.filter((r) => r.slowest).map((r) => r.id), ['res:processor:res_one']);
+		assert.ok(Math.abs(rows.find((r) => r.id === 'res:processor:res_one')!.share! - 5000 / 6100) < 1e-12);
+		const node = nodeFiguresOf(model, paths, all)['res:processor:res_one'];
+		assert.ok(node?.kind === 'component' && node.slowest === true, JSON.stringify(node));
+	});
+
+	test('RESOURCE LEAF (7.7): a resource is a leaf by its config node, not by the series under `root.processor_resources.`; with no config, every resource is', () => {
+		const config = [
+			'input:', '  generate:', '    mapping: root = 1',
+			'pipeline:', '  processors:', '    - resource: res_a', '    - resource: res_b',
+			'output:', '  drop: {}',
+			'processor_resources:',
+			'  - label: res_a', '    branch:', '      processors:', '        - mapping: root = this',
+			'  - label: res_b', '    mapping: root = this', '',
+		].join('\n');
+		const { model, paths } = configOf(config);
+		const text = (n: number) => connectText([
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_a', received: n, sent: n, sum: n * 6000, count: n },
+			{ family: 'processor', path: 'root.processor_resources.branch.processors.0', received: n, sent: n, sum: n * 500, count: n },
+			{ family: 'processor', path: 'root.processor_resources', label: 'res_b', received: n, sent: n, sum: n * 3000, count: n },
+			{ family: 'output', path: 'root.output', sent: n, sum: n * 100, count: n },
+		]);
+		const all = fig(reading(0, text(10)), reading(1000, text(20)));
+		assert.ok(model.nodes.some((n) => n.parent === 'res:processor:res_a'), 'res_a has a child component');
+		// res_a has a child component: not a leaf; the childless res_b is the slowest (the child is smaller).
+		assert.strictEqual(bottleneck(model, paths, all).slowest, 'root.processor_resources\u0000res_b');
+		assert.deepStrictEqual(metricRows(model, paths, all).filter((r) => r.slowest).map((r) => r.id), ['res:processor:res_b']);
+		// The child is nested in a resource by path: not added to the total.
+		assert.strictEqual(all.get('root.processor_resources\u0000res_a')!.share, 6000 / 9100);
+		// No config (an unmapped Cloud pipeline): every resource is a leaf.
+		assert.strictEqual(bottleneck({ nodes: [], edges: [] }, new Map(), all).slowest, 'root.processor_resources\u0000res_a');
+	});
+
+	test('BROKER OUTPUT (7.7): no `root.output` series: the flow names the input\'s rate only, and no gap', () => {
+		const config = [
+			'input:', '  generate:', '    mapping: root = 1',
+			'pipeline:', '  processors:', '    - mapping: root = this',
+			'output:', '  broker:', '    pattern: fan_out', '    outputs:', '      - drop: {}', '      - drop: {}', '',
+		].join('\n');
+		const { model, paths } = configOf(config);
+		const text = (n: number) => connectText([
+			{ family: 'input', path: 'root.input', received: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n, sum: n * 1000, count: n },
+			{ family: 'output', path: 'root.output.broker.outputs.0', sent: n, sum: n * 100, count: n },
+			{ family: 'output', path: 'root.output.broker.outputs.1', sent: n / 2, sum: n * 100, count: n },
+		]);
+		const all = fig(reading(0, text(0)), reading(2000, text(400)));
+		const summary = metricsSummary(metricRows(model, paths, all))!;
+		assert.deepStrictEqual([summary.inputRate, summary.outputRate, summary.gap], [200, null, null]);
+		assert.strictEqual(metricsSummary(metricRows({ nodes: [], edges: [] }, new Map(), all))!.outputRate, null, 'no config either');
+		// Both broker outputs are top-level outputs in the total.
+		assert.ok(Math.abs(all.get('root.output.broker.outputs.0\u0000')!.share! - 100 / 1200) < 1e-12);
+	});
+
+	test('ERRORS (7.7): a processor with errors over the window is marked on its row and node and named in the summary; none: "none", no marks', () => {
+		const { model, paths } = configOf(HAPPY);
+		const all = fig(reading(0, timedText(100)), reading(2000, timedText(500, { fastErrors: 10 })));
+		const rows = metricRows(model, paths, all);
+		assert.deepStrictEqual(rows.filter((r) => r.hasErrors).map((r) => r.name), ['fast']);
+		const fast = nodeFiguresOf(model, paths, all)['label:fast'];
+		assert.ok(fast?.kind === 'component' && fast.hasErrors === true && fast.slowest === undefined);
+		assert.deepStrictEqual(metricsSummary(rows)?.errors, [{ name: 'fast', rate: 5 }]);
+		// None: no row or node marked.
+		const clean = fig(reading(0, timedText(100)), reading(2000, timedText(500)));
+		const cleanRows = metricRows(model, paths, clean);
+		assert.ok(cleanRows.every((r) => !r.hasErrors));
+		assert.ok(Object.values(nodeFiguresOf(model, paths, clean)).every((f) => f.kind === 'input' || f.hasErrors === undefined));
+		assert.deepStrictEqual(metricsSummary(cleanRows)?.errors, []);
+	});
+
+	test('GAP (7.7): named when the output\'s rate differs from the input\'s by more than 5%; else none', () => {
+		const { model, paths } = configOf(HAPPY);
+		const gap = metricsSummary(metricRows(model, paths, fig(reading(0, timedText(0)), reading(2000, timedText(400, { out: 300 })))))!;
+		assert.deepStrictEqual([gap.inputRate, gap.outputRate, gap.gap], [200, 150, { rate: 50, share: 0.25 }]);
+		const close = metricsSummary(metricRows(model, paths, fig(reading(0, timedText(0)), reading(2000, timedText(400, { out: 390 })))))!;
+		assert.deepStrictEqual([close.inputRate, close.outputRate, close.gap], [200, 195, null]);
+		assert.strictEqual(gapOf(200, 200), null);
+		assert.strictEqual(gapOf(200, 190), null, 'exactly 5%: no gap');
+		assert.deepStrictEqual(gapOf(200, 189), { rate: 11, share: 0.055 });
+		assert.deepStrictEqual(gapOf(200, 250), { rate: -50, share: -0.25 });
+		assert.strictEqual(gapOf(0, 0), null);
+		assert.deepStrictEqual(gapOf(0, 5), { rate: -5, share: null });
+		assert.strictEqual(gapOf(null, 5), null);
+		assert.strictEqual(gapOf(5, null), null);
+	});
+
+	test('FIRST_READING (7.7): no rates: no share, no slowest, no summary', () => {
+		const { model, paths } = configOf(HAPPY);
+		const all = fig(reading(0, timedText(100)));
+		const rows = metricRows(model, paths, all);
+		assert.ok(rows.every((r) => r.share === null && !r.slowest && !r.hasErrors));
+		assert.strictEqual(metricsSummary(rows), null);
+		assert.ok(Object.values(nodeFiguresOf(model, paths, all)).every((f) => f.kind === 'input' || (f.share === null && f.slowest === undefined)));
+		// No messages in the window (rates 0, no time spent): no share either, but a summary.
+		const idle = metricRows(model, paths, fig(reading(0, timedText(100)), reading(2000, timedText(100))));
+		assert.ok(idle.every((r) => r.share === null && !r.slowest));
+		assert.deepStrictEqual(metricsSummary(idle), { slowest: null, inputRate: 0, outputRate: 0, gap: null, errors: [] });
+	});
+
+	test('TIE (7.7): the first in config order is the slowest', () => {
+		const { model, paths } = configOf(HAPPY);
+		const tie = (n: number) => connectText([
+			{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, sum: n * 10, count: n },
+			{ family: 'processor', path: 'root.pipeline.processors.0', label: 'fast', received: n, sent: n, sum: n * 10, count: n },
+		]);
+		const rows = metricRows(model, paths, fig(reading(0, tie(0)), reading(1000, tie(10))));
+		assert.deepStrictEqual(rows.filter((r) => r.slowest).map((r) => r.name), ['fast']);
+	});
+
+	test('SORT (7.7): by Share, the input last', () => {
+		const { model, paths } = configOf(HAPPY);
+		const rows = metricRows(model, paths, fig(reading(0, timedText(100)), reading(2000, timedText(500))));
+		assert.deepStrictEqual(sortRows(rows, { column: 'share', dir: 'desc' }).map((r) => r.name), ['sleep', 'fast', 'drop', 'generate']);
+		assert.deepStrictEqual(sortRows(rows, { column: 'share', dir: 'asc' }).map((r) => r.name), ['drop', 'fast', 'sleep', 'generate']);
 	});
 
 	test('NO_MODEL: without a model every series is listed, by path', () => {

@@ -138,3 +138,61 @@ describe('FOCUS and CONTRAST (ticket 4.11, DESIGN test panel)', () => {
 		expect(rule(selector)).toContain(`border: 1px solid var(--vscode-button-border, ${CONTRAST})`);
 	});
 });
+
+describe('PINNED (ticket 7.7): the metrics tab\'s Component column and header stay put on an opaque theme background', () => {
+	const css = readFileSync(new URL('metrics/metrics.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	const rule = (selector: string) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+		.filter((m) => m[1].split(',').map((s) => s.trim()).includes(selector))
+		.map((m) => m[2]).join('\n');
+	const OPAQUE = 'background: var(--vscode-panel-background, var(--vscode-editor-background))';
+	it('the header row is sticky at the top, opaque', () => {
+		expect(rule('.rpcn-metrics-table th')).toMatch(/position:\s*sticky/);
+		expect(rule('.rpcn-metrics-table th')).toMatch(/top:\s*0/);
+		expect(rule('.rpcn-metrics-table th')).toContain(OPAQUE);
+	});
+	it('the Component column is sticky on the left, opaque, with a separator edge; its header cell above both', () => {
+		const pinned = rule('.rpcn-metrics-table .rpcn-metrics-pinned');
+		expect(pinned).toMatch(/position:\s*sticky/);
+		expect(pinned).toMatch(/left:\s*0/);
+		expect(pinned).toContain(OPAQUE);
+		expect(pinned).toMatch(/box-shadow:\s*inset -1px 0 0 var\(--vscode-panel-border/);
+		const z = (selector: string) => Number(/z-index:\s*(\d+)/.exec(rule(selector))?.[1]);
+		expect(z('.rpcn-metrics-table th.rpcn-metrics-pinned')).toBeGreaterThan(z('.rpcn-metrics-table th'));
+		expect(z('.rpcn-metrics-table th')).toBeGreaterThan(z('.rpcn-metrics-table .rpcn-metrics-pinned'));
+		// The slowest row's pinned cell keeps an opaque background under its tint.
+		expect(rule('.rpcn-metrics-table .rpcn-metrics-slowest td.rpcn-metrics-pinned')).toContain('var(--vscode-panel-background, var(--vscode-editor-background))');
+	});
+	it('the marks use warning- and error-like theme colours, never the graph\'s lint marker classes', () => {
+		expect(rule('.rpcn-metrics-tag-slowest')).toContain('var(--vscode-editorWarning-foreground)');
+		expect(rule('.rpcn-metrics-tag-errors')).toContain('var(--vscode-errorForeground)');
+		expect(css).not.toMatch(/pipeline-node-(error|warning)/);
+	});
+});
+
+describe('METRICS MARKS (ticket 7.7, board 2): the graph\'s slowest band and errors mark', () => {
+	const css = readFileSync(new URL('graph.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+	const rule = (selector: string) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+		.filter((m) => m[1].split(',').map((s) => s.trim()).includes(selector))
+		.map((m) => m[2]).join('\n');
+	it('the slowest in a warning-like colour, errors in an error-like one; the lint marker\'s border wins', () => {
+		expect(rule('.rpcn-node-slowest .rpcn-node-figures-latency')).toContain('var(--vscode-editorWarning-foreground)');
+		expect(rule('.rpcn-node-band-slowest')).toContain('var(--vscode-editorWarning-foreground)');
+		expect(rule('.rpcn-node-band-errors')).toContain('var(--vscode-errorForeground)');
+		expect(rule('.rpcn-node-slowest:not(.pipeline-node-error):not(.pipeline-node-warning):not(.rpcn-node-selected)'))
+			.toContain('border-color: var(--vscode-editorWarning-foreground)');
+	});
+	it('a selected slowest box keeps the selection border: no slowest rule sets a border on a selected box', () => {
+		const slowestBorders = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+			.filter((m) => /rpcn-node-slowest/.test(m[1]) && /border(-color)?:/.test(m[2]))
+			.flatMap((m) => m[1].split(',').map((sel) => sel.trim()));
+		expect(slowestBorders.length).toBeGreaterThan(0);
+		expect(slowestBorders.every((sel) => sel.includes(':not(.rpcn-node-selected)'))).toBe(true);
+		expect(rule('.rpcn-node-selected')).toContain('border-color: var(--vscode-list-activeSelectionBackground)');
+	});
+	it('the error-row bar in the tab uses the same error colour as the other errors marks', () => {
+		const tab = readFileSync(new URL('metrics/metrics.css', DIR), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+		const bar = /\.rpcn-metrics-errors:not\(\.rpcn-metrics-slowest\) td\.rpcn-metrics-pinned\s*\{([^}]*)\}/.exec(tab)?.[1] ?? '';
+		expect(bar).toContain('inset 3px 0 0 var(--vscode-errorForeground)');
+		expect(bar).not.toContain('--vscode-editorError-foreground');
+	});
+});

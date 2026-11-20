@@ -6,14 +6,15 @@
 // malformed messages. The formatters and validators are checked here too.
 // Ticket 7.6: the window control (1 / 5 / 15 min, `aria-pressed`, asks the host), the new columns
 // (batches, error %, P90, mean), the trend line (inline SVG with its min and max as its text), the footer.
+// Ticket 7.7: the summary line, the Share column, the slowest and errors row marks, the pinned column.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	addressText, cloudAddressText, cloudSourceLabel, formatNs, formatRate, formatShare, keptText, nextSort, NO_FILE_TEXT, noMetricsAccessText, NOT_MAPPED_TEXT,
-	parseMetricsHostMessage, parseMetricsWebviewMessage, refusedText, stateText, STOPPED_TEXT, trendText,
-	type MetricRow, type MetricsHostMessage, type MetricsWebviewMessage,
+	addressText, cloudAddressText, cloudSourceLabel, errorsText, flowText, formatNs, formatRate, formatShare, keptText, nextSort, NO_FILE_TEXT, noMetricsAccessText,
+	NOT_MAPPED_TEXT, parseMetricsHostMessage, parseMetricsWebviewMessage, refusedText, slowestBandText, slowestText, stateText, STOPPED_TEXT, summaryParts, trendText,
+	type MetricRow, type MetricsHostMessage, type MetricsSummary, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
 import { INDENT_EM, MetricsView, NO_SOURCE_TITLE, TREND_HEIGHT, trendPoints } from './MetricsView';
 
@@ -30,6 +31,7 @@ const send = async (message: MetricsHostMessage | Record<string, unknown>) => {
 const row = (id: string, extra: Partial<MetricRow> = {}): MetricRow => ({
 	id, nodeId: id, kind: 'processor', name: id, path: `pipeline.processors[0]`, depth: 0,
 	inRate: null, outRate: null, batchInRate: null, batchOutRate: null, errorRate: null, errorShare: null, p50: null, p90: null, p99: null, mean: null, trend: [],
+	share: null, slowest: false, hasErrors: false,
 	...extra,
 });
 
@@ -78,15 +80,15 @@ describe('MetricsView', () => {
 		expect(host.querySelector('.rpcn-metrics-address')?.textContent).toBe('127.0.0.1:41873 · read every 2 s');
 		expect(host.querySelector('.rpcn-metrics-state')).toBeNull();
 		expect(texts('thead th')).toEqual([
-			'Component', 'Path', 'In/s', 'Out/s', 'Batches in/s', 'Batches out/s', 'Errors/s', 'Error %', 'P50', 'P90', 'P99', 'Mean', 'Trend',
+			'Component', 'Path', 'In/s', 'Out/s', 'Batches in/s', 'Batches out/s', 'Errors/s', 'Error %', 'P50', 'P90', 'P99', 'Mean', 'Share', 'Trend',
 		]);
 		const cells = [...host.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td:not([data-column="trend"])')].map((td) => td.textContent));
 		expect(cells).toEqual([
-			['inputgenerate', 'input', '—', '200.0', '—', '—', '—', '—', '—', '—', '—', '—'],
-			['processorfast', 'pipeline.processors[0]', '200.0', '199.8', '20.0', '19.9', '0.0', '2.5%', '7.70 µs', '15.0 µs', '21.0 µs', '8.10 µs'],
-			['processormapping', 'pipeline.processors[1].branch.processors[0]', '—', '—', '—', '—', '—', '—', '5.17 ms', '—', '1.50 s', '—'],
-			['outputdrop', 'output', '—', '199.8', '—', '—', '0.0', '—', '87 ns', '—', '4.06 µs', '—'],
-			['processorx', 'x', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—'],
+			['inputgenerate', 'input', '—', '200.0', '—', '—', '—', '—', '—', '—', '—', '—', '—'],
+			['processorfast', 'pipeline.processors[0]', '200.0', '199.8', '20.0', '19.9', '0.0', '2.5%', '7.70 µs', '15.0 µs', '21.0 µs', '8.10 µs', '—'],
+			['processormapping', 'pipeline.processors[1].branch.processors[0]', '—', '—', '—', '—', '—', '—', '5.17 ms', '—', '1.50 s', '—', '—'],
+			['outputdrop', 'output', '—', '199.8', '—', '—', '0.0', '—', '87 ns', '—', '4.06 µs', '—', '—'],
+			['processorx', 'x', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—'],
 		]);
 		// The latency columns say how they are made.
 		expect(host.querySelectorAll<HTMLButtonElement>('thead button')[8].title).toContain('latest reading');
@@ -101,6 +103,60 @@ describe('MetricsView', () => {
 		const nested = host.querySelector<HTMLElement>('[data-row="path:pipeline.processors[1].branch.processors[0]"] .rpcn-metrics-component');
 		expect(nested?.style.paddingLeft).toBe(`${INDENT_EM}em`);
 		expect(host.querySelector('[data-row="series:root.x:"]')?.className).toBe('rpcn-metrics-unmatched');
+	});
+
+	it('ticket 7.7: the summary line, the Share column, the slowest and errors marks (board 1)', async () => {
+		const summary: MetricsSummary = {
+			slowest: { name: 'sleep', path: 'pipeline.processors[2]', share: 0.996, p50: 5_170_000 },
+			inputRate: 200, outputRate: 199.8, gap: null, errors: [],
+		};
+		const marked: MetricsHostMessage = {
+			...SHOW, summary,
+			rows: [
+				row('path:input', { kind: 'input', name: 'generate', path: 'input', outRate: 200 }),
+				row('label:fast', { name: 'fast', share: 0.004, errorRate: 2, hasErrors: true }),
+				row('path:pipeline.processors[2]', { name: 'sleep', path: 'pipeline.processors[2]', share: 0.996, slowest: true, p50: 5_170_000 }),
+			],
+		};
+		await send(marked);
+		expect(texts('.rpcn-metrics-summary-part')).toEqual([
+			'Slowest: sleep pipeline.processors[2] · 99.6% of the pipeline\'s time · p50 5.17 ms',
+			'Input 200.0/s → Output 199.8/s · no gap',
+			'Errors: none',
+		]);
+		expect(host.querySelector('.rpcn-metrics-summary')?.textContent).toBe(
+			'Slowest: sleep pipeline.processors[2] · 99.6% of the pipeline\'s time · p50 5.17 ms · Input 200.0/s → Output 199.8/s · no gap · Errors: none');
+		// It comes after the state line (none while live) and before the table; it is never announced.
+		expect(host.querySelector('.rpcn-metrics-summary')?.getAttribute('role')).toBeNull();
+		expect(host.querySelector('.rpcn-metrics-summary')?.nextElementSibling?.className).toBe('rpcn-metrics-scroll');
+		expect(host.querySelector('[data-row="path:pipeline.processors[2]"] [data-column="share"]')?.textContent).toBe('99.6%');
+		expect(host.querySelector('[data-row="path:input"] [data-column="share"]')?.textContent).toBe('—');
+		const slow = host.querySelector('[data-row="path:pipeline.processors[2]"]')!;
+		expect(slow.className).toBe('rpcn-metrics-slowest');
+		expect(slow.querySelector('.rpcn-metrics-tag-slowest')?.textContent).toBe('slowest');
+		const errs = host.querySelector('[data-row="label:fast"]')!;
+		expect(errs.className).toBe('rpcn-metrics-errors');
+		expect(errs.querySelector('.rpcn-metrics-tag-errors')?.textContent).toBe('errors');
+		expect(host.querySelector('[data-row="path:input"]')?.className).toBe('');
+		expect(host.querySelectorAll('.rpcn-metrics-tag')).toHaveLength(2);
+		// The Component column is pinned: its header and every first cell.
+		expect(host.querySelector('thead th')?.className).toBe('rpcn-metrics-pinned');
+		expect([...host.querySelectorAll('tbody tr')].every((tr) => tr.querySelector('td')?.className === 'rpcn-metrics-pinned')).toBe(true);
+		expect(host.querySelectorAll('.rpcn-metrics-pinned')).toHaveLength(4);
+		// Errors, a gap, no slowest; no rates: no summary line.
+		await send({ ...marked, summary: { slowest: null, inputRate: 200, outputRate: 150, gap: { rate: 50, share: 0.25 }, errors: [{ name: 'fast', rate: 2 }] } });
+		expect(texts('.rpcn-metrics-summary-part')).toEqual(['Input 200.0/s → Output 150.0/s · gap 50.0/s (25%)', 'Errors: fast 2.0/s']);
+		expect(host.querySelector('.rpcn-metrics-summary-errors')?.textContent).toBe('Errors: fast 2.0/s');
+		expect(host.querySelector('[data-part="flow"]')?.className).toBe('rpcn-metrics-summary-part');
+		await send({ ...marked, summary: null });
+		expect(host.querySelector('.rpcn-metrics-summary')).toBeNull();
+		await send({ ...marked, summary: undefined });
+		expect(host.querySelector('.rpcn-metrics-summary')).toBeNull();
+		// Sorting by Share asks the host.
+		const shareButton = [...host.querySelectorAll<HTMLButtonElement>('thead button')].find((b) => b.textContent === 'Share')!;
+		expect(shareButton.title).toContain('pipeline\'s time');
+		await act(async () => shareButton.click());
+		expect(posted.at(-1)).toEqual({ type: 'sort', sort: { column: 'share', dir: 'asc' } });
 	});
 
 	it('shows the state lines', async () => {
@@ -235,6 +291,24 @@ describe('metricsProtocol texts and validators', () => {
 		expect(nextSort({ column: 'in', dir: 'desc' }, 'p99')).toEqual({ column: 'p99', dir: 'asc' });
 	});
 
+	it('ticket 7.7: the summary texts and the band', () => {
+		const base: MetricsSummary = { slowest: null, inputRate: 200, outputRate: 200, gap: null, errors: [] };
+		expect(slowestText({ name: 'sleep', path: 'pipeline.processors[2]', share: 0.996, p50: 5_170_000 }))
+			.toBe('Slowest: sleep pipeline.processors[2] · 99.6% of the pipeline\'s time · p50 5.17 ms');
+		expect(slowestText({ name: 'x', path: '', share: 0.5, p50: null })).toBe('Slowest: x · 50.0% of the pipeline\'s time · p50 —');
+		expect(flowText(base)).toBe('Input 200.0/s → Output 200.0/s · no gap');
+		expect(flowText({ ...base, outputRate: 150, gap: { rate: 50, share: 0.25 } })).toBe('Input 200.0/s → Output 150.0/s · gap 50.0/s (25%)');
+		expect(flowText({ ...base, outputRate: 250, gap: { rate: -50, share: -0.25 } })).toBe('Input 200.0/s → Output 250.0/s · gap 50.0/s (25%)');
+		expect(flowText({ ...base, inputRate: 0, outputRate: 5, gap: { rate: -5, share: null } })).toBe('Input 0.0/s → Output 5.0/s · gap 5.0/s');
+		expect(flowText({ ...base, outputRate: null })).toBe('Input 200.0/s');
+		expect(flowText({ ...base, inputRate: null })).toBeUndefined();
+		expect(errorsText(base)).toBe('Errors: none');
+		expect(errorsText({ ...base, errors: [{ name: 'a', rate: 1 }, { name: 'b', rate: 0.5 }] })).toBe('Errors: a 1.0/s, b 0.5/s');
+		expect(summaryParts({ ...base, inputRate: null })).toEqual(['Errors: none']);
+		expect(summaryParts({ ...base, outputRate: null })).toEqual(['Input 200.0/s', 'Errors: none']);
+		expect(slowestBandText(0.996)).toBe('SLOWEST · 99.6% of the time');
+	});
+
 	it('checks host messages and copies webview messages', () => {
 		expect(parseMetricsHostMessage(SHOW)).toBe(SHOW);
 		expect(parseMetricsHostMessage({ ...SHOW, port: 70_000 })).toBeUndefined();
@@ -262,5 +336,17 @@ describe('metricsProtocol texts and validators', () => {
 		expect(parseMetricsWebviewMessage({ type: 'window', minutes: '5' })).toBeUndefined();
 		expect(parseMetricsHostMessage({ ...SHOW, windowMinutes: undefined })).toBeUndefined();
 		expect(parseMetricsWebviewMessage({ type: 'sort', sort: { column: 'mean', dir: 'asc' } })).toEqual({ type: 'sort', sort: { column: 'mean', dir: 'asc' } });
+		// Ticket 7.7: the row marks, the Share sort and the summary.
+		expect(parseMetricsWebviewMessage({ type: 'sort', sort: { column: 'share', dir: 'desc' } })).toEqual({ type: 'sort', sort: { column: 'share', dir: 'desc' } });
+		expect(parseMetricsHostMessage({ ...SHOW, rows: [row('a', { share: 0.5, slowest: true, hasErrors: true })] })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, rows: [{ ...row('a'), slowest: undefined }] })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, rows: [row('a', { share: NaN })] })).toBeUndefined();
+		const summary: MetricsSummary = { slowest: { name: 's', path: 'p', share: 1, p50: null }, inputRate: 1, outputRate: null, gap: null, errors: [{ name: 'e', rate: 1 }] };
+		expect(parseMetricsHostMessage({ ...SHOW, summary })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, summary: null })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, summary: { ...summary, errors: [{ name: 'e' }] } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, summary: { ...summary, slowest: { name: 's' } } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, summary: { ...summary, gap: { rate: 'x', share: null } } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, summary: 'x' })).toBeUndefined();
 	});
 });

@@ -23,15 +23,19 @@
 // Ticket 7.6: the header's 1 / 5 / 15 min control chooses the window the figures are over (5 min until
 // one is chosen; the choice is the session's, in memory, shared with the graphs through the feeds): the
 // rows and trends are recomputed at once from the readings kept, with no read, and the footer says it.
+//
+// Ticket 7.7: each reading's rows carry their share of the pipeline's time and the marks (the slowest,
+// errors), and the tab gets the summary line made from them (`metricsSummary`, core): the slowest, the
+// input's and the output's rates and their gap, the components with errors.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	cloudSourceLabel, localSourceLabel, parseMetricsWebviewMessage, type MetricRow, type MetricsHostMessage, type MetricsPanelState, type MetricsSort,
-	type MetricsWindowMinutes,
+	type MetricsSummary, type MetricsWindowMinutes,
 } from '../../shared/metricsProtocol';
 import type { ComponentFigures } from '../../core/metrics';
-import { metricRows, sortRows } from '../../core/metrics';
+import { metricRows, metricsSummary, sortRows } from '../../core/metrics';
 import { webviewHtml } from '../graphPanel/html';
 import { cloudMetricsKey, type CloudMetricsBinding, type MetricsFeeds, type MetricsSourceFactory, type MetricsSubscription, type MetricsUpdate } from './metricsFeed';
 
@@ -73,6 +77,8 @@ export class MetricsPanel implements vscode.Disposable {
 	/** The figures the rows were made from (a new reading is a new map). */
 	private rowsFrom: ReadonlyMap<string, ComponentFigures> | undefined;
 	private configRows: MetricRow[] = [];
+	/** Ticket 7.7: the summary line of `configRows` (`null`: not shown). */
+	private configSummary: MetricsSummary | null = null;
 	private sort: MetricsSort | null = null;
 	private readonly changed = new vscode.EventEmitter<void>();
 	/** Fires when the rows or the state change (test seam). */
@@ -104,6 +110,11 @@ export class MetricsPanel implements vscode.Disposable {
 	/** The rows as shown (sorted). */
 	rows(): readonly MetricRow[] {
 		return sortRows(this.configRows, this.sort);
+	}
+
+	/** Ticket 7.7: the summary line as sent (`null`: not shown). */
+	get summary(): MetricsSummary | null {
+		return this.configSummary;
 	}
 
 	/** How many reads of the bound file's feed were started (test seam). */
@@ -221,6 +232,7 @@ export class MetricsPanel implements vscode.Disposable {
 		}
 		this.rowsFrom = undefined;
 		this.configRows = [];
+		this.configSummary = null;
 		this.updated(sub, sub.feed.update, false);
 		const port = sub.feed.update.port;
 		this.options.log(`Pipeline metrics: showing ${path.basename(uri.fsPath)}${port ? ` (127.0.0.1:${port})` : ''}.`);
@@ -235,6 +247,7 @@ export class MetricsPanel implements vscode.Disposable {
 		const sub = this.bind(binding.file ?? cloudMetricsKey(binding.clusterId, binding.pipelineId));
 		this.rowsFrom = undefined;
 		this.configRows = [];
+		this.configSummary = null;
 		sub.feed.bindCloud(binding);
 		this.updated(sub, sub.feed.update, false);
 		this.options.log(`Pipeline metrics: showing pipeline ${binding.pipelineName} on ${binding.clusterName} (${binding.host})`
@@ -288,6 +301,7 @@ export class MetricsPanel implements vscode.Disposable {
 			} else {
 				this.configRows = [];
 			}
+			this.configSummary = metricsSummary(this.configRows);
 		}
 		if (post) {
 			// Ticket 7.5: the source can change under the tab (a local run taking the file back from the Cloud).
@@ -314,6 +328,7 @@ export class MetricsPanel implements vscode.Disposable {
 			intervalMs: this.update?.intervalMs ?? this.options.feeds.intervalMs,
 			sort: this.sort,
 			windowMinutes: this.windowMinutes,
+			summary: this.configSummary,
 			...(this.update?.source.kind === 'cloud' ? { cloud: { host: this.update.source.host } } : {}),
 		};
 		this.posted.push(message);

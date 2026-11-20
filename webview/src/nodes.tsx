@@ -7,7 +7,10 @@
 // with a marker (`data.marker`, 3.8) gets DESIGN's pipeline-node-error / -warning treatment: a 2px
 // border and its own codicon in the top-right corner, never colour alone, and its hover text lists
 // the messages verbatim. While a local run is live (7.3), a component box shows its figures line
-// (`data.figures`) under its name, and its hover text carries it too.
+// (`data.figures`) under its name, and its hover text carries it too. Ticket 7.7 (board 2): the slowest
+// box shows the band "SLOWEST · N% of the time" under its figures, with its border and latency in a
+// warning-like theme colour; a box whose component had errors shows an "ERRORS" mark and its errors in
+// an error-like one. Both are text as well as colour, and never AD-17's lint marker classes.
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { createContext, useContext, type MouseEvent } from 'react';
@@ -50,11 +53,30 @@ function Handles({ node }: { readonly node: PipelineNode }) {
 	);
 }
 
-function ComponentView({ data }: NodeProps<ViewNode>) {
-	const { node, selected, marker, figures } = data;
-	const base = `${nodeKind(node)}: ${nodeName(node)}`;
+/** Ticket 7.7: the errors mark's text on a box. */
+export const ERRORS_MARK = 'ERRORS';
+
+/** The figures line, its parts (rate, latency, errors) in their own spans so the marks can colour them. */
+function FiguresLine({ figures }: { readonly figures: string }) {
+	const parts = figures.split(' · ');
+	const names = parts.length === 3 ? ['rate', 'latency', 'errors'] : parts.map(() => 'rate');
 	return (
-		<div className={boxClass('rpcn-node', selected, ` rpcn-node-${node.role}`, marker)} title={nodeTitle(figures === undefined ? base : `${base}\n${figures}`, marker)}>
+		<div className="rpcn-node-figures">
+			{parts.map((part, i) => (
+				<span key={i}>{i > 0 && ' · '}<span className={`rpcn-node-figures-${names[i]}`}>{part}</span></span>
+			))}
+		</div>
+	);
+}
+
+function ComponentView({ data }: NodeProps<ViewNode>) {
+	const { node, selected, marker, figures, slowest, metricErrors } = data;
+	const base = `${nodeKind(node)}: ${nodeName(node)}`;
+	const marks = [...(slowest !== undefined ? [slowest] : []), ...(metricErrors ? [ERRORS_MARK] : [])];
+	const hover = figures === undefined ? base : `${base}\n${figures}${marks.length > 0 ? `\n${marks.join(' · ')}` : ''}`;
+	const metricsClass = `${slowest !== undefined ? ' rpcn-node-slowest' : ''}${metricErrors ? ' rpcn-node-metric-errors' : ''}`;
+	return (
+		<div className={boxClass('rpcn-node', selected, ` rpcn-node-${node.role}${metricsClass}`, marker)} title={nodeTitle(hover, marker)}>
 			<Handles node={node} />
 			<MarkerIcon marker={marker} />
 			<div className="rpcn-node-kind">
@@ -62,7 +84,13 @@ function ComponentView({ data }: NodeProps<ViewNode>) {
 				{node.label !== undefined && <> · <span className="rpcn-node-label">{node.label}</span></>}
 			</div>
 			<div className="rpcn-node-name">{nodeName(node)}</div>
-			{figures !== undefined && <div className="rpcn-node-figures">{figures}</div>}
+			{figures !== undefined && <FiguresLine figures={figures} />}
+			{marks.length > 0 && (
+				<div className="rpcn-node-band">
+					{slowest !== undefined && <span className="rpcn-node-band-slowest">{slowest}</span>}
+					{metricErrors && <span className="rpcn-node-band-errors">{ERRORS_MARK}</span>}
+				</div>
+			)}
 		</div>
 	);
 }

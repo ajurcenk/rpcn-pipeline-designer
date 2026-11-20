@@ -44,18 +44,37 @@ export interface MetricRow {
 	readonly mean: number | null;
 	/** Ticket 7.6: messages out per second, one point per reading interval of the window, oldest first. */
 	readonly trend: readonly number[];
+	/** Ticket 7.7: its share of the pipeline's time over the window, 0–1 (`null` for the input, or no rates yet). */
+	readonly share: number | null;
+	/** Ticket 7.7: the slowest component (the largest share among the leaves). */
+	readonly slowest: boolean;
+	/** Ticket 7.7: it had errors over the window. */
+	readonly hasErrors: boolean;
 }
 
-export type MetricsColumn = 'name' | 'path' | 'in' | 'out' | 'batchesIn' | 'batchesOut' | 'errors' | 'errorShare' | 'p50' | 'p90' | 'p99' | 'mean';
+/**
+ * Ticket 7.7: the tab's summary line (board 1), computed by the host: the slowest component, the
+ * input's and the output's rates and their gap (input − output per second, and its share of the
+ * input's; `null`: none named), and the components with errors over the window.
+ */
+export interface MetricsSummary {
+	readonly slowest: { readonly name: string; readonly path: string; readonly share: number; readonly p50: number | null } | null;
+	readonly inputRate: number | null;
+	readonly outputRate: number | null;
+	readonly gap: { readonly rate: number; readonly share: number | null } | null;
+	readonly errors: readonly { readonly name: string; readonly rate: number }[];
+}
 
-/** The sortable columns in their order (ticket 7.6 decision); the trend column follows them, not sortable. */
+export type MetricsColumn = 'name' | 'path' | 'in' | 'out' | 'batchesIn' | 'batchesOut' | 'errors' | 'errorShare' | 'p50' | 'p90' | 'p99' | 'mean' | 'share';
+
+/** The sortable columns in their order (ticket 7.6 decision; 7.7: Share after Mean); the trend column follows them, not sortable. */
 export const METRICS_COLUMNS: readonly MetricsColumn[] = [
-	'name', 'path', 'in', 'out', 'batchesIn', 'batchesOut', 'errors', 'errorShare', 'p50', 'p90', 'p99', 'mean',
+	'name', 'path', 'in', 'out', 'batchesIn', 'batchesOut', 'errors', 'errorShare', 'p50', 'p90', 'p99', 'mean', 'share',
 ];
 
 export const COLUMN_LABELS: Readonly<Record<MetricsColumn, string>> = {
 	name: 'Component', path: 'Path', in: 'In/s', out: 'Out/s', batchesIn: 'Batches in/s', batchesOut: 'Batches out/s',
-	errors: 'Errors/s', errorShare: 'Error %', p50: 'P50', p90: 'P90', p99: 'P99', mean: 'Mean',
+	errors: 'Errors/s', errorShare: 'Error %', p50: 'P50', p90: 'P90', p99: 'P99', mean: 'Mean', share: 'Share',
 };
 
 /** The trend column's header (not sortable). */
@@ -68,6 +87,7 @@ export const COLUMN_TITLES: Readonly<Partial<Record<MetricsColumn, string>>> = {
 	p99: 'From the latest reading: the process\'s own quantile, not over the window',
 	mean: 'Over the window: the latency\'s total over its count',
 	errorShare: 'Errors as a share of the messages received, over the window',
+	share: 'The share of the pipeline\'s time spent in this component over the window (the top-level processors and the output make 100%)',
 };
 
 /** Ticket 7.6: the windows the figures are computed over, in minutes. */
@@ -126,6 +146,8 @@ export type MetricsHostMessage = {
 	readonly sort: MetricsSort | null;
 	/** Ticket 7.6: the window the figures are over. */
 	readonly windowMinutes: MetricsWindowMinutes;
+	/** Ticket 7.7: the summary line; absent or `null` while there are no rates (not shown). */
+	readonly summary?: MetricsSummary | null;
 };
 
 export type MetricsWebviewMessage =
@@ -251,6 +273,49 @@ export function trendText(points: readonly number[]): string {
 	return `Out/s over the window: from ${formatRate(Math.min(...points))} to ${formatRate(Math.max(...points))}`;
 }
 
+/** Ticket 7.7: "Slowest: <name> <path> · N% of the pipeline's time · p50 …". */
+export function slowestText(s: NonNullable<MetricsSummary['slowest']>): string {
+	return `Slowest: ${s.name}${s.path !== '' ? ` ${s.path}` : ''} · ${formatShare(s.share)} of the pipeline's time · p50 ${formatNs(s.p50)}`;
+}
+
+/**
+ * Ticket 7.7: "Input X/s → Output Y/s · no gap" or "… · gap 50.0/s (25%)"; "Input X/s" alone when the
+ * output's rate is unknown (an output `broker` has no `root.output` series), so no gap is named;
+ * `undefined` when the input's is unknown.
+ */
+export function flowText(summary: MetricsSummary): string | undefined {
+	if (summary.inputRate === null) {
+		return undefined;
+	}
+	if (summary.outputRate === null) {
+		return `Input ${formatRate(summary.inputRate)}/s`;
+	}
+	const rates = `Input ${formatRate(summary.inputRate)}/s → Output ${formatRate(summary.outputRate)}/s`;
+	const gap = summary.gap;
+	if (!gap) {
+		return `${rates} · no gap`;
+	}
+	const share = gap.share === null ? '' : ` (${Math.round(Math.abs(gap.share) * 100)}%)`;
+	return `${rates} · gap ${formatRate(Math.abs(gap.rate))}/s${share}`;
+}
+
+/** Ticket 7.7: "Errors: none" or "Errors: <name> <rate>/s, …". */
+export function errorsText(summary: MetricsSummary): string {
+	return summary.errors.length === 0 ? 'Errors: none'
+		: `Errors: ${summary.errors.map((e) => `${e.name} ${formatRate(e.rate)}/s`).join(', ')}`;
+}
+
+/** Ticket 7.7: the summary line's parts, in board 1's order. */
+export function summaryParts(summary: MetricsSummary): string[] {
+	const flow = flowText(summary);
+	return [...(summary.slowest ? [slowestText(summary.slowest)] : []), ...(flow !== undefined ? [flow] : []), errorsText(summary)];
+}
+
+/** Ticket 7.7 (board 2): the slowest node's band, "SLOWEST · N% of the time". */
+export function slowestBandText(share: number | null): string {
+	return `SLOWEST · ${formatShare(share)} of the time`;
+}
+
 /** A rate on a node's figures line: "200.0/s", `—` for none. */
 function rateText(value: number | null): string {
 	const text = formatRate(value);
@@ -291,7 +356,22 @@ function isRow(v: unknown): v is MetricRow {
 		&& typeof v.depth === 'number' && Number.isInteger(v.depth) && v.depth >= 0
 		&& isFigure(v.inRate) && isFigure(v.outRate) && isFigure(v.batchInRate) && isFigure(v.batchOutRate)
 		&& isFigure(v.errorRate) && isFigure(v.errorShare) && isFigure(v.p50) && isFigure(v.p90) && isFigure(v.p99) && isFigure(v.mean)
-		&& Array.isArray(v.trend) && v.trend.every((p) => typeof p === 'number' && Number.isFinite(p));
+		&& Array.isArray(v.trend) && v.trend.every((p) => typeof p === 'number' && Number.isFinite(p))
+		&& isFigure(v.share) && typeof v.slowest === 'boolean' && typeof v.hasErrors === 'boolean';
+}
+
+const isNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+function isSummary(v: unknown): v is MetricsSummary {
+	if (!isObject(v)) {
+		return false;
+	}
+	const s = v.slowest;
+	const gap = v.gap;
+	return (s === null || (isObject(s) && typeof s.name === 'string' && typeof s.path === 'string' && isNumber(s.share) && isFigure(s.p50)))
+		&& isFigure(v.inputRate) && isFigure(v.outputRate)
+		&& (gap === null || (isObject(gap) && isNumber(gap.rate) && isFigure(gap.share)))
+		&& Array.isArray(v.errors) && v.errors.every((e) => isObject(e) && typeof e.name === 'string' && isNumber(e.rate));
 }
 
 function isSort(v: unknown): v is MetricsSort {
@@ -333,6 +413,7 @@ export function parseMetricsHostMessage(v: unknown): MetricsHostMessage | undefi
 		&& typeof v.intervalMs === 'number' && Number.isFinite(v.intervalMs) && v.intervalMs > 0
 		&& (v.sort === null || isSort(v.sort)) && isWindowMinutes(v.windowMinutes)
 		&& (v.cloud === undefined || v.cloud === null || (isObject(v.cloud) && typeof v.cloud.host === 'string' && v.cloud.host !== ''))
+		&& (v.summary === undefined || v.summary === null || isSummary(v.summary))
 		? v as MetricsHostMessage : undefined;
 }
 

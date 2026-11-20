@@ -6,6 +6,7 @@
 // model, is mapped onto the panel's current model (`nodeFiguresOf`, the tab's mapping) and sent as
 // `nodeFigures` when it changed; while the YAML does
 // not parse the figures are frozen, and with no live run (stopped, not running, hidden) they are `{}`.
+// Ticket 7.7: each component's figures carry its share and marks (slowest, errors), the same as the tab's.
 
 import * as path from 'path';
 import * as vscode from 'vscode';

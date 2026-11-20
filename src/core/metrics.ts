@@ -18,10 +18,19 @@
 // quantiles are the latest reading's (the process's own, not computable per window), the highest
 // across pods; the mean is Δ`_sum` / Δ`_count`; the error share Δ`processor_error` /
 // Δ`processor_received`. Each component's trend is its out rate per reading interval.
+//
+// Ticket 7.7, the bottleneck (E7 R6, AD-25): a component's share is the time it spent over the window
+// (its Δ`_latency_ns_sum`) over the total of the top-level processors, the output's top-level series
+// and every resource (a processor or output not nested in another of its kind, by Connect's path; a
+// `resource:` processor reports no series of its own, so a resource's time is counted as its own);
+// the input has none (its latency is end-to-end). The slowest is the largest share among the leaves (a component with no component of its
+// kind nested in it, so a `sleep` inside a `branch` is marked, not the branch), the first in config order
+// on a tie; none while no share is known (no rates yet). Components with errors over the window are
+// marked too, and the summary names the input's and the output's rates and a gap of more than 5%.
 
 import { isMap, isScalar, type Pair } from 'yaml';
-import type { NodeFigures, NodeFiguresById, PipelineModel } from '../shared/protocol';
-import type { MetricKind, MetricRow, MetricsSort } from '../shared/metricsProtocol';
+import type { NodeFigures, NodeFiguresById, PipelineModel, PipelineNode } from '../shared/protocol';
+import type { MetricKind, MetricRow, MetricsSort, MetricsSummary } from '../shared/metricsProtocol';
 import { familyOf, type PromText } from './prometheus';
 import type { ParsedYaml } from './yamlPath';
 
@@ -78,6 +87,12 @@ export interface ComponentFigures {
 	readonly mean: number | null;
 	/** Out per second for each reading interval of the window, oldest first. */
 	readonly trend: readonly number[];
+	/** Ticket 7.7: the time spent over the window (Δ`_latency_ns_sum`, ns); `null` for the input or with no rates. */
+	readonly timeNs: number | null;
+	/** Ticket 7.7: `timeNs` over the pipeline's (the top-level processors', the output's and the resources'), 0–1; `null`: none. */
+	readonly share: number | null;
+	/** Ticket 7.7: no component of its kind is nested in it, by path (only a leaf can be the slowest); a resource always is here (its config node decides, `bottleneck`). */
+	readonly leaf: boolean;
 }
 
 /** Ticket 7.6: readings are kept this long (the longest window). */
@@ -204,6 +219,9 @@ function intervalIncrease(a: ComponentReading, b: ComponentReading, field: Count
 	return total;
 }
 
+/** Ticket 7.7: a resource's own series (`root.processor_resources`, `root.output_resources`; its children's paths go on after it). */
+const isResourcePath = (path: string) => /^root\.\w+_resources$/.test(path);
+
 /** The out counter of a kind (the trend's): the input's received, the others' sent. */
 const outField = (kind: SeriesKind): CounterField => (kind === 'input' ? 'received' : 'sent');
 
@@ -223,7 +241,10 @@ export function figures(readings: readonly CompactReading[], windowMs: number): 
 	const window = readings.filter((r) => r.time >= cur.time - windowMs && r.time <= cur.time);
 	const first = window[0];
 	const seconds = (cur.time - first.time) / 1000;
-	for (const c of cur.components.values()) {
+	const components = [...cur.components.values()];
+	const nestedIn = (inner: ComponentReading, outer: ComponentReading) =>
+		inner !== outer && inner.kind === outer.kind && inner.path.startsWith(`${outer.path}.`);
+	for (const c of components) {
 		const totals: Partial<Record<CounterField, number>> = {};
 		const trend: number[] = [];
 		for (let i = 1; i < window.length; i++) {
@@ -255,6 +276,9 @@ export function figures(readings: readonly CompactReading[], windowMs: number): 
 		const base = {
 			key: c.key, path: c.path, label: c.label, kind: c.kind, inRate: null, batchInRate: null, batchOutRate: null, errorRate: null,
 			errorShare: null, p50: null, p90: null, p99: null, mean: null, trend,
+			timeNs: c.kind !== 'input' && seconds > 0 && has('sum') ? totals.sum ?? 0 : null,
+			share: null,
+			leaf: isResourcePath(c.path) || !components.some((o) => nestedIn(o, c)),
 		};
 		switch (c.kind) {
 			case 'input':
@@ -275,7 +299,123 @@ export function figures(readings: readonly CompactReading[], windowMs: number): 
 				break;
 		}
 	}
+	// Ticket 7.7: each component's share of the time of the top-level processors, the output's top-level
+	// series and the resources (a `resource:` processor reports no series, so its resource's time is not
+	// in any other; the resource's children are nested in it, by path).
+	let total = 0;
+	for (const c of components) {
+		const time = out.get(c.key)?.timeNs;
+		if (c.kind !== 'input' && time !== null && time !== undefined && !components.some((o) => nestedIn(c, o))) {
+			total += time;
+		}
+	}
+	if (total > 0) {
+		for (const [key, f] of out) {
+			if (f.timeNs !== null) {
+				out.set(key, { ...f, share: f.timeNs / total });
+			}
+		}
+	}
 	return out;
+}
+
+/** Ticket 7.7: the marks of a window's figures: the slowest component's key, and those with errors. */
+export interface Marks {
+	readonly slowest: string | undefined;
+	readonly errors: ReadonlySet<string>;
+}
+
+/**
+ * Ticket 7.7: the marks of `ordered` (the components in config order, as the tab lists them): the
+ * slowest is the leaf with the largest share above 0 (never the input), the first on a tie, none
+ * while no share is known; a component with errors over the window (Errors/s above 0) is marked.
+ */
+function marksOf(ordered: readonly ComponentFigures[], isLeaf: (f: ComponentFigures) => boolean = (f) => f.leaf): Marks {
+	let slowest: ComponentFigures | undefined;
+	const errors = new Set<string>();
+	for (const f of ordered) {
+		if (f.kind !== 'input' && isLeaf(f) && f.share !== null && f.share > 0 && (slowest === undefined || f.share > (slowest.share ?? 0))) {
+			slowest = f;
+		}
+		if (f.errorRate !== null && f.errorRate > 0) {
+			errors.add(f.key);
+		}
+	}
+	return { slowest: slowest?.key, errors };
+}
+
+/** The series in the tab's order: those on a node in the model's order, then the others by path and label. */
+function inConfigOrder(model: PipelineModel, byNode: ReadonlyMap<string, ComponentFigures>, unmatched: readonly ComponentFigures[]): {
+	readonly matched: readonly (readonly [PipelineNode, ComponentFigures | undefined])[];
+	readonly unmatched: readonly ComponentFigures[];
+	readonly ordered: readonly ComponentFigures[];
+} {
+	const matched = model.nodes.filter((n) => n.role !== 'route').map((n) => [n, byNode.get(n.id)] as const);
+	const rest = unmatched.slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+	const ordered = [...matched.flatMap(([, f]) => (f ? [f] : [])), ...rest];
+	return { matched, unmatched: rest, ordered };
+}
+
+/**
+ * Ticket 7.7: the marks of `all` on `model` (the tab's and the graph's), ties broken in the tab's
+ * order. A resource is a leaf when its config node has no child components (the series under
+ * `root.processor_resources.` are any resource's children, so its path cannot tell); with no node, it is.
+ */
+export function bottleneck(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): Marks {
+	const { byNode, unmatched } = figuresByNode(model, paths, all);
+	const nodeOf = new Map([...byNode].map(([id, f]) => [f.key, id]));
+	const parents = new Set(model.nodes.flatMap((n) => (n.parent !== undefined ? [n.parent] : [])));
+	return marksOf(inConfigOrder(model, byNode, unmatched).ordered, (f) => {
+		if (!isResourcePath(f.path)) {
+			return f.leaf;
+		}
+		const id = nodeOf.get(f.key);
+		return id === undefined || !parents.has(id);
+	});
+}
+
+/** Ticket 7.7: a gap is named when the output's rate differs from the input's by more than this share of it. */
+export const GAP_THRESHOLD = 0.05;
+
+/**
+ * Ticket 7.7: the gap between the input's and the output's rates: `null` when either is unknown or
+ * they differ by at most `GAP_THRESHOLD` of the input's; else the difference (input − output, per
+ * second) and its share of the input's (`null` when the input's is 0).
+ */
+export function gapOf(inputRate: number | null, outputRate: number | null): { readonly rate: number; readonly share: number | null } | null {
+	if (inputRate === null || outputRate === null) {
+		return null;
+	}
+	const diff = inputRate - outputRate;
+	if (Math.abs(diff) <= GAP_THRESHOLD * inputRate && !(inputRate === 0 && diff !== 0)) {
+		return null;
+	}
+	return { rate: diff, share: inputRate > 0 ? diff / inputRate : null };
+}
+
+/**
+ * Ticket 7.7: the tab's summary line from its rows (config order): the slowest, the input's
+ * (`input`) and the output's (`output`) rates and their gap, and the rows with errors; `null` while
+ * no row has a rate (the first reading).
+ */
+export function metricsSummary(rows: readonly MetricRow[]): MetricsSummary | null {
+	const hasRates = rows.some((r) => r.inRate !== null || r.outRate !== null || r.errorRate !== null);
+	if (!hasRates) {
+		return null;
+	}
+	const slowest = rows.find((r) => r.slowest);
+	const input = rows.find((r) => r.kind === 'input' && r.path === 'input') ?? rows.find((r) => r.kind === 'input');
+	// Only `root.output`'s own series: under a `broker` there is none, and one child's rate is not the output's.
+	const output = rows.find((r) => r.kind === 'output' && r.path === 'output');
+	const inputRate = input?.outRate ?? null;
+	const outputRate = output?.outRate ?? null;
+	return {
+		slowest: slowest && slowest.share !== null ? { name: slowest.name, path: slowest.path, share: slowest.share, p50: slowest.p50 } : null,
+		inputRate,
+		outputRate,
+		gap: gapOf(inputRate, outputRate),
+		errors: rows.filter((r) => r.hasErrors && r.errorRate !== null).map((r) => ({ name: r.name, rate: r.errorRate as number })),
+	};
 }
 
 /** Connect's path in AD-7's form: `root.` dropped, `.N` written `[N]` (`root.pipeline.processors.0` → `pipeline.processors[0]`). */
@@ -340,9 +480,11 @@ export function figuresByNode(model: PipelineModel, paths: ReadonlyMap<string, s
  * The graph's figures by node id (ticket 7.3, AD-17, AD-25): the same mapping as the tab's rows
  * (`figuresByNode`), for each component node drawn as a box (not a route, not a group); the input's
  * series gives only its Out/s (its latency is end-to-end). A node with no series has no entry.
+ * Ticket 7.7: a component's share, and its marks (`slowest`, `hasErrors`) as the tab's (`bottleneck`).
  */
 export function nodeFiguresOf(model: PipelineModel, paths: ReadonlyMap<string, string>, all: ReadonlyMap<string, ComponentFigures>): NodeFiguresById {
 	const { byNode } = figuresByNode(model, paths, all);
+	const marks = bottleneck(model, paths, all);
 	const out: Record<string, NodeFigures> = {};
 	for (const node of model.nodes) {
 		const f = byNode.get(node.id);
@@ -351,20 +493,25 @@ export function nodeFiguresOf(model: PipelineModel, paths: ReadonlyMap<string, s
 		}
 		out[node.id] = f.kind === 'input'
 			? { kind: 'input', outRate: f.outRate }
-			: { kind: 'component', inRate: f.inRate, outRate: f.outRate, errorRate: f.errorRate, p50: f.p50, p99: f.p99 };
+			: {
+				kind: 'component', inRate: f.inRate, outRate: f.outRate, errorRate: f.errorRate, p50: f.p50, p99: f.p99, share: f.share,
+				...(marks.slowest === f.key ? { slowest: true as const } : {}),
+				...(marks.errors.has(f.key) ? { hasErrors: true as const } : {}),
+			};
 	}
 	return out;
 }
 
 const EMPTY_FIGURES = {
 	inRate: null, outRate: null, batchInRate: null, batchOutRate: null, errorRate: null, errorShare: null, p50: null, p90: null, p99: null, mean: null,
-	trend: [] as readonly number[],
+	trend: [] as readonly number[], share: null, slowest: false, hasErrors: false,
 } as const;
 
-/** A row's figures from a component's. */
-const rowFigures = (f: ComponentFigures) => ({
+/** A row's figures from a component's, with its marks (ticket 7.7). */
+const rowFigures = (f: ComponentFigures, marks: Marks) => ({
 	inRate: f.inRate, outRate: f.outRate, batchInRate: f.batchInRate, batchOutRate: f.batchOutRate, errorRate: f.errorRate,
 	errorShare: f.errorShare, p50: f.p50, p90: f.p90, p99: f.p99, mean: f.mean, trend: f.trend,
+	share: f.share, slowest: marks.slowest === f.key, hasErrors: marks.errors.has(f.key),
 });
 
 /**
@@ -386,12 +533,10 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 		}
 		return depth;
 	};
+	const order = inConfigOrder(model, byNode, unmatched);
+	const marks = bottleneck(model, paths, all);
 	const rows: MetricRow[] = [];
-	for (const node of model.nodes) {
-		if (node.role === 'route') {
-			continue;
-		}
-		const f = byNode.get(node.id);
+	for (const [node, f] of order.matched) {
 		const path = paths.get(node.id) ?? (node.id.startsWith('path:') ? node.id.slice('path:'.length) : f ? yamlPathOf(f.path) : '');
 		rows.push({
 			id: node.id,
@@ -400,11 +545,10 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 			name: node.label ?? node.component ?? path,
 			path,
 			depth: depthOf(node.id),
-			...(f ? rowFigures(f) : EMPTY_FIGURES),
+			...(f ? rowFigures(f, marks) : EMPTY_FIGURES),
 		});
 	}
-	unmatched.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
-	for (const f of unmatched) {
+	for (const f of order.unmatched) {
 		const path = yamlPathOf(f.path);
 		rows.push({
 			id: `series:${f.path}:${f.label}`,
@@ -413,7 +557,7 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 			name: f.label !== '' ? f.label : path,
 			path,
 			depth: 0,
-			...rowFigures(f),
+			...rowFigures(f, marks),
 		});
 	}
 	return rows;
@@ -438,6 +582,7 @@ export function sortRows(rows: readonly MetricRow[], sort: MetricsSort | null): 
 			case 'p90': return row.p90;
 			case 'p99': return row.p99;
 			case 'mean': return row.mean;
+			case 'share': return row.share;
 		}
 	};
 	const sign = sort.dir === 'asc' ? 1 : -1;

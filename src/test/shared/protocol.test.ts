@@ -53,8 +53,10 @@ const HOST_MESSAGES: readonly HostMessage[] = [
 	{ type: 'nodeFigures', byId: {} },
 	{ type: 'nodeFigures', byId: {
 		'path:input': { kind: 'input', outRate: 200 },
-		'label:fast': { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000 },
-		'path:output': { kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061 },
+		'label:fast': { kind: 'component', inRate: 200, outRate: 200, errorRate: 0, p50: 7700, p99: 21_000, share: 0.004 },
+		'path:output': { kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 87, p99: 4061, share: null },
+		// Ticket 7.7: the marks.
+		'label:slow': { kind: 'component', inRate: 200, outRate: 200, errorRate: 2, p50: 5_170_000, p99: 5_620_000, share: 0.996, slowest: true, hasErrors: true },
 	} },
 	{ type: 'snapshot', model: EMPTY_MODEL, nodeStatus: {}, selection: null, hostStatus: { binary: 'ok', schema: 'ok' },
 		nodeFigures: { 'path:input': { kind: 'input', outRate: null } } },
@@ -146,6 +148,10 @@ suite('shared/protocol (3.2)', () => {
 			{ type: 'nodeFigures', byId: { a: { kind: 'output', outRate: 1 } } },
 			{ type: 'nodeFigures', byId: { a: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1 } } },
 			{ ...snapshot, nodeFigures: { a: { kind: 'component' } } },
+			// Ticket 7.7: no share, or a mark that is not `true`.
+			{ type: 'nodeFigures', byId: { a: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1 } } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1, share: 0.5, slowest: false } } },
+			{ type: 'nodeFigures', byId: { a: { kind: 'component', inRate: 1, outRate: 1, errorRate: 0, p50: 1, p99: 1, share: 0.5, hasErrors: 1 } } },
 			{ ...snapshot, nodeFigures: [] },
 		];
 		for (const message of hostBad) {

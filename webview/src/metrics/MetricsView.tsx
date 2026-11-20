@@ -13,11 +13,18 @@
 // P99, Mean (each sortable) and Trend, an inline SVG line of the host's out-rate points scaled to its
 // own min and max (flat when constant), with its min and max as its accessible text. The footer names
 // the window. The table scrolls sideways when the tab is narrow.
+// Ticket 7.7 (board 1, E7 R6): the host's summary line under the state line ("Slowest: … · N% of the
+// pipeline's time · p50 …", "Input X/s → Output Y/s · no gap" or "· gap …", "Errors: none" or the
+// components with errors); a Share column after Mean; the slowest row highlighted (a warning-like
+// theme colour) and rows with errors marked (an error-like one), each with a text tag too, never colour
+// alone. The Component column stays pinned on the left while the others scroll sideways, and the
+// header row stays fixed while the rows scroll, both on an opaque theme background.
 
 import { useEffect, useState } from 'react';
 import {
-	addressText, cloudAddressText, COLUMN_LABELS, COLUMN_TITLES, DEFAULT_WINDOW_MINUTES, formatNs, formatRate, formatShare, keptText, METRICS_COLUMNS,
-	METRICS_WINDOWS, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, stateText, TREND_LABEL, trendText, windowLabel,
+	addressText, cloudAddressText, COLUMN_LABELS, COLUMN_TITLES, DEFAULT_WINDOW_MINUTES, formatNs, formatRate, formatShare, keptText,
+	METRICS_COLUMNS, METRICS_WINDOWS, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, stateText, summaryParts, TREND_LABEL, trendText, windowLabel,
+	type MetricsSummary,
 	type MetricRow, type MetricsColumn, type MetricsHostMessage, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
 
@@ -31,6 +38,9 @@ const NUMERIC: ReadonlySet<MetricsColumn> = new Set(FIGURE_COLUMNS);
 /** The trend line's size in px. */
 export const TREND_WIDTH = 80;
 export const TREND_HEIGHT = 16;
+/** Ticket 7.7: the row tags' texts (beside the colour). */
+export const SLOWEST_TAG = 'slowest';
+export const ERRORS_TAG = 'errors';
 
 /** A cell's text. */
 export function cellText(row: MetricRow, column: MetricsColumn): string {
@@ -47,7 +57,37 @@ export function cellText(row: MetricRow, column: MetricsColumn): string {
 		case 'p90': return formatNs(row.p90);
 		case 'p99': return formatNs(row.p99);
 		case 'mean': return formatNs(row.mean);
+		case 'share': return formatShare(row.share);
 	}
+}
+
+/** Ticket 7.7: a row's class list (unmatched, slowest, errors), or `undefined`. */
+export function rowClass(row: MetricRow): string | undefined {
+	const classes = [
+		...(row.nodeId === null ? ['rpcn-metrics-unmatched'] : []),
+		...(row.slowest ? ['rpcn-metrics-slowest'] : []),
+		...(row.hasErrors ? ['rpcn-metrics-errors'] : []),
+	];
+	return classes.length > 0 ? classes.join(' ') : undefined;
+}
+
+/** Ticket 7.7: the summary line (board 1): `summaryParts`, each in its own span (the slowest and errors coloured). */
+function Summary({ summary }: { readonly summary: MetricsSummary }) {
+	const texts = summaryParts(summary);
+	// The parts are the slowest (when there is one), the flow (when known), then the errors, always last.
+	const kinds = texts.map((_, i) => (i === texts.length - 1 ? 'errors' : i === 0 && summary.slowest ? 'slowest' : 'flow'));
+	const classOf = (kind: string) => (kind === 'slowest' ? ' rpcn-metrics-summary-slowest'
+		: kind === 'errors' && summary.errors.length > 0 ? ' rpcn-metrics-summary-errors' : '');
+	return (
+		<p className="rpcn-metrics-summary">
+			{texts.map((text, i) => (
+				<span key={kinds[i]}>
+					{i > 0 && <span className="rpcn-metrics-summary-sep" aria-hidden="true"> · </span>}
+					<span className={`rpcn-metrics-summary-part${classOf(kinds[i])}`} data-part={kinds[i]}>{text}</span>
+				</span>
+			))}
+		</p>
+	);
 }
 
 /**
@@ -107,6 +147,7 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 	const sort = shown?.sort ?? null;
 	const windowMinutes = shown?.windowMinutes ?? DEFAULT_WINDOW_MINUTES;
 	const showTable = rows.length > 0;
+	const summary = showTable ? shown?.summary ?? null : null;
 
 	return (
 		<div className="rpcn-metrics">
@@ -135,6 +176,7 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 					{line}
 				</p>
 			)}
+			{summary && <Summary summary={summary} />}
 			<div className="rpcn-metrics-scroll">
 				{showTable ? (
 					<table className="rpcn-metrics-table">
@@ -145,7 +187,7 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 									return (
 										<th
 											key={column}
-											className={NUMERIC.has(column) ? 'rpcn-metrics-num' : undefined}
+											className={column === 'name' ? 'rpcn-metrics-pinned' : NUMERIC.has(column) ? 'rpcn-metrics-num' : undefined}
 											aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}
 										>
 											<button type="button" className="rpcn-metrics-sort" title={COLUMN_TITLES[column]} onClick={() => post({ type: 'sort', sort: nextSort(sort, column) })}>
@@ -160,11 +202,13 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 						</thead>
 						<tbody>
 							{rows.map((row) => (
-								<tr key={row.id} data-row={row.id} className={row.nodeId === null ? 'rpcn-metrics-unmatched' : undefined}>
-									<td>
+								<tr key={row.id} data-row={row.id} className={rowClass(row)}>
+									<td className="rpcn-metrics-pinned">
 										<span className="rpcn-metrics-component" style={{ paddingLeft: `${row.depth * INDENT_EM}em` }}>
 											<span className="rpcn-metrics-kind">{row.kind}</span>
 											<span className="rpcn-metrics-name">{row.name}</span>
+											{row.slowest && <span className="rpcn-metrics-tag rpcn-metrics-tag-slowest">{SLOWEST_TAG}</span>}
+											{row.hasErrors && <span className="rpcn-metrics-tag rpcn-metrics-tag-errors">{ERRORS_TAG}</span>}
 										</span>
 									</td>
 									<td className="rpcn-metrics-path">{cellText(row, 'path')}</td>
