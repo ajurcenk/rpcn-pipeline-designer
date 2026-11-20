@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import { componentCatalogue } from '../../core/catalogue';
 import { buildPipelineModel, componentPaths } from '../../core/graph';
 import {
-	componentReadings, figures, hasComponentSeries, metricRows, metricsTypeOf, nodeFiguresOf, pathToNodeId, rate, sortRows, yamlPathOf, type MetricsReading,
+	compactReading, componentReadings, figures, hasComponentSeries, increase, keepReading, MAX_WINDOW_MS, metricRows, metricsTypeOf, nodeFiguresOf, pathToNodeId,
+	sortRows, yamlPathOf, type CompactReading, type MetricsReading,
 } from '../../core/metrics';
 import { parsePrometheus } from '../../core/prometheus';
 import { parseYaml } from '../../core/yamlPath';
@@ -16,6 +17,8 @@ const configOf = (text: string) => {
 	return { model: buildPipelineModel(parsed, text, CATALOGUE), paths: componentPaths(parsed, text, CATALOGUE) };
 };
 const reading = (time: number, text: string): MetricsReading => ({ ...parsePrometheus(text), time });
+/** The figures of `readings` (oldest first) over the whole of them. */
+const fig = (...readings: MetricsReading[]) => figures(readings.map(compactReading), MAX_WINDOW_MS);
 
 const HAPPY = [
 	'input:',
@@ -40,11 +43,11 @@ const happyText = (n: number, p50 = 7700) => connectText([
 ]) + 'input_latency_ns{label="",path="root.input",quantile="0.5"} 5210000\n';
 
 suite('core/metrics', () => {
-	test('HAPPY: four rows in config order, rates over the last two readings, the latencies as served', () => {
+	test('HAPPY: four rows in config order, rates over two readings (one interval), the latencies as served', () => {
 		const { model, paths } = configOf(HAPPY);
 		const first = reading(1_000, happyText(100));
 		const second = reading(3_000, happyText(500, 8000));
-		const rows = metricRows(model, paths, figures(first, second));
+		const rows = metricRows(model, paths, fig(first, second));
 		assert.deepStrictEqual(rows.map((r) => [r.kind, r.name, r.path, r.depth, r.inRate, r.outRate, r.errorRate, r.p50, r.p99]), [
 			['input', 'generate', 'input', 0, null, 200, null, null, null],
 			['processor', 'fast', 'pipeline.processors[0]', 0, 200, 200, 0, 8000, 21_000],
@@ -56,25 +59,121 @@ suite('core/metrics', () => {
 
 	test('FIRST_READING: latencies shown, rates none', () => {
 		const { model, paths } = configOf(HAPPY);
-		const rows = metricRows(model, paths, figures(undefined, reading(1_000, happyText(100))));
-		assert.deepStrictEqual(rows.map((r) => [r.inRate, r.outRate, r.errorRate]), [[null, null, null], [null, null, null], [null, null, null], [null, null, null]]);
+		const rows = metricRows(model, paths, fig(reading(1_000, happyText(100))));
+		assert.deepStrictEqual(rows.map((r) => [r.inRate, r.outRate, r.errorRate, r.errorShare, r.mean]), Array(4).fill([null, null, null, null, null]));
 		assert.deepStrictEqual(rows.map((r) => r.p50), [null, 7700, 5_170_000, 87]);
+		assert.deepStrictEqual(rows.map((r) => r.trend), [[], [], [], []]);
 	});
 
-	test('COUNTER_RESET: a counter lower than before gives no rate, never a negative one; the next reading counts from it', () => {
-		assert.strictEqual(rate(10, 30, 2000), 10);
-		assert.strictEqual(rate(30, 10, 2000), null);
-		assert.strictEqual(rate(undefined, 10, 2000), null);
-		assert.strictEqual(rate(10, 10, 0), null);
+	test('RESET (7.6): a counter that goes back counts its new value as the increase (as rate()), never a negative rate', () => {
+		assert.strictEqual(increase(10, 30), 20);
+		assert.strictEqual(increase(30, 10), 10);
+		assert.strictEqual(increase(undefined, 10), 10);
+		assert.strictEqual(increase(10, undefined), undefined);
 		const a = reading(0, happyText(1000));
-		const b = reading(2000, happyText(40));
-		const c = reading(4000, happyText(240));
-		const reset = figures(a, b);
+		const b = reading(2000, happyText(1200));
+		const c = reading(4000, happyText(40));
+		const d = reading(6000, happyText(240));
+		const reset = fig(b, c);
 		for (const f of reset.values()) {
-			assert.ok(f.outRate === null, `${f.path}: ${f.outRate}`);
+			assert.strictEqual(f.outRate, 20, f.path);
 		}
-		const after = [...figures(b, c).values()];
-		assert.deepStrictEqual(after.map((f) => f.outRate), [100, 100, 100, 100]);
+		const all = [...fig(a, b, c, d).values()];
+		for (const f of all) {
+			assert.ok((f.outRate ?? -1) >= 0, `${f.path}: ${f.outRate}`);
+			assert.strictEqual(f.outRate, (200 + 40 + 200) / 6, f.path);
+			assert.deepStrictEqual(f.trend, [100, 20, 100], f.path);
+		}
+	});
+
+	const podText = (pods: Record<string, number>) => connectText(Object.entries(pods).map(([pod, n]) => (
+		{ family: 'processor' as const, path: 'root.pipeline.processors.0', pod, received: n, sent: n })));
+
+	test('NEW_POD (7.6): a pod the reading before did not have is a restart for that pod; the pods are summed', () => {
+		const f = fig(
+			reading(0, podText({ a: 1000 })),
+			reading(2000, podText({ a: 1200 })),
+			reading(4000, podText({ b: 50 })),
+			reading(6000, podText({ b: 250 })),
+		).get('root.pipeline.processors.0\u0000')!;
+		assert.strictEqual(f.outRate, (200 + 50 + 200) / 6);
+		assert.deepStrictEqual(f.trend, [100, 25, 100]);
+		const two = fig(reading(0, podText({ a: 100, b: 100 })), reading(2000, podText({ a: 300, b: 500 }))).get('root.pipeline.processors.0\u0000')!;
+		assert.strictEqual(two.inRate, 300, 'both pods\' increases');
+	});
+
+	test('MISSING (7.6): a component missing from a reading adds nothing for the intervals around it; its running total is not counted', () => {
+		const other = connectText([{ family: 'output', path: 'root.output', sent: 1 }]);
+		const f = fig(
+			reading(0, podText({ a: 100 })),
+			reading(2000, other),
+			reading(4000, podText({ a: 300 })),
+			reading(6000, podText({ a: 400 })),
+		).get('root.pipeline.processors.0\u0000')!;
+		assert.strictEqual(f.outRate, 100 / 6, 'only the 4 s → 6 s interval counts');
+		assert.deepStrictEqual(f.trend, [50]);
+	});
+
+	test('WINDOWS (7.6): 100/s for 10 min then 300/s: 1 and 5 min show 300/s, 15 min the mean of both; each its own trend', () => {
+		let kept: CompactReading[] = [];
+		let n = 0;
+		for (let t = 0; t <= 15 * 60_000; t += 2000) {
+			if (t > 0) {
+				n += t <= 10 * 60_000 ? 200 : 600;
+			}
+			kept = keepReading(kept, compactReading(reading(t, happyText(n))));
+		}
+		assert.strictEqual(kept.length, 451);
+		const out = (minutes: number) => figures(kept, minutes * 60_000).get('root.output\u0000')!;
+		assert.strictEqual(out(1).outRate, 300);
+		assert.strictEqual(out(5).outRate, 300);
+		assert.ok(Math.abs(out(15).outRate! - (100 * 600 + 300 * 300) / 900) < 1e-9, String(out(15).outRate));
+		assert.strictEqual(out(1).trend.length, 30);
+		assert.ok(out(1).trend.every((p) => p === 300));
+		assert.strictEqual(out(5).trend.length, 150);
+		assert.strictEqual(out(15).trend.length, 450);
+		assert.deepStrictEqual([out(15).trend[0], out(15).trend.at(-1)], [100, 300]);
+		// WINDOW CHANGE: the same readings over another window, no new reading needed.
+		assert.notStrictEqual(out(15).outRate, out(1).outRate);
+	});
+
+	test('OLDER_THAN_15_MIN (7.6): readings more than 15 minutes older than the last are dropped; an older reading is not added', () => {
+		const r = (t: number) => compactReading(reading(t, happyText(t / 1000)));
+		let kept = keepReading([], r(0));
+		kept = keepReading(kept, r(60_000));
+		kept = keepReading(kept, r(MAX_WINDOW_MS));
+		assert.deepStrictEqual(kept.map((x) => x.time), [0, 60_000, MAX_WINDOW_MS]);
+		kept = keepReading(kept, r(MAX_WINDOW_MS + 1));
+		assert.deepStrictEqual(kept.map((x) => x.time), [60_000, MAX_WINDOW_MS, MAX_WINDOW_MS + 1]);
+		assert.deepStrictEqual(keepReading(kept, r(30_000)).map((x) => x.time), [60_000, MAX_WINDOW_MS, MAX_WINDOW_MS + 1]);
+		assert.deepStrictEqual(figures([], 60_000).size, 0);
+	});
+
+	const fullText = (n: number, extra: { received?: number; sum?: number; count?: number; p90?: number; pod?: string } = {}) => connectText([
+		{
+			family: 'processor', path: 'root.pipeline.processors.0', pod: extra.pod, received: extra.received ?? n, sent: n, errors: n / 20,
+			batchesIn: n / 10, batchesOut: n / 10, p50: 100, p90: extra.p90 ?? 900, p99: 990, sum: extra.sum ?? n * 1000, count: extra.count ?? n,
+		},
+		{ family: 'output', path: 'root.output', sent: n, batchesOut: n / 5, errors: 0, p50: 10, p90: 50, p99: 99, sum: n * 20, count: n },
+	]);
+
+	test('BATCHES / ERRORS / MEAN / P90 (7.6): batches in and out per second, errors per second and as a share of received, mean over the window', () => {
+		const all = fig(reading(0, fullText(100)), reading(2000, fullText(300)), reading(4000, fullText(500)));
+		const p = all.get('root.pipeline.processors.0\u0000')!;
+		assert.deepStrictEqual([p.inRate, p.outRate, p.batchInRate, p.batchOutRate, p.errorRate, p.errorShare, p.p50, p.p90, p.p99, p.mean],
+			[100, 100, 10, 10, 5, 0.05, 100, 900, 990, 1000]);
+		const o = all.get('root.output\u0000')!;
+		assert.deepStrictEqual([o.inRate, o.outRate, o.batchInRate, o.batchOutRate, o.errorRate, o.errorShare, o.p90, o.mean],
+			[null, 100, null, 20, 0, null, 50, 20], 'an output: no In/s, no batches in, no error share');
+		// Nothing received over the window: no error share; no count: no mean.
+		const idle = fig(reading(0, fullText(100)), reading(2000, fullText(100))).get('root.pipeline.processors.0\u0000')!;
+		assert.deepStrictEqual([idle.errorRate, idle.errorShare, idle.mean], [0, null, null]);
+		// The mean is Δsum / Δcount over the window, not the process's whole sum / count.
+		const mean = fig(reading(0, fullText(100, { sum: 1_000_000, count: 100 })), reading(2000, fullText(300, { sum: 1_000_000 + 200 * 50, count: 300 })));
+		assert.strictEqual(mean.get('root.pipeline.processors.0\u0000')!.mean, 50);
+		// p90: the latest reading's, the highest across pods.
+		const pods = reading(0, fullText(1, { pod: 'a', p90: 300 }) + fullText(1, { pod: 'b', p90: 700 }));
+		assert.strictEqual(fig(pods).get('root.pipeline.processors.0\u0000')!.p90, 700);
 	});
 
 	test('componentReadings: summed across label sets per path + label, the highest quantile kept, series without path ignored', () => {
@@ -91,9 +190,12 @@ suite('core/metrics', () => {
 		const parsed = parsePrometheus(text);
 		const readings = [...componentReadings(parsed).values()];
 		assert.strictEqual(readings.length, 1);
-		assert.strictEqual(readings[0].received, 15);
+		assert.deepStrictEqual([...readings[0].pods].map(([pod, c]) => [pod, c.received]), [['a', 10], ['b', 5]], 'kept per pod');
 		assert.strictEqual(readings[0].p50, 300);
+		assert.strictEqual(readings[0].p90, 900);
 		assert.strictEqual(readings[0].p99, undefined);
+		assert.strictEqual(fig(reading(0, text), reading(1000, text.replace('pod="a"} 10', 'pod="a"} 20'))).get('root.pipeline.processors.0\u0000')!.inRate, 10,
+			'summed across pods');
 		assert.ok(hasComponentSeries(parsed));
 		assert.ok(!hasComponentSeries(parsePrometheus('go_goroutines 3\nprocessor_received{label="x"} 3\n')));
 	});
@@ -150,7 +252,7 @@ suite('core/metrics', () => {
 			{ family: 'input', path: 'root.input', received: 1 },
 			{ family: 'processor', path: 'root.aaa', received: 1 },
 		]);
-		const rows = metricRows(model, paths, figures(undefined, reading(0, text)));
+		const rows = metricRows(model, paths, fig(reading(0, text)));
 		assert.deepStrictEqual(rows.map((r) => [r.id, r.kind, r.name, r.path, r.depth]), [
 			['path:input', 'input', 'generate', 'input', 0],
 			['label:dup', 'processor', 'dup', 'pipeline.processors[0]', 0],
@@ -176,7 +278,7 @@ suite('core/metrics', () => {
 			{ family: 'processor', path: 'root.processor_resources', label: 'res_one', received: n, sent: n, p50: 5, p99: 6 },
 			{ family: 'processor', path: 'root.zzz', label: 'ghost', received: n },
 		]);
-		const all = figures(reading(0, series(100)), reading(2000, series(500)));
+		const all = fig(reading(0, series(100)), reading(2000, series(500)));
 		const byId = nodeFiguresOf(model, paths, all);
 		assert.deepStrictEqual(Object.keys(byId), [
 			'path:input', 'label:dup', 'path:pipeline.processors[1].branch.processors[0]', 'res:processor:res_one',
@@ -191,23 +293,29 @@ suite('core/metrics', () => {
 			}
 		}
 		// The first reading: latencies, no rates.
-		assert.deepStrictEqual(nodeFiguresOf(model, paths, figures(undefined, reading(0, series(1))))['label:dup'],
+		assert.deepStrictEqual(nodeFiguresOf(model, paths, fig(reading(0, series(1))))['label:dup'],
 			{ kind: 'component', inRate: null, outRate: null, errorRate: null, p50: 7700, p99: 21_000 });
 	});
 
 	test('NO_MODEL: without a model every series is listed, by path', () => {
-		const rows = metricRows({ nodes: [], edges: [] }, new Map(), figures(undefined, reading(0, happyText(1))));
+		const rows = metricRows({ nodes: [], edges: [] }, new Map(), fig(reading(0, happyText(1))));
 		assert.deepStrictEqual(rows.map((r) => r.path), ['input', 'output', 'pipeline.processors[0]', 'pipeline.processors[1]']);
 	});
 
 	test('sortRows: ascending, descending, rows with no figure last, stable; null keeps the order', () => {
 		const { model, paths } = configOf(HAPPY);
-		const rows = metricRows(model, paths, figures(reading(0, happyText(100)), reading(2000, happyText(300))));
+		const rows = metricRows(model, paths, fig(reading(0, happyText(100)), reading(2000, happyText(300))));
 		assert.deepStrictEqual(sortRows(rows, { column: 'p50', dir: 'desc' }).map((r) => r.name), ['sleep', 'fast', 'drop', 'generate']);
 		assert.deepStrictEqual(sortRows(rows, { column: 'p50', dir: 'asc' }).map((r) => r.name), ['drop', 'fast', 'sleep', 'generate']);
 		assert.deepStrictEqual(sortRows(rows, { column: 'in', dir: 'asc' }).map((r) => r.name), ['fast', 'sleep', 'generate', 'drop']);
 		assert.deepStrictEqual(sortRows(rows, { column: 'name', dir: 'asc' }).map((r) => r.name), ['drop', 'fast', 'generate', 'sleep']);
 		assert.deepStrictEqual(sortRows(rows, null).map((r) => r.name), ['generate', 'fast', 'sleep', 'drop']);
+		// Ticket 7.6: every figure column sorts.
+		assert.deepStrictEqual(sortRows(rows, { column: 'errorShare', dir: 'desc' }).map((r) => r.name), ['sleep', 'fast', 'generate', 'drop']);
+		assert.deepStrictEqual(sortRows(rows, { column: 'errors', dir: 'desc' }).map((r) => r.name), ['sleep', 'fast', 'drop', 'generate']);
+		for (const column of ['batchesIn', 'batchesOut', 'p90', 'mean'] as const) {
+			assert.strictEqual(sortRows(rows, { column, dir: 'asc' }).length, 4, column);
+		}
 	});
 
 	test('metricsTypeOf: the metrics section type, none by default, mapping not a type', () => {

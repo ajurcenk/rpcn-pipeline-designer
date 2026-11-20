@@ -21,14 +21,21 @@
 // again until the cluster's access changes or Show metrics runs again; no access is the `noAccess`
 // state, nothing read, and the feed follows the access as it is set or forgotten. Its error texts are
 // masked by the binding (the Cloud view's mask) before they are shown or logged.
+//
+// Ticket 7.6, the live window: the feed keeps the last 15 minutes of readings in memory, compactly
+// (`compactReading`: per component, not the whole text), in place of the one reading before; each
+// update's figures are over the session's window (`MetricsFeeds.windowMinutes`, 5 min until the tab
+// chooses another; one choice for the tab and the graphs, held until VS Code restarts). Choosing a
+// window recomputes every feed's figures at once, with no read. The readings are dropped at the same
+// points as before: nothing showing them visible, a new port, a restart or rebind, an access change.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
 import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/logsProtocol';
-import type { MetricsPanelState } from '../../shared/metricsProtocol';
+import { DEFAULT_WINDOW_MINUTES, type MetricsPanelState, type MetricsWindowMinutes } from '../../shared/metricsProtocol';
 import type { PipelineModel } from '../../shared/protocol';
-import { figures, type ComponentFigures, type MetricsReading } from '../../core/metrics';
+import { compactReading, figures, keepReading, type CompactReading, type ComponentFigures } from '../../core/metrics';
 import { isMetricsReadError, localMetricsSource, type MetricsSource } from '../metrics/source';
 import type { RunChange } from './run';
 
@@ -116,8 +123,9 @@ export interface MetricsUpdate {
 	/** The run's metrics port; `undefined` while it has none. */
 	readonly port: number | undefined;
 	/**
-	 * The figures of the last reading (kept, marked by the state, after the run stops); `undefined`
-	 * with none. A new reading is a new map, so a consumer can tell one apart by identity.
+	 * The figures of the last reading over the session's window (kept, marked by the state, after the
+	 * run stops); `undefined` with none. A new reading, or a new window, is a new map, so a consumer can
+	 * tell one apart by identity.
 	 */
 	readonly figures: ReadonlyMap<string, ComponentFigures> | undefined;
 	/** When the last reading was made (ms since the epoch); `undefined` with none. */
@@ -154,7 +162,8 @@ export class MetricsFeed {
 	private readonly subscribers = new Set<Subscriber>();
 	private port: number | undefined;
 	private panelState: MetricsPanelState = NONE;
-	private prev: MetricsReading | undefined;
+	/** Ticket 7.6: the last 15 minutes of readings, oldest first (compact). */
+	private readings: CompactReading[] = [];
 	private last: ReadonlyMap<string, ComponentFigures> | undefined;
 	/** Failed reads (refused, unreachable) in a row. */
 	private failures = 0;
@@ -199,7 +208,7 @@ export class MetricsFeed {
 
 	get update(): MetricsUpdate {
 		return {
-			state: this.panelState, port: this.port, figures: this.last, time: this.prev?.time, source: this.cloudInfo,
+			state: this.panelState, port: this.port, figures: this.last, time: this.readings.at(-1)?.time, source: this.cloudInfo,
 			intervalMs: this.cloud ? this.feeds.cloudTiming.intervalMs : this.intervalMs,
 		};
 	}
@@ -254,7 +263,7 @@ export class MetricsFeed {
 		if (!has) {
 			this.pause();
 			this.generation++;
-			this.prev = undefined;
+			this.readings = [];
 			this.last = undefined;
 			this.failures = 0;
 			this.noSeriesReads = 0;
@@ -316,7 +325,7 @@ export class MetricsFeed {
 		this.pause();
 		this.generation++;
 		this.port = undefined;
-		this.prev = undefined;
+		this.readings = [];
 		this.last = undefined;
 		this.failures = 0;
 		this.noSeriesReads = 0;
@@ -355,7 +364,7 @@ export class MetricsFeed {
 
 	/** Drops the readings and figures (no subscriber visible); a live feed waits for its next reading. */
 	private dropReadings(): void {
-		this.prev = undefined;
+		this.readings = [];
 		this.last = undefined;
 		this.failures = 0;
 		this.noSeriesReads = 0;
@@ -380,7 +389,7 @@ export class MetricsFeed {
 		}
 		if (port !== this.port) {
 			this.port = port;
-			this.prev = undefined;
+			this.readings = [];
 			this.failures = 0;
 			this.noSeriesReads = 0;
 			this.notServedReason = undefined;
@@ -393,7 +402,7 @@ export class MetricsFeed {
 		} else if (this.notServedReason !== undefined) {
 			this.panelState = { kind: 'notServed', reason: this.notServedReason };
 		} else if (this.panelState.kind !== 'live' && this.panelState.kind !== 'unreachable') {
-			this.panelState = this.prev ? { kind: 'live' } : { kind: 'waiting' };
+			this.panelState = this.readings.length > 0 ? { kind: 'live' } : { kind: 'waiting' };
 		}
 	}
 
@@ -410,7 +419,7 @@ export class MetricsFeed {
 		} else if (this.notServedReason !== undefined) {
 			this.panelState = { kind: 'notServed', reason: this.notServedReason };
 		} else if (this.panelState.kind !== 'live' && this.panelState.kind !== 'unreachable') {
-			this.panelState = this.prev ? { kind: 'live' } : { kind: 'waiting' };
+			this.panelState = this.readings.length > 0 ? { kind: 'live' } : { kind: 'waiting' };
 		}
 	}
 
@@ -490,8 +499,8 @@ export class MetricsFeed {
 			if (abort.signal.aborted || generation !== this.generation) {
 				return;
 			}
-			this.last = figures(this.prev, reading);
-			this.prev = reading;
+			this.readings = keepReading(this.readings, compactReading(reading));
+			this.last = figures(this.readings, this.feeds.windowMs);
 			this.failures = 0;
 			this.noSeriesReads = 0;
 			this.panelState = { kind: 'live' };
@@ -543,8 +552,8 @@ export class MetricsFeed {
 			if (abort.signal.aborted || generation !== this.generation) {
 				return;
 			}
-			this.last = figures(this.prev, reading);
-			this.prev = reading;
+			this.readings = keepReading(this.readings, compactReading(reading));
+			this.last = figures(this.readings, this.feeds.windowMs);
 			this.failures = 0;
 			this.noSeriesReads = 0;
 			this.panelState = { kind: 'live' };
@@ -647,6 +656,15 @@ export class MetricsFeed {
 		}
 	}
 
+	/** Ticket 7.6: the session's window changed: the figures over it, at once, with no read. */
+	windowChanged(): void {
+		if (this.readings.length === 0) {
+			return;
+		}
+		this.last = figures(this.readings, this.feeds.windowMs);
+		this.emit();
+	}
+
 	private emit(): void {
 		const update = this.update;
 		for (const s of [...this.subscribers]) {
@@ -672,6 +690,25 @@ export class MetricsFeeds implements vscode.Disposable {
 	cloudTiming: CloudTiming = CLOUD_TIMING;
 	/** Ticket 7.5: when the last Cloud read of each cluster began (the floor is per cluster: each read is the whole cluster's). */
 	private readonly cloudReads = new Map<string, number>();
+	/** Ticket 7.6: the window the figures are over, for the session (the tab's choice; none written anywhere). */
+	private window: MetricsWindowMinutes = DEFAULT_WINDOW_MINUTES;
+
+	get windowMinutes(): MetricsWindowMinutes {
+		return this.window;
+	}
+
+	get windowMs(): number {
+		return this.window * 60_000;
+	}
+
+	/** Ticket 7.6: the tab chose a window: every feed's figures over it, at once (no read). */
+	setWindowMinutes(minutes: MetricsWindowMinutes): void {
+		if (minutes === this.window) {
+			return;
+		}
+		this.window = minutes;
+		this.feeds.forEach((f) => f.windowChanged());
+	}
 
 	/** Ticket 7.5: when the last Cloud read of `clusterId` began, if any. */
 	lastCloudReadOf(clusterId: string): number | undefined {

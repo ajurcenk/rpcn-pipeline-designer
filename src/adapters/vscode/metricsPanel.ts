@@ -19,11 +19,16 @@
 // one of its own (rows by path). The header names it ("Cloud · <cluster> · <pipeline>", the endpoint's
 // host, the mapped file or "not mapped to a file", the interval); no access and a refused read are
 // states of their own. Show Pipeline Metrics on the file binds it back to the local run.
+//
+// Ticket 7.6: the header's 1 / 5 / 15 min control chooses the window the figures are over (5 min until
+// one is chosen; the choice is the session's, in memory, shared with the graphs through the feeds): the
+// rows and trends are recomputed at once from the readings kept, with no read, and the footer says it.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	cloudSourceLabel, localSourceLabel, parseMetricsWebviewMessage, type MetricRow, type MetricsHostMessage, type MetricsPanelState, type MetricsSort,
+	type MetricsWindowMinutes,
 } from '../../shared/metricsProtocol';
 import type { ComponentFigures } from '../../core/metrics';
 import { metricRows, sortRows } from '../../core/metrics';
@@ -110,6 +115,11 @@ export class MetricsPanel implements vscode.Disposable {
 		return this.view?.visible === true;
 	}
 
+	/** Ticket 7.6: the window the figures are over (the session's). */
+	get windowMinutes(): MetricsWindowMinutes {
+		return this.options.feeds.windowMinutes;
+	}
+
 	/** "Local run · <file>" or (ticket 7.5) "Cloud · <cluster> · <pipeline>", or `undefined` before the first Show. */
 	get title(): string | undefined {
 		const source = this.update?.source;
@@ -135,20 +145,7 @@ export class MetricsPanel implements vscode.Disposable {
 		view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')] };
 		view.webview.html = webviewHtml(view.webview, this.options.extensionUri, 'metrics', 'Pipeline Metrics');
 		this.viewSubscriptions = [
-			view.webview.onDidReceiveMessage((raw: unknown) => {
-				const m = parseMetricsWebviewMessage(raw);
-				switch (m?.type) {
-					case 'ready':
-						this.ready = true;
-						this.postShow();
-						break;
-					case 'sort':
-						this.sort = m.sort;
-						this.postShow();
-						this.changed.fire();
-						break;
-				}
-			}),
+			view.webview.onDidReceiveMessage((raw: unknown) => this.receive(raw)),
 			view.onDidChangeVisibility(() => {
 				if (!view.visible) {
 					// Not retained while hidden: the page loads again (and posts `ready`) when shown.
@@ -170,6 +167,33 @@ export class MetricsPanel implements vscode.Disposable {
 		];
 		this.updateDescription();
 		this.subscription?.setVisible(view.visible);
+	}
+
+	/** A message from the webview (a test seam too: the integration tests cannot click in it). */
+	receive(raw: unknown): void {
+		const m = parseMetricsWebviewMessage(raw);
+		switch (m?.type) {
+			case 'ready':
+				this.ready = true;
+				this.postShow();
+				break;
+			case 'sort':
+				this.sort = m.sort;
+				this.postShow();
+				this.changed.fire();
+				break;
+			case 'window': {
+				// The feeds recompute their figures and emit (this tab's update posts the rows); with no
+				// readings nothing is emitted, so the tab posts the new window itself.
+				const before = this.posted.length;
+				this.options.feeds.setWindowMinutes(m.minutes);
+				if (this.posted.length === before) {
+					this.postShow();
+					this.changed.fire();
+				}
+				break;
+			}
+		}
 	}
 
 	/** Show Pipeline Metrics: `uri` (default: the active editor's file) is bound, and the tab opens. */
@@ -289,6 +313,7 @@ export class MetricsPanel implements vscode.Disposable {
 			rows: this.rows(),
 			intervalMs: this.update?.intervalMs ?? this.options.feeds.intervalMs,
 			sort: this.sort,
+			windowMinutes: this.windowMinutes,
 			...(this.update?.source.kind === 'cloud' ? { cloud: { host: this.update.source.host } } : {}),
 		};
 		this.posted.push(message);

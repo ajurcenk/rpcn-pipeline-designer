@@ -12,7 +12,10 @@ export type MetricKind = 'input' | 'processor' | 'output' | 'resource';
 
 export const METRIC_KINDS: readonly MetricKind[] = ['input', 'processor', 'output', 'resource'];
 
-/** One component's figures. Rates are per second; latencies in nanoseconds; `null`: none ("—"). */
+/**
+ * One component's figures (ticket 7.6: over the chosen window). Rates are per second; latencies in
+ * nanoseconds; the error share a fraction of the received (0–1); `null`: none ("—").
+ */
 export interface MetricRow {
 	/** Unique among the rows: the node id, else `series:<path>:<label>`. */
 	readonly id: string;
@@ -27,18 +30,55 @@ export interface MetricRow {
 	readonly depth: number;
 	readonly inRate: number | null;
 	readonly outRate: number | null;
+	/** Ticket 7.6: batches received and sent per second. */
+	readonly batchInRate: number | null;
+	readonly batchOutRate: number | null;
 	readonly errorRate: number | null;
+	/** Ticket 7.6: errors as a share of received (processors only), 0–1. */
+	readonly errorShare: number | null;
+	/** The latest reading's quantiles (the process's own, not over the window). */
 	readonly p50: number | null;
+	readonly p90: number | null;
 	readonly p99: number | null;
+	/** Ticket 7.6: the mean latency over the window (Δ`_sum` / Δ`_count`). */
+	readonly mean: number | null;
+	/** Ticket 7.6: messages out per second, one point per reading interval of the window, oldest first. */
+	readonly trend: readonly number[];
 }
 
-export type MetricsColumn = 'name' | 'path' | 'in' | 'out' | 'errors' | 'p50' | 'p99';
+export type MetricsColumn = 'name' | 'path' | 'in' | 'out' | 'batchesIn' | 'batchesOut' | 'errors' | 'errorShare' | 'p50' | 'p90' | 'p99' | 'mean';
 
-export const METRICS_COLUMNS: readonly MetricsColumn[] = ['name', 'path', 'in', 'out', 'errors', 'p50', 'p99'];
+/** The sortable columns in their order (ticket 7.6 decision); the trend column follows them, not sortable. */
+export const METRICS_COLUMNS: readonly MetricsColumn[] = [
+	'name', 'path', 'in', 'out', 'batchesIn', 'batchesOut', 'errors', 'errorShare', 'p50', 'p90', 'p99', 'mean',
+];
 
 export const COLUMN_LABELS: Readonly<Record<MetricsColumn, string>> = {
-	name: 'Component', path: 'Path', in: 'In/s', out: 'Out/s', errors: 'Errors/s', p50: 'P50', p99: 'P99',
+	name: 'Component', path: 'Path', in: 'In/s', out: 'Out/s', batchesIn: 'Batches in/s', batchesOut: 'Batches out/s',
+	errors: 'Errors/s', errorShare: 'Error %', p50: 'P50', p90: 'P90', p99: 'P99', mean: 'Mean',
 };
+
+/** The trend column's header (not sortable). */
+export const TREND_LABEL = 'Trend';
+
+/** Ticket 7.6: the column headers' tooltips, where a figure needs saying how it is made. */
+export const COLUMN_TITLES: Readonly<Partial<Record<MetricsColumn, string>>> = {
+	p50: 'From the latest reading: the process\'s own quantile, not over the window',
+	p90: 'From the latest reading: the process\'s own quantile, not over the window',
+	p99: 'From the latest reading: the process\'s own quantile, not over the window',
+	mean: 'Over the window: the latency\'s total over its count',
+	errorShare: 'Errors as a share of the messages received, over the window',
+};
+
+/** Ticket 7.6: the windows the figures are computed over, in minutes. */
+export type MetricsWindowMinutes = 1 | 5 | 15;
+
+export const METRICS_WINDOWS: readonly MetricsWindowMinutes[] = [1, 5, 15];
+
+/** The window until one is chosen (ticket 7.6 decision). */
+export const DEFAULT_WINDOW_MINUTES: MetricsWindowMinutes = 5;
+
+export const isWindowMinutes = (v: unknown): v is MetricsWindowMinutes => (METRICS_WINDOWS as readonly unknown[]).includes(v);
 
 export interface MetricsSort {
 	readonly column: MetricsColumn;
@@ -84,12 +124,16 @@ export type MetricsHostMessage = {
 	readonly intervalMs: number;
 	/** The order the rows come in: `null` is config order. */
 	readonly sort: MetricsSort | null;
+	/** Ticket 7.6: the window the figures are over. */
+	readonly windowMinutes: MetricsWindowMinutes;
 };
 
 export type MetricsWebviewMessage =
 	| { readonly type: 'ready' }
 	/** A column header was clicked: the host orders the rows (`null`: config order). */
-	| { readonly type: 'sort'; readonly sort: MetricsSort | null };
+	| { readonly type: 'sort'; readonly sort: MetricsSort | null }
+	/** Ticket 7.6: a window was chosen: the host computes the figures over it. */
+	| { readonly type: 'window'; readonly minutes: MetricsWindowMinutes };
 
 // ---------------------------------------------------------------------------------------------
 // Texts.
@@ -98,7 +142,15 @@ export type MetricsWebviewMessage =
 export const NO_FILE_TEXT = 'Run a Redpanda Connect config, then use Show Pipeline Metrics on it.';
 export const NOT_RUNNING_TEXT = 'Run this file to see its metrics.';
 export const STOPPED_TEXT = 'The run stopped. The figures are from its last reading.';
-export const KEPT_TEXT = 'Readings are kept only while this tab is open.';
+/** Ticket 7.6 (board 1): the footer, "Figures over the last <n> minutes · readings kept only while this tab is open". */
+export function keptText(minutes: MetricsWindowMinutes): string {
+	return `Figures over the last ${minutes} minute${minutes === 1 ? '' : 's'} · readings kept only while this tab is open`;
+}
+
+/** Ticket 7.6: a window button's text ("5 min"). */
+export function windowLabel(minutes: MetricsWindowMinutes): string {
+	return `${minutes} min`;
+}
 export const NO_ROWS_TEXT = 'No components yet.';
 
 /** "Local run · <file>". */
@@ -183,6 +235,22 @@ export function formatNs(value: number | null): string {
 	return `${scaled.toFixed(digits)} ${unit}`;
 }
 
+/** Ticket 7.6: a share as a percentage with one decimal ("2.5%"), `—` for none. */
+export function formatShare(value: number | null): string {
+	if (value === null || !Number.isFinite(value) || value < 0) {
+		return '—';
+	}
+	return `${(value * 100).toFixed(1)}%`;
+}
+
+/** Ticket 7.6: a trend's accessible text, "Out/s over the window: from <min> to <max>" (or "no trend yet"). */
+export function trendText(points: readonly number[]): string {
+	if (points.length === 0) {
+		return 'Out/s over the window: no trend yet';
+	}
+	return `Out/s over the window: from ${formatRate(Math.min(...points))} to ${formatRate(Math.max(...points))}`;
+}
+
 /** A rate on a node's figures line: "200.0/s", `—` for none. */
 function rateText(value: number | null): string {
 	const text = formatRate(value);
@@ -221,7 +289,9 @@ function isRow(v: unknown): v is MetricRow {
 		&& typeof v.kind === 'string' && (METRIC_KINDS as readonly string[]).includes(v.kind)
 		&& typeof v.name === 'string' && typeof v.path === 'string'
 		&& typeof v.depth === 'number' && Number.isInteger(v.depth) && v.depth >= 0
-		&& isFigure(v.inRate) && isFigure(v.outRate) && isFigure(v.errorRate) && isFigure(v.p50) && isFigure(v.p99);
+		&& isFigure(v.inRate) && isFigure(v.outRate) && isFigure(v.batchInRate) && isFigure(v.batchOutRate)
+		&& isFigure(v.errorRate) && isFigure(v.errorShare) && isFigure(v.p50) && isFigure(v.p90) && isFigure(v.p99) && isFigure(v.mean)
+		&& Array.isArray(v.trend) && v.trend.every((p) => typeof p === 'number' && Number.isFinite(p));
 }
 
 function isSort(v: unknown): v is MetricsSort {
@@ -261,7 +331,7 @@ export function parseMetricsHostMessage(v: unknown): MetricsHostMessage | undefi
 	return (v.source === null || typeof v.source === 'string') && (v.file === null || typeof v.file === 'string')
 		&& (v.port === null || isPort(v.port)) && isState(v.state) && Array.isArray(v.rows) && v.rows.every(isRow)
 		&& typeof v.intervalMs === 'number' && Number.isFinite(v.intervalMs) && v.intervalMs > 0
-		&& (v.sort === null || isSort(v.sort))
+		&& (v.sort === null || isSort(v.sort)) && isWindowMinutes(v.windowMinutes)
 		&& (v.cloud === undefined || v.cloud === null || (isObject(v.cloud) && typeof v.cloud.host === 'string' && v.cloud.host !== ''))
 		? v as MetricsHostMessage : undefined;
 }
@@ -277,6 +347,8 @@ export function parseMetricsWebviewMessage(v: unknown): MetricsWebviewMessage | 
 		case 'sort':
 			return v.sort === null ? { type: 'sort', sort: null }
 				: isSort(v.sort) ? { type: 'sort', sort: { column: v.sort.column, dir: v.sort.dir } } : undefined;
+		case 'window':
+			return isWindowMinutes(v.minutes) ? { type: 'window', minutes: v.minutes } : undefined;
 		default:
 			return undefined;
 	}

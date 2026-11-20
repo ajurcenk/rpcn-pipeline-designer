@@ -198,7 +198,9 @@ export class GraphPanel implements GraphPanelHandle {
 	/**
 	 * Maps the feed's last reading onto the current model and posts `nodeFigures` when it changed:
 	 * `{}` without a live run (the figures of a stopped run are not shown) or an open document; frozen
-	 * while the YAML does not parse (as the node status, AD-17).
+	 * while the YAML does not parse (as the node status, AD-17). Ticket 7.6: the feed's figures are over
+	 * the session's window (the tab's choice, 5 min when it was never opened), so each node matches its
+	 * row; a new window is a new update, re-posted here.
 	 */
 	private async sendFigures(): Promise<void> {
 		const update = this.metricsUpdate;

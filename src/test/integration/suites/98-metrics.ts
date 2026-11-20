@@ -10,6 +10,8 @@
 // too, each node's line has its row's numbers), LABELLED / RESOURCE / NESTED (each on its own node, no
 // line on the group), HIDDEN (graph hidden and tab closed: no read), REOPENED (the snapshot carries
 // the figures), STOP (the lines cleared).
+// Ticket 7.6, the live window: WINDOW (the 1 / 5 / 15 min choice recomputes the rows, the trends and the
+// footer at once, with no read brought forward; the new columns are filled).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -95,6 +97,9 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		metrics().setSourceFactory(fake.factory);
 	});
 
+	// Ticket 7.6: the window is the session's: a failing WINDOW test must not leave 1 or 15 min to later tests.
+	teardown(() => metrics().receive({ type: 'window', minutes: 5 }));
+
 	suiteTeardown(async () => {
 		metrics().setSourceFactory(undefined);
 		await vscode.commands.executeCommand('workbench.action.closePanel');
@@ -158,6 +163,61 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
 		assert.ok(await waitFor(() => metrics().state.kind === 'live' && fake.readsOf(again).length > 0, METRICS_INTERVAL_MS + 3_000), JSON.stringify(metrics().state));
 		assert.strictEqual(metrics().posted.at(-1)?.port, again);
+		await stop(doc);
+	});
+
+	test('WINDOW (7.6): 1 / 5 / 15 min recompute the rows and trends at once, one show each, with no read brought forward; batches, error %, p90 and mean shown', async () => {
+		const doc = await open('window.yaml', CONFIG);
+		const port = await runAndWait(doc);
+		// Readings a simulated minute apart: 100/s for two minutes, then 300/s; every read answers.
+		const base = Date.now();
+		fake.clock = () => base + fake.readsOf(port).length * 60_000;
+		fake.serve(port, (i) => {
+			const n = i <= 2 ? i * 6_000 : 12_000 + (i - 2) * 18_000;
+			return connectText([
+				{ family: 'input', path: 'root.input', received: n },
+				{
+					family: 'processor', path: 'root.pipeline.processors.0', label: 'fast', received: n, sent: n, errors: n / 100, batchesIn: n / 10, batchesOut: n / 10,
+					p50: 7700, p90: 15_000, p99: 21_000, sum: n * 8000, count: n,
+				},
+				{ family: 'processor', path: 'root.pipeline.processors.1', received: n, sent: n, errors: 0, p50: 5_170_000, p99: 5_620_000 },
+				{ family: 'output', path: 'root.output', sent: n, batchesOut: n / 10, errors: 0, p50: 87, p90: 2000, p99: 4061, sum: n * 100, count: n },
+			]);
+		});
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+		// The fourth reading shown and the fifth read not started (none in flight); synchronous from here.
+		assert.ok(await waitFor(() => fake.readsOf(port).length === 4 && metrics().rows()[0]?.trend.length === 3, METRICS_INTERVAL_MS * 8),
+			`four readings: ${fake.readsOf(port).length} ${JSON.stringify(metrics().rows()[0])}`);
+		assert.strictEqual(metrics().windowMinutes, 5, 'five minutes until one is chosen');
+		assert.strictEqual(metrics().posted.at(-1)?.windowMinutes, 5);
+		const fast = () => metrics().rows()[1];
+		assert.strictEqual(metrics().rows()[0].outRate, 30_000 / 180, 'the input over the 3 minutes kept');
+		assert.deepStrictEqual(metrics().rows()[0].trend, [100, 100, 300]);
+		assert.deepStrictEqual([fast().batchInRate, fast().batchOutRate, fast().errorShare, fast().p90, fast().mean], [3_000 / 180, 3_000 / 180, 0.01, 15_000, 8000]);
+		assert.strictEqual(metrics().rows()[3].batchOutRate, 3_000 / 180);
+		assert.strictEqual(metrics().rows()[3].p90, 2000);
+
+		let postedAt = metrics().posted.length;
+		metrics().receive({ type: 'window', minutes: 1 });
+		assert.strictEqual(metrics().posted.length, postedAt + 1, 'one change posts one show');
+		assert.strictEqual(metrics().windowMinutes, 1);
+		let shown = metrics().posted.at(-1)!;
+		assert.strictEqual(shown.windowMinutes, 1);
+		assert.strictEqual(shown.rows[0].outRate, 300, 'the last minute, posted at once');
+		assert.deepStrictEqual(shown.rows[0].trend, [300]);
+		assert.strictEqual(shown.rows[1].inRate, 300);
+		postedAt = metrics().posted.length;
+		metrics().receive({ type: 'window', minutes: 15 });
+		assert.strictEqual(metrics().posted.length, postedAt + 1, 'one change posts one show');
+		shown = metrics().posted.at(-1)!;
+		assert.strictEqual(shown.windowMinutes, 15);
+		assert.strictEqual(shown.rows[0].outRate, 30_000 / 180);
+		assert.deepStrictEqual(shown.rows[0].trend, [100, 100, 300]);
+		assert.strictEqual(fake.readsOf(port).length, 4, 'no read for the window');
+		// The next read comes at the interval after the last, not sooner.
+		assert.ok(await waitFor(() => fake.readsOf(port).length >= 5, METRICS_INTERVAL_MS * 3));
+		const [fourth, fifth] = fake.readsOf(port).slice(3, 5);
+		assert.ok(fifth.startedAt - fourth.startedAt >= METRICS_INTERVAL_MS - 5, `the next read at the interval: ${fifth.startedAt - fourth.startedAt} ms`);
 		await stop(doc);
 	});
 

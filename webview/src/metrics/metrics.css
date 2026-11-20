@@ -81,6 +81,7 @@ body {
 }
 .rpcn-metrics-table {
 	width: 100%;
+	min-width: max-content;
 	border-collapse: collapse;
 	font-variant-numeric: tabular-nums;
 }
@@ -150,4 +151,50 @@ body {
 	border-top: 1px solid var(--vscode-panel-border, transparent);
 	color: var(--vscode-descriptionForeground);
 	font-size: 0.9em;
+}
+/* Ticket 7.6: the window control (board 1), a segmented 1 / 5 / 15 min group at the header's end. */
+.rpcn-metrics-window {
+	display: inline-flex;
+	margin-left: auto;
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, var(--vscode-contrastBorder, transparent)));
+	border-radius: 2px;
+	overflow: hidden;
+}
+.rpcn-metrics-window-button {
+	padding: 2px 8px;
+	border: 0;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font: inherit;
+	cursor: pointer;
+}
+.rpcn-metrics-window-button + .rpcn-metrics-window-button {
+	border-left: 1px solid var(--vscode-button-border, var(--vscode-panel-border, var(--vscode-contrastBorder, transparent)));
+}
+.rpcn-metrics-window-button:hover {
+	background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.rpcn-metrics-window-button[aria-pressed="true"] {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+.rpcn-metrics-window-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+/* The trend line: theme colours only. */
+.rpcn-metrics-trend-head {
+	padding: 6px 8px;
+}
+.rpcn-metrics-trend {
+	display: block;
+}
+.rpcn-metrics-trend polyline {
+	stroke: var(--vscode-charts-blue, var(--vscode-foreground));
+	stroke-width: 1.25;
+	stroke-linejoin: round;
+	stroke-linecap: round;
+}
+.rpcn-metrics-trend-none {
+	color: var(--vscode-descriptionForeground);
 }

@@ -131,7 +131,7 @@ export interface ExtensionApi {
 	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
 	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten. Only in `ExtensionMode.Test`.
 	 */
-	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory'>
+	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes'>
 		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];

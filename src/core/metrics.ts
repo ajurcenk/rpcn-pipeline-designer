@@ -1,13 +1,23 @@
 // The pure pipeline metrics model (AD-25, ticket 7.2): a reading's Prometheus samples as each
-// component's counters and latency quantiles (per `path` + `label`), the figures of two readings
-// (rates over the time between them, with counter resets), the mapping of a series to its model node
-// (AD-7, AD-17), and the tab's rows in config order. No `vscode`, no I/O.
+// component's counters and latency quantiles (per `path` + `label`), the figures of a window of
+// readings, the mapping of a series to its model node (AD-7, AD-17), and the tab's rows in config
+// order. No `vscode`, no I/O.
 //
-// Series (AD-25): counters `input_received`, `processor_received` / `_sent` / `_error`, `output_sent` /
-// `_error`; summaries `processor_latency_ns` and `output_latency_ns` (quantiles 0.5 and 0.99 shown, in
+// Series (AD-25): counters `input_received`, `processor_received` / `_sent` / `_error` /
+// `_batch_received` / `_batch_sent`, `output_sent` / `_batch_sent` / `_error`; summaries
+// `processor_latency_ns` and `output_latency_ns` (quantiles 0.5, 0.9 and 0.99, `_sum`, `_count`, in
 // ns). `input_latency_ns` is the whole pipeline's time (read to ack): it is not the input's own and is
-// not shown here (entry 6). Series without `path` are ignored. Several label sets of one component
-// (several pods) are summed for counters, and the highest quantile is kept.
+// not shown here. Series without `path` are ignored.
+//
+// Ticket 7.6, the live window: a reading is kept compactly (`compactReading`: per component, its
+// counters and `_sum` / `_count` per `pod`, and its highest quantiles), at most 15 minutes of them
+// (`keepReading`). The figures over a window (`figures`) sum, per pod, the increase between each two
+// consecutive readings in it, over the time from its first reading to its last: a counter that goes
+// back, or a pod the reading before did not have (a restart), counts its new value as the increase
+// (as Prometheus's `rate()`), never a negative one. The pods' increases are summed per component; the
+// quantiles are the latest reading's (the process's own, not computable per window), the highest
+// across pods; the mean is Δ`_sum` / Δ`_count`; the error share Δ`processor_error` /
+// Δ`processor_received`. Each component's trend is its out rate per reading interval.
 
 import { isMap, isScalar, type Pair } from 'yaml';
 import type { NodeFigures, NodeFiguresById, PipelineModel } from '../shared/protocol';
@@ -23,7 +33,12 @@ export interface MetricsReading extends PromText {
 
 export type SeriesKind = 'input' | 'processor' | 'output';
 
-/** One component's raw values in one reading. */
+/** The counters (and a summary's `_sum` / `_count`) a component has, per pod. */
+export type CounterField = 'received' | 'sent' | 'errors' | 'batchesIn' | 'batchesOut' | 'sum' | 'count';
+
+export type PodCounters = { [F in CounterField]?: number };
+
+/** One component's values in one reading. */
 export interface ComponentReading {
 	readonly key: string;
 	/** Connect's path (`root.pipeline.processors.0`). */
@@ -31,14 +46,21 @@ export interface ComponentReading {
 	/** Connect's `label` (`""` when none). */
 	readonly label: string;
 	readonly kind: SeriesKind;
-	received?: number;
-	sent?: number;
-	errors?: number;
+	/** Its counters by `pod` (`""` without one), each summed over its other label sets. */
+	readonly pods: Map<string, PodCounters>;
+	/** The highest across pods. */
 	p50?: number;
+	p90?: number;
 	p99?: number;
 }
 
-/** One component's figures between two readings. Rates per second, latencies in ns; `null`: none. */
+/** Ticket 7.6: one reading as kept in the window: its time and its components (not the whole text). */
+export interface CompactReading {
+	readonly time: number;
+	readonly components: ReadonlyMap<string, ComponentReading>;
+}
+
+/** One component's figures over a window. Rates per second, latencies in ns, the share 0–1; `null`: none. */
 export interface ComponentFigures {
 	readonly key: string;
 	readonly path: string;
@@ -46,19 +68,30 @@ export interface ComponentFigures {
 	readonly kind: SeriesKind;
 	readonly inRate: number | null;
 	readonly outRate: number | null;
+	readonly batchInRate: number | null;
+	readonly batchOutRate: number | null;
 	readonly errorRate: number | null;
+	readonly errorShare: number | null;
 	readonly p50: number | null;
+	readonly p90: number | null;
 	readonly p99: number | null;
+	readonly mean: number | null;
+	/** Out per second for each reading interval of the window, oldest first. */
+	readonly trend: readonly number[];
 }
 
-type CounterField = 'received' | 'sent' | 'errors';
+/** Ticket 7.6: readings are kept this long (the longest window). */
+export const MAX_WINDOW_MS = 15 * 60_000;
 
 const COUNTERS: Readonly<Record<string, readonly [SeriesKind, CounterField]>> = {
 	input_received: ['input', 'received'],
 	processor_received: ['processor', 'received'],
 	processor_sent: ['processor', 'sent'],
 	processor_error: ['processor', 'errors'],
+	processor_batch_received: ['processor', 'batchesIn'],
+	processor_batch_sent: ['processor', 'batchesOut'],
 	output_sent: ['output', 'sent'],
+	output_batch_sent: ['output', 'batchesOut'],
 	output_error: ['output', 'errors'],
 };
 
@@ -67,9 +100,10 @@ const LATENCIES: Readonly<Record<string, SeriesKind>> = {
 	output_latency_ns: 'output',
 };
 
+const QUANTILES: ReadonlyMap<number, 'p50' | 'p90' | 'p99'> = new Map([[0.5, 'p50'], [0.9, 'p90'], [0.99, 'p99']]);
+
 /** Every Connect component family, the input's latency included (for `hasComponentSeries`). */
-const COMPONENT_FAMILIES = new Set([...Object.keys(COUNTERS), ...Object.keys(LATENCIES), 'input_latency_ns',
-	'processor_batch_received', 'processor_batch_sent', 'output_batch_sent', 'output_rejected']);
+const COMPONENT_FAMILIES = new Set([...Object.keys(COUNTERS), ...Object.keys(LATENCIES), 'input_latency_ns', 'output_rejected']);
 
 const keyOf = (path: string, label: string) => `${path}\u0000${label}`;
 
@@ -78,36 +112,49 @@ export function hasComponentSeries(text: PromText): boolean {
 	return text.samples.some((s) => s.labels.path !== undefined && COMPONENT_FAMILIES.has(familyOf(s.name, text.types).family));
 }
 
-/** Each component's counters and quantiles in `reading`, by `path` + `label`, in the order first seen. */
+/** Each component's counters (per pod) and quantiles in `reading`, by `path` + `label`, in the order first seen. */
 export function componentReadings(reading: PromText): Map<string, ComponentReading> {
 	const out = new Map<string, ComponentReading>();
 	const at = (kind: SeriesKind, path: string, label: string): ComponentReading => {
 		const key = keyOf(path, label);
 		let entry = out.get(key);
 		if (!entry) {
-			entry = { key, path, label, kind };
+			entry = { key, path, label, kind, pods: new Map() };
 			out.set(key, entry);
 		}
 		return entry;
 	};
+	const add = (entry: ComponentReading, pod: string, field: CounterField, value: number) => {
+		let counters = entry.pods.get(pod);
+		if (!counters) {
+			counters = {};
+			entry.pods.set(pod, counters);
+		}
+		counters[field] = (counters[field] ?? 0) + value;
+	};
 	for (const sample of reading.samples) {
 		const path = sample.labels.path;
-		if (path === undefined || Number.isNaN(sample.value)) {
+		if (path === undefined || !Number.isFinite(sample.value)) {
 			continue;
 		}
 		const label = sample.labels.label ?? '';
+		const pod = sample.labels.pod ?? '';
 		const counter = COUNTERS[sample.name];
 		if (counter) {
-			const entry = at(counter[0], path, label);
-			entry[counter[1]] = (entry[counter[1]] ?? 0) + sample.value;
+			add(at(counter[0], path, label), pod, counter[1], sample.value);
+			continue;
+		}
+		const total = /^(.*)_(sum|count)$/.exec(sample.name);
+		const totalOf = total ? LATENCIES[total[1]] : undefined;
+		if (total && totalOf) {
+			add(at(totalOf, path, label), pod, total[2] as 'sum' | 'count', sample.value);
 			continue;
 		}
 		const latency = LATENCIES[sample.name];
 		const quantile = sample.labels.quantile;
 		if (latency && quantile !== undefined) {
-			const q = Number(quantile);
-			const field = q === 0.5 ? 'p50' : q === 0.99 ? 'p99' : undefined;
-			if (field && Number.isFinite(sample.value)) {
+			const field = QUANTILES.get(Number(quantile));
+			if (field) {
 				const entry = at(latency, path, label);
 				entry[field] = Math.max(entry[field] ?? -Infinity, sample.value);
 			}
@@ -116,39 +163,115 @@ export function componentReadings(reading: PromText): Map<string, ComponentReadi
 	return out;
 }
 
-/**
- * A counter's rate per second from `prev` to `cur` over `ms`: `null` without both values, without
- * time between them, or when the counter went back (a restart: the count starts again from `cur`).
- */
-export function rate(prev: number | undefined, cur: number | undefined, ms: number): number | null {
-	if (prev === undefined || cur === undefined || !(ms > 0) || cur < prev) {
-		return null;
-	}
-	return (cur - prev) / (ms / 1000);
+/** Ticket 7.6: `reading` as the window keeps it. */
+export function compactReading(reading: MetricsReading): CompactReading {
+	return { time: reading.time, components: componentReadings(reading) };
 }
 
 /**
- * The figures of `cur` against `prev` (the reading before it; none for the first): rates over the
- * time between them (none on the first reading), latencies as `cur` serves them. The input's row has
- * only Out/s (`input_received`); an output's has no In/s.
+ * Ticket 7.6: `readings` with `reading` added (a reading older than the last is dropped) and those
+ * more than `MAX_WINDOW_MS` older than it dropped. A new array; `readings` is not changed.
  */
-export function figures(prev: MetricsReading | undefined, cur: MetricsReading): Map<string, ComponentFigures> {
-	const before = prev ? componentReadings(prev) : new Map<string, ComponentReading>();
-	const ms = prev ? cur.time - prev.time : 0;
+export function keepReading(readings: readonly CompactReading[], reading: CompactReading): CompactReading[] {
+	const last = readings.at(-1);
+	if (last && reading.time < last.time) {
+		return readings.slice();
+	}
+	return [...readings.filter((r) => r.time >= reading.time - MAX_WINDOW_MS), reading];
+}
+
+/**
+ * A counter's increase from `prev` to `cur` (ticket 7.6): `undefined` without `cur`; `cur` itself
+ * when there was none before or it went back (a restart: the count starts again from 0, as
+ * Prometheus's `rate()` counts it); never negative.
+ */
+export function increase(prev: number | undefined, cur: number | undefined): number | undefined {
+	if (cur === undefined) {
+		return undefined;
+	}
+	return prev === undefined || cur < prev ? cur : cur - prev;
+}
+
+/** The increase of `field` from `a` to `b`, summed over `b`'s pods (a pod new in `b` is a restart); `undefined`: none has it. */
+function intervalIncrease(a: ComponentReading, b: ComponentReading, field: CounterField): number | undefined {
+	let total: number | undefined;
+	for (const [pod, counters] of b.pods) {
+		const inc = increase(a.pods.get(pod)?.[field], counters[field]);
+		if (inc !== undefined) {
+			total = (total ?? 0) + inc;
+		}
+	}
+	return total;
+}
+
+/** The out counter of a kind (the trend's): the input's received, the others' sent. */
+const outField = (kind: SeriesKind): CounterField => (kind === 'input' ? 'received' : 'sent');
+
+/**
+ * The figures of the last of `readings` (oldest first) over the `windowMs` before it (ticket 7.6):
+ * the readings at most `windowMs` older than the last; rates are their summed increases over the time
+ * from the first to the last (none with one reading only); the quantiles the last reading's. The
+ * input's row has only Out/s (`input_received`); an output's has no In/s, no batches in and no error
+ * share. Two readings give the rates over the one interval between them.
+ */
+export function figures(readings: readonly CompactReading[], windowMs: number): Map<string, ComponentFigures> {
 	const out = new Map<string, ComponentFigures>();
-	for (const c of componentReadings(cur).values()) {
-		const p = before.get(c.key);
-		const r = (field: CounterField) => rate(p?.[field], c[field], ms);
-		const base = { key: c.key, path: c.path, label: c.label, kind: c.kind };
+	const cur = readings.at(-1);
+	if (!cur) {
+		return out;
+	}
+	const window = readings.filter((r) => r.time >= cur.time - windowMs && r.time <= cur.time);
+	const first = window[0];
+	const seconds = (cur.time - first.time) / 1000;
+	for (const c of cur.components.values()) {
+		const totals: Partial<Record<CounterField, number>> = {};
+		const trend: number[] = [];
+		for (let i = 1; i < window.length; i++) {
+			const b = window[i].components.get(c.key);
+			const a = window[i - 1].components.get(c.key);
+			// A component missing from either reading adds nothing for that interval (its running total
+			// is not an increase); a new pod of a component that was there is a restart (`intervalIncrease`).
+			if (!a || !b) {
+				continue;
+			}
+			for (const field of ['received', 'sent', 'errors', 'batchesIn', 'batchesOut', 'sum', 'count'] as const) {
+				const inc = intervalIncrease(a, b, field);
+				if (inc !== undefined) {
+					totals[field] = (totals[field] ?? 0) + inc;
+				}
+			}
+			const ms = window[i].time - window[i - 1].time;
+			const outInc = intervalIncrease(a, b, outField(c.kind));
+			if (outInc !== undefined && ms > 0) {
+				trend.push(outInc / (ms / 1000));
+			}
+		}
+		const has = (field: CounterField) => [...c.pods.values()].some((p) => p[field] !== undefined);
+		const r = (field: CounterField): number | null => (seconds > 0 && has(field) ? (totals[field] ?? 0) / seconds : null);
+		const ratio = (num: CounterField, den: CounterField): number | null => {
+			const d = totals[den];
+			return seconds > 0 && has(num) && d !== undefined && d > 0 ? (totals[num] ?? 0) / d : null;
+		};
+		const base = {
+			key: c.key, path: c.path, label: c.label, kind: c.kind, inRate: null, batchInRate: null, batchOutRate: null, errorRate: null,
+			errorShare: null, p50: null, p90: null, p99: null, mean: null, trend,
+		};
 		switch (c.kind) {
 			case 'input':
-				out.set(c.key, { ...base, inRate: null, outRate: r('received'), errorRate: null, p50: null, p99: null });
+				out.set(c.key, { ...base, outRate: r('received') });
 				break;
 			case 'processor':
-				out.set(c.key, { ...base, inRate: r('received'), outRate: r('sent'), errorRate: r('errors'), p50: c.p50 ?? null, p99: c.p99 ?? null });
+				out.set(c.key, {
+					...base, inRate: r('received'), outRate: r('sent'), batchInRate: r('batchesIn'), batchOutRate: r('batchesOut'),
+					errorRate: r('errors'), errorShare: ratio('errors', 'received'),
+					p50: c.p50 ?? null, p90: c.p90 ?? null, p99: c.p99 ?? null, mean: ratio('sum', 'count'),
+				});
 				break;
 			case 'output':
-				out.set(c.key, { ...base, inRate: null, outRate: r('sent'), errorRate: r('errors'), p50: c.p50 ?? null, p99: c.p99 ?? null });
+				out.set(c.key, {
+					...base, outRate: r('sent'), batchOutRate: r('batchesOut'), errorRate: r('errors'),
+					p50: c.p50 ?? null, p90: c.p90 ?? null, p99: c.p99 ?? null, mean: ratio('sum', 'count'),
+				});
 				break;
 		}
 	}
@@ -233,7 +356,16 @@ export function nodeFiguresOf(model: PipelineModel, paths: ReadonlyMap<string, s
 	return out;
 }
 
-const EMPTY_FIGURES = { inRate: null, outRate: null, errorRate: null, p50: null, p99: null } as const;
+const EMPTY_FIGURES = {
+	inRate: null, outRate: null, batchInRate: null, batchOutRate: null, errorRate: null, errorShare: null, p50: null, p90: null, p99: null, mean: null,
+	trend: [] as readonly number[],
+} as const;
+
+/** A row's figures from a component's. */
+const rowFigures = (f: ComponentFigures) => ({
+	inRate: f.inRate, outRate: f.outRate, batchInRate: f.batchInRate, batchOutRate: f.batchOutRate, errorRate: f.errorRate,
+	errorShare: f.errorShare, p50: f.p50, p90: f.p90, p99: f.p99, mean: f.mean, trend: f.trend,
+});
 
 /**
  * The tab's rows: one per component node of `model` in config order (the model's pre-order), at its
@@ -268,7 +400,7 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 			name: node.label ?? node.component ?? path,
 			path,
 			depth: depthOf(node.id),
-			...(f ? { inRate: f.inRate, outRate: f.outRate, errorRate: f.errorRate, p50: f.p50, p99: f.p99 } : EMPTY_FIGURES),
+			...(f ? rowFigures(f) : EMPTY_FIGURES),
 		});
 	}
 	unmatched.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
@@ -281,7 +413,7 @@ export function metricRows(model: PipelineModel, paths: ReadonlyMap<string, stri
 			name: f.label !== '' ? f.label : path,
 			path,
 			depth: 0,
-			inRate: f.inRate, outRate: f.outRate, errorRate: f.errorRate, p50: f.p50, p99: f.p99,
+			...rowFigures(f),
 		});
 	}
 	return rows;
@@ -298,9 +430,14 @@ export function sortRows(rows: readonly MetricRow[], sort: MetricsSort | null): 
 			case 'path': return row.path === '' ? null : row.path;
 			case 'in': return row.inRate;
 			case 'out': return row.outRate;
+			case 'batchesIn': return row.batchInRate;
+			case 'batchesOut': return row.batchOutRate;
 			case 'errors': return row.errorRate;
+			case 'errorShare': return row.errorShare;
 			case 'p50': return row.p50;
+			case 'p90': return row.p90;
 			case 'p99': return row.p99;
+			case 'mean': return row.mean;
 		}
 	};
 	const sign = sort.dir === 'asc' ? 1 : -1;

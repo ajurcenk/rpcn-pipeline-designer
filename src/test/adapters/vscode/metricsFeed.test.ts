@@ -61,6 +61,71 @@ suite('adapters/vscode MetricsFeeds (7.3)', () => {
 		graph.dispose();
 	});
 
+	test('WINDOW (7.6): the figures are over the session\'s window (5 min by default); a new window recomputes every subscriber\'s at once, with no read brought forward', async () => {
+		// Its own feeds with a longer interval, so the test sees each reading before the next.
+		const interval = 100;
+		const own = new MetricsFeeds({
+			log: () => undefined,
+			run: { portOf: (uri) => (uri === URI.toString() ? PORT : undefined), onDidChangeRun: runChanged.event },
+			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined }),
+			intervalMs: interval,
+		});
+		// Readings a simulated minute apart: 100/s for two minutes, then 300/s; every read answers.
+		const base = 1_000_000;
+		const started: number[] = [];
+		own.setSourceFactory((port) => ({
+			address: `127.0.0.1:${port}`,
+			read: async () => {
+				const i = started.length;
+				started.push(Date.now());
+				const n = i <= 2 ? i * 6_000 : 12_000 + (i - 2) * 18_000;
+				return { ...parsePrometheus(connectText([{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n }])), time: base + i * 60_000 };
+			},
+		}));
+		const tab: MetricsUpdate[] = [];
+		const graph: MetricsUpdate[] = [];
+		const a = own.subscribe(URI, (u) => tab.push(u), true);
+		const b = own.subscribe(URI, (u) => graph.push(u), true);
+		try {
+			await until(() => tab.at(-1)?.time === base + 180_000);
+			// Synchronous from here until the next read (about `interval` away): the fourth reading's figures.
+			assert.strictEqual(started.length, 4, 'the fifth read has not started: none in flight');
+			const out = (u: MetricsUpdate | undefined) => [...(u?.figures?.values() ?? [])][0]?.outRate;
+			assert.strictEqual(own.windowMinutes, 5);
+			assert.strictEqual(out(tab.at(-1)), 30_000 / 180);
+			own.setWindowMinutes(1);
+			assert.strictEqual(out(tab.at(-1)), 300, 'the tab\'s figures over 1 min, at once');
+			assert.strictEqual(out(graph.at(-1)), 300, 'the graph\'s too');
+			assert.deepStrictEqual([...tab.at(-1)!.figures!.values()][0].trend, [300]);
+			own.setWindowMinutes(15);
+			assert.strictEqual(out(tab.at(-1)), 30_000 / 180);
+			assert.strictEqual(started.length, 4, 'no read for the window');
+			// The next read comes at the interval after the last, not sooner.
+			await until(() => started.length >= 5);
+			assert.ok(started[4] - started[3] >= interval - 5, `the next read at the interval: ${started[4] - started[3]} ms`);
+		} finally {
+			a.dispose();
+			b.dispose();
+			own.dispose();
+		}
+	});
+
+	test('CLOSED (7.6): the tab closed and the graph hidden drop the window; shown again, the first reading has no rates (nothing from before the hide counts)', async () => {
+		const updates: MetricsUpdate[] = [];
+		const sub = feeds.subscribe(URI, (u) => updates.push(u), true);
+		await until(() => (updates.at(-1)?.figures?.size ?? 0) > 0 && [...updates.at(-1)!.figures!.values()][0].trend.length >= 2);
+		assert.ok([...updates.at(-1)!.figures!.values()][0].inRate !== null, 'rates before the hide');
+		sub.setVisible(false);
+		assert.strictEqual(sub.feed.update.figures, undefined, 'dropped once nothing is visible');
+		const shownAt = updates.length;
+		sub.setVisible(true);
+		await until(() => updates.slice(shownAt).some((u) => u.figures !== undefined));
+		const first = updates.slice(shownAt).find((u) => u.figures !== undefined)!;
+		const f = [...first.figures!.values()][0];
+		assert.deepStrictEqual([f.inRate, f.outRate, f.mean, f.trend], [null, null, null, []], 'the window holds only the new reading');
+		sub.dispose();
+	});
+
 	test('VISIBILITY: reads while any subscriber is visible; none visible, no read and the figures dropped', async () => {
 		const tab = feeds.subscribe(URI, () => undefined, false);
 		const graph = feeds.subscribe(URI, () => undefined, false);
