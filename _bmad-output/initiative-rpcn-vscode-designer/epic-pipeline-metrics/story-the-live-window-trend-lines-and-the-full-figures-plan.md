@@ -131,3 +131,7 @@ All six patches applied by the implementer. Verified after them: `npm run compil
 **Manual checks:**
 - In the dev host, run `metrics_a.yaml` and open Pipeline Metrics: the window control switches 1/5/15 min, each row has a trend line, and the new columns show batches, error %, p90 and mean.
 
+
+## Manual Check
+
+- 2026-11-20, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `ec8c8bf`, restarted on the new build) with `metrics_a.yaml` run locally: "tested, no issues".
