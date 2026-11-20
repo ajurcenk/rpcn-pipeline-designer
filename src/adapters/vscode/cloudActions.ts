@@ -519,6 +519,35 @@ export class CloudActions {
 	}
 
 	/**
+	 * Ticket 7.5: the file Show metrics binds a pipeline's figures to, found as the other row actions find
+	 * it: its path; `undefined` when it has none (no tag, or outside the workspace: the tab shows it
+	 * alone); `null` when its tag is in several folders and the pick was cancelled.
+	 */
+	async metricsFileOf(pipeline: CloudPipeline): Promise<string | undefined | null> {
+		const local = this.ctx.localFileOf(pipeline);
+		if (local.kind === 'ok') {
+			return local.path;
+		}
+		if (local.kind === 'ambiguous') {
+			return await this.pickLocalFile(pipeline, local, `Show metrics: ${pipeline.displayName}`, 'show the metrics on') ?? null;
+		}
+		return undefined;
+	}
+
+	/** Bug 47: which of the files a tag names in several folders (`undefined`: cancelled). */
+	private async pickLocalFile(pipeline: CloudPipeline, local: { readonly tag: string; readonly paths: readonly string[] }, title: string, what: string): Promise<string | undefined> {
+		// Each choice carries its file: shown by its tag here, with its path when two would read the same.
+		const folders = this.ctx.workspaceFolders();
+		const tags = local.paths.map((f) => configTag(f, folders));
+		const offered = local.paths.map((file, i) => ({
+			file, label: tags.filter((t) => t === tags[i]).length > 1 ? `${tags[i]} (${file})` : tags[i],
+		}));
+		const choice = await this.ctx.ui.pickChoice(title, this.ctx.mask(
+			`Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${IN_SEVERAL_FOLDERS}. Which file to ${what}?`), offered.map((o) => o.label));
+		return offered.find((o) => o.label === choice)?.file;
+	}
+
+	/**
 	 * The row's local file, or said why there is none (`what`: what needs it). Bug 47: a tag naming
 	 * files in more than one folder is never resolved alone: the user picks one (cancelled: nothing done).
 	 */
@@ -528,15 +557,7 @@ export class CloudActions {
 			return local.path;
 		}
 		if (local.kind === 'ambiguous') {
-			// Each choice carries its file: shown by its tag here, with its path when two would read the same.
-			const folders = this.ctx.workspaceFolders();
-			const tags = local.paths.map((f) => configTag(f, folders));
-			const offered = local.paths.map((file, i) => ({
-				file, label: tags.filter((t) => t === tags[i]).length > 1 ? `${tags[i]} (${file})` : tags[i],
-			}));
-			const choice = await this.ctx.ui.pickChoice(`${ROW_ACTION_TEXT[what === 'deploy' ? 'deployAgain' : 'compare']}: ${pipeline.displayName}`, this.ctx.mask(
-				`Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${IN_SEVERAL_FOLDERS}. Which file to ${what}?`), offered.map((o) => o.label));
-			return offered.find((o) => o.label === choice)?.file ?? NOT_STARTED;
+			return await this.pickLocalFile(pipeline, local, `${ROW_ACTION_TEXT[what === 'deploy' ? 'deployAgain' : 'compare']}: ${pipeline.displayName}`, what) ?? NOT_STARTED;
 		}
 		void this.ctx.showInfo(local.kind === 'outside'
 			? `Pipeline ${pipeline.displayName} was deployed from ${local.tag}, which is ${NOT_IN_WORKSPACE}, so there is no local file to ${what}.`

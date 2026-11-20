@@ -172,7 +172,7 @@ export interface CloudMetricsOptions {
 }
 
 /** Where a Cloud endpoint is shown: its host (no path, query or credentials). */
-function cloudAddress(url: string): string {
+export function cloudAddress(url: string): string {
 	try {
 		return new URL(url).host || url;
 	} catch {

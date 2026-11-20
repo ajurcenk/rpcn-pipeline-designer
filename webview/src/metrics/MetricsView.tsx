@@ -5,10 +5,13 @@
 // In/s, Out/s, Errors/s, P50, P99). A header's click asks the host for that order (ascending, then
 // descending, then config order). Every figure comes from the host; the view formats them (rates
 // with one decimal, nanoseconds as ns, µs, ms or s, "—" for none). Theme colours only.
+// Ticket 7.5 (design board 3): a Cloud pipeline's header names it ("Cloud · <cluster> · <pipeline>") and
+// its address line the endpoint's host, the mapped file (or "not mapped to a file") and the interval;
+// no metrics access and a refused read are states of their own.
 
 import { useEffect, useState } from 'react';
 import {
-	addressText, COLUMN_LABELS, formatNs, formatRate, KEPT_TEXT, METRICS_COLUMNS, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, stateText,
+	addressText, cloudAddressText, COLUMN_LABELS, formatNs, formatRate, KEPT_TEXT, METRICS_COLUMNS, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, stateText,
 	type MetricRow, type MetricsColumn, type MetricsHostMessage, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
 
@@ -47,7 +50,10 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 	}, [post]);
 
 	const state = shown?.state ?? { kind: 'none' as const };
-	const line = stateText(state, shown?.file ?? null, shown?.port ?? null);
+	const cloud = shown?.cloud ?? null;
+	const line = stateText(state, shown?.file ?? null, shown?.port ?? null, cloud?.host ?? null);
+	const address = !shown ? undefined : cloud ? cloudAddressText(cloud.host, shown.file, shown.intervalMs)
+		: shown.port !== null ? addressText(shown.port, shown.intervalMs) : undefined;
 	const rows = shown?.rows ?? [];
 	const sort = shown?.sort ?? null;
 	const showTable = rows.length > 0;
@@ -59,10 +65,10 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 					<span className={`rpcn-metrics-dot rpcn-metrics-dot-${state.kind}`} aria-hidden="true" />
 					{shown?.source ?? NO_SOURCE_TITLE}
 				</h1>
-				{shown && shown.port !== null && <span className="rpcn-metrics-address">{addressText(shown.port, shown.intervalMs)}</span>}
+				{address && <span className="rpcn-metrics-address">{address}</span>}
 			</header>
 			{line && (
-				<p className={`rpcn-metrics-state rpcn-metrics-state-${state.kind}`} role={state.kind === 'unreachable' || state.kind === 'notServed' ? 'alert' : 'status'}>
+				<p className={`rpcn-metrics-state rpcn-metrics-state-${state.kind}`} role={state.kind === 'unreachable' || state.kind === 'notServed' || state.kind === 'refused' ? 'alert' : 'status'}>
 					{line}
 				</p>
 			)}

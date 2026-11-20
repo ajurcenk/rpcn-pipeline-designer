@@ -10,10 +10,22 @@
 // otherwise is tried again at the interval, quietly until 3 failures in a row. Each change is emitted
 // to every subscriber as a `MetricsUpdate`: the state, the port, and the figures of the last reading
 // (each consumer maps them onto its own model: the tab's rows, the graph's node figures).
+//
+// Ticket 7.5: a feed is bound to a source: the file's local run (the above, unchanged), or a Cloud
+// pipeline (Show metrics on its row), last chosen wins: Show metrics binds the pipeline's file to the
+// Cloud; Show Pipeline Metrics on the file, or a local run of it starting, binds it back to the run. A
+// pipeline with no local file has a feed of its own, keyed by a synthetic per-pipeline URI
+// (`cloudMetricsKey`). The Cloud is read every 10 s (AD-25), one read in flight, never sooner than 5 s
+// after the last read began; a read that fails is tried again after 5, 10, 20, 30, 60 s, then every 60 s
+// (quietly until 3 failures in a row); a refused read (401/403) is the `refused` state and is not read
+// again until the cluster's access changes or Show metrics runs again; no access is the `noAccess`
+// state, nothing read, and the feed follows the access as it is set or forgotten. Its error texts are
+// masked by the binding (the Cloud view's mask) before they are shown or logged.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
+import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/logsProtocol';
 import type { MetricsPanelState } from '../../shared/metricsProtocol';
 import type { PipelineModel } from '../../shared/protocol';
 import { figures, type ComponentFigures, type MetricsReading } from '../../core/metrics';
@@ -29,6 +41,59 @@ export const QUIET_FAILURES = 3;
  * still starting serves its HTTP server before its components exist.
  */
 export const NO_SERIES_READS = 5;
+/** Ticket 7.5 (AD-25): a Cloud pipeline is read this often. */
+export const CLOUD_METRICS_INTERVAL_MS = 10_000;
+/** Ticket 7.5 (AD-25): a Cloud endpoint is never read sooner than this after the last read began. */
+export const CLOUD_MIN_GAP_MS = 5_000;
+/** Ticket 7.5: what the Cloud no-series state says to do. */
+export const CLOUD_NO_SERIES_HINT = 'Use Show metrics again once the pipeline runs.';
+/** Ticket 7.5: the scheme of a feed key of a Cloud pipeline with no local file. */
+export const CLOUD_METRICS_SCHEME = 'redpanda-cloud-metrics';
+
+/** Ticket 7.5: the feed key of a Cloud pipeline with no local file. */
+export function cloudMetricsKey(clusterId: string, pipelineId: string): vscode.Uri {
+	return vscode.Uri.from({ scheme: CLOUD_METRICS_SCHEME, path: `/${clusterId}/${pipelineId}` });
+}
+
+/** Ticket 7.5: how a Cloud feed is timed (the test seam shortens it). */
+export interface CloudTiming {
+	readonly intervalMs: number;
+	readonly minGapMs: number;
+	readonly retryDelaysMs: readonly number[];
+}
+
+export const CLOUD_TIMING: CloudTiming = { intervalMs: CLOUD_METRICS_INTERVAL_MS, minGapMs: CLOUD_MIN_GAP_MS, retryDelaysMs: RETRY_DELAYS_MS };
+
+/**
+ * Ticket 7.5: a Cloud pipeline a feed reads, as the Cloud view gives it. The source is built from the
+ * cluster's access held now (none: no access); the password never leaves it.
+ */
+export interface CloudMetricsBinding {
+	readonly clusterId: string;
+	readonly clusterName: string;
+	readonly pipelineId: string;
+	readonly pipelineName: string;
+	/** The cluster's Prometheus endpoint host, as shown. */
+	readonly host: string;
+	/** The pipeline's local file; `undefined`: not mapped to one (the feed's key is `cloudMetricsKey`). */
+	readonly file: vscode.Uri | undefined;
+	/** The source with the cluster's access now; `undefined`: no access. */
+	source(): MetricsSource | undefined;
+	/** Fires when the cluster's metrics access is set, replaced or forgotten. */
+	readonly onDidChangeAccess: vscode.Event<void>;
+	/** An error text with the Cloud view's secrets masked. */
+	mask(text: string): string;
+}
+
+/** What a feed reads, as its subscribers are told. */
+export type MetricsSourceInfo =
+	| { readonly kind: 'local' }
+	| {
+		readonly kind: 'cloud'; readonly clusterId: string; readonly clusterName: string; readonly pipelineId: string; readonly pipelineName: string;
+		readonly host: string; readonly file: vscode.Uri | undefined;
+	};
+
+const LOCAL: MetricsSourceInfo = { kind: 'local' };
 
 /** What the feed reads of the Run (`RunController`). */
 export interface MetricsRun {
@@ -57,6 +122,10 @@ export interface MetricsUpdate {
 	readonly figures: ReadonlyMap<string, ComponentFigures> | undefined;
 	/** When the last reading was made (ms since the epoch); `undefined` with none. */
 	readonly time: number | undefined;
+	/** Ticket 7.5: what is read (the local run, or a Cloud pipeline). */
+	readonly source: MetricsSourceInfo;
+	/** Ticket 7.5: how often it is read. */
+	readonly intervalMs: number;
 }
 
 /** A consumer's hold on a feed: its visibility, and its end. */
@@ -98,6 +167,12 @@ export class MetricsFeed {
 	/** Bumped whenever what is read changes: an older read's answer is dropped. */
 	private generation = 0;
 	private reads = 0;
+	/** Ticket 7.5: the Cloud pipeline read instead of the local run (last chosen wins). */
+	private cloud: CloudMetricsBinding | undefined;
+	private cloudInfo: MetricsSourceInfo = LOCAL;
+	private accessSubscription: vscode.Disposable | undefined;
+	/** Ticket 7.5: why the Cloud refused the last read (masked); not read again until the access changes. */
+	private refusedMessage: string | undefined;
 
 	constructor(
 		readonly uri: vscode.Uri,
@@ -123,8 +198,85 @@ export class MetricsFeed {
 	}
 
 	get update(): MetricsUpdate {
-		return { state: this.panelState, port: this.port, figures: this.last, time: this.prev?.time };
+		return {
+			state: this.panelState, port: this.port, figures: this.last, time: this.prev?.time, source: this.cloudInfo,
+			intervalMs: this.cloud ? this.feeds.cloudTiming.intervalMs : this.intervalMs,
+		};
 	}
+
+	/** Ticket 7.5: the Cloud pipeline it reads, if any. */
+	get cloudBinding(): CloudMetricsBinding | undefined {
+		return this.cloud;
+	}
+
+	/**
+	 * Ticket 7.5: Show metrics on a Cloud pipeline: the feed reads it from now on (its readings start
+	 * again; a refused or failing state is tried again), and follows its cluster's access.
+	 */
+	bindCloud(binding: CloudMetricsBinding): void {
+		this.accessSubscription?.dispose();
+		this.cloud = binding;
+		this.cloudInfo = {
+			kind: 'cloud', clusterId: binding.clusterId, clusterName: binding.clusterName, pipelineId: binding.pipelineId,
+			pipelineName: binding.pipelineName, host: binding.host, file: binding.file,
+		};
+		this.accessSubscription = binding.onDidChangeAccess(() => this.accessChanged(binding));
+		this.restart();
+	}
+
+	/**
+	 * Ticket 7.5: Show Pipeline Metrics on the file, or a local run of it starting: the feed reads the
+	 * local run again (its readings start again). Already local: nothing changes.
+	 */
+	bindLocal(): void {
+		if (!this.cloud) {
+			return;
+		}
+		this.unbindCloud();
+		this.restart();
+	}
+
+	private unbindCloud(): void {
+		this.accessSubscription?.dispose();
+		this.accessSubscription = undefined;
+		this.cloud = undefined;
+		this.cloudInfo = LOCAL;
+		this.refusedMessage = undefined;
+		this.notServedReason = undefined;
+	}
+
+	/** Ticket 7.5: the cluster's access was set, replaced or forgotten. */
+	private accessChanged(binding: CloudMetricsBinding): void {
+		if (this.cloud !== binding) {
+			return;
+		}
+		const has = binding.source() !== undefined;
+		if (!has) {
+			this.pause();
+			this.generation++;
+			this.prev = undefined;
+			this.last = undefined;
+			this.failures = 0;
+			this.noSeriesReads = 0;
+			this.refusedMessage = undefined;
+			this.refreshState();
+			this.emit();
+			return;
+		}
+		// Set or replaced: a read in flight with the old access is dropped (its answer could be a stale
+		// refusal) and the feed reads again with the new one, within the floor.
+		this.pause();
+		this.generation++;
+		this.refusedMessage = undefined;
+		this.failures = 0;
+		if (this.panelState.kind !== 'live') {
+			this.panelState = { kind: 'waiting' };
+		}
+		this.refreshState();
+		this.emit();
+		this.resume();
+	}
+
 
 	/** Subscribes `listener` (visible or not); it is called on each change, not at once. */
 	subscribe(listener: (update: MetricsUpdate) => void, visible: boolean): MetricsSubscription {
@@ -167,6 +319,12 @@ export class MetricsFeed {
 		this.prev = undefined;
 		this.last = undefined;
 		this.failures = 0;
+		this.noSeriesReads = 0;
+		this.refusedMessage = undefined;
+		if (this.cloud) {
+			this.notServedReason = undefined;
+			this.panelState = { kind: 'waiting' };
+		}
 		this.refreshState();
 		this.emit();
 		this.resume();
@@ -176,6 +334,8 @@ export class MetricsFeed {
 	dispose(): void {
 		this.pause();
 		this.generation++;
+		this.accessSubscription?.dispose();
+		this.accessSubscription = undefined;
 	}
 
 	private visibilityChanged(before: boolean): void {
@@ -205,8 +365,12 @@ export class MetricsFeed {
 		}
 	}
 
-	/** The state for the file's run now; a new port starts the figures again. */
+	/** The state for the file's run (or, ticket 7.5, its Cloud pipeline) now; a new port starts the figures again. */
 	private refreshState(): void {
+		if (this.cloud) {
+			this.refreshCloudState(this.cloud);
+			return;
+		}
 		const uri = this.uri;
 		const port = this.options.run.portOf(uri.toString());
 		if (port === undefined) {
@@ -233,9 +397,34 @@ export class MetricsFeed {
 		}
 	}
 
+	/**
+	 * Ticket 7.5: the state of a Cloud pipeline: no access, refused, not served (as the local run's), else
+	 * waiting until its first reading. The deployed config's own `metrics` section is not checked.
+	 */
+	private refreshCloudState(binding: CloudMetricsBinding): void {
+		this.port = undefined;
+		if (binding.source() === undefined) {
+			this.panelState = { kind: 'noAccess', cluster: binding.clusterName };
+		} else if (this.refusedMessage !== undefined) {
+			this.panelState = { kind: 'refused', cluster: binding.clusterName, message: this.refusedMessage };
+		} else if (this.notServedReason !== undefined) {
+			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+		} else if (this.panelState.kind !== 'live' && this.panelState.kind !== 'unreachable') {
+			this.panelState = this.prev ? { kind: 'live' } : { kind: 'waiting' };
+		}
+	}
+
 	/** The file's run started, stopped or changed port. */
 	runChanged(change: RunChange): void {
 		if (change.uri !== this.uri.toString()) {
+			return;
+		}
+		if (this.cloud) {
+			// Ticket 7.5: a local run of the file starting takes it back from the Cloud (last chosen wins).
+			if (change.phase === 'running') {
+				this.unbindCloud();
+				this.restart();
+			}
 			return;
 		}
 		const before = this.port;
@@ -250,14 +439,27 @@ export class MetricsFeed {
 		this.resume();
 	}
 
-	/** Whether the feed reads now: a running file whose metrics are served, with a visible subscriber. */
+	/**
+	 * Whether the feed reads now: a running file whose metrics are served, with a visible subscriber;
+	 * (ticket 7.5) a Cloud pipeline with access that was not refused and is served.
+	 */
 	private get reading(): boolean {
+		if (this.cloud) {
+			const kind = this.panelState.kind;
+			return this.visible && kind !== 'noAccess' && kind !== 'refused' && kind !== 'notServed';
+		}
 		return this.visible && this.port !== undefined && this.panelState.kind !== 'notServed';
 	}
 
-	/** Reads at once (when it should) and then every interval. */
+	/** Reads at once (when it should; a Cloud read not sooner than the floor after the last) and then every interval. */
 	private resume(): void {
-		if (this.reading && !this.timer && !this.inFlight) {
+		if (!this.reading || this.timer || this.inFlight) {
+			return;
+		}
+		const wait = this.cloud ? this.floorWait(this.cloud) : 0;
+		if (wait > 0) {
+			this.timer = setTimeout(() => void this.readNow(), wait);
+		} else {
 			void this.readNow();
 		}
 	}
@@ -271,6 +473,9 @@ export class MetricsFeed {
 	}
 
 	private async readNow(): Promise<void> {
+		if (this.cloud) {
+			return this.readCloud(this.cloud);
+		}
 		this.timer = undefined;
 		const port = this.port;
 		if (port === undefined || this.inFlight || !this.reading) {
@@ -303,6 +508,108 @@ export class MetricsFeed {
 		this.emit();
 		if (this.reading && !this.timer) {
 			this.timer = setTimeout(() => void this.readNow(), this.intervalMs);
+		}
+	}
+
+	/**
+	 * Ticket 7.5: one read of a Cloud pipeline, then the next: at the interval after a reading, after the
+	 * backoff after a failure, none after a refusal or no metrics served.
+	 */
+	private async readCloud(binding: CloudMetricsBinding): Promise<void> {
+		this.timer = undefined;
+		if (this.inFlight || !this.reading) {
+			return;
+		}
+		const source = binding.source();
+		if (!source) {
+			this.refreshState();
+			this.emit();
+			return;
+		}
+		// The floor is the cluster's: another feed of it (or this one before a re-Show) may have read just now.
+		const wait = this.floorWait(binding);
+		if (wait > 0) {
+			this.timer = setTimeout(() => void this.readNow(), wait);
+			return;
+		}
+		const generation = this.generation;
+		const abort = new AbortController();
+		this.inFlight = abort;
+		this.reads++;
+		this.feeds.cloudReadStarted(binding.clusterId);
+		let next = this.feeds.cloudTiming.intervalMs;
+		try {
+			const reading = await source.read(abort.signal);
+			if (abort.signal.aborted || generation !== this.generation) {
+				return;
+			}
+			this.last = figures(this.prev, reading);
+			this.prev = reading;
+			this.failures = 0;
+			this.noSeriesReads = 0;
+			this.panelState = { kind: 'live' };
+		} catch (err) {
+			if (abort.signal.aborted || generation !== this.generation) {
+				return;
+			}
+			this.cloudFailed(err, binding);
+			if (!isMetricsReadError(err) || (err.kind === 'unreachable')) {
+				next = retryDelayMs(this.failures, this.feeds.cloudTiming.retryDelaysMs);
+			}
+		} finally {
+			if (this.inFlight === abort) {
+				this.inFlight = undefined;
+			}
+		}
+		this.emit();
+		if (this.reading && !this.timer && this.cloud === binding) {
+			this.timer = setTimeout(() => void this.readNow(), Math.max(next, this.feeds.cloudTiming.minGapMs));
+		}
+	}
+
+	/** How long a Cloud read of `binding`'s cluster must wait for the floor (0: none). */
+	private floorWait(binding: CloudMetricsBinding): number {
+		const last = this.feeds.lastCloudReadOf(binding.clusterId);
+		return last === undefined ? 0 : last + this.feeds.cloudTiming.minGapMs - Date.now();
+	}
+
+	private cloudFailed(err: unknown, binding: CloudMetricsBinding): void {
+		const where = `${binding.pipelineName} on ${binding.clusterName} (${binding.host})`;
+		const message = binding.mask(isMetricsReadError(err) ? err.message : errorText(err));
+		if (isMetricsReadError(err) && err.kind === 'refused') {
+			this.refusedMessage = message;
+			this.failures = 0;
+			this.panelState = { kind: 'refused', cluster: binding.clusterName, message };
+			this.options.log(`Pipeline metrics: ${where}: ${message}; not read again until its metrics access is set again.`);
+			return;
+		}
+		if (isMetricsReadError(err) && err.kind === 'notServed' && !err.noSeries) {
+			this.notServedReason = `${message}.`;
+			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.options.log(`Pipeline metrics: ${where}: ${message}.`);
+			return;
+		}
+		const noSeries = isMetricsReadError(err) && err.noSeries === true;
+		if (noSeries) {
+			this.noSeriesReads++;
+			this.failures = 0;
+		} else {
+			this.failures++;
+			this.noSeriesReads = 0;
+		}
+		const count = noSeries ? this.noSeriesReads : this.failures;
+		const limit = noSeries ? NO_SERIES_READS : QUIET_FAILURES;
+		if (count === limit) {
+			this.options.log(`Pipeline metrics: ${where}: ${message}.`);
+		}
+		if (count < limit) {
+			return;
+		}
+		if (noSeries) {
+			this.notServedReason = `${message}. ${CLOUD_NO_SERIES_HINT}`;
+			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+		} else {
+			this.panelState = { kind: 'unreachable', message };
 		}
 	}
 
@@ -361,6 +668,20 @@ export class MetricsFeeds implements vscode.Disposable {
 	private readonly subscriptions: vscode.Disposable[] = [];
 	private sourceFactory: MetricsSourceFactory = (port) => localMetricsSource(port);
 	readonly intervalMs: number;
+	/** Ticket 7.5: how a Cloud pipeline is read (the test seam shortens it; AD-25's in production). */
+	cloudTiming: CloudTiming = CLOUD_TIMING;
+	/** Ticket 7.5: when the last Cloud read of each cluster began (the floor is per cluster: each read is the whole cluster's). */
+	private readonly cloudReads = new Map<string, number>();
+
+	/** Ticket 7.5: when the last Cloud read of `clusterId` began, if any. */
+	lastCloudReadOf(clusterId: string): number | undefined {
+		return this.cloudReads.get(clusterId);
+	}
+
+	/** Ticket 7.5: a Cloud read of `clusterId` begins now. */
+	cloudReadStarted(clusterId: string): void {
+		this.cloudReads.set(clusterId, Date.now());
+	}
 
 	constructor(private readonly options: MetricsFeedsOptions) {
 		this.intervalMs = options.intervalMs ?? METRICS_INTERVAL_MS;
@@ -398,8 +719,11 @@ export class MetricsFeeds implements vscode.Disposable {
 		return this.feeds.get(uri.toString());
 	}
 
-	/** The config of `uri`, or `undefined` (logged) when it cannot be read. */
+	/** The config of `uri`, or `undefined` (logged) when it cannot be read; none for a Cloud pipeline with no file. */
 	configOf(uri: vscode.Uri): MetricsConfig | undefined {
+		if (uri.scheme === CLOUD_METRICS_SCHEME) {
+			return undefined;
+		}
 		try {
 			return this.options.configFor(uri);
 		} catch (err) {

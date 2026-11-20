@@ -1,9 +1,10 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { MetricsFeeds, type MetricsUpdate } from '../../../adapters/vscode/metricsFeed';
+import type { MetricsSource } from '../../../adapters/metrics/source';
+import { CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, CLOUD_TIMING, cloudMetricsKey, MetricsFeeds, type CloudMetricsBinding, type MetricsUpdate } from '../../../adapters/vscode/metricsFeed';
 import type { RunChange } from '../../../adapters/vscode/run';
 import { parsePrometheus } from '../../../core/prometheus';
-import { connectText } from '../../helpers/fakeMetrics';
+import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
 
 // Ticket 7.3: one feed per file, shared by the tab and the graph; it reads while any subscriber is
 // visible, drops its readings when none is, and goes with its last subscriber.
@@ -111,5 +112,269 @@ suite('adapters/vscode MetricsFeeds (7.3)', () => {
 		assert.strictEqual(a.feed.state.kind, 'live');
 		a.dispose();
 		b.dispose();
+	});
+});
+
+// Ticket 7.5: a feed bound to a Cloud pipeline: read at its own interval with a 5 s floor (shortened
+// here), backoff after failures, refused and no access never read, the access followed; last chosen wins
+// between the Cloud and the local run.
+suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
+	const SECRET = 'cloud-feed-secret-Hq2';
+	const TIMING = { intervalMs: 40, minGapMs: 20, retryDelaysMs: [30, 60, 90] };
+	let feeds: MetricsFeeds;
+	let localReads: number;
+	let cloudReads: number[];
+	let answers: ('ok' | 'refused' | 'unreachable' | 'noSeries')[];
+	let hasAccess: boolean;
+	let running: boolean;
+	let accessChanged: vscode.EventEmitter<void>;
+	const runChanged = new vscode.EventEmitter<RunChange>();
+
+	/** Ticket 7.5 review: a read held until released (an in-flight read across an access change). */
+	let hold: Promise<void> | undefined;
+
+	function binding(file: vscode.Uri | undefined = URI, pipelineId = 'p1'): CloudMetricsBinding {
+		let n = 0;
+		const source: MetricsSource = {
+			address: 'prom.example',
+			read: async () => {
+				cloudReads.push(Date.now());
+				const held = hold;
+				if (held) {
+					hold = undefined;
+					await held;
+				}
+				const next = answers.shift() ?? 'ok';
+				if (next === 'refused') {
+					throw new FakeMetricsReadError('refused', `prom.example refused: the user or password is wrong (HTTP 401) ${SECRET}`);
+				}
+				if (next === 'unreachable') {
+					throw new FakeMetricsReadError('unreachable', `prom.example answered HTTP 503 ${SECRET}`);
+				}
+				if (next === 'noSeries') {
+					throw new FakeMetricsReadError('notServed', 'prom.example has no Redpanda Connect component series', true);
+				}
+				n += 100;
+				return { ...parsePrometheus(connectText([{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n }])), time: Date.now() };
+			},
+		};
+		return {
+			clusterId: 'c1', clusterName: 'rpc-vilnius', pipelineId, pipelineName: 'orders', host: 'prom.example', file,
+			source: () => (hasAccess ? source : undefined),
+			onDidChangeAccess: accessChanged.event,
+			mask: (text) => text.split(SECRET).join('•••'),
+		};
+	}
+
+	setup(() => {
+		localReads = 0;
+		hold = undefined;
+		cloudReads = [];
+		answers = [];
+		hasAccess = true;
+		running = false;
+		accessChanged = new vscode.EventEmitter<void>();
+		feeds = new MetricsFeeds({
+			log: () => undefined,
+			run: { portOf: (uri) => (running && uri === URI.toString() ? PORT : undefined), onDidChangeRun: runChanged.event },
+			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: 'none' }),
+			intervalMs: INTERVAL,
+		});
+		feeds.cloudTiming = TIMING;
+		feeds.setSourceFactory(() => ({
+			address: 'local',
+			read: async () => {
+				localReads++;
+				return { ...parsePrometheus(connectText([{ family: 'processor', path: 'root.pipeline.processors.0', received: 1, sent: 1 }])), time: Date.now() };
+			},
+		}));
+	});
+
+	teardown(() => {
+		feeds.dispose();
+		accessChanged.dispose();
+	});
+
+	async function until(check: () => boolean, tries = 200): Promise<void> {
+		for (let i = 0; i < tries && !check(); i++) {
+			await tick(5);
+		}
+	}
+
+	test('AD-25 timing: 10 s in production, never sooner than 5 s, unreachable backoff 5, 10, 20, 30, 60 s', () => {
+		assert.deepStrictEqual([CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS], [10_000, 5_000]);
+		assert.deepStrictEqual(CLOUD_TIMING.retryDelaysMs, [5_000, 10_000, 20_000, 30_000, 60_000]);
+		assert.strictEqual(new MetricsFeeds({ log: () => undefined, run: { portOf: () => undefined, onDidChangeRun: runChanged.event }, configFor: () => { throw new Error('x'); } }).cloudTiming, CLOUD_TIMING);
+	});
+
+	test('LIVE / INTERVAL: bound to the Cloud, it reads the pipeline at its interval, one at a time; the update names the source; its config\'s `metrics` section is not checked', async () => {
+		const updates: MetricsUpdate[] = [];
+		const sub = feeds.subscribe(URI, (u) => updates.push(u), true);
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length >= 3);
+		assert.strictEqual(sub.feed.state.kind, 'live');
+		assert.strictEqual(localReads, 0, 'the local run is not read');
+		const last = updates.at(-1)!;
+		assert.deepStrictEqual([last.source.kind, last.intervalMs, last.port], ['cloud', TIMING.intervalMs, undefined]);
+		assert.strictEqual(last.source.kind === 'cloud' && last.source.pipelineName, 'orders');
+		const gaps = cloudReads.slice(1).map((t, i) => t - cloudReads[i]);
+		assert.ok(gaps.every((g) => g >= TIMING.intervalMs - 5), JSON.stringify(gaps));
+		sub.dispose();
+	});
+
+	test('HIDDEN / FLOOR: nothing visible, no read and the readings dropped; shown again within the floor, the read waits for it', async () => {
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length >= 1);
+		sub.setVisible(false);
+		assert.strictEqual(sub.feed.update.figures, undefined);
+		assert.strictEqual(sub.feed.state.kind, 'waiting');
+		const at = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, at, 'no read while hidden');
+		const before = cloudReads.at(-1)!;
+		sub.setVisible(true);
+		sub.setVisible(false);
+		sub.setVisible(true);
+		await until(() => cloudReads.length > at);
+		assert.ok(cloudReads[at] - before >= TIMING.minGapMs - 2, `${cloudReads[at] - before}`);
+		sub.dispose();
+	});
+
+	test('REFUSED: a 401 is its own state, masked, and is not read again; access set again, or Show metrics again, reads', async () => {
+		answers = ['refused'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		const b = binding();
+		sub.feed.bindCloud(b);
+		await until(() => sub.feed.state.kind === 'refused');
+		const state = sub.feed.state;
+		assert.deepStrictEqual(state.kind === 'refused' && [state.cluster, state.message.includes(SECRET), state.message.includes('the user or password is wrong')], ['rpc-vilnius', false, true]);
+		await tick(TIMING.intervalMs * 3);
+		assert.strictEqual(cloudReads.length, 1, 'not retried');
+		accessChanged.fire();
+		await until(() => sub.feed.state.kind === 'live');
+		assert.strictEqual(sub.feed.state.kind, 'live');
+		// Refused again; Show metrics again (a new binding) reads.
+		answers = ['refused'];
+		await until(() => sub.feed.state.kind === 'refused');
+		const n = cloudReads.length;
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length > n);
+		assert.ok(cloudReads.length > n);
+		sub.dispose();
+	});
+
+	test('NO_ACCESS / SET LATER / FORGOTTEN: no access, nothing read; set, it reads; forgotten, it stops and says so', async () => {
+		hasAccess = false;
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		assert.deepStrictEqual(sub.feed.state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, 0);
+		hasAccess = true;
+		accessChanged.fire();
+		await until(() => sub.feed.state.kind === 'live');
+		assert.ok(cloudReads.length >= 1);
+		hasAccess = false;
+		accessChanged.fire();
+		assert.deepStrictEqual(sub.feed.state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		assert.strictEqual(sub.feed.update.figures, undefined);
+		const at = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, at, 'reading stopped');
+		sub.dispose();
+	});
+
+	test('UNREACHABLE: quiet until 3 failures, then said (masked); retried after the backoff, the last delay repeated', async () => {
+		answers = ['unreachable', 'unreachable', 'unreachable', 'unreachable', 'unreachable'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length >= 2);
+		assert.strictEqual(sub.feed.state.kind as string, 'waiting', 'quiet');
+		await until(() => cloudReads.length >= 5, 400);
+		const state = sub.feed.state;
+		assert.ok(state.kind === 'unreachable' && !state.message.includes(SECRET), JSON.stringify(state));
+		const gaps = cloudReads.slice(1).map((t, i) => t - cloudReads[i]);
+		const expected = [30, 60, 90, 90];
+		gaps.forEach((g, i) => assert.ok(g >= expected[i] - 5, `gap ${i}: ${g} < ${expected[i]} (${JSON.stringify(gaps)})`));
+		await until(() => sub.feed.state.kind === 'live', 400);
+		assert.strictEqual(sub.feed.state.kind, 'live');
+		sub.dispose();
+	});
+
+	test('LAST CHOSEN WINS: bindLocal reads the local run again; a local run of the file starting takes it back from the Cloud', async () => {
+		running = true;
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length >= 1);
+		sub.feed.bindLocal();
+		assert.strictEqual(sub.feed.update.source.kind as string, 'local');
+		// The local config says `metrics: none` here: the local branch's own rules apply again.
+		assert.strictEqual(sub.feed.state.kind as string, 'notServed');
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		runChanged.fire({ uri: URI.toString(), phase: 'stopping', port: PORT });
+		assert.strictEqual(sub.feed.update.source.kind as string, 'cloud', 'a run stopping does not');
+		runChanged.fire({ uri: URI.toString(), phase: 'running', port: PORT });
+		assert.strictEqual(sub.feed.update.source.kind as string, 'local');
+		const at = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, at, 'the Cloud is no longer read');
+		sub.dispose();
+	});
+
+	test('LAST CHOSEN WINS (no port): a local run of the file starting without a metrics port takes it back too', async () => {
+		running = false;
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		runChanged.fire({ uri: URI.toString(), phase: 'running', port: undefined });
+		assert.strictEqual(sub.feed.update.source.kind as string, 'local');
+		sub.dispose();
+	});
+
+	test('FLOOR per cluster: two feeds of one cluster, and a re-Show, never read sooner than the floor apart', async () => {
+		const slow = { intervalMs: 20, minGapMs: 60, retryDelaysMs: [20] };
+		feeds.cloudTiming = slow;
+		const a = feeds.subscribe(URI, () => undefined, true);
+		const b = feeds.subscribe(cloudMetricsKey('c1', 'p2'), () => undefined, true);
+		a.feed.bindCloud(binding(URI, 'p1'));
+		b.feed.bindCloud(binding(undefined, 'p2'));
+		// Re-Show on A at once: still waits for the cluster's floor.
+		a.feed.bindCloud(binding(URI, 'p1'));
+		await until(() => cloudReads.length >= 5, 400);
+		const sorted = [...cloudReads].sort((x, y) => x - y);
+		const gaps = sorted.slice(1).map((t, i) => t - sorted[i]);
+		assert.ok(gaps.every((g) => g >= slow.minGapMs - 3), JSON.stringify(gaps));
+		a.dispose();
+		b.dispose();
+	});
+
+	test('ACCESS REPLACED: a read in flight with the old access is dropped (its late 401 ignored) and the feed reads again', async () => {
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		let release: () => void = () => undefined;
+		hold = new Promise<void>((r) => { release = r; });
+		answers = ['refused', 'ok'];
+		await until(() => hold === undefined, 400);
+		const inFlightAt = cloudReads.length;
+		accessChanged.fire();
+		release();
+		await until(() => cloudReads.length > inFlightAt, 400);
+		await until(() => sub.feed.state.kind === 'live');
+		await tick(10);
+		assert.strictEqual(sub.feed.state.kind, 'live', 'not stuck in refused');
+		sub.dispose();
+	});
+
+	test('NOT MAPPED: a pipeline with no file has a feed of its own (synthetic key, no config read)', async () => {
+		const key = cloudMetricsKey('c1', 'p1');
+		const sub = feeds.subscribe(key, () => undefined, true);
+		sub.feed.bindCloud(binding(undefined));
+		await until(() => sub.feed.state.kind === 'live');
+		assert.strictEqual(feeds.configOf(key), undefined);
+		assert.notStrictEqual(feeds.feedOf(key), feeds.feedOf(URI));
+		sub.dispose();
 	});
 });

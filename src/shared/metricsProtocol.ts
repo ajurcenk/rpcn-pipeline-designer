@@ -49,6 +49,8 @@ export interface MetricsSort {
  * The tab's state: `none` (no file chosen yet), `notRunning` (the file has no run), `waiting` (running,
  * no reading yet), `live`, `stopped` (the run ended; its last figures stay), `notServed` (the run
  * serves no metrics, `reason` says why), `unreachable` (reads keep failing; tried again at the interval).
+ * Ticket 7.5, a Cloud pipeline: `noAccess` (its cluster has no metrics access set; nothing is read),
+ * `refused` (the endpoint refused the user or password; not read again until the access is set again).
  */
 export type MetricsPanelState =
 	| { readonly kind: 'none' }
@@ -57,14 +59,24 @@ export type MetricsPanelState =
 	| { readonly kind: 'live' }
 	| { readonly kind: 'stopped' }
 	| { readonly kind: 'notServed'; readonly reason: string }
-	| { readonly kind: 'unreachable'; readonly message: string };
+	| { readonly kind: 'unreachable'; readonly message: string }
+	| { readonly kind: 'noAccess'; readonly cluster: string }
+	| { readonly kind: 'refused'; readonly cluster: string; readonly message: string };
+
+/** Ticket 7.5: where a Cloud pipeline's figures are read (the header's address line). */
+export interface MetricsCloudAddress {
+	/** The cluster's Prometheus endpoint host (no path, query or credentials). */
+	readonly host: string;
+}
 
 export type MetricsHostMessage = {
 	readonly type: 'show';
-	/** "Local run · <file>"; `null` before the first Show Pipeline Metrics. */
+	/** "Local run · <file>" or (ticket 7.5) "Cloud · <cluster> · <pipeline>"; `null` before the first Show Pipeline Metrics. */
 	readonly source: string | null;
-	/** The file's name. */
+	/** The file's name (a Cloud pipeline's mapped file; `null` when it is not mapped to one). */
 	readonly file: string | null;
+	/** Ticket 7.5: a Cloud pipeline's endpoint; absent or `null` for a local run. */
+	readonly cloud?: MetricsCloudAddress | null;
 	/** The run's metrics port on 127.0.0.1; `null` while it has none. */
 	readonly port: number | null;
 	readonly state: MetricsPanelState;
@@ -94,20 +106,49 @@ export function localSourceLabel(file: string): string {
 	return `Local run · ${file}`;
 }
 
-/** "127.0.0.1:<port> · read every <n> s". */
-export function addressText(port: number, intervalMs: number): string {
-	return `127.0.0.1:${port} · read every ${Math.round(intervalMs / 100) / 10} s`;
+/** "read every <n> s". */
+function everyText(intervalMs: number): string {
+	return `read every ${Math.round(intervalMs / 100) / 10} s`;
 }
 
-/** The state line under the source, or `undefined` when live. */
-export function stateText(state: MetricsPanelState, file: string | null, port: number | null): string | undefined {
+/** "127.0.0.1:<port> · read every <n> s". */
+export function addressText(port: number, intervalMs: number): string {
+	return `127.0.0.1:${port} · ${everyText(intervalMs)}`;
+}
+
+/** Ticket 7.5 (design board 3): "Cloud · <cluster> · <pipeline>". */
+export function cloudSourceLabel(cluster: string, pipeline: string): string {
+	return `Cloud · ${cluster} · ${pipeline}`;
+}
+
+/** Ticket 7.5: what a Cloud pipeline's header says when no local file is mapped to it. */
+export const NOT_MAPPED_TEXT = 'not mapped to a file';
+
+/** Ticket 7.5 (design board 3): "<host> · mapped to <file> · read every <n> s" (or "not mapped to a file"). */
+export function cloudAddressText(host: string, file: string | null, intervalMs: number): string {
+	return `${host} · ${file ? `mapped to ${file}` : NOT_MAPPED_TEXT} · ${everyText(intervalMs)}`;
+}
+
+/** Ticket 7.5: the no-access state's text, naming the cluster and what to do. */
+export function noMetricsAccessText(cluster: string): string {
+	return `No metrics access is held for ${cluster}. Connect to Redpanda Cloud, or use Set up metrics access… on its row in the Cloud view; the figures are read once it is set.`;
+}
+
+/** Ticket 7.5: the refused state's text (`message`: the read's, "… refused: the user or password is wrong (HTTP 401)"). */
+export function refusedText(cluster: string, message: string): string {
+	return `${message}. Nothing more is read. Use Set up metrics access… on ${cluster}'s row in the Cloud view to enter them again.`;
+}
+
+/** The state line under the source, or `undefined` when live (`host`: a Cloud pipeline's endpoint). */
+export function stateText(state: MetricsPanelState, file: string | null, port: number | null, host: string | null = null): string | undefined {
 	switch (state.kind) {
 		case 'none':
 			return NO_FILE_TEXT;
 		case 'notRunning':
 			return file ? `${file} is not running. ${NOT_RUNNING_TEXT}` : NOT_RUNNING_TEXT;
 		case 'waiting':
-			return port === null ? 'Waiting for the first reading…' : `Waiting for the first reading of 127.0.0.1:${port}…`;
+			return host !== null ? `Waiting for the first reading of ${host}…`
+				: port === null ? 'Waiting for the first reading…' : `Waiting for the first reading of 127.0.0.1:${port}…`;
 		case 'live':
 			return undefined;
 		case 'stopped':
@@ -116,6 +157,10 @@ export function stateText(state: MetricsPanelState, file: string | null, port: n
 			return `No metrics served: ${state.reason}`;
 		case 'unreachable':
 			return `Can't read the metrics: ${state.message}. Trying again.`;
+		case 'noAccess':
+			return noMetricsAccessText(state.cluster);
+		case 'refused':
+			return refusedText(state.cluster, state.message);
 	}
 }
 
@@ -199,6 +244,10 @@ function isState(v: unknown): v is MetricsPanelState {
 			return typeof v.reason === 'string';
 		case 'unreachable':
 			return typeof v.message === 'string';
+		case 'noAccess':
+			return typeof v.cluster === 'string';
+		case 'refused':
+			return typeof v.cluster === 'string' && typeof v.message === 'string';
 		default:
 			return false;
 	}
@@ -213,6 +262,7 @@ export function parseMetricsHostMessage(v: unknown): MetricsHostMessage | undefi
 		&& (v.port === null || isPort(v.port)) && isState(v.state) && Array.isArray(v.rows) && v.rows.every(isRow)
 		&& typeof v.intervalMs === 'number' && Number.isFinite(v.intervalMs) && v.intervalMs > 0
 		&& (v.sort === null || isSort(v.sort))
+		&& (v.cloud === undefined || v.cloud === null || (isObject(v.cloud) && typeof v.cloud.host === 'string' && v.cloud.host !== ''))
 		? v as MetricsHostMessage : undefined;
 }
 

@@ -10,11 +10,21 @@
 // per cluster. `clear` (Disconnect, another account) drops the users held in memory; the stored records
 // stay, so the same account reads them again. The passwords held in this window join the Cloud view's
 // mask; one the endpoint refused is masked only in that attempt's messages.
+//
+// Ticket 7.5 (AD-25): **Show metrics** on a pipeline row opens the Pipeline Metrics tab on that pipeline:
+// its local file is found as the other row actions find it (its tag; a pick when it is in several
+// folders; none: the tab shows it alone, rows by path), and the tab's feed reads the cluster's Prometheus
+// endpoint (`prometheus.url` only) with the access held now (`accessOf`), following it as it is set,
+// replaced or forgotten (`onDidChangeAccess`, fired only when it really changes). With no access the
+// tab opens in its no-access state and an info message offers Set up metrics access…, as Show logs does.
 
+import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
 import type { CloudCluster } from '../cloud/controlPlane';
 import { maskCredentials } from '../cloud/errors';
-import { CLOUD_REFUSED_TEXT, DEFAULT_PROMETHEUS_USER, isMetricsReadError, testCloudMetricsAccess } from '../metrics/source';
+import type { CloudPipeline } from '../cloud/dataPlane';
+import { CLOUD_REFUSED_TEXT, cloudAddress, cloudMetricsSource, DEFAULT_PROMETHEUS_USER, isMetricsReadError, type MetricsSource, testCloudMetricsAccess } from '../metrics/source';
+import type { CloudMetricsBinding } from './metricsFeed';
 import type { CloudContext, CloudNode } from './cloudView';
 
 /** The secret storage key of a cluster's metrics access (one JSON record: username, password). */
@@ -23,6 +33,14 @@ export const metricsAccessKey = (clusterId: string): string => `${METRICS_ACCESS
 export const SET_UP_METRICS_ACCESS_COMMAND = 'redpandaConnect.cloud.setUpMetricsAccess';
 export const FORGET_METRICS_ACCESS_COMMAND = 'redpandaConnect.cloud.forgetMetricsAccess';
 export const NO_CLUSTER_WITH_METRICS_ACCESS = 'No cluster has metrics access set.';
+/** Ticket 7.5: a pipeline row's Show metrics. */
+export const SHOW_CLOUD_METRICS_COMMAND = 'redpandaConnect.cloud.showMetrics';
+export const SET_UP_METRICS_ACCESS_ACTION = 'Set up metrics access…';
+
+/** Ticket 7.5: Show metrics on a pipeline whose cluster has no metrics access. */
+export function noMetricsAccessMessage(cluster: string): string {
+	return `${cluster} has no metrics access set, so its pipelines' metrics can't be read. Set it up to read them.`;
+}
 
 export function metricsAccessSetMessage(cluster: string): string {
 	return `Metrics access for ${cluster} is set.`;
@@ -55,6 +73,13 @@ export type MetricsAccessResult =
 	/** The test read failed (`refused`: a 401 or 403): nothing stored. */
 	| { readonly kind: 'failed'; readonly refused: boolean; readonly message: string };
 
+/** Ticket 7.5: how Show metrics ended (the command's result, for tests). */
+export type ShowMetricsResult =
+	| { readonly kind: 'notStarted' }
+	/** The tab shows the pipeline in its no-access state (Set up metrics access… was not chosen, or failed). */
+	| { readonly kind: 'noAccess'; readonly pipelineId: string; readonly file: string | undefined }
+	| { readonly kind: 'shown'; readonly pipelineId: string; readonly file: string | undefined };
+
 /** How Forget metrics access ended (the command's result, for tests). */
 export type ForgetMetricsAccessResult = { readonly kind: 'notStarted' } | { readonly kind: 'forgotten'; readonly clusterId: string };
 
@@ -68,8 +93,33 @@ export class CloudMetricsAccess {
 	private readonly settingUp = new Set<string>();
 	/** Every metrics password held in this window, for masking; a refused one is never added. */
 	private readonly kept = new Set<string>();
+	private readonly changed = new vscode.EventEmitter<string>();
+	/** Ticket 7.5: a cluster's access held in memory was set, replaced or dropped (its id); not fired when it stays the same. */
+	readonly onDidChangeAccess = this.changed.event;
 
 	constructor(private readonly ctx: CloudContext) {}
+
+	/**
+	 * Keeps `access` for `clusterId` (none: drops it); fires the change when it differs from what was held,
+	 * or always with `always` (a successful Set up: a refused tab reads again even with the same values).
+	 */
+	private hold(clusterId: string, access: MetricsAccess | undefined, always = false): void {
+		const before = this.accesses.get(clusterId);
+		if (access) {
+			this.metricsUsers.set(clusterId, access.username);
+			this.accesses.set(clusterId, access);
+		} else {
+			this.metricsUsers.delete(clusterId);
+			this.accesses.delete(clusterId);
+		}
+		if (always || before?.username !== access?.username || before?.password !== access?.password) {
+			this.changed.fire(clusterId);
+		}
+	}
+
+	dispose(): void {
+		this.changed.dispose();
+	}
 
 	/**
 	 * Reads `clusterId`'s metrics access from the secret storage; keeps its user for the rows.
@@ -90,12 +140,8 @@ export class CloudMetricsAccess {
 		const access = parseMetricsAccess(text);
 		if (access) {
 			this.kept.add(access.password);
-			this.metricsUsers.set(clusterId, access.username);
-			this.accesses.set(clusterId, access);
-		} else {
-			this.metricsUsers.delete(clusterId);
-			this.accesses.delete(clusterId);
 		}
+		this.hold(clusterId, access);
 		return access;
 	}
 
@@ -116,8 +162,10 @@ export class CloudMetricsAccess {
 
 	/** Disconnect, another service account: the accesses held in memory are dropped; the stored records stay. */
 	clear(): void {
+		for (const clusterId of [...this.accesses.keys()]) {
+			this.hold(clusterId, undefined);
+		}
 		this.metricsUsers.clear();
-		this.accesses.clear();
 	}
 
 	/** Removes a cluster's metrics access: its record in the secret storage and memory. Throws when the secret storage does. */
@@ -128,8 +176,7 @@ export class CloudMetricsAccess {
 		} finally {
 			this.ctx.writing--;
 		}
-		this.metricsUsers.delete(clusterId);
-		this.accesses.delete(clusterId);
+		this.hold(clusterId, undefined);
 		this.ctx.fire();
 	}
 
@@ -284,8 +331,7 @@ export class CloudMetricsAccess {
 			} finally {
 				this.ctx.writing--;
 			}
-			this.metricsUsers.set(cluster.id, username);
-			this.accesses.set(cluster.id, access);
+			this.hold(cluster.id, access, true);
 			this.ctx.fire();
 			this.ctx.log(`Redpanda Cloud: metrics access to ${cluster.name} set up for ${username}.`);
 			void this.ctx.showInfo(metricsAccessSetMessage(cluster.name));
@@ -296,6 +342,91 @@ export class CloudMetricsAccess {
 			void this.ctx.showError(`Set up metrics access failed: ${message}`);
 			return NOT_STARTED;
 		}
+	}
+
+	/**
+	 * Ticket 7.5: Show metrics on a pipeline row: the Pipeline Metrics tab on that pipeline, with its
+	 * local file (a pick when it is in several folders; none: the tab alone). No access: the tab in its
+	 * no-access state, and Set up metrics access… offered. Never throws.
+	 */
+	async showMetrics(node?: CloudNode): Promise<ShowMetricsResult> {
+		try {
+			if (node?.kind !== 'pipeline') {
+				void this.ctx.showInfo('Choose a pipeline in the Cloud view.');
+				return NOT_STARTED;
+			}
+			await this.ctx.ready;
+			const cluster = this.ctx.clusterById(node.clusterId);
+			const pipeline = this.ctx.pipelineById(node.clusterId, node.id);
+			const metrics = this.ctx.options.metrics;
+			if (!cluster || !pipeline || !metrics || !this.ctx.account) {
+				void this.ctx.showInfo('That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.');
+				return NOT_STARTED;
+			}
+			const url = this.ctx.prometheusUrlOf(cluster);
+			if (!url) {
+				void this.ctx.showError(noPrometheusEndpointMessage(cluster.name));
+				return NOT_STARTED;
+			}
+			const file = await this.ctx.metricsFileOf(pipeline);
+			if (file === null) {
+				return NOT_STARTED;
+			}
+			// The access as stored now (another window may have set or forgotten it).
+			const access = await this.readAccess(cluster.id);
+			const binding = this.binding(cluster, pipeline, url, file === undefined ? undefined : vscode.Uri.file(file));
+			this.ctx.log(`Redpanda Cloud: showing the metrics of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}`
+				+ `${file ? `, mapped to ${file}` : ''}${access ? `, read as ${access.username}` : ', which has no metrics access set'}.`);
+			await metrics.showCloud(binding);
+			if (access) {
+				return { kind: 'shown', pipelineId: pipeline.id, file };
+			}
+			const choice = await this.ctx.showInfo(noMetricsAccessMessage(cluster.name), SET_UP_METRICS_ACCESS_ACTION);
+			if (choice !== SET_UP_METRICS_ACCESS_ACTION || (await this.setUpAccess({ kind: 'cluster', id: cluster.id })).kind !== 'stored') {
+				return { kind: 'noAccess', pipelineId: pipeline.id, file };
+			}
+			// Stored: the tab's feed follows the access change and starts reading.
+			return { kind: 'shown', pipelineId: pipeline.id, file };
+		} catch (err) {
+			const message = this.maskError(errorText(err));
+			this.ctx.log(`Redpanda Cloud: Show metrics failed: ${message}`);
+			void this.ctx.showError(`Show metrics failed: ${message}`);
+			return NOT_STARTED;
+		}
+	}
+
+	/** What the tab's feed reads the pipeline with: the endpoint and the cluster's access held now (none: no access). */
+	private binding(cluster: CloudCluster, pipeline: CloudPipeline, url: string, file: vscode.Uri | undefined): CloudMetricsBinding {
+		let cached: { readonly access: MetricsAccess; readonly source: MetricsSource } | undefined;
+		const host = cloudAddress(url);
+		return {
+			clusterId: cluster.id,
+			clusterName: cluster.name,
+			pipelineId: pipeline.id,
+			pipelineName: pipeline.displayName,
+			host,
+			file,
+			source: () => {
+				const access = this.accesses.get(cluster.id);
+				if (!access) {
+					cached = undefined;
+					return undefined;
+				}
+				if (cached?.access !== access) {
+					cached = {
+						access,
+						source: cloudMetricsSource(url, access.username, access.password, pipeline.id, { timeoutMs: this.ctx.metricsTimeoutMs }),
+					};
+				}
+				return cached.source;
+			},
+			onDidChangeAccess: (listener, thisArgs, disposables) => this.changed.event((clusterId) => {
+				if (clusterId === cluster.id) {
+					listener.call(thisArgs, undefined);
+				}
+			}, undefined, disposables),
+			mask: (text) => this.maskError(text),
+		};
 	}
 }
 

@@ -116,7 +116,8 @@ export interface ExtensionApi {
 	readonly cloud?: Pick<CloudView, 'items' | 'ui' | 'lint' | 'localVersion' | 'localCatalogue' | 'endpoints' | 'pollMs' | 'timeoutMs' | 'restartGraceMs' | 'tokens' | 'connected' | 'accountName' | 'ready'
 		| 'connect' | 'disconnect' | 'deploy' | 'refresh' | 'expanded' | 'getChildren' | 'onDidChangeTreeData' | 'stored' | 'mask' | 'workspaceFolders' | 'getTreeItem'
 		| 'logReader' | 'nodeVersion' | 'setUpLogAccess' | 'showLogs' | 'storedLogAccess' | 'removeLogAccess' | 'storedValue' | 'showLogsAroundError' | 'errorFollowUp'
-		| 'forgetLogAccess' | 'storeAsAnotherWindow' | 'setUpMetricsAccess' | 'forgetMetricsAccess' | 'removeMetricsAccess' | 'storedMetricsAccess' | 'metricsTimeoutMs'>;
+		| 'forgetLogAccess' | 'storeAsAnotherWindow' | 'setUpMetricsAccess' | 'forgetMetricsAccess' | 'removeMetricsAccess' | 'storedMetricsAccess' | 'metricsTimeoutMs'
+		| 'showMetrics'>;
 	/**
 	 * The Pipeline Logs tab (tickets 6.2, 6.3, 6.8): the shown pipeline, its kept rows and status, whether it
 	 * reads, its range state, the cap and window to change, the posted messages, the menu's actions, Export…
@@ -128,10 +129,10 @@ export interface ExtensionApi {
 	/**
 	 * The Pipeline Metrics tab (ticket 7.2): its state, rows and posted messages, and the source seam
 	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
-	 * graph shares. Only in `ExtensionMode.Test`.
+	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten. Only in `ExtensionMode.Test`.
 	 */
 	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory'>
-		& { feeds: Pick<MetricsFeeds, 'feedOf'> };
+		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -398,6 +399,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 			return { kind: 'ok', files: [...new Set(expanded)].filter((f) => f !== own) };
 		},
 		logs: logsPanel,
+		// Ticket 7.5: Show metrics on a pipeline row opens the Pipeline Metrics tab on it.
+		metrics: { showCloud: (binding) => metricsPanel.showCloud(binding) },
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 

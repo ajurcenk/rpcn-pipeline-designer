@@ -131,7 +131,9 @@ import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy'
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
 import {
 	CloudMetricsAccess, FORGET_METRICS_ACCESS_COMMAND, type ForgetMetricsAccessResult, METRICS_ACCESS_PREFIX, type MetricsAccessResult, SET_UP_METRICS_ACCESS_COMMAND,
+	SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult,
 } from './cloudMetrics';
+import type { CloudMetricsBinding } from './metricsFeed';
 import { CLOUD_READ_TIMEOUT_MS } from '../metrics/source';
 import {
 	CONNECT_ACTION, DEPLOYED_SCHEME, filesOfTag, IN_SEVERAL_FOLDERS, NO_RESOURCE_FILES, NOT_IN_WORKSPACE, pipelineStateDescription, type ResourceFiles,
@@ -156,8 +158,8 @@ export {
 } from './cloudLogs';
 export {
 	FORGET_METRICS_ACCESS_COMMAND, METRICS_ACCESS_PREFIX, metricsAccessForgottenMessage, metricsAccessKey, metricsAccessSetMessage, metricsRefusedMessage,
-	metricsUnreachableMessage, NO_CLUSTER_WITH_METRICS_ACCESS, noPrometheusEndpointMessage, SET_UP_METRICS_ACCESS_COMMAND, type ForgetMetricsAccessResult,
-	type MetricsAccessResult,
+	metricsUnreachableMessage, NO_CLUSTER_WITH_METRICS_ACCESS, noMetricsAccessMessage, noPrometheusEndpointMessage, SET_UP_METRICS_ACCESS_ACTION, SET_UP_METRICS_ACCESS_COMMAND,
+	SHOW_CLOUD_METRICS_COMMAND, type ForgetMetricsAccessResult, type MetricsAccessResult, type ShowMetricsResult,
 } from './cloudMetrics';
 
 export const CLOUD_VIEW_ID = 'redpandaConnect.cloud';
@@ -448,6 +450,8 @@ export interface CloudContext {
 	/** Ticket 7.4: a Cloud metrics read's timeout (the test seam shortens it). */
 	readonly metricsTimeoutMs: number;
 	localFileOf(p: CloudPipeline | undefined): LocalFile;
+	/** Ticket 7.5: the file Show metrics binds a pipeline to (`undefined`: none; `null`: the pick was cancelled). */
+	metricsFileOf(p: CloudPipeline): Promise<string | undefined | null>;
 	readPipeline(cluster: CloudCluster, dp: string, id: string, shown: string)
 		: Promise<{ readonly kind: 'ok'; readonly value: CloudPipeline } | { readonly kind: 'error'; readonly message: string; readonly status?: number }>;
 	/** The deploy flow's (Deploy again, and the state Start and Stop follow). */
@@ -497,6 +501,10 @@ export interface CloudViewOptions {
 	};
 	/** Ticket 6.2: how a cluster's logs are read (default: `@platformatic/kafka`). */
 	readonly logReader?: LogReaderFactory;
+	/** Ticket 7.5: the Pipeline Metrics tab, which Show metrics opens on a pipeline. */
+	readonly metrics?: {
+		showCloud(binding: CloudMetricsBinding): Promise<void>;
+	};
 }
 
 /** How Set up log access… ended (the command's result, for tests). */
@@ -686,6 +694,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			dataplaneUrlOf: (c) => view.dataplaneUrlOf(c),
 			prometheusUrlOf: (c) => view.prometheusUrlOf(c),
 			localFileOf: (p) => view.localFileOf(p),
+			metricsFileOf: (p) => view.actions.metricsFileOf(p),
 			readPipeline: (cluster, dp, id, shown) => view.readPipeline(cluster, dp, id, shown),
 			deploy: (uri, only) => view.deployFlow.deploy(uri, only),
 			follow: (cluster, dp, first, name, report, change, onFailure) => view.deployFlow.follow(cluster, dp, first, name, report, change, onFailure),
@@ -723,6 +732,8 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			// From the palette (ticket 6.5) it gets no argument: the mapped pipeline, else a pick.
 			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
 			vscode.commands.registerCommand(SHOW_LOGS_AROUND_ERROR_COMMAND, (node?: CloudNode) => this.showLogsAroundError(node)),
+			// Ticket 7.5: a pipeline row's only (no palette entry).
+			vscode.commands.registerCommand(SHOW_CLOUD_METRICS_COMMAND, (node?: CloudNode) => this.showMetrics(node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -1368,6 +1379,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 
 	dispose(): void {
 		this.subscriptions.forEach((s) => s.dispose());
+		this.metricsAccess.dispose();
 	}
 
 	/** The deployed config of a pipeline, read-only (`redpanda-cloud:/<cluster>/<pipeline>/<name>.yaml`). */
@@ -1447,6 +1459,11 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	/** Ticket 7.4: a cluster's stored metrics user, without its password (the test seam). */
 	storedMetricsAccess(clusterId: string): Promise<{ readonly username: string } | undefined> {
 		return this.metricsAccess.storedAccess(clusterId);
+	}
+
+	/** Ticket 7.5: Show metrics on a pipeline row: the Pipeline Metrics tab on that pipeline. Never throws. */
+	showMetrics(node?: CloudNode): Promise<ShowMetricsResult> {
+		return this.metricsAccess.showMetrics(node);
 	}
 
 	/** Show logs: a pipeline row's, or from the palette the mapped pipeline's, else a picked one's. Never throws. */

@@ -13,18 +13,27 @@
 // AD-25); so is an answer that holds no Connect metrics. A read that fails otherwise is tried again at
 // the interval, quietly until 3 failures in a row. Hidden, the tab tells the feed so; closing it drops
 // its hold on the feed, and the feed drops every reading once nothing that shows them is visible.
+//
+// Ticket 7.5: **Show metrics** on a Cloud pipeline row binds the tab (`showCloud`) to that pipeline's feed:
+// its local file's (shared with that file's graph, which then shows the Cloud figures), or, with no file,
+// one of its own (rows by path). The header names it ("Cloud · <cluster> · <pipeline>", the endpoint's
+// host, the mapped file or "not mapped to a file", the interval); no access and a refused read are
+// states of their own. Show Pipeline Metrics on the file binds it back to the local run.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	localSourceLabel, parseMetricsWebviewMessage, type MetricRow, type MetricsHostMessage, type MetricsPanelState, type MetricsSort,
+	cloudSourceLabel, localSourceLabel, parseMetricsWebviewMessage, type MetricRow, type MetricsHostMessage, type MetricsPanelState, type MetricsSort,
 } from '../../shared/metricsProtocol';
 import type { ComponentFigures } from '../../core/metrics';
 import { metricRows, sortRows } from '../../core/metrics';
 import { webviewHtml } from '../graphPanel/html';
-import type { MetricsFeeds, MetricsSourceFactory, MetricsSubscription, MetricsUpdate } from './metricsFeed';
+import { cloudMetricsKey, type CloudMetricsBinding, type MetricsFeeds, type MetricsSourceFactory, type MetricsSubscription, type MetricsUpdate } from './metricsFeed';
 
-export { METRICS_INTERVAL_MS, NO_SERIES_READS, QUIET_FAILURES, type MetricsConfig, type MetricsRun, type MetricsSourceFactory } from './metricsFeed';
+export {
+	CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, METRICS_INTERVAL_MS, NO_SERIES_READS, QUIET_FAILURES, type CloudMetricsBinding, type MetricsConfig, type MetricsRun,
+	type MetricsSourceFactory,
+} from './metricsFeed';
 
 export const METRICS_VIEW_ID = 'redpandaConnect.pipelineMetrics';
 export const SHOW_METRICS_COMMAND = 'redpandaConnect.showPipelineMetrics';
@@ -101,9 +110,22 @@ export class MetricsPanel implements vscode.Disposable {
 		return this.view?.visible === true;
 	}
 
-	/** "Local run · <file>", or `undefined` before the first Show Pipeline Metrics. */
+	/** "Local run · <file>" or (ticket 7.5) "Cloud · <cluster> · <pipeline>", or `undefined` before the first Show. */
 	get title(): string | undefined {
+		const source = this.update?.source;
+		if (source?.kind === 'cloud') {
+			return cloudSourceLabel(source.clusterName, source.pipelineName);
+		}
 		return this.uri ? localSourceLabel(path.basename(this.uri.fsPath)) : undefined;
+	}
+
+	/** Ticket 7.5: the shown file's name (a Cloud pipeline's mapped file; `null`: none). */
+	private get fileName(): string | null {
+		const source = this.update?.source;
+		if (source?.kind === 'cloud') {
+			return source.file ? path.basename(source.file.fsPath) : null;
+		}
+		return this.uri ? path.basename(this.uri.fsPath) : null;
 	}
 
 	resolveWebviewView(view: vscode.WebviewView): void {
@@ -166,19 +188,11 @@ export class MetricsPanel implements vscode.Disposable {
 	 * reading for both); otherwise its readings start again (ticket 7.2).
 	 */
 	async show(uri: vscode.Uri): Promise<void> {
-		this.uri = uri;
-		const old = this.subscription;
-		let sub: MetricsSubscription;
-		if (old && old.feed.uri.toString() === uri.toString()) {
-			sub = old;
-		} else {
-			// Not visible until the tab is focused (as 7.2: the tab's first read comes after the focus).
-			const added = this.options.feeds.subscribe(uri, (update) => this.updated(added, update), false);
-			sub = added;
-			this.subscription = sub;
-			old?.dispose();
-		}
-		if (!sub.feed.visible) {
+		const sub = this.bind(uri);
+		if (sub.feed.cloudBinding) {
+			// Ticket 7.5: last chosen wins: the file's tab and graph go back to its local run.
+			sub.feed.bindLocal();
+		} else if (!sub.feed.visible) {
 			sub.feed.restart();
 		}
 		this.rowsFrom = undefined;
@@ -186,6 +200,40 @@ export class MetricsPanel implements vscode.Disposable {
 		this.updated(sub, sub.feed.update, false);
 		const port = sub.feed.update.port;
 		this.options.log(`Pipeline metrics: showing ${path.basename(uri.fsPath)}${port ? ` (127.0.0.1:${port})` : ''}.`);
+		await this.opened(sub);
+	}
+
+	/**
+	 * Ticket 7.5: Show metrics on a Cloud pipeline: the tab is bound to its feed (its local file's, shared
+	 * with that file's graph, else its own) and opens; the feed reads the pipeline from now on.
+	 */
+	async showCloud(binding: CloudMetricsBinding): Promise<void> {
+		const sub = this.bind(binding.file ?? cloudMetricsKey(binding.clusterId, binding.pipelineId));
+		this.rowsFrom = undefined;
+		this.configRows = [];
+		sub.feed.bindCloud(binding);
+		this.updated(sub, sub.feed.update, false);
+		this.options.log(`Pipeline metrics: showing pipeline ${binding.pipelineName} on ${binding.clusterName} (${binding.host})`
+			+ `${binding.file ? `, mapped to ${path.basename(binding.file.fsPath)}` : ', not mapped to a file'}.`);
+		await this.opened(sub);
+	}
+
+	/** The tab's hold on the feed of `uri` (kept when it is already that feed). */
+	private bind(uri: vscode.Uri): MetricsSubscription {
+		this.uri = uri;
+		const old = this.subscription;
+		if (old && old.feed.uri.toString() === uri.toString()) {
+			return old;
+		}
+		// Not visible until the tab is focused (as 7.2: the tab's first read comes after the focus).
+		const added = this.options.feeds.subscribe(uri, (update) => this.updated(added, update), false);
+		this.subscription = added;
+		old?.dispose();
+		return added;
+	}
+
+	/** Posts the bound feed's state and opens the tab. */
+	private async opened(sub: MetricsSubscription): Promise<void> {
 		this.updateDescription();
 		this.postShow();
 		this.changed.fire();
@@ -218,6 +266,8 @@ export class MetricsPanel implements vscode.Disposable {
 			}
 		}
 		if (post) {
+			// Ticket 7.5: the source can change under the tab (a local run taking the file back from the Cloud).
+			this.updateDescription();
 			this.postShow();
 			this.changed.fire();
 		}
@@ -233,12 +283,13 @@ export class MetricsPanel implements vscode.Disposable {
 		const message: MetricsHostMessage = {
 			type: 'show',
 			source: this.title ?? null,
-			file: this.uri ? path.basename(this.uri.fsPath) : null,
+			file: this.fileName,
 			port: this.update?.port ?? null,
 			state: this.state,
 			rows: this.rows(),
-			intervalMs: this.options.feeds.intervalMs,
+			intervalMs: this.update?.intervalMs ?? this.options.feeds.intervalMs,
 			sort: this.sort,
+			...(this.update?.source.kind === 'cloud' ? { cloud: { host: this.update.source.host } } : {}),
 		};
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {

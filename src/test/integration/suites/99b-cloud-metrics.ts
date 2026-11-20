@@ -1,0 +1,440 @@
+// Metrics of a Cloud pipeline in the tab and on the graph (ticket 7.5, AD-25), end to end in the stable
+// run: the Cloud view against the Cloud fake (`helpers/fakeCloud.ts`), whose cluster serves two
+// pipelines' series (A, mapped to a local file, and B, mapped to none) on its Prometheus endpoint behind
+// basic auth. Show metrics runs through its command on a pipeline row; the tab and the graph are read
+// through their test seams, and the Cloud feeds' timing is shortened through the feeds' seam (production
+// is AD-25's 10 s, 5 s floor, 5–60 s backoff, checked in the unit tests). Every matrix row of the plan has
+// a test (LIVE … NO_LEAK), and the two acceptance criteria (GRAPH, and the 98-metrics suite unchanged).
+import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { CONFIG_TAG } from '../../../adapters/cloud/dataPlane';
+import {
+	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, FORGET_METRICS_ACCESS_COMMAND, metricsAccessKey, noMetricsAccessMessage, SET_UP_METRICS_ACCESS_ACTION,
+	SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND, type CloudItem, type CloudUi,
+} from '../../../adapters/vscode/cloudView';
+import { CLOUD_REFUSED_TEXT, DEFAULT_PROMETHEUS_USER } from '../../../adapters/metrics/source';
+import { CLOUD_NO_SERIES_HINT, CLOUD_TIMING } from '../../../adapters/vscode/metricsFeed';
+import { SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
+import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
+import type { NodeFiguresById } from '../../../shared/protocol';
+import { type ExtensionApi } from '../../../extension';
+import { cloudMetricsBody, FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
+import { connectScript, fixtureBodies, makeTempDir, writeFakeBinary } from '../../helpers/fakeBinary';
+import { EXTENSION_ID, waitFor } from '../helpers';
+
+const CLIENT_ID = 'fake-client-id-7-5';
+const CLIENT_SECRET = 'fake-client-secret-7-5-Wd3';
+const PASSWORD = 'prom-password-7-5-Kx9q';
+const WRONG_PASSWORD = 'wrong-prom-password-7-5-Ju4';
+const VILNIUS = 'cvilnius0000000000aa';
+const A = 'd5orders000000000001';
+const B = 'd5clicks000000000002';
+const TIMING = { intervalMs: 500, minGapMs: 250, retryDelaysMs: [300, 600, 900] };
+
+const CONFIG = [
+	'input:',
+	'  generate:',
+	'    mapping: root = "tick"',
+	'pipeline:',
+	'  processors:',
+	'    - label: fast',
+	'      mapping: root = this',
+	'output:',
+	'  drop: {}',
+	'',
+].join('\n');
+
+type Input = string | undefined;
+
+suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, ticket 7.5)', function () {
+	this.timeout(90_000);
+	const api = () => vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.exports;
+	const cloud = () => api().cloud!;
+	const metrics = () => api().metrics!;
+	const config = () => vscode.workspace.getConfiguration('redpandaConnect');
+	const originalPath = process.env.PATH;
+	let fake: FakeCloud;
+	let originalUi: CloudUi;
+	let originalFolders: () => readonly { name: string; path: string }[];
+	let dir: string;
+	let fileA: string;
+	let inputs: Input[] = [];
+	let infoAnswers: (string | undefined)[] = [];
+	const errors: string[] = [];
+	const infos: string[] = [];
+	const allShown: string[] = [];
+	const seenItems: CloudItem[] = [];
+	/** When each Prometheus read arrived. */
+	let promTimes: number[] = [];
+
+	const pipelineNode = (id: string): CloudItem['node'] => ({ kind: 'pipeline', clusterId: VILNIUS, id });
+	const showMetrics = (id: string) => vscode.commands.executeCommand<{ kind: string; pipelineId?: string; file?: string }>(SHOW_CLOUD_METRICS_COMMAND, pipelineNode(id));
+	const promReads = () => fake.requestsTo('/prom/').length;
+	const lastPosted = () => metrics().posted.at(-1)!;
+	const figuresOf = (handle: GraphPanelHandle): NodeFiguresById[] => handle.posted.flatMap((m) => (m.type === 'nodeFigures' ? [m.byId] : []));
+	const lastFigures = (handle: GraphPanelHandle) => figuresOf(handle).at(-1) ?? {};
+
+	function pipeline(id: string, name: string, tags: Record<string, string>): FakePipeline {
+		return {
+			id, display_name: name, description: '', config_yaml: CONFIG,
+			resources: { cpu_shares: '100m', memory_shares: '400M' }, tags, state: 'STATE_RUNNING', sequence: [],
+		};
+	}
+
+	async function setUpAccess(): Promise<void> {
+		inputs = [DEFAULT_PROMETHEUS_USER, PASSWORD];
+		const result = await vscode.commands.executeCommand<{ kind: string }>(SET_UP_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: VILNIUS });
+		assert.strictEqual(result?.kind, 'stored', errors.join('\n'));
+		// The test read is not one of the tab's.
+		fake.requests.length = 0;
+		promTimes = [];
+	}
+
+	async function closeTab(): Promise<void> {
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !metrics().visible, 10_000));
+	}
+
+	/** Reads of the endpoint during `ms`. */
+	async function readsDuring(ms: number): Promise<number> {
+		const before = promReads();
+		await new Promise((r) => setTimeout(r, ms));
+		return promReads() - before;
+	}
+
+	suiteSetup(async () => {
+		await vscode.extensions.getExtension<ExtensionApi>(EXTENSION_ID)!.activate();
+		// A fake binary for the schema the graph's model is built with (as 98-metrics).
+		const fixtures = fixtureBodies('4.112.0');
+		process.env.PATH = (originalPath ?? '').split(path.delimiter)
+			.filter((d) => d && !['rpk', 'redpanda-connect'].some((b) => fs.existsSync(path.join(d, b))))
+			.join(path.delimiter);
+		dir = makeTempDir('rpcn-cloud-metrics-');
+		const bin = writeFakeBinary(dir, 'redpanda-connect', connectScript({ version: '4.112.0', ...fixtures, run: 'while :; do sleep 0.05; done' }));
+		await config().update('binaryPath', bin, vscode.ConfigurationTarget.Global);
+		assert.ok(await waitFor(() => api().schemaStore.current?.path === bin, 30_000), 'the schema (for the model) is there');
+		fileA = path.join(dir, 'orders.yaml');
+		fs.writeFileSync(fileA, CONFIG);
+		fake = new FakeCloud({
+			clientId: CLIENT_ID,
+			clientSecret: CLIENT_SECRET,
+			clientName: 'metrics-bot',
+			clusters: [
+				{ id: VILNIUS, name: 'rpc-vilnius', type: 'TYPE_DEDICATED', cloudProvider: 'CLOUD_PROVIDER_AWS', region: 'us-east-2', connectVersion: '4.118.0', prometheus: true, prometheusPassword: PASSWORD, pipelines: [] },
+			],
+		});
+		await fake.start();
+		originalUi = cloud().ui;
+		originalFolders = cloud().workspaceFolders;
+		cloud().endpoints = { authUrl: fake.url, controlPlaneUrl: fake.url, requireHttps: false };
+		cloud().workspaceFolders = () => [{ name: path.basename(dir), path: dir }];
+		metrics().feeds.cloudTiming = TIMING;
+		cloud().ui = {
+			...originalUi,
+			input: async (options) => {
+				allShown.push(options.title ?? '', options.prompt ?? '', options.value ?? '');
+				return inputs.shift();
+			},
+			error: async (m) => {
+				errors.push(m);
+				allShown.push(m);
+				return undefined;
+			},
+			info: async (m) => {
+				infos.push(m);
+				allShown.push(m);
+				return infoAnswers.shift();
+			},
+			progress: async (title, task) => {
+				allShown.push(title);
+				return task(() => undefined);
+			},
+		};
+	});
+
+	setup(async () => {
+		await cloud().disconnect();
+		await cloud().removeMetricsAccess(VILNIUS);
+		const c = fake.cluster(VILNIUS);
+		c.pipelines = [pipeline(A, 'orders', { [CONFIG_TAG]: 'orders.yaml' }), pipeline(B, 'clicks', {})];
+		c.prometheusPassword = PASSWORD;
+		c.prometheusFailure = undefined;
+		c.metricsBody = undefined;
+		fake.delay = (req) => {
+			if (req.url.startsWith('/prom/')) {
+				promTimes.push(Date.now());
+			}
+			return 0;
+		};
+		promTimes = [];
+		errors.length = 0;
+		infos.length = 0;
+		infoAnswers = [];
+		inputs = [CLIENT_ID, CLIENT_SECRET];
+		assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true, errors.join('\n'));
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		errors.length = 0;
+		infos.length = 0;
+		fake.requests.length = 0;
+	});
+
+	teardown(async () => {
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		seenItems.push(...cloud().items());
+	});
+
+	suiteTeardown(async () => {
+		metrics().feeds.cloudTiming = CLOUD_TIMING;
+		if (fake) {
+			await cloud().removeMetricsAccess(VILNIUS);
+			await cloud().disconnect();
+			cloud().ui = originalUi;
+			cloud().workspaceFolders = originalFolders;
+			await fake.stop();
+		}
+		process.env.PATH = originalPath;
+		await config().update('binaryPath', undefined, vscode.ConfigurationTarget.Global);
+		if (dir) {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('package.json: Show metrics ($(pulse)) in the pipeline row\'s menu only, at 0_open@5 (around the error after it); no inline icon, no palette entry', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+			contributes: { commands: { command: string; title: string; icon?: string }[]; menus: Record<string, { command: string; when?: string; group?: string }[]> };
+		};
+		const command = pkg.contributes.commands.find((c) => c.command === SHOW_CLOUD_METRICS_COMMAND);
+		assert.deepStrictEqual([command?.title, command?.icon], ['Show metrics', '$(pulse)']);
+		assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === SHOW_CLOUD_METRICS_COMMAND)?.when, 'false');
+		const entries = Object.entries(pkg.contributes.menus).flatMap(([menu, items]) => items.filter((m) => m.command === SHOW_CLOUD_METRICS_COMMAND).map((m) => ({ menu, ...m })));
+		assert.deepStrictEqual(entries.filter((e) => e.menu !== 'commandPalette'), [{
+			menu: 'view/item/context', command: SHOW_CLOUD_METRICS_COMMAND, when: 'view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/', group: '0_open@5',
+		}]);
+		const around = pkg.contributes.menus['view/item/context'].find((m) => m.command === 'redpandaConnect.cloud.showLogsAroundError');
+		assert.strictEqual(around?.group, '0_open@6');
+	});
+
+	test('LIVE / GRAPH: Show metrics on A: the tab names "Cloud · <cluster> · A", its host, file and interval, only A\'s components in its file\'s config order; A\'s file\'s graph shows the same figures', async () => {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 5_000));
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.ok(handle, 'a graph panel');
+		const result = await showMetrics(A);
+		assert.deepStrictEqual(result, { kind: 'shown', pipelineId: A, file: fileA }, errors.join('\n'));
+		assert.ok(await waitFor(() => metrics().visible && metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders');
+		assert.strictEqual(metrics().file, doc.uri.toString());
+		const host = new URL(fake.url).host;
+		const shown = lastPosted();
+		assert.deepStrictEqual([shown.source, shown.file, shown.port, shown.cloud, shown.intervalMs], ['Cloud · rpc-vilnius · orders', 'orders.yaml', null, { host }, TIMING.intervalMs]);
+		assert.deepStrictEqual(metrics().rows().map((r) => r.id), ['path:input', 'label:fast', 'path:output'], 'config order');
+		assert.strictEqual(metrics().rows()[1].p50, 4700, 'A\'s series (B\'s is 9400)');
+		// The counters rise: rates.
+		fake.cluster(VILNIUS).metricsBody = cloudMetricsBody([A, B], 200);
+		assert.ok(await waitFor(() => (metrics().rows()[0]?.outRate ?? 0) > 0, 10_000), JSON.stringify(metrics().rows()));
+		assert.ok(await waitFor(() => (lastFigures(handle)['label:fast'] as { p50?: number } | undefined)?.p50 === 4700, 10_000), JSON.stringify(lastFigures(handle)));
+		assert.ok(await waitFor(() => (lastFigures(handle)['path:input']?.outRate ?? 0) > 0, 10_000), JSON.stringify(lastFigures(handle)));
+		assert.deepStrictEqual(Object.keys(lastFigures(handle)).sort(), ['label:fast', 'path:input', 'path:output']);
+		// Each read carries the access as basic auth.
+		const read = fake.requestsTo('/prom/').at(-1)!;
+		assert.strictEqual(read.headers.authorization, `Basic ${Buffer.from(`prometheus:${PASSWORD}`).toString('base64')}`);
+	});
+
+	test('ACCEPTANCE (GRAPH): with A\'s graph open and the tab closed, the graph alone reads A\'s figures; the graph gone too, the reads stop', async () => {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		await closeTab();
+		fake.cluster(VILNIUS).metricsBody = cloudMetricsBody([A, B], 300);
+		const before = figuresOf(handle).length;
+		assert.ok(await waitFor(() => figuresOf(handle).length > before && (lastFigures(handle)['label:fast'] as { p50?: number } | undefined)?.p50 === 4700, 10_000),
+			JSON.stringify(lastFigures(handle)));
+		assert.ok(await readsDuring(TIMING.intervalMs * 2 + 200) >= 1, 'the graph alone reads');
+		handle.panel.dispose();
+		await new Promise((r) => setTimeout(r, 200));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0, 'nothing shows the figures: no read');
+	});
+
+	test('INTERVAL: while the tab is visible, read at the interval, one at a time (a slow read is waited for)', async () => {
+		await setUpAccess();
+		fake.delay = (req) => {
+			if (req.url.startsWith('/prom/')) {
+				promTimes.push(Date.now());
+				return 400;
+			}
+			return 0;
+		};
+		assert.strictEqual((await showMetrics(B))?.kind, 'shown');
+		assert.ok(await waitFor(() => promTimes.length >= 4, 15_000));
+		const gaps = promTimes.slice(1).map((t, i) => t - promTimes[i]);
+		// Each next read starts an interval after the last answer: never two at once.
+		assert.ok(gaps.every((g) => g >= TIMING.intervalMs + 400 - 50), JSON.stringify(gaps));
+	});
+
+	test('HIDDEN: the tab hidden and no graph: no read; the readings dropped', async () => {
+		await setUpAccess();
+		assert.strictEqual((await showMetrics(B))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000));
+		await closeTab();
+		assert.strictEqual(metrics().state.kind, 'waiting', 'dropped');
+		await new Promise((r) => setTimeout(r, 200));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0);
+	});
+
+	test('NO_ACCESS / SET LATER: the tab opens in the no-access state naming the cluster, nothing read; the info offers Set up metrics access…, and once set the tab reads', async () => {
+		infoAnswers = [undefined];
+		assert.deepStrictEqual(await showMetrics(A), { kind: 'noAccess', pipelineId: A, file: fileA });
+		assert.deepStrictEqual(metrics().state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders');
+		assert.deepStrictEqual(infos, [noMetricsAccessMessage('rpc-vilnius')]);
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 2), 0, 'no read');
+		// Set up from the offer: the tab starts reading.
+		infos.length = 0;
+		infoAnswers = [SET_UP_METRICS_ACCESS_ACTION];
+		inputs = [DEFAULT_PROMETHEUS_USER, PASSWORD];
+		assert.deepStrictEqual(await showMetrics(A), { kind: 'shown', pipelineId: A, file: fileA }, errors.join('\n'));
+		assert.ok(await waitFor(() => metrics().state.kind === 'live' && metrics().rows().length === 3, 10_000), JSON.stringify(metrics().state));
+		// Set from the row later works too.
+		await vscode.commands.executeCommand(FORGET_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: VILNIUS });
+		assert.ok(await waitFor(() => metrics().state.kind === 'noAccess', 5_000));
+		await setUpAccess();
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+	});
+
+	test('REFUSED: a 401 is the refused state ("the user or password is wrong…") and is not read again until the access is set again or Show metrics runs again', async () => {
+		await setUpAccess();
+		fake.cluster(VILNIUS).prometheusPassword = WRONG_PASSWORD;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'refused', 10_000), JSON.stringify(metrics().state));
+		const state = metrics().state;
+		assert.ok(state.kind === 'refused' && state.cluster === 'rpc-vilnius' && state.message.includes(CLOUD_REFUSED_TEXT), JSON.stringify(state));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0, 'not retried');
+		// Show metrics again: read once more (refused again).
+		const before = promReads();
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => promReads() > before, 5_000));
+		assert.ok(await waitFor(() => metrics().state.kind === 'refused', 5_000));
+		// The access set again (the endpoint's password now): it reads.
+		fake.cluster(VILNIUS).prometheusPassword = PASSWORD;
+		await vscode.commands.executeCommand(FORGET_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: VILNIUS });
+		await setUpAccess();
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+	});
+
+	test('REFUSED, SET UP AGAIN WITH THE SAME VALUES: a successful Set up metrics access reads again, without a Forget', async () => {
+		await setUpAccess();
+		// The endpoint refuses a moment (a rotated password), then takes the stored one again.
+		fake.cluster(VILNIUS).prometheusPassword = WRONG_PASSWORD;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'refused', 10_000), JSON.stringify(metrics().state));
+		fake.cluster(VILNIUS).prometheusPassword = PASSWORD;
+		await setUpAccess();
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+	});
+
+	test('UNREACHABLE: a 5xx is quiet for the first failures, then the unreachable state with its reason; retried with the backoff; back once it answers', async () => {
+		await setUpAccess();
+		fake.cluster(VILNIUS).prometheusFailure = 503;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => promTimes.length >= 2, 10_000));
+		assert.strictEqual(metrics().state.kind, 'waiting', 'quiet');
+		assert.ok(await waitFor(() => metrics().state.kind === 'unreachable', 10_000), JSON.stringify(metrics().state));
+		const state = metrics().state;
+		assert.ok(state.kind === 'unreachable' && /answered HTTP 503$/.test(state.message), JSON.stringify(state));
+		assert.ok(await waitFor(() => promTimes.length >= 4, 10_000));
+		const gaps = promTimes.slice(1).map((t, i) => t - promTimes[i]);
+		assert.ok(gaps[0] >= TIMING.retryDelaysMs[0] - 50 && gaps[1] >= TIMING.retryDelaysMs[1] - 50 && gaps[2] >= TIMING.retryDelaysMs[2] - 50, JSON.stringify(gaps));
+		fake.cluster(VILNIUS).prometheusFailure = undefined;
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+	});
+
+	test('NO_SERIES: a body with no series of A is the "no series" state of the local run (after 5 answers), and is not read on', async () => {
+		await setUpAccess();
+		fake.cluster(VILNIUS).metricsBody = cloudMetricsBody([B]);
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'notServed', 15_000), JSON.stringify(metrics().state));
+		const state = metrics().state;
+		assert.ok(state.kind === 'notServed' && state.reason.includes('has no Redpanda Connect component series') && state.reason.endsWith(CLOUD_NO_SERIES_HINT), JSON.stringify(state));
+		assert.strictEqual(promReads(), 5);
+		assert.strictEqual(metrics().rows().length, 0);
+	});
+
+	test('FORGOTTEN: live, then Forget metrics access: the no-access state, reading stops', async () => {
+		await setUpAccess();
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000));
+		await vscode.commands.executeCommand(FORGET_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: VILNIUS });
+		assert.deepStrictEqual(metrics().state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		await new Promise((r) => setTimeout(r, 100));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0);
+	});
+
+	test('NOT MAPPED: B has no local file: the tab only, rows by path, the header says it is not mapped; no graph gets its figures', async () => {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.deepStrictEqual(await showMetrics(B), { kind: 'shown', pipelineId: B, file: undefined });
+		assert.ok(await waitFor(() => metrics().state.kind === 'live' && metrics().rows().length === 3, 10_000), JSON.stringify(metrics().state));
+		assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · clicks');
+		assert.strictEqual(lastPosted().file, null);
+		assert.ok(metrics().file?.startsWith('redpanda-cloud-metrics:'), metrics().file);
+		assert.deepStrictEqual(metrics().rows().map((r) => [r.nodeId, r.path]), [[null, 'input'], [null, 'output'], [null, 'pipeline.processors[0]']], 'by path');
+		assert.strictEqual(metrics().rows()[2].p50, 9400, 'B\'s series');
+		// A's file's graph keeps whatever its own feed reads (A's, when an earlier Show metrics bound it), never B's.
+		await new Promise((r) => setTimeout(r, TIMING.intervalMs * 2));
+		assert.ok(!JSON.stringify(handle.posted.filter((m) => m.type === 'nodeFigures')).includes('9400'), 'no graph gets B\'s figures');
+	});
+
+	test('LAST CHOSEN WINS: Show Pipeline Metrics on A\'s file after Show metrics binds it back to the local run', async () => {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000));
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+		assert.strictEqual(metrics().title, 'Local run · orders.yaml');
+		assert.strictEqual(metrics().state.kind, 'notRunning');
+		assert.strictEqual(lastPosted().cloud, undefined);
+		await new Promise((r) => setTimeout(r, 100));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0, 'the Cloud is no longer read');
+	});
+
+	test('NO_LEAK: after live, refused and unreachable, the password is in no posted message (the tab\'s or the graph\'s), output line or view item', async () => {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const graph = api().graphPanels.panelFor(doc.uri)!;
+		assert.ok(graph, 'a graph panel');
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000));
+		fake.cluster(VILNIUS).prometheusFailure = 503;
+		assert.ok(await waitFor(() => metrics().state.kind === 'unreachable', 15_000), JSON.stringify(metrics().state));
+		fake.cluster(VILNIUS).prometheusFailure = undefined;
+		fake.cluster(VILNIUS).prometheusPassword = WRONG_PASSWORD;
+		assert.ok(await waitFor(() => metrics().state.kind === 'refused', 15_000), JSON.stringify(metrics().state));
+		seenItems.push(...cloud().items());
+		assert.ok(figuresOf(graph).some((f) => Object.keys(f).length > 0), 'the graph showed the figures');
+		const shown = JSON.stringify({ posted: metrics().posted, graph: graph.posted, shown: allShown, output: api().outputLines(), items: seenItems });
+		const basic = Buffer.from(`prometheus:${PASSWORD}`).toString('base64');
+		for (const value of [PASSWORD, basic, CLIENT_SECRET]) {
+			assert.ok(!shown.includes(value), 'a secret in a posted message, a message, the output or the view');
+		}
+		assert.ok(api().outputLines().some((l) => l.includes('Pipeline metrics: orders on rpc-vilnius') && l.includes(CLOUD_REFUSED_TEXT)), 'the output says so');
+		// The stored record is the only place it is.
+		assert.ok((await cloud().storedValue(metricsAccessKey(VILNIUS)))?.includes(PASSWORD));
+		assert.ok(!((await cloud().storedValue(CLIENT_ID_KEY)) ?? '').includes(PASSWORD));
+		assert.ok(!((await cloud().storedValue(CLIENT_SECRET_KEY)) ?? '').includes(PASSWORD));
+	});
+});

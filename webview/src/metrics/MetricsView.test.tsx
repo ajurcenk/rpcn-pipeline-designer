@@ -9,7 +9,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	addressText, formatNs, formatRate, nextSort, NO_FILE_TEXT, parseMetricsHostMessage, parseMetricsWebviewMessage, STOPPED_TEXT,
+	addressText, cloudAddressText, cloudSourceLabel, formatNs, formatRate, nextSort, NO_FILE_TEXT, noMetricsAccessText, NOT_MAPPED_TEXT, parseMetricsHostMessage,
+	parseMetricsWebviewMessage, refusedText, stateText, STOPPED_TEXT,
 	type MetricRow, type MetricsHostMessage, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
 import { INDENT_EM, MetricsView, NO_SOURCE_TITLE } from './MetricsView';
@@ -100,6 +101,38 @@ describe('MetricsView', () => {
 		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe("Can't read the metrics: 127.0.0.1:41873: connection refused. Trying again.");
 	});
 
+	it('ticket 7.5: a Cloud pipeline\'s header (board 3): the source, the endpoint host, the mapped file and the interval', async () => {
+		const cloud: MetricsHostMessage = {
+			...SHOW, source: 'Cloud · rpc-vilnius · orders', file: 'orders.yaml', port: null, intervalMs: 10_000, cloud: { host: 'prom.example.cloud:443' },
+		};
+		await send(cloud);
+		expect(host.querySelector('h1')?.textContent).toBe('Cloud · rpc-vilnius · orders');
+		expect(host.querySelector('.rpcn-metrics-address')?.textContent).toBe('prom.example.cloud:443 · mapped to orders.yaml · read every 10 s');
+		expect(host.querySelectorAll('tbody tr')).toHaveLength(5);
+		await send({ ...cloud, file: null });
+		expect(host.querySelector('.rpcn-metrics-address')?.textContent).toBe(`prom.example.cloud:443 · ${NOT_MAPPED_TEXT} · read every 10 s`);
+		await send({ ...cloud, rows: [], state: { kind: 'waiting' } });
+		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe('Waiting for the first reading of prom.example.cloud:443…');
+	});
+
+	it('ticket 7.5: the no-access and refused states name the cluster and say what to do', async () => {
+		const cloud = { ...SHOW, source: 'Cloud · rpc-vilnius · orders', port: null, rows: [], cloud: { host: 'prom.example.cloud' } };
+		await send({ ...cloud, state: { kind: 'noAccess', cluster: 'rpc-vilnius' } });
+		const state = () => host.querySelector('.rpcn-metrics-state');
+		expect(state()?.textContent).toBe(noMetricsAccessText('rpc-vilnius'));
+		expect(noMetricsAccessText('rpc-vilnius')).toBe('No metrics access is held for rpc-vilnius. Connect to Redpanda Cloud, or use Set up metrics access… on its row in the Cloud view; the figures are read once it is set.');
+		expect(state()?.textContent).toContain('Set up metrics access…');
+		expect(state()?.className).toContain('rpcn-metrics-state-noAccess');
+		expect(state()?.getAttribute('role')).toBe('status');
+		const message = 'prom.example.cloud refused: the user or password is wrong (HTTP 401)';
+		await send({ ...cloud, state: { kind: 'refused', cluster: 'rpc-vilnius', message } });
+		expect(state()?.textContent).toBe(refusedText('rpc-vilnius', message));
+		expect(state()?.textContent).toContain('the user or password is wrong');
+		expect(state()?.className).toContain('rpcn-metrics-state-refused');
+		expect(state()?.getAttribute('role')).toBe('alert');
+		expect(host.querySelector('.rpcn-metrics-dot-refused')).not.toBeNull();
+	});
+
 	it('asks the host to sort on a header click and marks the sorted column', async () => {
 		await send(SHOW);
 		const p50 = () => [...host.querySelectorAll<HTMLButtonElement>('thead button')][5];
@@ -137,6 +170,11 @@ describe('metricsProtocol texts and validators', () => {
 		expect(formatNs(250_000_000)).toBe('250 ms');
 		expect(formatNs(2.5e9)).toBe('2.50 s');
 		expect(addressText(1234, 10_000)).toBe('127.0.0.1:1234 · read every 10 s');
+		expect(cloudSourceLabel('rpc-vilnius', 'orders')).toBe('Cloud · rpc-vilnius · orders');
+		expect(cloudAddressText('h:443', 'a.yaml', 10_000)).toBe('h:443 · mapped to a.yaml · read every 10 s');
+		expect(cloudAddressText('h:443', null, 10_000)).toBe('h:443 · not mapped to a file · read every 10 s');
+		expect(stateText({ kind: 'waiting' }, null, null, 'h:443')).toBe('Waiting for the first reading of h:443…');
+		expect(stateText({ kind: 'waiting' }, null, 41873)).toBe('Waiting for the first reading of 127.0.0.1:41873…');
 	});
 
 	it('cycles the sort', () => {
@@ -152,6 +190,16 @@ describe('metricsProtocol texts and validators', () => {
 		expect(parseMetricsHostMessage({ ...SHOW, intervalMs: 0 })).toBeUndefined();
 		expect(parseMetricsHostMessage({ ...SHOW, rows: [row('a', { inRate: Infinity })] })).toBeUndefined();
 		expect(parseMetricsHostMessage({ ...SHOW, sort: { column: 'odd', dir: 'asc' } })).toBeUndefined();
+		// Ticket 7.5: the Cloud address and the new states.
+		const cloud = { ...SHOW, port: null, cloud: { host: 'h' } };
+		expect(parseMetricsHostMessage(cloud)).toBe(cloud);
+		expect(parseMetricsHostMessage({ ...SHOW, cloud: null })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, cloud: { host: '' } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, cloud: 'h' })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'noAccess', cluster: 'c' } })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'noAccess' } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'refused', cluster: 'c', message: 'm' } })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'refused', cluster: 'c' } })).toBeUndefined();
 		expect(parseMetricsWebviewMessage({ type: 'ready', extra: 1 })).toEqual({ type: 'ready' });
 		expect(parseMetricsWebviewMessage({ type: 'sort', sort: { column: 'p50', dir: 'desc', x: 1 } })).toEqual({ type: 'sort', sort: { column: 'p50', dir: 'desc' } });
 		expect(parseMetricsWebviewMessage({ type: 'sort', sort: null })).toEqual({ type: 'sort', sort: null });

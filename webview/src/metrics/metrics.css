@@ -47,6 +47,9 @@ body {
 .rpcn-metrics-dot-notServed {
 	background: var(--vscode-editorWarning-foreground);
 }
+.rpcn-metrics-dot-refused {
+	background: var(--vscode-editorError-foreground);
+}
 .rpcn-metrics-address {
 	color: var(--vscode-descriptionForeground);
 }
@@ -59,8 +62,12 @@ body {
 .rpcn-metrics-state-unreachable {
 	color: var(--vscode-editorWarning-foreground);
 }
+.rpcn-metrics-state-refused {
+	color: var(--vscode-errorForeground);
+}
 .rpcn-metrics-state-stopped,
 .rpcn-metrics-state-waiting,
+.rpcn-metrics-state-noAccess,
 .rpcn-metrics-state-none {
 	color: var(--vscode-descriptionForeground);
 }
