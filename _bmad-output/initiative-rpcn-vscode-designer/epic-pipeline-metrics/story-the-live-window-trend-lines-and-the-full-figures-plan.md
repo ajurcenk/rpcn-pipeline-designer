@@ -3,7 +3,7 @@ title: 'The live window, trend lines and the full figures'
 type: 'feature'
 ticket: '6'
 created: '2026-11-20'
-status: 'built'
+status: done
 baseline_revision: '529a89a767581f45425005763501e28a04a2ac6c'
 route: 'full'
 route_source: 'auto'
