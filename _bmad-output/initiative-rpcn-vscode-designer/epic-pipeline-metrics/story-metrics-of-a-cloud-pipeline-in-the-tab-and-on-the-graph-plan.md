@@ -131,3 +131,7 @@ All seven patches applied by the implementer. Verified after them: `npm run comp
 **Manual checks:**
 - In the dev host, signed in, with metrics access set on the user's cluster: Show metrics on a running pipeline shows its figures in the tab, and on its file's graph when the file is open.
 
+
+## Manual Check
+
+- 2026-11-20, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `ff3c955`, restarted on the new build) on their Redpanda Cloud cluster: "tested, no issues".
