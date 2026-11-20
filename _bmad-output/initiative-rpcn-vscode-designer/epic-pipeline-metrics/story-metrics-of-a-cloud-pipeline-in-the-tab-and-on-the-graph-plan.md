@@ -3,7 +3,7 @@ title: 'Metrics of a Cloud pipeline in the tab and on the graph'
 type: 'feature'
 ticket: '5'
 created: '2026-11-19'
-status: 'built'
+status: done
 baseline_revision: '19c8dfd12a09b72323e57418c456124e68ab2970'
 route: 'full'
 route_source: 'auto'
