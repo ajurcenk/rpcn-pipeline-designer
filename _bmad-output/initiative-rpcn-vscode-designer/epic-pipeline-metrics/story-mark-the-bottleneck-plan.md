@@ -3,7 +3,7 @@ title: 'Mark the bottleneck'
 type: 'feature'
 ticket: '7'
 created: '2026-11-20'
-status: 'built'
+status: done
 baseline_revision: '780d06be0b88c3844f5c3af3bd6f27c167e8589a'
 route: 'full'
 route_source: 'auto'
