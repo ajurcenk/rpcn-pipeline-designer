@@ -121,3 +121,7 @@ Resolver order mirrors board 5's command card: "its local run when one runs, els
 **Manual checks:**
 - Dev host: run `metrics_a.yaml`, use the status bar item → tab live; Show Pipeline Metrics with no editor → pick; graph toolbar button; a Cloud row's inline icon.
 
+
+## Manual Check
+
+- 2026-11-21, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `a355618`, restarted on the build) on the status bar menu of a local run, the command (Cloud pipeline of the mapped `metrics_a.yaml`, Not running, the pick), the graph toolbar and the Cloud row: "tested, no issues".
