@@ -136,3 +136,7 @@ The six patches applied by the implementer (#2 rejected). Verified after them: `
 **Manual checks:**
 - In the dev host: open Pipeline Metrics on `metrics_a.yaml` not running → Run from the tab; `metrics_none.yaml` → Open the metrics section; a Cloud pipeline with a wrong password → Set up metrics access… from the tab.
 
+
+## Manual Check
+
+- 2026-11-21, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `7570a39`, restarted on the build) on the not-running, stopped, no-metrics-served and Cloud access states: "tested, no issues".
