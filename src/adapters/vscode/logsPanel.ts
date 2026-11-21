@@ -98,9 +98,10 @@ import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
 import {
 	filterActive, filterText, isLiveRange, LOG_LEVELS, MAX_LOG_ROWS, MINUTE_MS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsWebviewMessage, RANGE_LABELS,
-	RETRY_DELAYS_MS, retryDelayMs, type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogStrip, type LogsViewState,
+	type LogFilter, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsRange, type LogStrip, type LogsViewState,
 	type RangeChoice,
 } from '../../shared/logsProtocol';
+import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/retry';
 import { countText, localMinute, matchCountText } from '../../shared/logsText';
 import { isLogReadError, LOGS_TOPIC, type LogPositions, type LogReader, type LogRecord } from '../logs/logReader';
 import { isPipelineRecord, licenseOrgOf, maskOrgs, toLogRow } from '../logs/records';

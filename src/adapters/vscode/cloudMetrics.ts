@@ -26,7 +26,7 @@ import type { CloudPipeline } from '../cloud/dataPlane';
 import { CLOUD_REFUSED_TEXT, cloudAddress, cloudMetricsSource, DEFAULT_PROMETHEUS_USER, isMetricsReadError, type MetricsSource, testCloudMetricsAccess } from '../metrics/source';
 import type { CloudMetricsBinding } from './metricsFeed';
 import type { CloudContext, CloudNode } from './cloudView';
-import { CONNECT_ACTION } from './cloudShared';
+import { CONNECT_ACTION, forgetAccess, rowCluster, SetUpGuard } from './cloudShared';
 
 /** The secret storage key of a cluster's metrics access (one JSON record: username, password). */
 export const METRICS_ACCESS_PREFIX = 'redpandaConnect.cloud.metrics.';
@@ -92,10 +92,10 @@ export class CloudMetricsAccess {
 	readonly metricsUsers = new Map<string, string>();
 	/** Each cluster's access as last read or stored (in memory only), for the Cloud source (entry 5). */
 	private readonly accesses = new Map<string, MetricsAccess>();
-	/** The clusters whose Set up metrics access is running (a second one is ignored). */
-	private readonly settingUp = new Set<string>();
 	/** Ticket 8: a cluster's Set up metrics access started or ended (its id), for the Pipeline Metrics tab's buttons. */
 	private readonly settingUpChanged = new vscode.EventEmitter<string>();
+	/** The clusters whose Set up metrics access is running (a second one is ignored). */
+	private readonly settingUp = new SetUpGuard('metrics access', (line) => this.ctx.log(line), (clusterId) => this.settingUpChanged.fire(clusterId));
 	/** Every metrics password held in this window, for masking; a refused one is never added. */
 	private readonly kept = new Set<string>();
 	private readonly changed = new vscode.EventEmitter<string>();
@@ -201,55 +201,16 @@ export class CloudMetricsAccess {
 	 * Forget metrics access: on a cluster row, that cluster's; from the palette (no node), one picked from
 	 * the clusters with metrics access (connected first). Escape: nothing changes. Never throws.
 	 */
-	async forgetAccess(node?: CloudNode): Promise<ForgetMetricsAccessResult> {
-		try {
-			let cluster: CloudCluster | undefined;
-			if (node === undefined) {
-				if (!(await this.ctx.connectedFirst())) {
-					return NOT_STARTED;
-				}
-				await this.ctx.loadClusters(false);
-				const clusters = this.ctx.clusters;
-				if (clusters?.kind !== 'ok') {
-					if (clusters?.kind === 'error') {
-						void this.ctx.showError(`Could not list the Redpanda Cloud clusters: ${clusters.message}`);
-					}
-					return NOT_STARTED;
-				}
-				const offered = clusters.value.filter((c) => this.metricsUsers.has(c.id));
-				if (offered.length === 0) {
-					void this.ctx.showInfo(NO_CLUSTER_WITH_METRICS_ACCESS);
-					return NOT_STARTED;
-				}
-				cluster = await this.ctx.ui.pickCluster(offered, 'Forget metrics access: the cluster', 'The cluster whose metrics access to remove');
-				if (!cluster) {
-					return NOT_STARTED;
-				}
-			} else if (node.kind === 'cluster') {
-				cluster = this.ctx.clusterById(node.id);
-				if (!cluster) {
-					void this.ctx.showInfo('That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.');
-					return NOT_STARTED;
-				}
-			} else {
-				void this.ctx.showInfo('Choose a cluster in the Cloud view.');
-				return NOT_STARTED;
-			}
-			const user = this.metricsUsers.get(cluster.id);
-			if (!user && (await this.ctx.options.store.get(metricsAccessKey(cluster.id))) === undefined) {
-				void this.ctx.showInfo(`${cluster.name} has no metrics access set.`);
-				return NOT_STARTED;
-			}
-			await this.removeAccess(cluster.id);
-			this.ctx.log(`Redpanda Cloud: removed the metrics access to ${cluster.name}${user ? ` (${user})` : ''}.`);
-			void this.ctx.showInfo(metricsAccessForgottenMessage(cluster.name));
-			return { kind: 'forgotten', clusterId: cluster.id };
-		} catch (err) {
-			const message = this.maskError(errorText(err));
-			this.ctx.log(`Redpanda Cloud: Forget metrics access failed: ${message}`);
-			void this.ctx.showError(`Could not remove the metrics access from the secret storage: ${message}`);
-			return NOT_STARTED;
-		}
+	forgetAccess(node?: CloudNode): Promise<ForgetMetricsAccessResult> {
+		return forgetAccess(this.ctx, node, {
+			what: 'metrics access',
+			userOf: (clusterId) => this.metricsUsers.get(clusterId),
+			key: metricsAccessKey,
+			remove: (clusterId) => this.removeAccess(clusterId),
+			noneSet: NO_CLUSTER_WITH_METRICS_ACCESS,
+			forgotten: metricsAccessForgottenMessage,
+			mask: (text) => this.maskError(text),
+		});
 	}
 
 	/**
@@ -257,35 +218,14 @@ export class CloudMetricsAccess {
 	 * stored only once it is accepted. Escape at any step: nothing stored or sent. Never throws. One at a
 	 * time per cluster; another request while one runs is ignored.
 	 */
-	async setUpAccess(node?: CloudNode): Promise<MetricsAccessResult> {
-		const clusterId = node?.kind === 'cluster' ? node.id : undefined;
-		if (clusterId !== undefined && this.settingUp.has(clusterId)) {
-			this.ctx.log('Redpanda Cloud: Set up metrics access is already running for that cluster; this request was ignored.');
-			return NOT_STARTED;
-		}
-		if (clusterId !== undefined) {
-			this.settingUp.add(clusterId);
-			this.settingUpChanged.fire(clusterId);
-		}
-		try {
-			return await this.setUpAccessNow(node);
-		} finally {
-			if (clusterId !== undefined) {
-				this.settingUp.delete(clusterId);
-				this.settingUpChanged.fire(clusterId);
-			}
-		}
+	setUpAccess(node?: CloudNode): Promise<MetricsAccessResult> {
+		return this.settingUp.guard(node, NOT_STARTED, () => this.setUpAccessNow(node));
 	}
 
 	private async setUpAccessNow(node?: CloudNode): Promise<MetricsAccessResult> {
 		try {
-			if (node?.kind !== 'cluster') {
-				void this.ctx.showInfo('Choose a cluster in the Cloud view.');
-				return NOT_STARTED;
-			}
-			const cluster = this.ctx.clusterById(node.id);
+			const cluster = rowCluster(this.ctx, node);
 			if (!cluster) {
-				void this.ctx.showInfo('That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.');
 				return NOT_STARTED;
 			}
 			const url = this.ctx.prometheusUrlOf(cluster);

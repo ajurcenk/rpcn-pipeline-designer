@@ -1,5 +1,7 @@
 // What the Cloud view, its deploy flow, its pipeline actions and its log access share (ticket 5.9): constants,
-// texts and pure helpers, no state. Every module of the four imports it; it imports none of them (types only).
+// texts and helpers. Every module of the four imports it; it imports none of them (types only). Ticket 7.10:
+// also the log and metrics accesses' shared flow (Forget, a cluster row's cluster) and `SetUpGuard`, the one
+// stateful part (the clusters whose Set up runs, one guard per access); each access keeps its own texts and masking.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,7 +16,7 @@ import {
 import { mergeResources, resourceBlockLines } from '../../core/cloudResources';
 import { type CloudSecretUse, translateForCloud } from '../../core/cloudTranslate';
 import { errorText } from '../../shared/errorText';
-import type { CloudContext, DeployResult } from './cloudView';
+import type { CloudContext, CloudNode, DeployResult } from './cloudView';
 
 export const NOT_CONNECTED_MESSAGE = 'No Redpanda Cloud service account is connected. Connect one to deploy.';
 export const CONNECT_ACTION = 'Connect service account';
@@ -317,6 +319,132 @@ export function mappingGoneText(
 		? `The cluster ${gone.named} that ${mappingName} maps ${file} to is gone or no longer offers the pipeline API.`
 		: `Pipeline ${m.pipelineName ?? m.pipelineId}, which ${mappingName} maps ${file} to, is no longer on ${gone.cluster.name}.`;
 	return then ? `${text} ${then}` : text;
+}
+
+/** A cluster row's command on a node that is not a cluster row. */
+export const CHOOSE_A_CLUSTER = 'Choose a cluster in the Cloud view.';
+/** A cluster row's command on a cluster the view no longer holds. */
+export const CLUSTER_GONE = 'That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.';
+
+/** The cluster of a cluster row's command (`undefined`: not a cluster row, or gone; said so). */
+export function rowCluster(ctx: Pick<CloudContext, 'clusterById' | 'showInfo'>, node: CloudNode | undefined): CloudCluster | undefined {
+	if (node?.kind !== 'cluster') {
+		void ctx.showInfo(CHOOSE_A_CLUSTER);
+		return undefined;
+	}
+	const cluster = ctx.clusterById(node.id);
+	if (!cluster) {
+		void ctx.showInfo(CLUSTER_GONE);
+	}
+	return cluster;
+}
+
+/**
+ * Epic 7 refactor sweep (7.10): the one-at-a-time rule of a cluster's Set up (log or metrics) access.
+ * `what`: "log access", "metrics access"; `changed`: told each time a cluster's set-up starts or ends.
+ * A call whose node is not a cluster row runs unguarded and is not told to `changed`.
+ */
+export class SetUpGuard {
+	private readonly running = new Set<string>();
+
+	constructor(private readonly what: string, private readonly log: (line: string) => void, private readonly changed?: (clusterId: string) => void) {}
+
+	/** Whether a set-up of `clusterId` runs now. */
+	has(clusterId: string): boolean {
+		return this.running.has(clusterId);
+	}
+
+	/** `run` for a cluster row's `node`, unless a set-up of that cluster runs already (then `ignored`, logged). */
+	async guard<T>(node: CloudNode | undefined, ignored: T, run: () => Promise<T>): Promise<T> {
+		const clusterId = node?.kind === 'cluster' ? node.id : undefined;
+		if (clusterId === undefined) {
+			return run();
+		}
+		if (this.running.has(clusterId)) {
+			this.log(`Redpanda Cloud: Set up ${this.what} is already running for that cluster; this request was ignored.`);
+			return ignored;
+		}
+		this.running.add(clusterId);
+		this.changed?.(clusterId);
+		try {
+			return await run();
+		} finally {
+			this.running.delete(clusterId);
+			this.changed?.(clusterId);
+		}
+	}
+}
+
+/** What Forget (log or metrics) access differs in (7.10: the flow itself is `forgetAccess`). */
+export interface ForgetHow {
+	/** "log access", "metrics access". */
+	readonly what: string;
+	/** The cluster's user held now (none: no access held; the palette offers only clusters with one). */
+	readonly userOf: (clusterId: string) => string | undefined;
+	/** The cluster's secret storage key. */
+	readonly key: (clusterId: string) => string;
+	/** Removes the cluster's access (the record and memory); throws when the secret storage does. */
+	readonly remove: (clusterId: string) => Promise<void>;
+	/** The palette's message when no cluster has an access. */
+	readonly noneSet: string;
+	/** The message once removed. */
+	readonly forgotten: (cluster: string) => string;
+	/** The mask of a failure's text. */
+	readonly mask: (text: string) => string;
+}
+
+/**
+ * Forget (log or metrics) access: on a cluster row, that cluster's; from the palette (no node), one picked
+ * from the clusters with an access (connected first). Escape: nothing changes. Never throws.
+ */
+export async function forgetAccess(
+	ctx: CloudContext, node: CloudNode | undefined, how: ForgetHow,
+): Promise<{ readonly kind: 'notStarted' } | { readonly kind: 'forgotten'; readonly clusterId: string }> {
+	const notStarted = { kind: 'notStarted' } as const;
+	try {
+		let cluster: CloudCluster | undefined;
+		if (node === undefined) {
+			if (!(await ctx.connectedFirst())) {
+				return notStarted;
+			}
+			await ctx.loadClusters(false);
+			const clusters = ctx.clusters;
+			if (clusters?.kind !== 'ok') {
+				if (clusters?.kind === 'error') {
+					void ctx.showError(`Could not list the Redpanda Cloud clusters: ${clusters.message}`);
+				}
+				return notStarted;
+			}
+			const offered = clusters.value.filter((c) => how.userOf(c.id) !== undefined);
+			if (offered.length === 0) {
+				void ctx.showInfo(how.noneSet);
+				return notStarted;
+			}
+			cluster = await ctx.ui.pickCluster(offered, `Forget ${how.what}: the cluster`, `The cluster whose ${how.what} to remove`);
+			if (!cluster) {
+				return notStarted;
+			}
+		} else {
+			cluster = rowCluster(ctx, node);
+			if (!cluster) {
+				return notStarted;
+			}
+		}
+		const user = how.userOf(cluster.id);
+		if (!user && (await ctx.options.store.get(how.key(cluster.id))) === undefined) {
+			void ctx.showInfo(`${cluster.name} has no ${how.what} set.`);
+			return notStarted;
+		}
+		await how.remove(cluster.id);
+		ctx.log(`Redpanda Cloud: removed the ${how.what} to ${cluster.name}${user ? ` (${user})` : ''}.`);
+		void ctx.showInfo(how.forgotten(cluster.name));
+		return { kind: 'forgotten', clusterId: cluster.id };
+	} catch (err) {
+		const message = how.mask(errorText(err));
+		ctx.log(`Redpanda Cloud: Forget ${how.what} failed: ${message}`);
+		void ctx.showError(`Could not remove the ${how.what} from the secret storage: ${message}`);
+		return notStarted;
+	}
 }
 
 /** Story 42: a config's resource files (each `redpandaConnect.resourceFiles` entry expanded), or why the setting can't be used. */

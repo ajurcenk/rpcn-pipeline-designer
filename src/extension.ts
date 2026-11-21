@@ -128,10 +128,7 @@ export interface ExtensionApi {
 	readonly logs?: Pick<LogsPanel, 'title' | 'statusText' | 'reading' | 'readingOlder' | 'visible' | 'rows' | 'droppedCount' | 'viewState' | 'cap' | 'windowMs' | 'errorWindowMs' | 'posted' | 'onDidChange' | 'chooseRange' | 'loadOlder' | 'setLive' | 'requestRetention' | 'setFilter' | 'around' | 'copyJson' | 'panelState' | 'retryDelaysMs' | 'retry' | 'stopReading' | 'setUpAccess' | 'chooseSlot' | 'exportShown' | 'ui'>
 		& { checkClient: typeof checkClient };
 	/**
-	 * The Pipeline Metrics tab (ticket 7.2): its state, rows and posted messages, and the source seam
-	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
-	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten, and (ticket 9) the pick's seam
-	 * (`ui`) and the run the tab reads (`readingRun`). Only in `ExtensionMode.Test`.
+	 * The Pipeline Metrics tab's test seams (tickets 7.2–7.9). Only in `ExtensionMode.Test`.
 	 */
 	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'
 		| 'ui' | 'readingRun'>

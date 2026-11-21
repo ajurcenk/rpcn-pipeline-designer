@@ -610,14 +610,6 @@ export const NO_PANEL_STATE: LogsPanelState = { kind: 'none' };
 /** Bug 52: the Stopped state's text (the records already shown stay). */
 export const STOPPED_BODY = 'The records already shown stay. Use Show logs on a pipeline in the Cloud view to read its log again.';
 
-/** A lost connection is tried again after these waits, then every last one (ticket 6.6, the user's decision of 2026-11-06). */
-export const RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 30_000, 60_000];
-
-/** The wait before try `attempt` (1 for the first after the loss). */
-export function retryDelayMs(attempt: number, delays: readonly number[] = RETRY_DELAYS_MS): number {
-	return delays[Math.min(Math.max(attempt, 1), delays.length) - 1];
-}
-
 /** "Trying again in 5 s.", "Trying again…" (`null`: trying now). */
 export function retryText(seconds: number | null): string {
 	return seconds === null ? 'Trying again…' : `Trying again in ${seconds} s.`;

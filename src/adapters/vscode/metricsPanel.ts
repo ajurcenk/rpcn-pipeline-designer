@@ -60,10 +60,8 @@ import { FORGET_METRICS_ACCESS_COMMAND, SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOU
 import { RUN_COMMAND } from './run';
 import { cloudMetricsKey, type CloudMetricsBinding, type MetricsFeeds, type MetricsSourceFactory, type MetricsSubscription, type MetricsUpdate } from './metricsFeed';
 
-export {
-	CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, METRICS_INTERVAL_MS, NO_SERIES_READS, QUIET_FAILURES, type CloudMetricsBinding, type MetricsConfig, type MetricsRun,
-	type MetricsSourceFactory,
-} from './metricsFeed';
+// Only for the existing test imports (98-metrics, metricsPanel.test).
+export { METRICS_INTERVAL_MS, NO_SERIES_READS, QUIET_FAILURES } from './metricsFeed';
 
 export const METRICS_VIEW_ID = 'redpandaConnect.pipelineMetrics';
 export const SHOW_METRICS_COMMAND = 'redpandaConnect.showPipelineMetrics';

@@ -21,9 +21,10 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage, retryDelayMs,
+	customRangeError, gapsIn, localMinute, NO_COUNTS, NO_FILTER, NO_PANEL_STATE, panelStateTexts, parseLogsHostMessage, parseLocalDateTime, parseLogsWebviewMessage,
 	MAX_MATCH_CHARS, searchError, searchPattern, shortTime, SLOW_PATTERN_ERROR, slotLabel, slotSize, STOPPED_BODY, stripLayout, type LogFilter, type LogStrip, type LogRow, type LogsHostMessage, type LogsPanelState, type LogsViewState, type LogsWebviewMessage,
 } from '../../../src/shared/logsProtocol';
+import { retryDelayMs } from '../../../src/shared/retry';
 import {
 	STRIP_HINT, stripAxis, stripTitle, chipText, footerText, highlightParts, LOADING_OLDER_TEXT, localTime, LogsView, matchText, NO_MATCH_TEXT, NO_OLDER_TEXT, NO_PIPELINE_TITLE, NO_RECORDS_TEXT,
 	ownTimeText, rangeButtonText, SEARCH_DEBOUNCE_MS, secondsLeft, STOPPED_EMPTY_TEXT, EXPORT_LABEL, EXPORT_TEXT,

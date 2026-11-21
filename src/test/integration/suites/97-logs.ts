@@ -45,7 +45,8 @@ import {
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
-import { gapsIn, leftOutHereText, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, RETRY_DELAYS_MS, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
+import { gapsIn, leftOutHereText, LOG_LEVELS, MAX_LOG_ROWS, NO_FILTER, panelStateTexts, slotBounds, slotOf, type LogFilter, type LogsPanelState } from '../../../shared/logsProtocol';
+import { RETRY_DELAYS_MS } from '../../../shared/retry';
 import { RETENTION_UNKNOWN } from '../../../adapters/logs/history';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';

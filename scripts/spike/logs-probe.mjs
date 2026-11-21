@@ -95,7 +95,7 @@ const RESOURCES = { cpu_shares: '100m', memory_shares: '400M' }; // 0.1 CPU
 const NAME_PREFIX = 'vscode-spike-logs-';
 const CLIENT_VERSIONS = { kafkajs: '2.2.4', '@platformatic/kafka': '2.15.0' };
 
-const SECRET_KEY = /^(authorization|client_secret|client_id|access_token|id_token|refresh_token|secret_data|password|token|api_key|private_key|azp|username|user|principal)$/i;
+const SECRET_KEY = /^(authorization|client_secret|client_id|access_token|id_token|refresh_token|secret_data|password|token|api_key|private_key|azp|username|user|principal|created_by|updated_by)$/i;
 const OTHER_ID_KEY = /_ids?$/i;
 // Hosts that name nothing of the user's (the public Cloud endpoints, documentation).
 const PUBLIC_HOSTS = new Set(['auth.prd.cloud.redpanda.com', 'api.redpanda.com', 'cloud.redpanda.com', 'docs.redpanda.com', 'www.redpanda.com', 'registry.npmjs.org']);

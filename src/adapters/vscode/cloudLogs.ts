@@ -20,7 +20,7 @@ import { isLogReadError, isSaslMechanism, type LogAccess, LOGS_TOPIC, SASL_MECHA
 import { newerVsCodeMessage, nodeSupported } from '../logs/runtime';
 import { setUpRunningText, type LogsShowOptions, type LogSource } from './logsPanel';
 import type { CloudContext, CloudNode, LogAccessResult, ShowLogsResult } from './cloudView';
-import { IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription } from './cloudShared';
+import { forgetAccess, IN_SEVERAL_FOLDERS, NOT_IN_WORKSPACE, pipelineStateDescription, rowCluster, SetUpGuard } from './cloudShared';
 import { maskCredentials } from '../cloud/errors';
 
 /** Ticket 6.5: the Error notification's way to the log. */
@@ -57,7 +57,7 @@ export class CloudLogs {
 	/** Ticket 6.6: each cluster's log access as last read or stored (in memory only), so a reader made later signs in with the newest. */
 	private readonly logAccesses = new Map<string, LogAccess>();
 	/** Ticket 6.6: the clusters whose Set up log access is running (a second one is ignored). */
-	private readonly settingUpLogs = new Set<string>();
+	private readonly settingUpLogs = new SetUpGuard('log access', (line) => this.ctx.log(line));
 	/**
 	 * Bug 52: every log access password held in this window (read, or stored after its test read), for
 	 * masking; kept after Forget and Disconnect too, so rows shaped again later stay masked. A password the
@@ -148,55 +148,16 @@ export class CloudLogs {
 	 * Forget log access (bug 52): on a cluster row, that cluster's; from the palette (no node), one picked
 	 * from the clusters with log access (connected first). Escape: nothing changes. Never throws.
 	 */
-	async forgetLogAccess(node?: CloudNode): Promise<ForgetLogAccessResult> {
-		try {
-			let cluster: CloudCluster | undefined;
-			if (node === undefined) {
-				if (!(await this.ctx.connectedFirst())) {
-					return LOGS_NOT_STARTED;
-				}
-				await this.ctx.loadClusters(false);
-				const clusters = this.ctx.clusters;
-				if (clusters?.kind !== 'ok') {
-					if (clusters?.kind === 'error') {
-						void this.ctx.showError(`Could not list the Redpanda Cloud clusters: ${clusters.message}`);
-					}
-					return LOGS_NOT_STARTED;
-				}
-				const offered = clusters.value.filter((c) => this.logUsers.has(c.id));
-				if (offered.length === 0) {
-					void this.ctx.showInfo(NO_CLUSTER_WITH_LOG_ACCESS);
-					return LOGS_NOT_STARTED;
-				}
-				cluster = await this.ctx.ui.pickCluster(offered, 'Forget log access: the cluster', 'The cluster whose log access to remove');
-				if (!cluster) {
-					return LOGS_NOT_STARTED;
-				}
-			} else if (node.kind === 'cluster') {
-				cluster = this.ctx.clusterById(node.id);
-				if (!cluster) {
-					void this.ctx.showInfo('That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.');
-					return LOGS_NOT_STARTED;
-				}
-			} else {
-				void this.ctx.showInfo('Choose a cluster in the Cloud view.');
-				return LOGS_NOT_STARTED;
-			}
-			const user = this.logUsers.get(cluster.id)?.username;
-			if (!user && (await this.ctx.options.store.get(logAccessKey(cluster.id))) === undefined) {
-				void this.ctx.showInfo(`${cluster.name} has no log access set.`);
-				return LOGS_NOT_STARTED;
-			}
-			await this.removeLogAccess(cluster.id);
-			this.ctx.log(`Redpanda Cloud: removed the log access to ${cluster.name}${user ? ` (${user})` : ''}.`);
-			void this.ctx.showInfo(logAccessForgottenMessage(cluster.name));
-			return { kind: 'forgotten', clusterId: cluster.id };
-		} catch (err) {
-			const message = this.ctx.mask(errorText(err));
-			this.ctx.log(`Redpanda Cloud: Forget log access failed: ${message}`);
-			void this.ctx.showError(`Could not remove the log access from the secret storage: ${message}`);
-			return LOGS_NOT_STARTED;
-		}
+	forgetLogAccess(node?: CloudNode): Promise<ForgetLogAccessResult> {
+		return forgetAccess(this.ctx, node, {
+			what: 'log access',
+			userOf: (clusterId) => this.logUsers.get(clusterId)?.username,
+			key: logAccessKey,
+			remove: (clusterId) => this.removeLogAccess(clusterId),
+			noneSet: NO_CLUSTER_WITH_LOG_ACCESS,
+			forgotten: logAccessForgottenMessage,
+			mask: (text) => this.ctx.mask(text),
+		});
 	}
 
 	/** The secret storage's value of `key` (the test seam's NO_LEAK check; only in `ExtensionMode.Test`). */
@@ -226,22 +187,8 @@ export class CloudLogs {
 	 * mechanism; a test read; stored only once it passes. Escape at any step: nothing stored or sent.
 	 * Never throws. Ticket 6.6: one at a time per cluster; another request while one runs is ignored.
 	 */
-	async setUpLogAccess(node?: CloudNode): Promise<LogAccessResult> {
-		const clusterId = node?.kind === 'cluster' ? node.id : undefined;
-		if (clusterId !== undefined && this.settingUpLogs.has(clusterId)) {
-			this.ctx.log('Redpanda Cloud: Set up log access is already running for that cluster; this request was ignored.');
-			return LOGS_NOT_STARTED;
-		}
-		if (clusterId !== undefined) {
-			this.settingUpLogs.add(clusterId);
-		}
-		try {
-			return await this.setUpLogAccessNow(node);
-		} finally {
-			if (clusterId !== undefined) {
-				this.settingUpLogs.delete(clusterId);
-			}
-		}
+	setUpLogAccess(node?: CloudNode): Promise<LogAccessResult> {
+		return this.settingUpLogs.guard(node, LOGS_NOT_STARTED, () => this.setUpLogAccessNow(node));
 	}
 
 	private async setUpLogAccessNow(node?: CloudNode): Promise<LogAccessResult> {
@@ -250,13 +197,8 @@ export class CloudLogs {
 			if (unsupported) {
 				return unsupported;
 			}
-			if (node?.kind !== 'cluster') {
-				void this.ctx.showInfo('Choose a cluster in the Cloud view.');
-				return LOGS_NOT_STARTED;
-			}
-			const cluster = this.ctx.clusterById(node.id);
+			const cluster = rowCluster(this.ctx, node);
 			if (!cluster) {
-				void this.ctx.showInfo('That cluster is no longer in the Cloud view. Refresh the view to read the clusters again.');
 				return LOGS_NOT_STARTED;
 			}
 			if (!cluster.seedBrokers?.length) {

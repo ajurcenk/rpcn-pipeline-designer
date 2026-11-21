@@ -72,7 +72,7 @@ const RESOURCES = { cpu_shares: '100m', memory_shares: '400M' }; // 0.1 CPU
 const NAME_PREFIX = 'vscode-spike-';
 const SECRET_PREFIX = 'VSCODE_SPIKE_';
 
-const SECRET_KEY = /^(authorization|client_secret|client_id|access_token|id_token|refresh_token|secret_data|password|token|api_key|private_key|azp)$/i;
+const SECRET_KEY = /^(authorization|client_secret|client_id|access_token|id_token|refresh_token|secret_data|password|token|api_key|private_key|azp|created_by|updated_by)$/i;
 const LICENSE_KEY = /licen[cs]e/i;
 const OTHER_ID_KEY = /_ids?$/i;
 const FOREIGN_CONFIG = '<redacted: a pipeline the probe did not create>';

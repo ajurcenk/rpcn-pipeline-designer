@@ -38,7 +38,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
-import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/logsProtocol';
+import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/retry';
 import { DEFAULT_WINDOW_MINUTES, type MetricsPanelState, type MetricsWindowMinutes, type NotServedCause } from '../../shared/metricsProtocol';
 import type { PipelineModel } from '../../shared/protocol';
 import { compactReading, figures, keepReading, type CompactReading, type ComponentFigures } from '../../core/metrics';
