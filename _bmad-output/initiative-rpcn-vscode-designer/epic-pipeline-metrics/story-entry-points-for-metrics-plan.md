@@ -3,7 +3,7 @@ title: 'Entry points for metrics'
 type: 'feature'
 ticket: '9'
 created: '2026-11-21'
-status: 'built'
+status: done
 baseline_revision: '36a1d131388f5606c9089086dd2ca318adcba9f4'
 route: 'full'
 route_source: 'auto'
