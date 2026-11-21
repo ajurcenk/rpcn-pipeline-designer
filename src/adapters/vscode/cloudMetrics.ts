@@ -26,6 +26,7 @@ import type { CloudPipeline } from '../cloud/dataPlane';
 import { CLOUD_REFUSED_TEXT, cloudAddress, cloudMetricsSource, DEFAULT_PROMETHEUS_USER, isMetricsReadError, type MetricsSource, testCloudMetricsAccess } from '../metrics/source';
 import type { CloudMetricsBinding } from './metricsFeed';
 import type { CloudContext, CloudNode } from './cloudView';
+import { CONNECT_ACTION } from './cloudShared';
 
 /** The secret storage key of a cluster's metrics access (one JSON record: username, password). */
 export const METRICS_ACCESS_PREFIX = 'redpandaConnect.cloud.metrics.';
@@ -36,6 +37,8 @@ export const NO_CLUSTER_WITH_METRICS_ACCESS = 'No cluster has metrics access set
 /** Ticket 7.5: a pipeline row's Show metrics. */
 export const SHOW_CLOUD_METRICS_COMMAND = 'redpandaConnect.cloud.showMetrics';
 export const SET_UP_METRICS_ACCESS_ACTION = 'Set up metrics access…';
+/** Ticket 8: Show metrics while no service account is connected (the tab's mapped-pipeline button). */
+export const NOT_CONNECTED_FOR_METRICS_MESSAGE = 'No Redpanda Cloud service account is connected. Connect one to show a pipeline\'s metrics.';
 
 /** Ticket 7.5: Show metrics on a pipeline whose cluster has no metrics access. */
 export function noMetricsAccessMessage(cluster: string): string {
@@ -91,6 +94,8 @@ export class CloudMetricsAccess {
 	private readonly accesses = new Map<string, MetricsAccess>();
 	/** The clusters whose Set up metrics access is running (a second one is ignored). */
 	private readonly settingUp = new Set<string>();
+	/** Ticket 8: a cluster's Set up metrics access started or ended (its id), for the Pipeline Metrics tab's buttons. */
+	private readonly settingUpChanged = new vscode.EventEmitter<string>();
 	/** Every metrics password held in this window, for masking; a refused one is never added. */
 	private readonly kept = new Set<string>();
 	private readonly changed = new vscode.EventEmitter<string>();
@@ -119,6 +124,12 @@ export class CloudMetricsAccess {
 
 	dispose(): void {
 		this.changed.dispose();
+		this.settingUpChanged.dispose();
+	}
+
+	/** Ticket 8: whether a Set up metrics access… of `clusterId` runs now (from any entry point). */
+	isSettingUp(clusterId: string): boolean {
+		return this.settingUp.has(clusterId);
 	}
 
 	/**
@@ -254,12 +265,14 @@ export class CloudMetricsAccess {
 		}
 		if (clusterId !== undefined) {
 			this.settingUp.add(clusterId);
+			this.settingUpChanged.fire(clusterId);
 		}
 		try {
 			return await this.setUpAccessNow(node);
 		} finally {
 			if (clusterId !== undefined) {
 				this.settingUp.delete(clusterId);
+				this.settingUpChanged.fire(clusterId);
 			}
 		}
 	}
@@ -356,7 +369,19 @@ export class CloudMetricsAccess {
 				return NOT_STARTED;
 			}
 			await this.ctx.ready;
+			if (!this.ctx.account) {
+				// Ticket 8: from the Pipeline Metrics tab (a file's mapped pipeline) while not signed in.
+				const choice = await this.ctx.showInfo(NOT_CONNECTED_FOR_METRICS_MESSAGE, CONNECT_ACTION);
+				if (choice === CONNECT_ACTION) {
+					await this.ctx.connect();
+				}
+				return NOT_STARTED;
+			}
 			const cluster = this.ctx.clusterById(node.clusterId);
+			// Ticket 8: from the Pipeline Metrics tab (a file's mapped pipeline), its cluster may not be expanded yet.
+			if (cluster && !this.ctx.pipelineById(node.clusterId, node.id) && this.ctx.pipelines.get(node.clusterId)?.kind !== 'ok') {
+				await this.ctx.loadPipelines(node.clusterId, false);
+			}
 			const pipeline = this.ctx.pipelineById(node.clusterId, node.id);
 			const metrics = this.ctx.options.metrics;
 			if (!cluster || !pipeline || !metrics || !this.ctx.account) {
@@ -426,6 +451,12 @@ export class CloudMetricsAccess {
 				}
 			}, undefined, disposables),
 			mask: (text) => this.maskError(text),
+			settingUp: () => this.settingUp.has(cluster.id),
+			onDidChangeSettingUp: (listener, thisArgs, disposables) => this.settingUpChanged.event((clusterId) => {
+				if (clusterId === cluster.id) {
+					listener.call(thisArgs, undefined);
+				}
+			}, undefined, disposables),
 		};
 	}
 }

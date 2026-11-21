@@ -19,12 +19,18 @@
 // theme colour) and rows with errors marked (an error-like one), each with a text tag too, never colour
 // alone. The Component column stays pinned on the left while the others scroll sideways, and the
 // header row stays fixed while the rows scroll, both on an opaque theme background.
+// Ticket 8 (board 5): each state but live is a panel under the header: its title, its body (what
+// happened, what to do; an unreachable state's wait counted down, kept out of the announcement) and its
+// buttons (`metricsStateActions`), each posting its `*Requested` message for the host to carry out; while
+// a Set up metrics access… runs, its buttons are disabled. The table stays under the panel while it has
+// rows (stopped, unreachable); otherwise the panel stands alone.
 
 import { useEffect, useState } from 'react';
 import {
 	addressText, cloudAddressText, COLUMN_LABELS, COLUMN_TITLES, DEFAULT_WINDOW_MINUTES, formatNs, formatRate, formatShare, keptText,
-	METRICS_COLUMNS, METRICS_WINDOWS, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, stateText, summaryParts, TREND_LABEL, trendText, windowLabel,
-	type MetricsSummary,
+	isSetUpAction, METRICS_COLUMNS, METRICS_WINDOWS, metricsStateActions, metricsStateTexts, nextSort, NO_ROWS_TEXT, parseMetricsHostMessage, retryingText,
+	summaryParts, TREND_LABEL, trendText, windowLabel,
+	type MetricsMappedPipeline, type MetricsPanelState, type MetricsSummary,
 	type MetricRow, type MetricsColumn, type MetricsHostMessage, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
 
@@ -123,6 +129,75 @@ function Trend({ points }: { readonly points: readonly number[] }) {
 	);
 }
 
+/** Ticket 8: the seconds an unreachable state's wait shows at `now` (at least 1); `null`: due now (a read in flight). */
+export function retrySecondsAt(retryAt: number | null, now: number): number | null {
+	return retryAt === null || retryAt <= now ? null : Math.max(1, Math.ceil((retryAt - now) / 1000));
+}
+
+/** The states whose panel is an alert (announced at once). */
+const ALERTS: ReadonlySet<MetricsPanelState['kind']> = new Set(['unreachable', 'notServed', 'refused']);
+
+/** Ticket 8 (board 5): the state's panel: its title, body and buttons; `null` when live. */
+function StatePanel({ shown, state, post }: {
+	readonly shown: MetricsHostMessage | undefined;
+	readonly state: MetricsPanelState;
+	readonly post: (message: MetricsWebviewMessage) => void;
+}) {
+	const [now, setNow] = useState(() => Date.now());
+	const retryAt = state.kind === 'unreachable' ? shown?.retryAt ?? null : null;
+	useEffect(() => {
+		if (retryAt === null) {
+			return undefined;
+		}
+		setNow(Date.now());
+		const timer = setInterval(() => setNow(Date.now()), 250);
+		return () => clearInterval(timer);
+	}, [retryAt]);
+	const mapped: MetricsMappedPipeline | null = shown?.mapped ?? null;
+	const cloud = shown?.cloud ?? null;
+	const seconds = retrySecondsAt(retryAt, now);
+	const texts = metricsStateTexts(state, {
+		file: shown?.file ?? null, port: shown?.port ?? null, host: cloud?.host ?? null, mapped, retrySeconds: seconds, lastReadingAt: shown?.lastReadingAt ?? null,
+	});
+	if (!texts) {
+		return null;
+	}
+	const actions = metricsStateActions(state, { file: shown?.file ?? null, cloud: cloud !== null, mapped });
+	const settingUp = shown?.settingUp === true;
+	// The countdown changes every second: kept out of the alert's announcement (`aria-live="off"`).
+	const retry = state.kind === 'unreachable' ? retryingText(seconds) : undefined;
+	const at = retry === undefined ? -1 : texts.body.indexOf(retry);
+	return (
+		<section className={`rpcn-metrics-state rpcn-metrics-state-${state.kind}`} data-state={state.kind} role={ALERTS.has(state.kind) ? 'alert' : 'status'} aria-label={texts.title}>
+			<div className="rpcn-metrics-state-title">{texts.title}</div>
+			<div className="rpcn-metrics-state-body">
+				{retry !== undefined && at >= 0 ? (
+					<>{texts.body.slice(0, at)}<span className="rpcn-metrics-state-countdown" aria-live="off">{retry}</span>{texts.body.slice(at + retry.length)}</>
+				) : texts.body}
+			</div>
+			{actions.length > 0 && (
+				<div className="rpcn-metrics-state-actions">
+					{actions.map((a) => (
+						<button
+							key={a.type}
+							type="button"
+							className={a.primary ? 'rpcn-metrics-button rpcn-metrics-primary' : 'rpcn-metrics-button'}
+							data-action={a.type}
+							disabled={settingUp && isSetUpAction(a.type)}
+							onClick={() => post({ type: a.type })}
+						>
+							{a.label}
+						</button>
+					))}
+				</div>
+			)}
+		</section>
+	);
+}
+
+/** Ticket 8: the states the table stays under (with rows); in the others the panel stands alone. */
+const TABLE_STATES: ReadonlySet<MetricsPanelState['kind']> = new Set(['live', 'stopped', 'unreachable']);
+
 export function MetricsView({ post }: { readonly post: (message: MetricsWebviewMessage) => void }) {
 	const [shown, setShown] = useState<MetricsHostMessage | undefined>(undefined);
 
@@ -140,13 +215,12 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 
 	const state = shown?.state ?? { kind: 'none' as const };
 	const cloud = shown?.cloud ?? null;
-	const line = stateText(state, shown?.file ?? null, shown?.port ?? null, cloud?.host ?? null);
 	const address = !shown ? undefined : cloud ? cloudAddressText(cloud.host, shown.file, shown.intervalMs)
 		: shown.port !== null ? addressText(shown.port, shown.intervalMs) : undefined;
 	const rows = shown?.rows ?? [];
 	const sort = shown?.sort ?? null;
 	const windowMinutes = shown?.windowMinutes ?? DEFAULT_WINDOW_MINUTES;
-	const showTable = rows.length > 0;
+	const showTable = rows.length > 0 && TABLE_STATES.has(state.kind);
 	const summary = showTable ? shown?.summary ?? null : null;
 
 	return (
@@ -171,11 +245,7 @@ export function MetricsView({ post }: { readonly post: (message: MetricsWebviewM
 					))}
 				</div>
 			</header>
-			{line && (
-				<p className={`rpcn-metrics-state rpcn-metrics-state-${state.kind}`} role={state.kind === 'unreachable' || state.kind === 'notServed' || state.kind === 'refused' ? 'alert' : 'status'}>
-					{line}
-				</p>
-			)}
+			<StatePanel shown={shown} state={state} post={post} />
 			{summary && <Summary summary={summary} />}
 			<div className="rpcn-metrics-scroll">
 				{showTable ? (

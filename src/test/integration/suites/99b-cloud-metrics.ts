@@ -5,6 +5,11 @@
 // through their test seams, and the Cloud feeds' timing is shortened through the feeds' seam (production
 // is AD-25's 10 s, 5 s floor, 5–60 s backoff, checked in the unit tests). Every matrix row of the plan has
 // a test (LIVE … NO_LEAK), and the two acceptance criteria (GRAPH, and the 98-metrics suite unchanged).
+// Ticket 8 (board 5): the states' buttons through the tab's seam (`receive`, as the webview posts them):
+// No access's Set up metrics access… opens the prompt (its buttons disabled while it runs) and, stored,
+// the tab reads; Refused's Forget metrics access gives the no-access state; Retry now reads at once within
+// the floor; no series is read again with Read again; a not-running file's `.cloud.json` pipeline is shown
+// with its Show button.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -12,6 +17,7 @@ import * as vscode from 'vscode';
 import { CONFIG_TAG } from '../../../adapters/cloud/dataPlane';
 import {
 	CLIENT_ID_KEY, CLIENT_SECRET_KEY, CONNECT_COMMAND, FORGET_METRICS_ACCESS_COMMAND, metricsAccessKey, noMetricsAccessMessage, SET_UP_METRICS_ACCESS_ACTION,
+	NOT_CONNECTED_FOR_METRICS_MESSAGE,
 	SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND, type CloudItem, type CloudUi,
 } from '../../../adapters/vscode/cloudView';
 import { CLOUD_REFUSED_TEXT, DEFAULT_PROMETHEUS_USER } from '../../../adapters/metrics/source';
@@ -61,6 +67,8 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 	let dir: string;
 	let fileA: string;
 	let inputs: Input[] = [];
+	/** Ticket 8: while set, every prompt waits for it (a set-up flow held open). */
+	let inputGate: Promise<void> | undefined;
 	let infoAnswers: (string | undefined)[] = [];
 	const errors: string[] = [];
 	const infos: string[] = [];
@@ -95,6 +103,14 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 	async function closeTab(): Promise<void> {
 		await vscode.commands.executeCommand('workbench.action.closePanel');
 		assert.ok(await waitFor(() => !metrics().visible, 10_000));
+	}
+
+	/** Ticket 8: the password is in no message the tab posted and no output line. */
+	function assertNoPassword(): void {
+		const text = JSON.stringify({ posted: metrics().posted, output: api().outputLines() });
+		for (const value of [PASSWORD, WRONG_PASSWORD, Buffer.from(`prometheus:${PASSWORD}`).toString('base64')]) {
+			assert.ok(!text.includes(value), 'a password in a posted message or an output line');
+		}
 	}
 
 	/** Reads of the endpoint during `ms`. */
@@ -135,6 +151,9 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 			...originalUi,
 			input: async (options) => {
 				allShown.push(options.title ?? '', options.prompt ?? '', options.value ?? '');
+				if (inputGate) {
+					await inputGate;
+				}
 				return inputs.shift();
 			},
 			error: async (m) => {
@@ -172,6 +191,7 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		errors.length = 0;
 		infos.length = 0;
 		infoAnswers = [];
+		inputGate = undefined;
 		inputs = [CLIENT_ID, CLIENT_SECRET];
 		assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true, errors.join('\n'));
 		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
@@ -444,5 +464,137 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		assert.ok((await cloud().storedValue(metricsAccessKey(VILNIUS)))?.includes(PASSWORD));
 		assert.ok(!((await cloud().storedValue(CLIENT_ID_KEY)) ?? '').includes(PASSWORD));
 		assert.ok(!((await cloud().storedValue(CLIENT_SECRET_KEY)) ?? '').includes(PASSWORD));
+	});
+
+	test('ticket 8, NO_ACCESS → Set up metrics access… from the tab: the prompt opens, the buttons disabled while it runs (a second request ignored); stored, the tab reads', async () => {
+		infoAnswers = [undefined];
+		assert.strictEqual((await showMetrics(A))?.kind, 'noAccess');
+		assert.deepStrictEqual(metrics().state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		assert.strictEqual(lastPosted().settingUp, false);
+		let release: () => void = () => undefined;
+		inputGate = new Promise<void>((r) => {
+			release = r;
+		});
+		inputs = [DEFAULT_PROMETHEUS_USER, PASSWORD];
+		const shownBefore = allShown.length;
+		const running = metrics().receive({ type: 'setUpAccessRequested' });
+		assert.ok(await waitFor(() => lastPosted().settingUp === true, 5_000), 'disabled while it runs');
+		assert.ok(allShown.slice(shownBefore).some((t) => t.startsWith('Set up metrics access for rpc-vilnius')), 'the prompt is open');
+		// A second request while it runs is ignored (one prompt only).
+		await metrics().receive({ type: 'setUpAccessRequested' });
+		inputGate = undefined;
+		release();
+		await running;
+		assert.strictEqual(lastPosted().settingUp, false);
+		assert.strictEqual(allShown.slice(shownBefore).filter((t) => t.startsWith('Set up metrics access for rpc-vilnius (1/2)')).length, 1, 'one prompt');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live' && metrics().rows().length === 3, 10_000), JSON.stringify(metrics().state));
+		assertNoPassword();
+	});
+
+	test('ticket 8, SET UP FROM THE INFO MESSAGE: a set-up of the bound cluster started from Show metrics\' offer disables the tab\'s set-up buttons too', async () => {
+		let release: () => void = () => undefined;
+		inputGate = new Promise<void>((r) => {
+			release = r;
+		});
+		infoAnswers = [SET_UP_METRICS_ACCESS_ACTION];
+		inputs = [DEFAULT_PROMETHEUS_USER, PASSWORD];
+		const shown = showMetrics(A);
+		assert.ok(await waitFor(() => metrics().state.kind === 'noAccess' && lastPosted().settingUp === true, 5_000), JSON.stringify(lastPosted()));
+		inputGate = undefined;
+		release();
+		assert.strictEqual((await shown)?.kind, 'shown', errors.join('\n'));
+		assert.ok(await waitFor(() => lastPosted().settingUp === false, 5_000), 'enabled again once it ends');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+	});
+
+	test('ticket 8, REFUSED → both buttons: Forget metrics access gives the no-access state; Set up metrics access… with the right password reads', async () => {
+		await setUpAccess();
+		fake.cluster(VILNIUS).prometheusPassword = WRONG_PASSWORD;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'refused', 10_000), JSON.stringify(metrics().state));
+		await metrics().receive({ type: 'forgetAccessRequested' });
+		assert.ok(await waitFor(() => metrics().state.kind === 'noAccess', 5_000), JSON.stringify(metrics().state));
+		assert.strictEqual(await cloud().storedValue(metricsAccessKey(VILNIUS)), undefined, 'forgotten');
+		// Not offered while there is no access: ignored.
+		const before = metrics().actions.length;
+		await metrics().receive({ type: 'forgetAccessRequested' });
+		assert.strictEqual(metrics().actions.length, before);
+		fake.cluster(VILNIUS).prometheusPassword = PASSWORD;
+		inputs = [DEFAULT_PROMETHEUS_USER, PASSWORD];
+		await metrics().receive({ type: 'setUpAccessRequested' });
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		assertNoPassword();
+	});
+
+	test('ticket 8, UNREACHABLE → Retry now reads at once, never sooner than the floor; the show says when the next retry is', async () => {
+		await setUpAccess();
+		metrics().feeds.cloudTiming = { ...TIMING, retryDelaysMs: [300, 300, 20_000] };
+		try {
+			fake.cluster(VILNIUS).prometheusFailure = 503;
+			assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+			assert.ok(await waitFor(() => metrics().state.kind === 'unreachable', 10_000), JSON.stringify(metrics().state));
+			const retryAt = lastPosted().retryAt;
+			assert.ok(typeof retryAt === 'number' && retryAt - Date.now() > 15_000, `the next retry in about 20 s: ${String(retryAt)}`);
+			const reads = promTimes.length;
+			fake.cluster(VILNIUS).prometheusFailure = undefined;
+			await metrics().receive({ type: 'retryRequested' });
+			assert.ok(await waitFor(() => promTimes.length > reads, 3_000), 'read at once');
+			assert.ok(promTimes[reads] - promTimes[reads - 1] >= TIMING.minGapMs - 50, `within the floor: ${promTimes[reads] - promTimes[reads - 1]} ms`);
+			assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		} finally {
+			metrics().feeds.cloudTiming = TIMING;
+		}
+	});
+
+	test('ticket 8, NO_SERIES → Read again: a fresh read cycle; once the pipeline\'s series are there, live', async () => {
+		await setUpAccess();
+		fake.cluster(VILNIUS).metricsBody = cloudMetricsBody([B]);
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'notServed', 15_000), JSON.stringify(metrics().state));
+		assert.strictEqual((metrics().state as { cause: string }).cause, 'noSeries');
+		assert.strictEqual(promReads(), 5);
+		fake.cluster(VILNIUS).metricsBody = undefined;
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		assert.ok(promReads() > 5);
+	});
+
+	test('ticket 8, NOT RUNNING, MAPPED: the file\'s .cloud.json pipeline is offered ("Show orders on rpc-vilnius") and its button shows it', async () => {
+		await setUpAccess();
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.strictEqual(metrics().state.kind, 'notRunning');
+			assert.ok(await waitFor(() => lastPosted().mapped !== null && lastPosted().mapped !== undefined, 5_000), JSON.stringify(lastPosted().mapped));
+			assert.deepStrictEqual(lastPosted().mapped, { pipeline: 'orders', cluster: 'rpc-vilnius' });
+			await metrics().receive({ type: 'showMappedRequested' });
+			assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders');
+			assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+			assert.strictEqual(lastPosted().mapped, null, 'no longer offered once shown');
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('ticket 8, NOT RUNNING, MAPPED, NOT SIGNED IN: its button says to connect a service account first', async () => {
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			await cloud().disconnect();
+			infos.length = 0;
+			infoAnswers = [undefined];
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.ok(await waitFor(() => lastPosted().mapped !== null && lastPosted().mapped !== undefined, 5_000), JSON.stringify(lastPosted().mapped));
+			await metrics().receive({ type: 'showMappedRequested' });
+			assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
+			assert.strictEqual(metrics().title, 'Local run · orders.yaml', 'the tab stays on the file');
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
 	});
 });

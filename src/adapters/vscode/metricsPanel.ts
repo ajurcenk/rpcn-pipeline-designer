@@ -27,16 +27,28 @@
 // Ticket 7.7: each reading's rows carry their share of the pipeline's time and the marks (the slowest,
 // errors), and the tab gets the summary line made from them (`metricsSummary`, core): the slowest, the
 // input's and the output's rates and their gap, the components with errors.
+//
+// Ticket 8 (board 5): each state but live shows a title, a body and its buttons (`metricsStateActions`,
+// shared with the webview), which the host carries out on the tab's current binding only (a button the
+// state does not show is ignored): Run <file> (the file's Run), Show <pipeline> on <cluster> (a not-running
+// file's `.cloud.json` pipeline, through Show metrics), Open the metrics section (the config's top-level
+// `metrics:` key, else the file's start), Read again and Retry now (the feed's), Set up metrics access… and
+// Forget metrics access (the Cloud view's commands on the bound cluster; while a set-up runs from the tab
+// its buttons are disabled), Show output (the "Redpanda Connect" channel).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	cloudSourceLabel, localSourceLabel, parseMetricsWebviewMessage, type MetricRow, type MetricsHostMessage, type MetricsPanelState, type MetricsSort,
-	type MetricsSummary, type MetricsWindowMinutes,
+	cloudSourceLabel, localSourceLabel, metricsStateActions, parseMetricsWebviewMessage, type MetricRow, type MetricsActionType, type MetricsHostMessage,
+	type MetricsMappedPipeline, type MetricsPanelState, type MetricsSort, type MetricsSummary, type MetricsWindowMinutes,
 } from '../../shared/metricsProtocol';
 import type { ComponentFigures } from '../../core/metrics';
-import { metricRows, metricsSummary, sortRows } from '../../core/metrics';
+import { metricRows, metricsSectionRange, metricsSummary, sortRows } from '../../core/metrics';
+import { parseYaml } from '../../core/yamlPath';
+import { errorText } from '../../shared/errorText';
 import { webviewHtml } from '../graphPanel/html';
+import { FORGET_METRICS_ACCESS_COMMAND, SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND } from './cloudMetrics';
+import { RUN_COMMAND } from './run';
 import { cloudMetricsKey, type CloudMetricsBinding, type MetricsFeeds, type MetricsSourceFactory, type MetricsSubscription, type MetricsUpdate } from './metricsFeed';
 
 export {
@@ -60,6 +72,18 @@ export interface MetricsPanelOptions {
 	readonly showInformationMessage?: (message: string) => void;
 	/** Opens the tab (default: the view's focus command; a test seam). */
 	readonly focus?: () => Thenable<unknown>;
+	/** Ticket 8: shows the "Redpanda Connect" output channel (Show output). */
+	readonly showOutput?: () => void;
+	/** Ticket 8: the Cloud pipeline a config's `.cloud.json` maps it to; `undefined`: none (or it can't be read). */
+	readonly mappingOf?: (uri: vscode.Uri) => Promise<MappedPipelineOf | undefined>;
+	/** Ticket 8: runs a command (default: VS Code's; a test seam). */
+	readonly executeCommand?: (command: string, ...args: unknown[]) => Thenable<unknown>;
+}
+
+/** Ticket 8: a config's mapped Cloud pipeline: its ids and the names its button shows. */
+export interface MappedPipelineOf extends MetricsMappedPipeline {
+	readonly clusterId: string;
+	readonly pipelineId: string;
 }
 
 const NONE: MetricsPanelState = { kind: 'none' };
@@ -80,6 +104,14 @@ export class MetricsPanel implements vscode.Disposable {
 	/** Ticket 7.7: the summary line of `configRows` (`null`: not shown). */
 	private configSummary: MetricsSummary | null = null;
 	private sort: MetricsSort | null = null;
+	/** Ticket 8: the bound file's mapped Cloud pipeline, read when it is not running. */
+	private mapped: MappedPipelineOf | undefined;
+	/** Bumped on every read of the mapping, so an older one is dropped. */
+	private mappingReads = 0;
+	/** Ticket 8: the clusters whose Set up metrics access… runs from this tab. */
+	private readonly settingUpFor = new Set<string>();
+	/** Ticket 8: the state buttons carried out, in order (test seam). */
+	readonly actions: MetricsActionType[] = [];
 	private readonly changed = new vscode.EventEmitter<void>();
 	/** Fires when the rows or the state change (test seam). */
 	readonly onDidChange = this.changed.event;
@@ -180,10 +212,16 @@ export class MetricsPanel implements vscode.Disposable {
 		this.subscription?.setVisible(view.visible);
 	}
 
-	/** A message from the webview (a test seam too: the integration tests cannot click in it). */
-	receive(raw: unknown): void {
+	/**
+	 * A message from the webview (a test seam too: the integration tests cannot click in it); a state
+	 * button's promise settles once its action is done.
+	 */
+	async receive(raw: unknown): Promise<void> {
 		const m = parseMetricsWebviewMessage(raw);
-		switch (m?.type) {
+		if (!m) {
+			return;
+		}
+		switch (m.type) {
 			case 'ready':
 				this.ready = true;
 				this.postShow();
@@ -204,7 +242,126 @@ export class MetricsPanel implements vscode.Disposable {
 				}
 				break;
 			}
+			default:
+				await this.act(m.type);
 		}
+	}
+
+	/** Ticket 8: the context of the state's buttons now (the host's view of the binding). */
+	private get actionContext(): { readonly file: string | null; readonly cloud: boolean; readonly mapped: MetricsMappedPipeline | null } {
+		const cloud = this.update?.source.kind === 'cloud';
+		return { file: this.fileName, cloud, mapped: !cloud && this.state.kind === 'notRunning' && this.mapped ? this.mapped : null };
+	}
+
+	/** Whether a Set up metrics access… of the bound cluster runs from this tab. */
+	private get settingUp(): boolean {
+		const source = this.update?.source;
+		return source?.kind === 'cloud'
+			&& (this.settingUpFor.has(source.clusterId) || this.subscription?.feed.cloudBinding?.settingUp?.() === true);
+	}
+
+	/** Ticket 8: a state button, carried out on the current binding when the state shows it; ignored otherwise. */
+	private async act(type: MetricsActionType): Promise<void> {
+		const offered = metricsStateActions(this.state, this.actionContext).some((a) => a.type === type);
+		const sub = this.subscription;
+		const uri = this.uri;
+		if (!offered || !sub || !uri) {
+			this.options.log(`Pipeline metrics: ignored ${type}: the tab's state (${this.state.kind}) offers no such action.`);
+			return;
+		}
+		this.actions.push(type);
+		if (this.actions.length > MAX_POSTED) {
+			this.actions.splice(0, this.actions.length - MAX_POSTED);
+		}
+		const source = sub.feed.update.source;
+		const run = this.options.executeCommand ?? ((command: string, ...args: unknown[]) => vscode.commands.executeCommand(command, ...args));
+		try {
+			switch (type) {
+				case 'runRequested':
+					await run(RUN_COMMAND, uri);
+					break;
+				case 'showMappedRequested': {
+					const m = this.mapped;
+					if (m) {
+						await run(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId });
+					}
+					break;
+				}
+				case 'metricsSectionRequested':
+					await this.openMetricsSection(uri);
+					break;
+				case 'readAgainRequested':
+					sub.feed.readAgain();
+					break;
+				case 'retryRequested':
+					sub.feed.retryNow();
+					break;
+				case 'outputRequested':
+					(this.options.showOutput ?? (() => undefined))();
+					break;
+				case 'setUpAccessRequested':
+					if (source.kind === 'cloud') {
+						await this.setUpAccess(source.clusterId, run);
+					}
+					break;
+				case 'forgetAccessRequested':
+					if (source.kind === 'cloud' && !this.settingUp) {
+						await run(FORGET_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: source.clusterId });
+					}
+					break;
+			}
+		} catch (err) {
+			const binding = source.kind === 'cloud' ? sub.feed.cloudBinding : undefined;
+			const text = errorText(err);
+			this.options.log(`Pipeline metrics: ${type} failed: ${binding ? binding.mask(text) : text}`);
+		}
+	}
+
+	/** Set up metrics access… on `clusterId` (the Cloud view's flow); its buttons disabled while it runs; a second one is ignored. */
+	private async setUpAccess(clusterId: string, run: (command: string, ...args: unknown[]) => Thenable<unknown>): Promise<void> {
+		if (this.settingUp) {
+			return;
+		}
+		this.settingUpFor.add(clusterId);
+		this.postShow();
+		this.changed.fire();
+		try {
+			// Once stored, the feed follows the access change and reads.
+			await run(SET_UP_METRICS_ACCESS_COMMAND, { kind: 'cluster', id: clusterId });
+		} finally {
+			this.settingUpFor.delete(clusterId);
+			this.postShow();
+			this.changed.fire();
+		}
+	}
+
+	/** Open the metrics section: the config's top-level `metrics:` key selected in its editor (none: the file's start). */
+	private async openMetricsSection(uri: vscode.Uri): Promise<void> {
+		const doc = await vscode.workspace.openTextDocument(uri);
+		const range = metricsSectionRange(parseYaml(doc.getText()));
+		const selection = range ? new vscode.Range(doc.positionAt(range[0]), doc.positionAt(range[1])) : new vscode.Range(0, 0, 0, 0);
+		await vscode.window.showTextDocument(doc, { selection, preview: false });
+	}
+
+	/** Ticket 8: reads the bound file's mapping (a not-running local file only); posts when it changes. */
+	private refreshMapping(): void {
+		const uri = this.uri;
+		const read = ++this.mappingReads;
+		if (!uri || uri.scheme !== 'file' || !this.options.mappingOf || this.update?.source.kind !== 'local') {
+			this.mapped = undefined;
+			return;
+		}
+		void this.options.mappingOf(uri).then((m) => m, () => undefined).then((m) => {
+			if (read !== this.mappingReads || this.uri?.toString() !== uri.toString()) {
+				return;
+			}
+			const before = JSON.stringify(this.mapped ?? null);
+			this.mapped = m;
+			if (JSON.stringify(m ?? null) !== before) {
+				this.postShow();
+				this.changed.fire();
+			}
+		});
 	}
 
 	/** Show Pipeline Metrics: `uri` (default: the active editor's file) is bound, and the tab opens. */
@@ -257,6 +414,10 @@ export class MetricsPanel implements vscode.Disposable {
 
 	/** The tab's hold on the feed of `uri` (kept when it is already that feed). */
 	private bind(uri: vscode.Uri): MetricsSubscription {
+		if (this.uri?.toString() !== uri.toString()) {
+			this.mapped = undefined;
+			this.update = undefined;
+		}
 		this.uri = uri;
 		const old = this.subscription;
 		if (old && old.feed.uri.toString() === uri.toString()) {
@@ -292,7 +453,12 @@ export class MetricsPanel implements vscode.Disposable {
 		if (sub !== this.subscription || !this.uri) {
 			return;
 		}
+		const entered = update.state.kind === 'notRunning' && (this.update?.state.kind !== 'notRunning' || this.update.source.kind !== 'local');
 		this.update = update;
+		if (entered) {
+			// Ticket 8: the mapping is read again each time the file stops being run (a deploy may have written it).
+			this.refreshMapping();
+		}
 		if (update.figures !== this.rowsFrom) {
 			this.rowsFrom = update.figures;
 			if (update.figures) {
@@ -330,6 +496,10 @@ export class MetricsPanel implements vscode.Disposable {
 			windowMinutes: this.windowMinutes,
 			summary: this.configSummary,
 			...(this.update?.source.kind === 'cloud' ? { cloud: { host: this.update.source.host } } : {}),
+			retryAt: this.state.kind === 'unreachable' ? this.update?.nextReadAt ?? null : null,
+			lastReadingAt: this.configRows.length > 0 ? this.update?.time ?? null : null,
+			settingUp: this.settingUp,
+			mapped: this.actionContext.mapped ? { pipeline: this.actionContext.mapped.pipeline, cluster: this.actionContext.mapped.cluster } : null,
 		};
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {

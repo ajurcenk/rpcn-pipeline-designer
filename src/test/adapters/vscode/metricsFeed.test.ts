@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import type { MetricsSource } from '../../../adapters/metrics/source';
-import { CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, CLOUD_TIMING, cloudMetricsKey, MetricsFeeds, type CloudMetricsBinding, type MetricsUpdate } from '../../../adapters/vscode/metricsFeed';
+import { CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, CLOUD_NO_SERIES_HINT, CLOUD_TIMING, cloudMetricsKey, MetricsFeeds, type CloudMetricsBinding, type MetricsUpdate } from '../../../adapters/vscode/metricsFeed';
 import type { RunChange } from '../../../adapters/vscode/run';
 import { parsePrometheus } from '../../../core/prometheus';
 import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
@@ -440,6 +440,39 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 		await until(() => sub.feed.state.kind === 'live');
 		assert.strictEqual(feeds.configOf(key), undefined);
 		assert.notStrictEqual(feeds.feedOf(key), feeds.feedOf(URI));
+		sub.dispose();
+	});
+
+	test('ticket 8, RETRY NOW: unreachable, the update says when the next retry is; Retry now reads at once, within the floor', async () => {
+		feeds.cloudTiming = { intervalMs: 40, minGapMs: 20, retryDelaysMs: [25, 25, 5_000] };
+		answers = ['unreachable', 'unreachable', 'unreachable', 'unreachable'];
+		const updates: MetricsUpdate[] = [];
+		const sub = feeds.subscribe(URI, (u) => updates.push(u), true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'unreachable', 400);
+		assert.strictEqual(cloudReads.length, 3);
+		const next = updates.at(-1)!.nextReadAt;
+		assert.ok(next !== undefined && next - Date.now() > 4_000, `the next retry in about 5 s: ${next === undefined ? 'none' : next - Date.now()}`);
+		sub.feed.retryNow();
+		await until(() => cloudReads.length >= 4);
+		assert.strictEqual(cloudReads.length, 4, 'read at once');
+		assert.ok(cloudReads[3] - cloudReads[2] >= 20 - 2, `within the floor: ${cloudReads[3] - cloudReads[2]} ms`);
+		sub.dispose();
+	});
+
+	test('ticket 8, READ AGAIN: no series (its cause), not read on; Read again starts a fresh cycle and reads', async () => {
+		answers = ['noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'notServed', 400);
+		const state = sub.feed.state;
+		assert.ok(state.kind === 'notServed' && state.cause === 'noSeries' && state.reason.endsWith(CLOUD_NO_SERIES_HINT), JSON.stringify(state));
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, 5, 'not read on');
+		sub.feed.readAgain();
+		assert.strictEqual(sub.feed.state.kind, 'waiting');
+		await until(() => sub.feed.state.kind === 'live', 400);
+		assert.strictEqual(cloudReads.length, 6);
 		sub.dispose();
 	});
 });

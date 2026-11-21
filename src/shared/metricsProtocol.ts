@@ -106,9 +106,18 @@ export interface MetricsSort {
 }
 
 /**
+ * Ticket 8 (board 5): why a run or an endpoint serves no metrics: `type` (the config's own `metrics`
+ * section is not `prometheus`), `answer` (the endpoint answered a 404, or not Prometheus text),
+ * `noSeries` (5 answers in a row held no component series: "No figures yet").
+ */
+export type NotServedCause = 'type' | 'answer' | 'noSeries';
+
+export const NOT_SERVED_CAUSES: readonly NotServedCause[] = ['type', 'answer', 'noSeries'];
+
+/**
  * The tab's state: `none` (no file chosen yet), `notRunning` (the file has no run), `waiting` (running,
  * no reading yet), `live`, `stopped` (the run ended; its last figures stay), `notServed` (the run
- * serves no metrics, `reason` says why), `unreachable` (reads keep failing; tried again at the interval).
+ * serves no metrics, `reason` says why, `cause` how), `unreachable` (reads keep failing; tried again at the interval).
  * Ticket 7.5, a Cloud pipeline: `noAccess` (its cluster has no metrics access set; nothing is read),
  * `refused` (the endpoint refused the user or password; not read again until the access is set again).
  */
@@ -118,10 +127,16 @@ export type MetricsPanelState =
 	| { readonly kind: 'waiting' }
 	| { readonly kind: 'live' }
 	| { readonly kind: 'stopped' }
-	| { readonly kind: 'notServed'; readonly reason: string }
+	| { readonly kind: 'notServed'; readonly reason: string; readonly cause: NotServedCause }
 	| { readonly kind: 'unreachable'; readonly message: string }
 	| { readonly kind: 'noAccess'; readonly cluster: string }
 	| { readonly kind: 'refused'; readonly cluster: string; readonly message: string };
+
+/** Ticket 8: the Cloud pipeline a not-running file is deployed to (its `.cloud.json`), as its button names it. */
+export interface MetricsMappedPipeline {
+	readonly pipeline: string;
+	readonly cluster: string;
+}
 
 /** Ticket 7.5: where a Cloud pipeline's figures are read (the header's address line). */
 export interface MetricsCloudAddress {
@@ -148,6 +163,14 @@ export type MetricsHostMessage = {
 	readonly windowMinutes: MetricsWindowMinutes;
 	/** Ticket 7.7: the summary line; absent or `null` while there are no rates (not shown). */
 	readonly summary?: MetricsSummary | null;
+	/** Ticket 8: when the next read is due (ms since the epoch) while unreachable; absent or `null`: none set (one in flight). */
+	readonly retryAt?: number | null;
+	/** Ticket 8: when the figures shown were read (ms since the epoch); absent or `null`: none shown. */
+	readonly lastReadingAt?: number | null;
+	/** Ticket 8: a Set up metrics access… of the bound cluster runs (its buttons are disabled). */
+	readonly settingUp?: boolean;
+	/** Ticket 8: a not-running file's mapped Cloud pipeline; absent or `null`: none. */
+	readonly mapped?: MetricsMappedPipeline | null;
 };
 
 export type MetricsWebviewMessage =
@@ -155,14 +178,87 @@ export type MetricsWebviewMessage =
 	/** A column header was clicked: the host orders the rows (`null`: config order). */
 	| { readonly type: 'sort'; readonly sort: MetricsSort | null }
 	/** Ticket 7.6: a window was chosen: the host computes the figures over it. */
-	| { readonly type: 'window'; readonly minutes: MetricsWindowMinutes };
+	| { readonly type: 'window'; readonly minutes: MetricsWindowMinutes }
+	/**
+	 * Ticket 8 (board 5): a state's button. No field: the host acts on the tab's current binding only, and
+	 * only when the state shows the button (`metricsStateActions`).
+	 */
+	| { readonly type: MetricsActionType };
+
+/** Ticket 8: the state buttons' messages. */
+export type MetricsActionType =
+	| 'runRequested'
+	| 'showMappedRequested'
+	| 'metricsSectionRequested'
+	| 'readAgainRequested'
+	| 'setUpAccessRequested'
+	| 'forgetAccessRequested'
+	| 'retryRequested'
+	| 'outputRequested';
+
+export const METRICS_ACTION_TYPES: readonly MetricsActionType[] = [
+	'runRequested', 'showMappedRequested', 'metricsSectionRequested', 'readAgainRequested', 'setUpAccessRequested', 'forgetAccessRequested',
+	'retryRequested', 'outputRequested',
+];
+
+/** Ticket 8: what a state's buttons depend on besides the state, as the host knows it and the show message carries it. */
+export interface MetricsActionContext {
+	/** The local file's name (a Cloud pipeline's mapped file; `null`: none). */
+	readonly file: string | null;
+	/** Whether a Cloud pipeline is shown. */
+	readonly cloud: boolean;
+	/** A not-running file's mapped Cloud pipeline. */
+	readonly mapped: MetricsMappedPipeline | null;
+}
+
+export interface MetricsStateAction {
+	readonly label: string;
+	readonly type: MetricsActionType;
+	readonly primary?: true;
+}
+
+/** Ticket 8 (board 5): the state's buttons, in order (the first, when primary, is the button style). */
+export function metricsStateActions(state: MetricsPanelState, ctx: MetricsActionContext): readonly MetricsStateAction[] {
+	const local = !ctx.cloud && ctx.file !== null;
+	switch (state.kind) {
+		case 'notRunning':
+			return local ? [
+				{ label: `Run ${ctx.file}`, type: 'runRequested', primary: true },
+				...(ctx.mapped ? [{ label: `Show ${ctx.mapped.pipeline} on ${ctx.mapped.cluster}`, type: 'showMappedRequested' } as const] : []),
+			] : [];
+		case 'stopped':
+			return local ? [{ label: `Run ${ctx.file}`, type: 'runRequested', primary: true }] : [];
+		case 'notServed':
+			return [
+				...(local && state.cause !== 'noSeries' ? [{ label: 'Open the metrics section', type: 'metricsSectionRequested', primary: true } as const] : []),
+				...(state.cause !== 'type' ? [{ label: 'Read again', type: 'readAgainRequested' } as const] : []),
+			];
+		case 'noAccess':
+			return ctx.cloud ? [{ label: 'Set up metrics access…', type: 'setUpAccessRequested', primary: true }] : [];
+		case 'refused':
+			return ctx.cloud ? [
+				{ label: 'Set up metrics access…', type: 'setUpAccessRequested', primary: true },
+				{ label: 'Forget metrics access', type: 'forgetAccessRequested' },
+			] : [];
+		case 'unreachable':
+			return [{ label: 'Retry now', type: 'retryRequested', primary: true }, { label: 'Show output', type: 'outputRequested' }];
+		case 'none':
+		case 'waiting':
+		case 'live':
+			return [];
+	}
+}
+
+/** Ticket 8: the buttons a Set up metrics access… in progress disables. */
+export function isSetUpAction(type: MetricsActionType): boolean {
+	return type === 'setUpAccessRequested' || type === 'forgetAccessRequested';
+}
 
 // ---------------------------------------------------------------------------------------------
 // Texts.
 // ---------------------------------------------------------------------------------------------
 
 export const NO_FILE_TEXT = 'Run a Redpanda Connect config, then use Show Pipeline Metrics on it.';
-export const NOT_RUNNING_TEXT = 'Run this file to see its metrics.';
 export const STOPPED_TEXT = 'The run stopped. The figures are from its last reading.';
 /** Ticket 7.6 (board 1): the footer, "Figures over the last <n> minutes · readings kept only while this tab is open". */
 export function keptText(minutes: MetricsWindowMinutes): string {
@@ -203,38 +299,91 @@ export function cloudAddressText(host: string, file: string | null, intervalMs: 
 	return `${host} · ${file ? `mapped to ${file}` : NOT_MAPPED_TEXT} · ${everyText(intervalMs)}`;
 }
 
-/** Ticket 7.5: the no-access state's text, naming the cluster and what to do. */
-export function noMetricsAccessText(cluster: string): string {
-	return `No metrics access is held for ${cluster}. Connect to Redpanda Cloud, or use Set up metrics access… on its row in the Cloud view; the figures are read once it is set.`;
+/** Ticket 8: "10:42:05", a reading's time of day (local time, 24 hours). */
+export function clockText(ms: number): string {
+	const d = new Date(ms);
+	const two = (n: number) => String(n).padStart(2, '0');
+	return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
 }
 
-/** Ticket 7.5: the refused state's text (`message`: the read's, "… refused: the user or password is wrong (HTTP 401)"). */
-export function refusedText(cluster: string, message: string): string {
-	return `${message}. Nothing more is read. Use Set up metrics access… on ${cluster}'s row in the Cloud view to enter them again.`;
+/** Ticket 8: "Retrying in 15 s", "Retrying…" (`null`: a read now). */
+export function retryingText(seconds: number | null): string {
+	return seconds === null ? 'Retrying…' : `Retrying in ${seconds} s`;
 }
 
-/** The state line under the source, or `undefined` when live (`host`: a Cloud pipeline's endpoint). */
-export function stateText(state: MetricsPanelState, file: string | null, port: number | null, host: string | null = null): string | undefined {
+/** What a state's texts depend on besides the state. */
+export interface MetricsTextContext {
+	readonly file: string | null;
+	readonly port: number | null;
+	/** A Cloud pipeline's endpoint host; `null`: a local run. */
+	readonly host: string | null;
+	readonly mapped?: MetricsMappedPipeline | null;
+	/** The seconds until the next retry (`null`: a read now); unreachable only. */
+	readonly retrySeconds?: number | null;
+	/** When the figures shown were read; `null`: none shown. */
+	readonly lastReadingAt?: number | null;
+}
+
+/** Ticket 8 (board 5): the state panel's title and body (what happened, what to do); `undefined` when live. */
+export function metricsStateTexts(state: MetricsPanelState, ctx: MetricsTextContext): { readonly title: string; readonly body: string } | undefined {
+	const cloud = ctx.host !== null;
 	switch (state.kind) {
 		case 'none':
-			return NO_FILE_TEXT;
-		case 'notRunning':
-			return file ? `${file} is not running. ${NOT_RUNNING_TEXT}` : NOT_RUNNING_TEXT;
+			return { title: 'No pipeline chosen', body: NO_FILE_TEXT };
+		case 'notRunning': {
+			const mapped = ctx.mapped ? ` It is deployed to ${ctx.mapped.pipeline} on ${ctx.mapped.cluster}: show that pipeline's metrics instead.` : '';
+			return {
+				title: 'Not running',
+				body: ctx.file ? `${ctx.file} is not running. Run it to see its metrics, read from its run every few seconds.${mapped}` : 'This file is not running. Run it to see its metrics.',
+			};
+		}
 		case 'waiting':
-			return host !== null ? `Waiting for the first reading of ${host}…`
-				: port === null ? 'Waiting for the first reading…' : `Waiting for the first reading of 127.0.0.1:${port}…`;
+			return {
+				title: 'Waiting for the first reading',
+				body: cloud ? `Reading ${ctx.host}…` : ctx.port === null ? 'Reading the run\'s metrics…' : `Reading 127.0.0.1:${ctx.port}…`,
+			};
 		case 'live':
 			return undefined;
 		case 'stopped':
-			return STOPPED_TEXT;
+			return { title: 'Stopped', body: `${STOPPED_TEXT}${ctx.file ? ` Run ${ctx.file} again to read its new run.` : ''}` };
 		case 'notServed':
-			return `No metrics served: ${state.reason}`;
-		case 'unreachable':
-			return `Can't read the metrics: ${state.message}. Trying again.`;
+			if (state.cause === 'noSeries') {
+				return {
+					title: 'No figures yet',
+					body: `${state.reason}${cloud ? '' : ' It may still be starting: read again once it has processed messages.'}`,
+				};
+			}
+			if (state.cause === 'type') {
+				return {
+					title: 'No metrics served',
+					body: `The run serves no Prometheus metrics: ${state.reason} Set it to \`prometheus\` (or remove it) and run the file again.`,
+				};
+			}
+			return {
+				title: 'No metrics served',
+				body: cloud ? `The endpoint serves no metrics for this pipeline: ${state.reason} Read again once it serves them.`
+					: `The run serves no Prometheus metrics: ${state.reason} Check the config's \`metrics\` section, then read again.`,
+			};
+		case 'unreachable': {
+			const at = ctx.lastReadingAt ?? null;
+			const retry = retryingText(ctx.retrySeconds ?? null);
+			// "Retrying…" ends the sentence itself: no full stop after the ellipsis.
+			const last = at !== null ? `; the figures shown are from ${clockText(at)}.` : retry.endsWith('…') ? '' : '.';
+			return {
+				title: 'Can\'t read the metrics',
+				body: `The last read failed (${state.message}). ${retry}${last}`,
+			};
+		}
 		case 'noAccess':
-			return noMetricsAccessText(state.cluster);
+			return {
+				title: 'No metrics access',
+				body: `${state.cluster} has no metrics access set. Set it up with the Prometheus user and password from the cluster's Overview › Prometheus in the Cloud UI; the figures are read once it is set.`,
+			};
 		case 'refused':
-			return refusedText(state.cluster, state.message);
+			return {
+				title: 'Password refused',
+				body: `${state.message}. Copy it again from ${state.cluster}'s Overview › Prometheus in the Cloud UI and set up metrics access again; nothing is read until then.`,
+			};
 	}
 }
 
@@ -391,7 +540,7 @@ function isState(v: unknown): v is MetricsPanelState {
 		case 'stopped':
 			return true;
 		case 'notServed':
-			return typeof v.reason === 'string';
+			return typeof v.reason === 'string' && typeof v.cause === 'string' && (NOT_SERVED_CAUSES as readonly string[]).includes(v.cause);
 		case 'unreachable':
 			return typeof v.message === 'string';
 		case 'noAccess':
@@ -414,6 +563,10 @@ export function parseMetricsHostMessage(v: unknown): MetricsHostMessage | undefi
 		&& (v.sort === null || isSort(v.sort)) && isWindowMinutes(v.windowMinutes)
 		&& (v.cloud === undefined || v.cloud === null || (isObject(v.cloud) && typeof v.cloud.host === 'string' && v.cloud.host !== ''))
 		&& (v.summary === undefined || v.summary === null || isSummary(v.summary))
+		&& (v.retryAt === undefined || v.retryAt === null || isNumber(v.retryAt))
+		&& (v.lastReadingAt === undefined || v.lastReadingAt === null || isNumber(v.lastReadingAt))
+		&& (v.settingUp === undefined || typeof v.settingUp === 'boolean')
+		&& (v.mapped === undefined || v.mapped === null || (isObject(v.mapped) && typeof v.mapped.pipeline === 'string' && typeof v.mapped.cluster === 'string'))
 		? v as MetricsHostMessage : undefined;
 }
 
@@ -431,6 +584,6 @@ export function parseMetricsWebviewMessage(v: unknown): MetricsWebviewMessage | 
 		case 'window':
 			return isWindowMinutes(v.minutes) ? { type: 'window', minutes: v.minutes } : undefined;
 		default:
-			return undefined;
+			return typeof v.type === 'string' && (METRICS_ACTION_TYPES as readonly string[]).includes(v.type) ? { type: v.type as MetricsActionType } : undefined;
 	}
 }

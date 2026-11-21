@@ -53,23 +53,69 @@ body {
 .rpcn-metrics-address {
 	color: var(--vscode-descriptionForeground);
 }
+/* Ticket 8 (board 5): the state panel under the header: a title, a body and its buttons; the state's
+   colour on its title (warning, error, description), as the logs tab's panel. */
 .rpcn-metrics-state {
-	margin: 0;
-	padding: 6px 12px;
-	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 8px 12px;
+	padding: 10px 14px;
+	max-width: 60em;
+	background: var(--vscode-editorWidget-background, transparent);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	border-radius: 4px;
+	line-height: 1.5;
 }
-.rpcn-metrics-state-notServed,
-.rpcn-metrics-state-unreachable {
+.rpcn-metrics-state-title {
+	font-weight: 600;
+}
+.rpcn-metrics-state-notServed .rpcn-metrics-state-title,
+.rpcn-metrics-state-unreachable .rpcn-metrics-state-title {
 	color: var(--vscode-editorWarning-foreground);
 }
-.rpcn-metrics-state-refused {
+.rpcn-metrics-state-refused .rpcn-metrics-state-title {
 	color: var(--vscode-errorForeground);
 }
-.rpcn-metrics-state-stopped,
-.rpcn-metrics-state-waiting,
-.rpcn-metrics-state-noAccess,
-.rpcn-metrics-state-none {
+.rpcn-metrics-state-stopped .rpcn-metrics-state-title,
+.rpcn-metrics-state-waiting .rpcn-metrics-state-title,
+.rpcn-metrics-state-noAccess .rpcn-metrics-state-title,
+.rpcn-metrics-state-notRunning .rpcn-metrics-state-title,
+.rpcn-metrics-state-none .rpcn-metrics-state-title {
 	color: var(--vscode-descriptionForeground);
+}
+.rpcn-metrics-state-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 2px;
+}
+.rpcn-metrics-button {
+	font: inherit;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	background: var(--vscode-button-secondaryBackground, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border-radius: 2px;
+	padding: 1px 8px;
+	cursor: pointer;
+}
+.rpcn-metrics-button:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+.rpcn-metrics-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.rpcn-metrics-button:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+.rpcn-metrics-primary {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+}
+.rpcn-metrics-primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
 }
 .rpcn-metrics-scroll {
 	flex: 1;

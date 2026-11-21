@@ -158,7 +158,7 @@ export {
 } from './cloudLogs';
 export {
 	FORGET_METRICS_ACCESS_COMMAND, METRICS_ACCESS_PREFIX, metricsAccessForgottenMessage, metricsAccessKey, metricsAccessSetMessage, metricsRefusedMessage,
-	metricsUnreachableMessage, NO_CLUSTER_WITH_METRICS_ACCESS, noMetricsAccessMessage, noPrometheusEndpointMessage, SET_UP_METRICS_ACCESS_ACTION, SET_UP_METRICS_ACCESS_COMMAND,
+	metricsUnreachableMessage, NO_CLUSTER_WITH_METRICS_ACCESS, noMetricsAccessMessage, noPrometheusEndpointMessage, NOT_CONNECTED_FOR_METRICS_MESSAGE, SET_UP_METRICS_ACCESS_ACTION, SET_UP_METRICS_ACCESS_COMMAND,
 	SHOW_CLOUD_METRICS_COMMAND, type ForgetMetricsAccessResult, type MetricsAccessResult, type ShowMetricsResult,
 } from './cloudMetrics';
 

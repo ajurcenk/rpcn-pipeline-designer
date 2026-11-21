@@ -7,16 +7,19 @@
 // Ticket 7.6: the window control (1 / 5 / 15 min, `aria-pressed`, asks the host), the new columns
 // (batches, error %, P90, mean), the trend line (inline SVG with its min and max as its text), the footer.
 // Ticket 7.7: the summary line, the Share column, the slowest and errors row marks, the pinned column.
+// Ticket 8 (board 5): each state's panel (title, body, buttons), the message each button posts, the set-up
+// buttons disabled while a set-up runs, the unreachable state's countdown and last reading time, the table
+// kept under the panel only while it has rows in the stopped and unreachable states.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	addressText, cloudAddressText, cloudSourceLabel, errorsText, flowText, formatNs, formatRate, formatShare, keptText, nextSort, NO_FILE_TEXT, noMetricsAccessText,
-	NOT_MAPPED_TEXT, parseMetricsHostMessage, parseMetricsWebviewMessage, refusedText, slowestBandText, slowestText, stateText, STOPPED_TEXT, summaryParts, trendText,
+	addressText, clockText, cloudAddressText, cloudSourceLabel, errorsText, flowText, formatNs, formatRate, formatShare, keptText, metricsStateActions, metricsStateTexts,
+	nextSort, NO_FILE_TEXT, NOT_MAPPED_TEXT, parseMetricsHostMessage, parseMetricsWebviewMessage, slowestBandText, slowestText, STOPPED_TEXT, summaryParts, trendText,
 	type MetricRow, type MetricsHostMessage, type MetricsSummary, type MetricsWebviewMessage,
 } from '../../../src/shared/metricsProtocol';
-import { INDENT_EM, MetricsView, NO_SOURCE_TITLE, TREND_HEIGHT, trendPoints } from './MetricsView';
+import { INDENT_EM, MetricsView, NO_SOURCE_TITLE, retrySecondsAt, TREND_HEIGHT, trendPoints } from './MetricsView';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -70,7 +73,9 @@ describe('MetricsView', () => {
 	it('posts ready and shows the no-file state before the host answers', () => {
 		expect(posted).toEqual([{ type: 'ready' }]);
 		expect(host.querySelector('h1')?.textContent).toBe(NO_SOURCE_TITLE);
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe(NO_FILE_TEXT);
+		expect(host.querySelector('.rpcn-metrics-state-title')?.textContent).toBe('No pipeline chosen');
+		expect(host.querySelector('.rpcn-metrics-state-body')?.textContent).toBe(NO_FILE_TEXT);
+		expect(host.querySelectorAll('.rpcn-metrics-state button')).toHaveLength(0);
 		expect(host.querySelector('table')).toBeNull();
 	});
 
@@ -159,20 +164,88 @@ describe('MetricsView', () => {
 		expect(posted.at(-1)).toEqual({ type: 'sort', sort: { column: 'share', dir: 'asc' } });
 	});
 
-	it('shows the state lines', async () => {
+	const title = () => host.querySelector('.rpcn-metrics-state-title')?.textContent;
+	const body = () => host.querySelector('.rpcn-metrics-state-body')?.textContent;
+	const buttons = () => [...host.querySelectorAll<HTMLButtonElement>('.rpcn-metrics-state button')];
+	const labels = () => buttons().map((b) => b.textContent);
+	const click = async (label: string) => {
+		const button = buttons().find((b) => b.textContent === label);
+		expect(button, label).toBeDefined();
+		await act(async () => button!.click());
+	};
+
+	it('ticket 8: the local states\' panels (board 5): title, body, buttons, the message each posts; the table under it only with rows when stopped or unreachable', async () => {
+		// Not running: Run <file>; a mapped Cloud pipeline adds its Show.
 		await send({ ...SHOW, port: null, rows: [], state: { kind: 'notRunning' } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe('a.yaml is not running. Run this file to see its metrics.');
+		expect(title()).toBe('Not running');
+		expect(body()).toBe('a.yaml is not running. Run it to see its metrics, read from its run every few seconds.');
 		expect(host.querySelector('.rpcn-metrics-address')).toBeNull();
+		expect(labels()).toEqual(['Run a.yaml']);
+		expect(buttons()[0].className).toBe('rpcn-metrics-button rpcn-metrics-primary');
+		await click('Run a.yaml');
+		expect(posted.at(-1)).toEqual({ type: 'runRequested' });
+		await send({ ...SHOW, port: null, rows: [], state: { kind: 'notRunning' }, mapped: { pipeline: 'orders', cluster: 'rpc-vilnius' } });
+		expect(labels()).toEqual(['Run a.yaml', 'Show orders on rpc-vilnius']);
+		expect(body()).toContain('deployed to orders on rpc-vilnius');
+		await click('Show orders on rpc-vilnius');
+		expect(posted.at(-1)).toEqual({ type: 'showMappedRequested' });
+		// Stopped: the last figures stay under the panel; Run again.
 		await send({ ...SHOW, port: null, state: { kind: 'stopped' } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe(STOPPED_TEXT);
+		expect(title()).toBe('Stopped');
+		expect(body()).toBe(`${STOPPED_TEXT} Run a.yaml again to read its new run.`);
 		expect(host.querySelectorAll('tbody tr')).toHaveLength(5);
-		await send({ ...SHOW, rows: [], state: { kind: 'notServed', reason: "this config's `metrics` section is `none`." } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe("No metrics served: this config's `metrics` section is `none`.");
+		expect(host.querySelector('.rpcn-metrics-state')?.nextElementSibling?.className).toBe('rpcn-metrics-scroll');
+		expect(labels()).toEqual(['Run a.yaml']);
+		// No metrics served, by the config's type: Open the metrics section; the panel alone (rows sent or not).
+		await send({ ...SHOW, state: { kind: 'notServed', reason: "this config's `metrics` section is `none`.", cause: 'type' } });
+		expect(title()).toBe('No metrics served');
+		expect(body()).toBe("The run serves no Prometheus metrics: this config's `metrics` section is `none`. Set it to `prometheus` (or remove it) and run the file again.");
 		expect(host.querySelector('.rpcn-metrics-state')?.getAttribute('role')).toBe('alert');
+		expect(host.querySelector('table')).toBeNull();
+		expect(labels()).toEqual(['Open the metrics section']);
+		await click('Open the metrics section');
+		expect(posted.at(-1)).toEqual({ type: 'metricsSectionRequested' });
+		// … by the answer (a 404): Read again too.
+		await send({ ...SHOW, rows: [], state: { kind: 'notServed', reason: '127.0.0.1:41873/metrics answered HTTP 404.', cause: 'answer' } });
+		expect(body()).toContain('answered HTTP 404');
+		expect(labels()).toEqual(['Open the metrics section', 'Read again']);
+		await click('Read again');
+		expect(posted.at(-1)).toEqual({ type: 'readAgainRequested' });
+		// No series yet: "No figures yet", Read again only.
+		await send({ ...SHOW, rows: [], state: { kind: 'notServed', reason: 'The answer has no Redpanda Connect component series.', cause: 'noSeries' } });
+		expect(title()).toBe('No figures yet');
+		expect(labels()).toEqual(['Read again']);
+		// Waiting: text only.
 		await send({ ...SHOW, rows: [], state: { kind: 'waiting' } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe('Waiting for the first reading of 127.0.0.1:41873…');
-		await send({ ...SHOW, state: { kind: 'unreachable', message: '127.0.0.1:41873: connection refused' } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe("Can't read the metrics: 127.0.0.1:41873: connection refused. Trying again.");
+		expect(title()).toBe('Waiting for the first reading');
+		expect(body()).toBe('Reading 127.0.0.1:41873…');
+		expect(labels()).toEqual([]);
+		// Live: no panel.
+		await send(SHOW);
+		expect(host.querySelector('.rpcn-metrics-state')).toBeNull();
+	});
+
+	it('ticket 8: unreachable: the reason, the countdown to the next retry and the last reading\'s time; Retry now and Show output; the figures stay under it', async () => {
+		const lastReadingAt = new Date(2026, 10, 20, 10, 42, 5).getTime();
+		await send({ ...SHOW, state: { kind: 'unreachable', message: 'timed out' }, retryAt: Date.now() + 15_000, lastReadingAt });
+		expect(title()).toBe('Can\'t read the metrics');
+		expect(body()).toMatch(/^The last read failed \(timed out\)\. Retrying in 1[45] s; the figures shown are from 10:42:05\.$/);
+		expect(host.querySelector('.rpcn-metrics-state-countdown')?.getAttribute('aria-live')).toBe('off');
+		expect(host.querySelector('.rpcn-metrics-state')?.getAttribute('role')).toBe('alert');
+		expect(host.querySelectorAll('tbody tr')).toHaveLength(5);
+		expect(labels()).toEqual(['Retry now', 'Show output']);
+		await click('Retry now');
+		expect(posted.at(-1)).toEqual({ type: 'retryRequested' });
+		await click('Show output');
+		expect(posted.at(-1)).toEqual({ type: 'outputRequested' });
+		// A read in flight (no retry set), no figures: "Retrying…", no time.
+		await send({ ...SHOW, rows: [], state: { kind: 'unreachable', message: 'timed out' }, retryAt: null, lastReadingAt: null });
+		expect(body()).toBe('The last read failed (timed out). Retrying…');
+		expect(retrySecondsAt(null, 0)).toBeNull();
+		expect(retrySecondsAt(1000, 1000)).toBeNull();
+		expect(retrySecondsAt(15_000, 1)).toBe(15);
+		expect(retrySecondsAt(1001, 1000)).toBe(1);
+		expect(clockText(lastReadingAt)).toBe('10:42:05');
 	});
 
 	it('ticket 7.5: a Cloud pipeline\'s header (board 3): the source, the endpoint host, the mapped file and the interval', async () => {
@@ -186,25 +259,44 @@ describe('MetricsView', () => {
 		await send({ ...cloud, file: null });
 		expect(host.querySelector('.rpcn-metrics-address')?.textContent).toBe(`prom.example.cloud:443 · ${NOT_MAPPED_TEXT} · read every 10 s`);
 		await send({ ...cloud, rows: [], state: { kind: 'waiting' } });
-		expect(host.querySelector('.rpcn-metrics-state')?.textContent).toBe('Waiting for the first reading of prom.example.cloud:443…');
+		expect(host.querySelector('.rpcn-metrics-state-body')?.textContent).toBe('Reading prom.example.cloud:443…');
 	});
 
-	it('ticket 7.5: the no-access and refused states name the cluster and say what to do', async () => {
+	it('ticket 7.5 / 8: the no-access and refused states name the cluster and say what to do; their set-up buttons, disabled while a set-up runs', async () => {
 		const cloud = { ...SHOW, source: 'Cloud · rpc-vilnius · orders', port: null, rows: [], cloud: { host: 'prom.example.cloud' } };
 		await send({ ...cloud, state: { kind: 'noAccess', cluster: 'rpc-vilnius' } });
 		const state = () => host.querySelector('.rpcn-metrics-state');
-		expect(state()?.textContent).toBe(noMetricsAccessText('rpc-vilnius'));
-		expect(noMetricsAccessText('rpc-vilnius')).toBe('No metrics access is held for rpc-vilnius. Connect to Redpanda Cloud, or use Set up metrics access… on its row in the Cloud view; the figures are read once it is set.');
-		expect(state()?.textContent).toContain('Set up metrics access…');
+		expect(title()).toBe('No metrics access');
+		expect(body()).toBe('rpc-vilnius has no metrics access set. Set it up with the Prometheus user and password from the cluster\'s Overview › Prometheus in the Cloud UI; the figures are read once it is set.');
 		expect(state()?.className).toContain('rpcn-metrics-state-noAccess');
 		expect(state()?.getAttribute('role')).toBe('status');
+		expect(labels()).toEqual(['Set up metrics access…']);
+		await click('Set up metrics access…');
+		expect(posted.at(-1)).toEqual({ type: 'setUpAccessRequested' });
 		const message = 'prom.example.cloud refused: the user or password is wrong (HTTP 401)';
 		await send({ ...cloud, state: { kind: 'refused', cluster: 'rpc-vilnius', message } });
-		expect(state()?.textContent).toBe(refusedText('rpc-vilnius', message));
-		expect(state()?.textContent).toContain('the user or password is wrong');
+		expect(title()).toBe('Password refused');
+		expect(body()).toBe(`${message}. Copy it again from rpc-vilnius's Overview › Prometheus in the Cloud UI and set up metrics access again; nothing is read until then.`);
 		expect(state()?.className).toContain('rpcn-metrics-state-refused');
 		expect(state()?.getAttribute('role')).toBe('alert');
 		expect(host.querySelector('.rpcn-metrics-dot-refused')).not.toBeNull();
+		expect(labels()).toEqual(['Set up metrics access…', 'Forget metrics access']);
+		await click('Forget metrics access');
+		expect(posted.at(-1)).toEqual({ type: 'forgetAccessRequested' });
+		// A set-up runs: both disabled (no message on a click).
+		await send({ ...cloud, state: { kind: 'refused', cluster: 'rpc-vilnius', message }, settingUp: true });
+		expect(buttons().map((b) => b.disabled)).toEqual([true, true]);
+		const before = posted.length;
+		await act(async () => buttons()[0].click());
+		expect(posted).toHaveLength(before);
+		// A Cloud no-series state: Read again; a 404: Read again only (no local file's section).
+		await send({ ...cloud, state: { kind: 'notServed', reason: 'x. Read again once the pipeline runs.', cause: 'noSeries' } });
+		expect(labels()).toEqual(['Read again']);
+		await send({ ...cloud, file: 'orders.yaml', state: { kind: 'notServed', reason: 'prom answered HTTP 404.', cause: 'answer' } });
+		expect(labels()).toEqual(['Read again']);
+		// Unreachable in the Cloud: the same buttons as a local run's.
+		await send({ ...cloud, state: { kind: 'unreachable', message: 'answered HTTP 503' }, retryAt: null });
+		expect(labels()).toEqual(['Retry now', 'Show output']);
 	});
 
 	it('asks the host to sort on a header click and marks the sorted column', async () => {
@@ -269,8 +361,9 @@ describe('metricsProtocol texts and validators', () => {
 		expect(cloudSourceLabel('rpc-vilnius', 'orders')).toBe('Cloud · rpc-vilnius · orders');
 		expect(cloudAddressText('h:443', 'a.yaml', 10_000)).toBe('h:443 · mapped to a.yaml · read every 10 s');
 		expect(cloudAddressText('h:443', null, 10_000)).toBe('h:443 · not mapped to a file · read every 10 s');
-		expect(stateText({ kind: 'waiting' }, null, null, 'h:443')).toBe('Waiting for the first reading of h:443…');
-		expect(stateText({ kind: 'waiting' }, null, 41873)).toBe('Waiting for the first reading of 127.0.0.1:41873…');
+		expect(metricsStateTexts({ kind: 'waiting' }, { file: null, port: null, host: 'h:443' })?.body).toBe('Reading h:443…');
+		expect(metricsStateTexts({ kind: 'waiting' }, { file: null, port: 41873, host: null })?.body).toBe('Reading 127.0.0.1:41873…');
+		expect(metricsStateTexts({ kind: 'live' }, { file: null, port: 41873, host: null })).toBeUndefined();
 	});
 
 	it('ticket 7.6: the trend is scaled to its own min and max, flat when constant', () => {
@@ -348,5 +441,38 @@ describe('metricsProtocol texts and validators', () => {
 		expect(parseMetricsHostMessage({ ...SHOW, summary: { ...summary, slowest: { name: 's' } } })).toBeUndefined();
 		expect(parseMetricsHostMessage({ ...SHOW, summary: { ...summary, gap: { rate: 'x', share: null } } })).toBeUndefined();
 		expect(parseMetricsHostMessage({ ...SHOW, summary: 'x' })).toBeUndefined();
+		// Ticket 8: the state's cause, the new show fields and the buttons' messages (no field copied).
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'notServed', reason: 'r', cause: 'answer' } })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'notServed', reason: 'r' } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, state: { kind: 'notServed', reason: 'r', cause: 'odd' } })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, retryAt: 1, lastReadingAt: 2, settingUp: true, mapped: { pipeline: 'p', cluster: 'c' } })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, retryAt: null, lastReadingAt: null, mapped: null })).toBeDefined();
+		expect(parseMetricsHostMessage({ ...SHOW, retryAt: 'soon' })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, settingUp: 'yes' })).toBeUndefined();
+		expect(parseMetricsHostMessage({ ...SHOW, mapped: { pipeline: 'p' } })).toBeUndefined();
+		for (const type of ['runRequested', 'showMappedRequested', 'metricsSectionRequested', 'readAgainRequested', 'setUpAccessRequested', 'forgetAccessRequested', 'retryRequested', 'outputRequested']) {
+			expect(parseMetricsWebviewMessage({ type, file: '/etc/passwd', clusterId: 'other' })).toEqual({ type });
+		}
+		expect(parseMetricsWebviewMessage({ type: 'deleteRequested' })).toBeUndefined();
+	});
+
+	it('ticket 8: the buttons of each state (board 5)', () => {
+		const local = { file: 'a.yaml', cloud: false, mapped: null };
+		const cloud = { file: 'a.yaml', cloud: true, mapped: null };
+		const types = (state: Parameters<typeof metricsStateActions>[0], ctx: Parameters<typeof metricsStateActions>[1]) => metricsStateActions(state, ctx).map((a) => a.type);
+		expect(types({ kind: 'none' }, local)).toEqual([]);
+		expect(types({ kind: 'waiting' }, local)).toEqual([]);
+		expect(types({ kind: 'live' }, local)).toEqual([]);
+		expect(types({ kind: 'notRunning' }, local)).toEqual(['runRequested']);
+		expect(types({ kind: 'notRunning' }, { ...local, mapped: { pipeline: 'p', cluster: 'c' } })).toEqual(['runRequested', 'showMappedRequested']);
+		expect(types({ kind: 'notRunning' }, { ...local, file: null })).toEqual([]);
+		expect(types({ kind: 'stopped' }, local)).toEqual(['runRequested']);
+		expect(types({ kind: 'notServed', reason: 'r', cause: 'type' }, local)).toEqual(['metricsSectionRequested']);
+		expect(types({ kind: 'notServed', reason: 'r', cause: 'answer' }, local)).toEqual(['metricsSectionRequested', 'readAgainRequested']);
+		expect(types({ kind: 'notServed', reason: 'r', cause: 'noSeries' }, local)).toEqual(['readAgainRequested']);
+		expect(types({ kind: 'notServed', reason: 'r', cause: 'answer' }, cloud)).toEqual(['readAgainRequested']);
+		expect(types({ kind: 'unreachable', message: 'm' }, local)).toEqual(['retryRequested', 'outputRequested']);
+		expect(types({ kind: 'noAccess', cluster: 'c' }, cloud)).toEqual(['setUpAccessRequested']);
+		expect(types({ kind: 'refused', cluster: 'c', message: 'm' }, cloud)).toEqual(['setUpAccessRequested', 'forgetAccessRequested']);
 	});
 });

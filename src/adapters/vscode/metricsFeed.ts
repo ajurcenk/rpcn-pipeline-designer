@@ -28,12 +28,18 @@
 // chooses another; one choice for the tab and the graphs, held until VS Code restarts). Choosing a
 // window recomputes every feed's figures at once, with no read. The readings are dropped at the same
 // points as before: nothing showing them visible, a new port, a restart or rebind, an access change.
+//
+// Ticket 8 (board 5), the tab's state buttons: Read again (`readAgain`: a fresh read cycle, the
+// not-served reason and the 5-answer count dropped) and Retry now (`retryNow`: the next read at once,
+// within the Cloud floor). Each update says when the next read is due (`nextReadAt`), for the
+// unreachable state's "Retrying in N s"; a not-served state says why (`cause`: the config's type, the
+// endpoint's answer, or no series yet).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { errorText } from '../../shared/errorText';
 import { RETRY_DELAYS_MS, retryDelayMs } from '../../shared/logsProtocol';
-import { DEFAULT_WINDOW_MINUTES, type MetricsPanelState, type MetricsWindowMinutes } from '../../shared/metricsProtocol';
+import { DEFAULT_WINDOW_MINUTES, type MetricsPanelState, type MetricsWindowMinutes, type NotServedCause } from '../../shared/metricsProtocol';
 import type { PipelineModel } from '../../shared/protocol';
 import { compactReading, figures, keepReading, type CompactReading, type ComponentFigures } from '../../core/metrics';
 import { isMetricsReadError, localMetricsSource, type MetricsSource } from '../metrics/source';
@@ -53,7 +59,7 @@ export const CLOUD_METRICS_INTERVAL_MS = 10_000;
 /** Ticket 7.5 (AD-25): a Cloud endpoint is never read sooner than this after the last read began. */
 export const CLOUD_MIN_GAP_MS = 5_000;
 /** Ticket 7.5: what the Cloud no-series state says to do. */
-export const CLOUD_NO_SERIES_HINT = 'Use Show metrics again once the pipeline runs.';
+export const CLOUD_NO_SERIES_HINT = 'Read again once the pipeline runs.';
 /** Ticket 7.5: the scheme of a feed key of a Cloud pipeline with no local file. */
 export const CLOUD_METRICS_SCHEME = 'redpanda-cloud-metrics';
 
@@ -90,6 +96,10 @@ export interface CloudMetricsBinding {
 	readonly onDidChangeAccess: vscode.Event<void>;
 	/** An error text with the Cloud view's secrets masked. */
 	mask(text: string): string;
+	/** Ticket 8: whether a Set up metrics access… of the cluster runs now (from any entry point). */
+	settingUp?(): boolean;
+	/** Ticket 8: fires when one starts or ends. */
+	readonly onDidChangeSettingUp?: vscode.Event<void>;
 }
 
 /** What a feed reads, as its subscribers are told. */
@@ -134,6 +144,8 @@ export interface MetricsUpdate {
 	readonly source: MetricsSourceInfo;
 	/** Ticket 7.5: how often it is read. */
 	readonly intervalMs: number;
+	/** Ticket 8: when the next read is due (ms since the epoch); `undefined`: none set (none, or one in flight). */
+	readonly nextReadAt: number | undefined;
 }
 
 /** A consumer's hold on a feed: its visibility, and its end. */
@@ -169,9 +181,11 @@ export class MetricsFeed {
 	private failures = 0;
 	/** Answers with no component series in a row. */
 	private noSeriesReads = 0;
-	/** Why a read said this run serves no metrics (reset by a new port). */
-	private notServedReason: string | undefined;
+	/** Why a read said this run serves no metrics (reset by a new port, a restart, Read again). */
+	private notServed: { readonly reason: string; readonly cause: NotServedCause } | undefined;
 	private timer: ReturnType<typeof setTimeout> | undefined;
+	/** Ticket 8: when `timer` fires. */
+	private timerAt: number | undefined;
 	private inFlight: AbortController | undefined;
 	/** Bumped whenever what is read changes: an older read's answer is dropped. */
 	private generation = 0;
@@ -210,6 +224,7 @@ export class MetricsFeed {
 		return {
 			state: this.panelState, port: this.port, figures: this.last, time: this.readings.at(-1)?.time, source: this.cloudInfo,
 			intervalMs: this.cloud ? this.feeds.cloudTiming.intervalMs : this.intervalMs,
+			nextReadAt: this.timer ? this.timerAt : undefined,
 		};
 	}
 
@@ -229,7 +244,10 @@ export class MetricsFeed {
 			kind: 'cloud', clusterId: binding.clusterId, clusterName: binding.clusterName, pipelineId: binding.pipelineId,
 			pipelineName: binding.pipelineName, host: binding.host, file: binding.file,
 		};
-		this.accessSubscription = binding.onDidChangeAccess(() => this.accessChanged(binding));
+		const access = binding.onDidChangeAccess(() => this.accessChanged(binding));
+		// Ticket 8: a set-up of the cluster starting or ending (the tab's buttons follow it).
+		const setUp = binding.onDidChangeSettingUp?.(() => this.emit());
+		this.accessSubscription = { dispose: () => { access.dispose(); setUp?.dispose(); } };
 		this.restart();
 	}
 
@@ -251,7 +269,7 @@ export class MetricsFeed {
 		this.cloud = undefined;
 		this.cloudInfo = LOCAL;
 		this.refusedMessage = undefined;
-		this.notServedReason = undefined;
+		this.notServed = undefined;
 	}
 
 	/** Ticket 7.5: the cluster's access was set, replaced or forgotten. */
@@ -330,13 +348,50 @@ export class MetricsFeed {
 		this.failures = 0;
 		this.noSeriesReads = 0;
 		this.refusedMessage = undefined;
+		this.notServed = undefined;
 		if (this.cloud) {
-			this.notServedReason = undefined;
 			this.panelState = { kind: 'waiting' };
 		}
 		this.refreshState();
 		this.emit();
 		this.resume();
+	}
+
+	/**
+	 * Ticket 8: Read again (a not-served state's button): a fresh read cycle on the same source; the
+	 * reason and the 5-answer count are dropped (a config's own `metrics` type still says so).
+	 */
+	readAgain(): void {
+		this.options.log(`Pipeline metrics: ${this.where()}: reading again.`);
+		this.restart();
+	}
+
+	/** Ticket 8: Retry now (the unreachable state's button): the next read at once (a Cloud one within its floor). */
+	retryNow(): void {
+		if (this.inFlight || !this.reading) {
+			return;
+		}
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		this.timerAt = undefined;
+		this.resume();
+		this.emit();
+	}
+
+	/** What the feed reads, for its log lines. */
+	private where(): string {
+		const c = this.cloud;
+		return c ? `${c.pipelineName} on ${c.clusterName} (${c.host})` : path.basename(this.uri.fsPath);
+	}
+
+	/** Sets the timer of the next read, `ms` from now. */
+	private schedule(ms: number): void {
+		this.timerAt = Date.now() + ms;
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			this.timerAt = undefined;
+			void this.readNow();
+		}, ms);
 	}
 
 	/** Stops reading for good (the feeds are disposed, or the last subscriber went). */
@@ -392,15 +447,15 @@ export class MetricsFeed {
 			this.readings = [];
 			this.failures = 0;
 			this.noSeriesReads = 0;
-			this.notServedReason = undefined;
+			this.notServed = undefined;
 			this.generation++;
 			this.panelState = { kind: 'waiting' };
 		}
 		const type = this.feeds.configOf(uri)?.metricsType;
 		if (type !== undefined && type !== 'prometheus') {
-			this.panelState = { kind: 'notServed', reason: `this config's \`metrics\` section is \`${type}\`.` };
-		} else if (this.notServedReason !== undefined) {
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.panelState = { kind: 'notServed', reason: `this config's \`metrics\` section is \`${type}\`.`, cause: 'type' };
+		} else if (this.notServed !== undefined) {
+			this.panelState = { kind: 'notServed', ...this.notServed };
 		} else if (this.panelState.kind !== 'live' && this.panelState.kind !== 'unreachable') {
 			this.panelState = this.readings.length > 0 ? { kind: 'live' } : { kind: 'waiting' };
 		}
@@ -416,8 +471,8 @@ export class MetricsFeed {
 			this.panelState = { kind: 'noAccess', cluster: binding.clusterName };
 		} else if (this.refusedMessage !== undefined) {
 			this.panelState = { kind: 'refused', cluster: binding.clusterName, message: this.refusedMessage };
-		} else if (this.notServedReason !== undefined) {
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+		} else if (this.notServed !== undefined) {
+			this.panelState = { kind: 'notServed', ...this.notServed };
 		} else if (this.panelState.kind !== 'live' && this.panelState.kind !== 'unreachable') {
 			this.panelState = this.readings.length > 0 ? { kind: 'live' } : { kind: 'waiting' };
 		}
@@ -467,7 +522,7 @@ export class MetricsFeed {
 		}
 		const wait = this.cloud ? this.floorWait(this.cloud) : 0;
 		if (wait > 0) {
-			this.timer = setTimeout(() => void this.readNow(), wait);
+			this.schedule(wait);
 		} else {
 			void this.readNow();
 		}
@@ -477,6 +532,7 @@ export class MetricsFeed {
 	private pause(): void {
 		clearTimeout(this.timer);
 		this.timer = undefined;
+		this.timerAt = undefined;
 		this.inFlight?.abort();
 		this.inFlight = undefined;
 	}
@@ -514,10 +570,11 @@ export class MetricsFeed {
 				this.inFlight = undefined;
 			}
 		}
-		this.emit();
 		if (this.reading && !this.timer) {
-			this.timer = setTimeout(() => void this.readNow(), this.intervalMs);
+			this.schedule(this.intervalMs);
 		}
+		// Ticket 8: after the next read is set, so the update says when it is due.
+		this.emit();
 	}
 
 	/**
@@ -538,7 +595,7 @@ export class MetricsFeed {
 		// The floor is the cluster's: another feed of it (or this one before a re-Show) may have read just now.
 		const wait = this.floorWait(binding);
 		if (wait > 0) {
-			this.timer = setTimeout(() => void this.readNow(), wait);
+			this.schedule(wait);
 			return;
 		}
 		const generation = this.generation;
@@ -570,10 +627,10 @@ export class MetricsFeed {
 				this.inFlight = undefined;
 			}
 		}
-		this.emit();
 		if (this.reading && !this.timer && this.cloud === binding) {
-			this.timer = setTimeout(() => void this.readNow(), Math.max(next, this.feeds.cloudTiming.minGapMs));
+			this.schedule(Math.max(next, this.feeds.cloudTiming.minGapMs));
 		}
+		this.emit();
 	}
 
 	/** How long a Cloud read of `binding`'s cluster must wait for the floor (0: none). */
@@ -593,8 +650,8 @@ export class MetricsFeed {
 			return;
 		}
 		if (isMetricsReadError(err) && err.kind === 'notServed' && !err.noSeries) {
-			this.notServedReason = `${message}.`;
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.notServed = { reason: `${message}.`, cause: 'answer' };
+			this.panelState = { kind: 'notServed', ...this.notServed };
 			this.options.log(`Pipeline metrics: ${where}: ${message}.`);
 			return;
 		}
@@ -615,8 +672,8 @@ export class MetricsFeed {
 			return;
 		}
 		if (noSeries) {
-			this.notServedReason = `${message}. ${CLOUD_NO_SERIES_HINT}`;
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.notServed = { reason: `${message}. ${CLOUD_NO_SERIES_HINT}`, cause: 'noSeries' };
+			this.panelState = { kind: 'notServed', ...this.notServed };
 		} else {
 			this.panelState = { kind: 'unreachable', message };
 		}
@@ -625,8 +682,8 @@ export class MetricsFeed {
 	private failed(err: unknown, port: number): void {
 		const name = path.basename(this.uri.fsPath);
 		if (isMetricsReadError(err) && err.kind === 'notServed' && !err.noSeries) {
-			this.notServedReason = `${err.message}.`;
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.notServed = { reason: `${err.message}.`, cause: 'answer' };
+			this.panelState = { kind: 'notServed', ...this.notServed };
 			this.options.log(`Pipeline metrics: ${name}: ${err.message}.`);
 			return;
 		}
@@ -649,8 +706,8 @@ export class MetricsFeed {
 			return;
 		}
 		if (noSeries) {
-			this.notServedReason = `${message}.`;
-			this.panelState = { kind: 'notServed', reason: this.notServedReason };
+			this.notServed = { reason: `${message}.`, cause: 'noSeries' };
+			this.panelState = { kind: 'notServed', ...this.notServed };
 		} else {
 			this.panelState = { kind: 'unreachable', message };
 		}

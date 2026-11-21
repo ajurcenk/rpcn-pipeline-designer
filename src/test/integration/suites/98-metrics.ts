@@ -15,6 +15,11 @@
 // Ticket 7.7, the bottleneck: in GRAPH FIGURES the sleep (`slow_one`) is marked slowest in the tab and
 // on its graph node with the same share, the summary names it, and the nested processor with errors is
 // marked with errors in both; the marks clear with the figures on stop.
+// Ticket 8 (board 5), the states' buttons through the tab's seam (`receive`, as the webview posts them):
+// STOP / RERUN's rerun is the stopped state's Run <file>; NOT_RUNNING's Run starts the run (waiting →
+// live); NOT_SERVED's Open the metrics section reveals the `metrics:` key; a 404 and no series are read
+// again with Read again; UNREACHABLE says when the next retry is, Retry now reads at once and Show output
+// is carried out; a button the state does not show is ignored.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -140,6 +145,12 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		assert.ok(await waitFor(() => (metrics().rows()[1]?.inRate ?? 0) > 0, METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().rows()[1]));
 		assert.strictEqual(metrics().state.kind, 'live');
 		assert.ok(fake.reads.every((r) => r.port === port));
+		// Ticket 8, FORGED: live offers no button: a Run is ignored (no second run, nothing changes).
+		const actionsBefore = metrics().actions.length;
+		await metrics().receive({ type: 'runRequested' });
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.strictEqual(metrics().actions.length, actionsBefore, 'ignored');
+		assert.strictEqual(api().run.portOf(doc.uri), port, 'the same run');
 
 		// HIDDEN: no read while the tab is hidden; one at once when shown again.
 		await vscode.commands.executeCommand('workbench.action.closePanel');
@@ -159,8 +170,11 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		await new Promise((r) => setTimeout(r, METRICS_INTERVAL_MS * 1.5));
 		assert.strictEqual(fake.reads.length, stoppedAt, 'no read after the stop');
 
-		// RERUN: the new port is read.
-		const again = await runAndWait(doc);
+		// RERUN (ticket 8: the stopped state's Run <file>): the new port is read.
+		assert.ok(metrics().posted.at(-1)!.rows.length > 0, 'the figures stay under the panel');
+		await metrics().receive({ type: 'runRequested' });
+		assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'running' && api().run.portOf(doc.uri) !== undefined, 15_000));
+		const again = api().run.portOf(doc.uri)!;
 		fake.serve(again, text(10));
 		// Run shows its terminal, which takes the bottom panel; the tab reads again once it is shown.
 		await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
@@ -224,34 +238,99 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		await stop(doc);
 	});
 
-	test('NOT_RUNNING / NOT_SERVED / UNREACHABLE', async () => {
-		// NOT_RUNNING: the tab names the file; nothing is read.
+	test('NOT_RUNNING / NOT_SERVED / UNREACHABLE, and their buttons (ticket 8)', async () => {
+		// NOT_RUNNING: the tab names the file; nothing is read. Run <file> starts it: waiting, then live.
 		const idle = await open('idle.yaml', CONFIG);
 		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
 		assert.ok(await waitFor(() => metrics().visible && metrics().file === idle.uri.toString(), 10_000));
 		assert.strictEqual(metrics().state.kind, 'notRunning');
 		await new Promise((r) => setTimeout(r, METRICS_INTERVAL_MS));
 		assert.strictEqual(fake.reads.length, 0);
+		assert.strictEqual(metrics().posted.at(-1)!.mapped, null, 'no .cloud.json: no second button');
+		const actionsBefore = metrics().actions.length;
+		await metrics().receive({ type: 'retryRequested' });
+		await metrics().receive({ type: 'metricsSectionRequested' });
+		assert.strictEqual(metrics().actions.length, actionsBefore, 'not offered while not running: ignored');
+		await metrics().receive({ type: 'runRequested' });
+		assert.strictEqual(metrics().actions.at(-1), 'runRequested');
+		assert.ok(await waitFor(() => api().run.phaseOf(idle.uri) === 'running' && api().run.portOf(idle.uri) !== undefined, 15_000), 'Run started it');
+		const idlePort = api().run.portOf(idle.uri)!;
+		fake.serve(idlePort, text(1));
+		// Run shows its terminal, which takes the bottom panel; the tab reads again once it is shown.
+		await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
+		assert.ok(await waitFor(() => metrics().state.kind === 'live' && fake.readsOf(idlePort).length > 0, METRICS_INTERVAL_MS * 4), JSON.stringify(metrics().state));
+		await stop(idle);
 
-		// NOT_SERVED: a config whose own `metrics` section is not prometheus is not read.
+		// NOT_SERVED: a config whose own `metrics` section is not prometheus is not read; Open the metrics
+		// section selects its `metrics:` key.
 		const none = await open('none.yaml', `${CONFIG}metrics:\n  none: {}\n`);
 		await runAndWait(none);
 		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
 		assert.ok(await waitFor(() => metrics().file === none.uri.toString() && metrics().state.kind === 'notServed', 10_000), JSON.stringify(metrics().state));
-		assert.strictEqual((metrics().state as { reason: string }).reason, "this config's `metrics` section is `none`.");
+		assert.deepStrictEqual(metrics().state, { kind: 'notServed', reason: "this config's `metrics` section is `none`.", cause: 'type' });
 		await new Promise((r) => setTimeout(r, METRICS_INTERVAL_MS));
-		assert.strictEqual(fake.reads.length, 0);
+		assert.strictEqual(fake.reads.filter((r) => r.port === api().run.portOf(none.uri)).length, 0);
+		await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
+		await vscode.window.showTextDocument(idle);
+		const typeActions = metrics().actions.length;
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.strictEqual(metrics().actions.length, typeActions, 'Read again is not offered for the config\'s own type');
+		await metrics().receive({ type: 'metricsSectionRequested' });
+		const metricsLine = none.getText().split('\n').indexOf('metrics:');
+		assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document.uri.toString() === none.uri.toString(), 5_000), 'the config\'s editor');
+		const selection = vscode.window.activeTextEditor!.selection;
+		assert.deepStrictEqual([selection.start.line, selection.start.character, selection.end.line, selection.end.character], [metricsLine, 0, metricsLine, 'metrics'.length]);
 		await stop(none);
 
-		// UNREACHABLE: quiet (waiting) for the first failures, then said; reading goes on and recovers.
+		// NOT_SERVED by the answer (a 404), then read again: the run's metrics are read.
+		const answer = await open('answer.yaml', CONFIG);
+		const answerPort = await runAndWait(answer);
+		fake.fail(answerPort, 'notServed', `127.0.0.1:${answerPort}/metrics answered HTTP 404`, 1);
+		fake.serve(answerPort, text(1));
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, answer.uri);
+		assert.ok(await waitFor(() => metrics().state.kind === 'notServed', METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().state));
+		assert.strictEqual((metrics().state as { cause: string }).cause, 'answer');
+		const readsBefore = fake.readsOf(answerPort).length;
+		await new Promise((r) => setTimeout(r, METRICS_INTERVAL_MS * 1.5));
+		assert.strictEqual(fake.readsOf(answerPort).length, readsBefore, 'not read on');
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().state));
+
+		// NO SERIES: 5 answers with none: "No figures yet"; Read again starts the count over and reads.
+		fake.fail(answerPort, 'notServed', `127.0.0.1:${answerPort}/metrics has no Redpanda Connect component series`, 5, true);
+		const liveActions = metrics().actions.length;
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.strictEqual(metrics().actions.length, liveActions, 'not offered while live');
+		assert.ok(await waitFor(() => metrics().state.kind === 'notServed', METRICS_INTERVAL_MS * 8), JSON.stringify(metrics().state));
+		assert.strictEqual((metrics().state as { cause: string }).cause, 'noSeries');
+		await metrics().receive({ type: 'readAgainRequested' });
+		assert.strictEqual(metrics().actions.at(-1), 'readAgainRequested');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().state));
+		await stop(answer);
+
+		// UNREACHABLE: quiet (waiting) for the first failures, then said, with the next retry's time and the
+		// last reading's; Retry now reads at once; Show output is carried out; reading goes on and recovers.
 		const doc = await open('unreachable.yaml', CONFIG);
 		const port = await runAndWait(doc);
-		fake.fail(port, 'unreachable', `127.0.0.1:${port}: connection refused`, 3);
+		fake.fail(port, 'unreachable', `127.0.0.1:${port}: connection refused`, 4);
 		fake.serve(port, text(1));
 		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
 		assert.ok(await waitFor(() => fake.readsOf(port).length >= 1, 5_000));
 		assert.strictEqual(metrics().state.kind, 'waiting');
 		assert.ok(await waitFor(() => metrics().state.kind === 'unreachable', METRICS_INTERVAL_MS * 4), JSON.stringify(metrics().state));
+		const shown = metrics().posted.at(-1)!;
+		assert.ok(typeof shown.retryAt === 'number' && shown.retryAt > Date.now() - 500 && shown.retryAt <= Date.now() + METRICS_INTERVAL_MS, String(shown.retryAt));
+		assert.strictEqual(shown.lastReadingAt, null, 'no figures shown');
+		const before = fake.readsOf(port).length;
+		const at = Date.now();
+		await metrics().receive({ type: 'retryRequested' });
+		assert.ok(await waitFor(() => fake.readsOf(port).length > before, 1_000), 'Retry now reads at once');
+		assert.ok(fake.readsOf(port)[before].startedAt - at < METRICS_INTERVAL_MS / 2, 'before the interval');
+		await metrics().receive({ type: 'outputRequested' });
+		assert.strictEqual(metrics().actions.at(-1), 'outputRequested');
+		// The output channel takes the bottom panel (the tab is hidden, so it stops reading); shown again, it reads on.
+		assert.ok(await waitFor(() => !metrics().visible, 5_000), 'the output channel is shown in the panel');
+		await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
 		assert.ok(await waitFor(() => metrics().state.kind === 'live', METRICS_INTERVAL_MS * 3), JSON.stringify(metrics().state));
 		await stop(doc);
 	});

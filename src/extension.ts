@@ -37,6 +37,7 @@ import type { JsonObject } from './core/schema';
 import { catalogueOf } from './adapters/graphPanel/status';
 import { MetricsFeeds, type MetricsConfig } from './adapters/vscode/metricsFeed';
 import { MetricsPanel } from './adapters/vscode/metricsPanel';
+import { findMapping } from './adapters/vscode/cloudShared';
 import { parsedDocument } from './adapters/vscode/parseCache';
 import { buildPipelineModel, componentPaths } from './core/graph';
 import { metricsTypeOf } from './core/metrics';
@@ -131,7 +132,7 @@ export interface ExtensionApi {
 	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
 	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten. Only in `ExtensionMode.Test`.
 	 */
-	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes'>
+	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'>
 		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
@@ -296,7 +297,21 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		},
 	});
 	// The Pipeline Metrics tab (ticket 7.2, AD-25): in the bottom panel next to Pipeline Logs.
-	const metricsPanel = new MetricsPanel({ extensionUri: context.extensionUri, log, feeds: metricsFeeds });
+	const metricsPanel = new MetricsPanel({
+		extensionUri: context.extensionUri,
+		log,
+		feeds: metricsFeeds,
+		// Ticket 8 (board 5): the state buttons' Show output and a not-running file's mapped Cloud pipeline.
+		showOutput: () => channel.show(true),
+		mappingOf: async (uri) => {
+			const at = await findMapping(uri.fsPath);
+			if (at.kind !== 'own' || at.read.kind !== 'ok') {
+				return undefined;
+			}
+			const m = at.read.mapping;
+			return { clusterId: m.clusterId, pipelineId: m.pipelineId, cluster: m.clusterName ?? m.clusterId, pipeline: m.pipelineName ?? m.pipelineId };
+		},
+	});
 	context.subscriptions.push(metricsFeeds, metricsPanel, ...metricsPanel.register());
 
 	const graphPanels = new GraphPanels({

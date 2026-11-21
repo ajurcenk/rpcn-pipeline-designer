@@ -620,3 +620,21 @@ export function metricsTypeOf(parsed: ParsedYaml | undefined): string | undefine
 	}
 	return undefined;
 }
+
+/**
+ * Ticket 8: where the top-level `metrics` key is (the first document that has one): its key token's
+ * `[start, end)` offsets; `undefined` with none (the tab's Open the metrics section then goes to the
+ * file's start). Never throws.
+ */
+export function metricsSectionRange(parsed: ParsedYaml | undefined): readonly [number, number] | undefined {
+	for (const doc of parsed?.docs ?? []) {
+		if (!isMap(doc.contents)) {
+			continue;
+		}
+		const key = (doc.contents.items as Pair[]).find((p) => isScalar(p.key) && p.key.value === 'metrics')?.key;
+		if (isScalar(key) && key.range) {
+			return [key.range[0], key.range[1]];
+		}
+	}
+	return undefined;
+}
