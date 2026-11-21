@@ -116,3 +116,7 @@ The four patches applied by the implementer (#5 rejected); the retry waits' two 
 - `grep -rn "from 'vscode'" src/core src/shared src/adapters/metrics` -- expected: no matches.
 - `git diff --stat <baseline> -- src/test webview/src/*.test.tsx` -- expected: import lines only.
 
+
+## Manual Check
+
+- 2026-11-21, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `15c4b2b`, restarted on the build) on Forget and Set up of the metrics and log access in the Cloud view: "tested, no issues".
