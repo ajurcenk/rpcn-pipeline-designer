@@ -20,11 +20,16 @@
 // live); NOT_SERVED's Open the metrics section reveals the `metrics:` key; a 404 and no series are read
 // again with Read again; UNREACHABLE says when the next retry is, Retry now reads at once and Show output
 // is carried out; a button the state does not show is ignored.
+// Ticket 9 (board 5), the entry points: RUNNING_FILE (HAPPY's command on the active running config),
+// STATUS_BAR (the running item's menu, Stop / Show pipeline metrics, and its " · N/s" while the tab reads
+// the run), GRAPH_BUTTON (the graph's `metricsRequested` opens the tab on its file's run), NEITHER (a file
+// neither running nor mapped opens Not running), NO_EDITOR (the pick of the running files; none: the message).
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { METRICS_INTERVAL_MS, METRICS_VIEW_ID, SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
+import { RUN_MENU_COMMAND, SHOW_METRICS_ACTION, stopAction } from '../../../adapters/vscode/run';
 import { type ExtensionApi } from '../../../extension';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import type { NodeFiguresById } from '../../../shared/protocol';
@@ -564,5 +569,101 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		await vscode.window.showTextDocument(doc);
 		await vscode.commands.executeCommand('workbench.action.files.revert');
 		handle.panel.dispose();
+	});
+	test('ticket 9, package.json: Show Pipeline Metrics is in the palette with no editor (no detected-file `when`); the status bar menu is not', () => {
+		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as { contributes: { menus: { commandPalette: { command: string; when?: string }[] } } };
+		const palette = pkg.contributes.menus.commandPalette;
+		const show = palette.filter((m) => m.command === SHOW_METRICS_COMMAND);
+		assert.ok(show.every((m) => m.when === undefined), `no when restricting it: ${JSON.stringify(show)}`);
+		assert.deepStrictEqual(palette.filter((m) => m.command === RUN_MENU_COMMAND), [{ command: RUN_MENU_COMMAND, when: 'false' }]);
+	});
+
+	test('ticket 9, STATUS_BAR: the running item opens Stop / Show pipeline metrics; Show opens the tab on that run, and the item then shows the output rate', async () => {
+		const doc = await open('status.yaml', CONFIG);
+		const port = await runAndWait(doc);
+		fake.serve(port, text(100));
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		assert.ok(await waitFor(() => !metrics().visible, 10_000));
+		assert.strictEqual(api().run.statusBarText, '$(debug-stop) Stop pipeline', 'no rate while the tab does not read the run');
+		const original = api().run.ui;
+		const menus: (readonly string[])[] = [];
+		api().run.ui = { menu: async (_title, entries) => { menus.push(entries); return SHOW_METRICS_ACTION; } };
+		try {
+			// The item's own command, with its arguments.
+			await vscode.commands.executeCommand(RUN_MENU_COMMAND, doc.uri);
+			assert.deepStrictEqual(menus, [[stopAction('status.yaml'), SHOW_METRICS_ACTION]]);
+			assert.ok(await waitFor(() => metrics().visible && metrics().file === doc.uri.toString(), 10_000), String(metrics().file));
+			assert.strictEqual(metrics().title, 'Local run · status.yaml');
+			let n = 100;
+			assert.ok(await waitFor(() => {
+				fake.serve(port, text(n += 50));
+				return /^\$\(debug-stop\) Stop pipeline · \d+\.\d\/s$/.test(api().run.statusBarText ?? '');
+			}, METRICS_INTERVAL_MS * 5), `the output rate: ${api().run.statusBarText}`);
+			// The tab closed: the rate goes (no read of the item's own).
+			await vscode.commands.executeCommand('workbench.action.closePanel');
+			assert.ok(await waitFor(() => api().run.statusBarText === '$(debug-stop) Stop pipeline', 10_000), String(api().run.statusBarText));
+			// Stop from the menu.
+			api().run.ui = { menu: async (_title, entries) => entries[0] };
+			await vscode.commands.executeCommand(RUN_MENU_COMMAND, doc.uri);
+			assert.ok(await waitFor(() => api().run.phaseOf(doc.uri) === 'exited', 15_000));
+		} finally {
+			api().run.ui = original;
+		}
+	});
+
+	test('ticket 9, GRAPH_BUTTON: Open Pipeline Metrics in the graph opens the tab on the graph file\'s run, as the command for that file', async () => {
+		const doc = await open('graphbutton.yaml', CONFIG);
+		const port = await runAndWait(doc);
+		fake.serve(port, text(100));
+		await vscode.commands.executeCommand('workbench.action.closePanel');
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.ok(handle, 'a graph panel');
+		// Another config active: the button goes by the graph's file, not the active editor.
+		await open('other-active.yaml', CONFIG);
+		const before = handle.posted.length;
+		await handle.receive({ type: 'metricsRequested' });
+		assert.ok(await waitFor(() => metrics().visible && metrics().file === doc.uri.toString(), 10_000), String(metrics().file));
+		assert.strictEqual(metrics().title, 'Local run · graphbutton.yaml');
+		assert.ok(handle.posted.slice(before).every((m) => m.type === 'nodeFigures'), `nothing else in the graph: ${handle.posted.slice(before).map((m) => m.type).join(', ')}`);
+		await stop(doc);
+		handle.panel.dispose();
+	});
+
+	test('ticket 9, NEITHER: a config neither running nor mapped opens the tab on it, Not running', async () => {
+		const doc = await open('neither.yaml', CONFIG);
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+		assert.ok(await waitFor(() => metrics().visible && metrics().file === doc.uri.toString(), 10_000));
+		assert.strictEqual(metrics().state.kind, 'notRunning');
+	});
+
+	test('ticket 9, NO_EDITOR: no active config: a pick of the running files; the one chosen opens; none running: the message', async () => {
+		const a = await open('pick-a.yaml', CONFIG);
+		const b = await open('pick-b.yaml', CONFIG);
+		await runAndWait(a);
+		await runAndWait(b);
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		const original = metrics().ui;
+		const shown: string[][] = [];
+		metrics().ui = {
+			pick: async (_title, items) => {
+				shown.push(items.map((i) => `${i.kind}:${i.label}`));
+				return items.find((i) => i.label === 'pick-b.yaml');
+			},
+		};
+		try {
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+			assert.deepStrictEqual(shown.map((l) => l.filter((x) => x.startsWith('local:')).sort()), [['local:pick-a.yaml', 'local:pick-b.yaml']]);
+			assert.ok(await waitFor(() => metrics().visible && metrics().file === b.uri.toString(), 10_000), String(metrics().file));
+			await stop(a);
+			await stop(b);
+			// None running: no local entry (with no Cloud pipeline loaded either, no pick: NO_CONFIG_MESSAGE, in the unit tests).
+			shown.length = 0;
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+			assert.ok(shown.every((l) => l.every((x) => !x.startsWith('local:'))), JSON.stringify(shown));
+			assert.strictEqual(metrics().file, b.uri.toString(), 'nothing new bound');
+		} finally {
+			metrics().ui = original;
+		}
 	});
 });

@@ -120,6 +120,11 @@
         "icon": "$(pulse)"
       },
       {
+        "command": "redpandaConnect.runMenu",
+        "title": "Stop or show pipeline metrics",
+        "category": "Redpanda Connect"
+      },
+      {
         "command": "redpandaConnect.runUntitled",
         "title": "Save the file to run it.",
         "category": "Redpanda Connect",
@@ -351,8 +356,8 @@
           "when": "redpandaConnect.activeEditorRunning"
         },
         {
-          "command": "redpandaConnect.showPipelineMetrics",
-          "when": "redpandaConnect.activeEditorDetected && resourceScheme == file"
+          "command": "redpandaConnect.runMenu",
+          "when": "false"
         },
         {
           "command": "redpandaConnect.runUntitled",
@@ -747,6 +752,11 @@
           "command": "redpandaConnect.cloud.showLogs",
           "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/",
           "group": "0_open@4"
+        },
+        {
+          "command": "redpandaConnect.cloud.showMetrics",
+          "when": "view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/",
+          "group": "inline@4"
         },
         {
           "command": "redpandaConnect.cloud.showMetrics",

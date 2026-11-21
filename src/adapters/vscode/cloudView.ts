@@ -1348,6 +1348,22 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			: found.length > 1 ? { kind: 'ambiguous', tag, paths: found } : { kind: 'outside', tag };
 	}
 
+	/**
+	 * Ticket 9: the pipelines the view has already loaded, cluster by cluster in its order (nothing is
+	 * requested): the Pipeline Metrics pick with no active config.
+	 */
+	loadedPipelines(): { readonly clusterId: string; readonly clusterName: string; readonly pipelineId: string; readonly pipelineName: string }[] {
+		if (!this.account || this.clusters?.kind !== 'ok') {
+			return [];
+		}
+		return this.clusters.value.flatMap((c) => {
+			const loaded = this.pipelines.get(c.id);
+			return loaded?.kind === 'ok'
+				? loaded.value.map((p) => ({ clusterId: c.id, clusterName: c.name, pipelineId: p.id, pipelineName: p.displayName }))
+				: [];
+		});
+	}
+
 	private pipelineById(clusterId: string, id: string): CloudPipeline | undefined {
 		const loaded = this.pipelines.get(clusterId);
 		return loaded?.kind === 'ok' ? loaded.value.find((p) => p.id === id) : undefined;

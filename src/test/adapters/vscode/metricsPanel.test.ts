@@ -1,7 +1,9 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { MetricsFeeds } from '../../../adapters/vscode/metricsFeed';
-import { MetricsPanel, NO_SERIES_READS, QUIET_FAILURES, type MappedPipelineOf } from '../../../adapters/vscode/metricsPanel';
+import {
+	METRICS_PICK_TITLE, MetricsPanel, NO_CONFIG_MESSAGE, NO_SERIES_READS, QUIET_FAILURES, type LoadedCloudPipeline, type MappedPipelineOf, type MetricsPickItem,
+} from '../../../adapters/vscode/metricsPanel';
 import { SHOW_CLOUD_METRICS_COMMAND } from '../../../adapters/vscode/cloudMetrics';
 import { RUN_COMMAND } from '../../../adapters/vscode/run';
 import type { RunChange } from '../../../adapters/vscode/run';
@@ -11,6 +13,8 @@ import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
 // Ticket 7.2: the Pipeline Metrics tab's host against a fake view, run and source: failures and
 // answers with no series counted apart, in a row; hiding the tab drops its readings.
 // Ticket 8: the state buttons carried out on the binding, a button the state does not show ignored.
+// Ticket 9: the resolver (run → mapping → the file; no active config: a pick), the bind on the tab's own
+// opening, and the run the tab reads for the status bar.
 const PORT = 41500;
 const URI = vscode.Uri.file('/ws/m.yaml');
 const OTHER = vscode.Uri.file('/ws/m2.yaml');
@@ -49,6 +53,11 @@ suite('adapters/vscode MetricsPanel', () => {
 	let commands: [string, ...unknown[]][];
 	let outputs: number;
 	let mapping: MappedPipelineOf | undefined;
+	let runs: vscode.Uri[];
+	let activeFile: vscode.Uri | undefined;
+	let configs: Set<string> | undefined;
+	let loaded: LoadedCloudPipeline[];
+	let infos: string[];
 
 	setup(async () => {
 		reads = 0;
@@ -57,6 +66,11 @@ suite('adapters/vscode MetricsPanel', () => {
 		commands = [];
 		outputs = 0;
 		mapping = undefined;
+		runs = [];
+		activeFile = undefined;
+		configs = undefined;
+		loaded = [];
+		infos = [];
 		feeds = new MetricsFeeds({
 			log: () => undefined,
 			run: { portOf: () => (running ? PORT : undefined), onDidChangeRun: runChanged.event },
@@ -76,6 +90,13 @@ suite('adapters/vscode MetricsPanel', () => {
 				outputs++;
 			},
 			mappingOf: async () => mapping,
+			runningUris: () => runs,
+			activeUri: () => activeFile,
+			isConfig: (uri) => !configs || configs.has(uri.toString()),
+			cloudPipelines: () => loaded,
+			showInformationMessage: (m) => {
+				infos.push(m);
+			},
 		});
 		// Each read takes the next scripted answer; once the script is done, the counters' text.
 		let n = 0;
@@ -238,5 +259,154 @@ suite('adapters/vscode MetricsPanel', () => {
 		await clicked;
 		await until(() => panel.state.kind === 'live');
 		assert.deepStrictEqual(panel.actions, ['outputRequested', 'retryRequested']);
+	});
+	suite('ticket 9: the resolver', () => {
+		const CLOUD_A: LoadedCloudPipeline = { clusterId: 'c1', clusterName: 'rpc-vilnius', pipelineId: 'p1', pipelineName: 'orders' };
+
+		test('RUNNING_FILE: a running file opens on its local run, its mapping not used', async () => {
+			runs = [URI];
+			mapping = { clusterId: 'c1', pipelineId: 'p1', cluster: 'rpc-vilnius', pipeline: 'orders' };
+			await panel.showFor(URI);
+			assert.strictEqual(panel.file, URI.toString());
+			assert.deepStrictEqual(commands, []);
+		});
+
+		test('MAPPED_NO_RUN: a file not running with its own mapping goes to Show metrics on the mapped pipeline', async () => {
+			running = false;
+			mapping = { clusterId: 'c1', pipelineId: 'p1', cluster: 'rpc-vilnius', pipeline: 'orders' };
+			await panel.showFor(URI);
+			assert.deepStrictEqual(commands, [[SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: 'c1', id: 'p1' }]]);
+			assert.strictEqual(panel.file, undefined, 'the tab is bound by Show metrics, not here');
+		});
+
+		test('NEITHER: a file neither running nor mapped opens on itself, Not running', async () => {
+			running = false;
+			await panel.showFor(URI);
+			assert.strictEqual(panel.file, URI.toString());
+			assert.strictEqual(panel.state.kind, 'notRunning');
+			assert.deepStrictEqual(commands, []);
+		});
+
+		test('ACTIVE: with no argument, the active config; an active file that is no config is no active config', async () => {
+			runs = [URI];
+			activeFile = URI;
+			await panel.showFor();
+			assert.strictEqual(panel.file, URI.toString());
+			activeFile = OTHER;
+			configs = new Set([URI.toString()]);
+			let picks = 0;
+			panel.ui = { pick: async () => { picks++; return undefined; } };
+			await panel.showFor();
+			assert.strictEqual(picks, 1);
+			assert.strictEqual(panel.file, URI.toString(), 'a dismissed pick binds nothing');
+		});
+
+		test('NO_EDITOR: a pick of the running files then the loaded Cloud pipelines; each choice opens its source; none: the message', async () => {
+			let shown: [string, readonly MetricsPickItem[]][] = [];
+			let choose: (items: readonly MetricsPickItem[]) => MetricsPickItem | undefined = (items) => items[1];
+			panel.ui = { pick: async (title, items) => { shown.push([title, items]); return choose(items); } };
+			runs = [URI, OTHER];
+			loaded = [CLOUD_A];
+			await panel.showFor();
+			assert.deepStrictEqual(shown.map(([title, items]) => [title, items.map((i) => [i.kind, i.label, i.description])]), [[METRICS_PICK_TITLE, [
+				['local', 'm.yaml', 'Local run · /ws'], ['local', 'm2.yaml', 'Local run · /ws'], ['cloud', 'orders', 'Cloud · rpc-vilnius'],
+			]]]);
+			assert.strictEqual(panel.file, OTHER.toString());
+			choose = (items) => items[2];
+			await panel.showFor();
+			assert.deepStrictEqual(commands, [[SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: 'c1', id: 'p1' }]]);
+			shown = [];
+			runs = [];
+			loaded = [];
+			await panel.showFor();
+			assert.deepStrictEqual([shown, infos], [[], [NO_CONFIG_MESSAGE]]);
+		});
+
+		const reveal = async () => {
+			view.setVisible(false);
+			view.setVisible(true);
+			await tick();
+		};
+
+		test('DIRECT_OPEN: opened with nothing bound: nothing to bind stays unbound (two runs: no pick); the active config\'s run is taken', async () => {
+			await reveal();
+			assert.strictEqual(panel.file, undefined);
+			runs = [URI, OTHER];
+			await reveal();
+			assert.strictEqual(panel.file, undefined);
+			activeFile = URI;
+			await reveal();
+			assert.strictEqual(panel.file, URI.toString());
+			assert.deepStrictEqual(commands, []);
+			// Bound: opening again binds nothing else.
+			activeFile = OTHER;
+			await reveal();
+			assert.strictEqual(panel.file, URI.toString());
+		});
+
+		test('DIRECT_OPEN: the active config\'s mapping is tried once per config; when it binds nothing, the only running file is taken', async () => {
+			activeFile = URI;
+			mapping = { clusterId: 'c1', pipelineId: 'p1', cluster: 'rpc-vilnius', pipeline: 'orders' };
+			// Show metrics binds nothing (signed out, gone pipeline): no message again on the next reveals.
+			await reveal();
+			await reveal();
+			assert.deepStrictEqual(commands, [[SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: 'c1', id: 'p1' }]]);
+			assert.strictEqual(panel.file, undefined);
+			// Another active config: its own mapping is tried.
+			activeFile = OTHER;
+			await reveal();
+			assert.strictEqual(commands.length, 2);
+			// Tried already, and one file running: that run.
+			runs = [vscode.Uri.file('/ws/run.yaml')];
+			await reveal();
+			assert.strictEqual(commands.length, 2);
+			assert.strictEqual(panel.file, vscode.Uri.file('/ws/run.yaml').toString());
+		});
+
+		test('DIRECT_OPEN: after the mapping step binds nothing, the only running file in the same open', async () => {
+			activeFile = URI;
+			runs = [OTHER];
+			mapping = { clusterId: 'c1', pipelineId: 'p1', cluster: 'rpc-vilnius', pipeline: 'orders' };
+			await reveal();
+			assert.strictEqual(commands.length, 1);
+			assert.strictEqual(panel.file, OTHER.toString());
+		});
+
+		test('NOT A FILE: an untitled active document, or a non-file argument, is no config: the pick (none: the message), nothing bound', async () => {
+			const untitled = vscode.Uri.parse('untitled:Untitled-1');
+			const cloudDoc = vscode.Uri.parse('redpanda-cloud:/c1/p1/orders.yaml');
+			let picks = 0;
+			panel.ui = { pick: async () => { picks++; return undefined; } };
+			activeFile = untitled;
+			await panel.showFor();
+			await panel.showFor(cloudDoc);
+			assert.deepStrictEqual([picks, infos, panel.file], [0, [NO_CONFIG_MESSAGE, NO_CONFIG_MESSAGE], undefined]);
+			runs = [URI];
+			await panel.showFor(untitled);
+			assert.deepStrictEqual([picks, panel.file], [1, undefined]);
+		});
+
+		test('DIRECT_OPEN: no active config and one running file: that run', async () => {
+			runs = [OTHER];
+			view.setVisible(false);
+			view.setVisible(true);
+			await tick();
+			assert.strictEqual(panel.file, OTHER.toString());
+			assert.deepStrictEqual(commands, []);
+		});
+
+		test('readingRun: the local run the visible, live tab reads, with its output rate; hidden: none', async () => {
+			assert.strictEqual(panel.readingRun, undefined);
+			await showAndRead(2);
+			assert.strictEqual(panel.state.kind, 'live');
+			// The fake serves no output series: no output rate (the summary's), so none on the status bar.
+			assert.deepStrictEqual(panel.readingRun, { uri: URI.toString(), rate: panel.summary?.outputRate ?? null });
+			let changes = 0;
+			const sub = panel.onDidChange(() => changes++);
+			view.setVisible(false);
+			sub.dispose();
+			assert.strictEqual(panel.readingRun, undefined);
+			assert.ok(changes > 0, 'a change is fired, so the status bar follows');
+		});
 	});
 });

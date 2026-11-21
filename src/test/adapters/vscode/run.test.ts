@@ -5,7 +5,7 @@ import { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import { SpawnOptions, StreamingChild, StreamingExit, StreamingHandlers } from '../../../adapters/redpandaConnect/process';
 import {
 	ACTIVE_DETECTED_KEY, ACTIVE_RUNNING_KEY, DETECTED_PATHS_KEY, exitLine, NOT_DETECTED_MESSAGE, NOT_ON_DISK_MESSAGE, portTakenMessage, RunChange, RunController, RunHost,
-	SET_VARIABLES_ACTION, STOP_GRACE_MS, statusText, UNTITLED_MESSAGE, unsetVariablesMessage, unsetVariablesReminder,
+	RUN_MENU_COMMAND, SET_VARIABLES_ACTION, SHOW_METRICS_ACTION, STOP_GRACE_MS, statusText, stopAction, UNTITLED_MESSAGE, unsetVariablesMessage, unsetVariablesReminder,
 } from '../../../adapters/vscode/run';
 
 const BIN = '/bin/redpanda-connect';
@@ -157,11 +157,14 @@ suite('adapters/vscode RunController', () => {
 			},
 			graceMs,
 			unsetVariables: (uri) => { unsetChecks.push(uri.toString()); return unset; },
+			showMetrics: (uri) => { metricsShown.push(uri.toString()); },
 		});
 		controller.onDidChangeRun((c) => changes.push(c));
 	}
 	let unsetChecks: string[];
 	let graceMs: number | undefined;
+	/** Ticket 9: the status bar menu's Show pipeline metrics, by URI. */
+	let metricsShown: string[];
 
 	setup(() => {
 		docs = [fakeDoc('a.yaml'), fakeDoc('b.yaml')];
@@ -189,6 +192,7 @@ suite('adapters/vscode RunController', () => {
 		setCalls = [];
 		setAnswer = (n) => n;
 		unsetChecks = [];
+		metricsShown = [];
 		nextPort = 41001;
 		portFails = false;
 		changes = [];
@@ -211,7 +215,8 @@ suite('adapters/vscode RunController', () => {
 		children[0].handlers.onStderr?.('level=info msg=x\n');
 		assert.strictEqual(terminals[0].output,
 			`\x1b[2m$ ${BIN} run --set http.enabled=true --set http.address=127.0.0.1:41001 /ws/a.yaml\x1b[0m\r\ntick\r\nlevel=info msg=x\r\n`);
-		assert.deepStrictEqual([status.text, status.visible, status.command?.command], ['$(debug-stop) Stop pipeline', true, 'redpandaConnect.stop']);
+		// Ticket 9: while running, the item opens its menu (Stop / Show pipeline metrics).
+		assert.deepStrictEqual([status.text, status.visible, status.command?.command], ['$(debug-stop) Stop pipeline', true, RUN_MENU_COMMAND]);
 		assert.strictEqual(contexts.get(ACTIVE_DETECTED_KEY), true);
 		assert.strictEqual(contexts.get(ACTIVE_RUNNING_KEY), true);
 		assert.strictEqual(controller.phaseOf(docs[0].uri), 'running');
@@ -614,6 +619,69 @@ suite('adapters/vscode RunController', () => {
 			assert.strictEqual(unsetVariablesMessage('x.yaml', ['A']), "Can't run x.yaml: the environment variable A is not set.");
 			assert.strictEqual(unsetVariablesMessage('x.yaml', ['A', 'secrets.B']),
 				"Can't run x.yaml: the environment variables A, secrets.B are not set. Only Redpanda Cloud sets secrets.B: a local Run cannot.");
+		});
+	});
+	suite('ticket 9: the status bar menu, the running files and the output rate', () => {
+		test('STATUS_BAR: the running item\'s menu offers Stop <file> and Show pipeline metrics; each does its own', async () => {
+			await controller.run();
+			const menus: [string, readonly string[]][] = [];
+			let answer: string | undefined = SHOW_METRICS_ACTION;
+			controller.ui = { menu: async (title, entries) => { menus.push([title, entries]); return answer; } };
+			assert.deepStrictEqual(status.command?.arguments?.map(String), [docs[0].uri.toString()]);
+			await controller.menu(docs[0].uri);
+			assert.deepStrictEqual(menus, [['a.yaml is running', [stopAction('a.yaml'), SHOW_METRICS_ACTION]]]);
+			assert.deepStrictEqual(metricsShown, [docs[0].uri.toString()]);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running', 'Show pipeline metrics stops nothing');
+			answer = undefined;
+			await controller.menu(docs[0].uri);
+			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running', 'a dismissed menu does nothing');
+			answer = stopAction('a.yaml');
+			await controller.menu(docs[0].uri);
+			await tick();
+			assert.deepStrictEqual(children[0].stops, [50]);
+			assert.strictEqual(status.command?.command, 'redpandaConnect.revealRun', 'after exit it keeps Show terminal');
+			assert.deepStrictEqual(metricsShown, [docs[0].uri.toString()]);
+		});
+
+		test('STOPPING: the item kills at once, with no menu', async () => {
+			honoursInt = false;
+			await controller.run();
+			controller.stop();
+			assert.strictEqual(status.command?.command, 'redpandaConnect.stop');
+			let menus = 0;
+			controller.ui = { menu: async () => { menus++; return undefined; } };
+			await controller.menu(docs[0].uri);
+			await tick();
+			assert.strictEqual(menus, 0);
+			assert.ok(children[0].signals.includes('SIGKILL'));
+		});
+
+		test('runningUris: the files whose run lives', async () => {
+			assert.deepStrictEqual(controller.runningUris(), []);
+			await controller.run(docs[0].uri);
+			await controller.run(docs[1].uri);
+			assert.deepStrictEqual(controller.runningUris().map(String), [docs[0].uri.toString(), docs[1].uri.toString()]);
+			controller.stop(docs[0].uri);
+			await tick();
+			assert.deepStrictEqual(controller.runningUris().map(String), [docs[1].uri.toString()]);
+		});
+
+		test('the output rate shows on the running item of the run the tab reads only; none, another file\'s or a stop clears it', async () => {
+			await controller.run();
+			controller.setOutputRate({ uri: docs[0].uri.toString(), rate: 200 });
+			assert.strictEqual(status.text, '$(debug-stop) Stop pipeline · 200.0/s');
+			controller.setOutputRate({ uri: docs[0].uri.toString(), rate: null });
+			assert.strictEqual(status.text, '$(debug-stop) Stop pipeline');
+			controller.setOutputRate({ uri: docs[1].uri.toString(), rate: 50 });
+			assert.strictEqual(status.text, '$(debug-stop) Stop pipeline');
+			controller.setOutputRate({ uri: docs[0].uri.toString(), rate: 12.5 });
+			assert.strictEqual(status.text, '$(debug-stop) Stop pipeline · 12.5/s');
+			controller.setOutputRate(undefined);
+			assert.strictEqual(status.text, '$(debug-stop) Stop pipeline');
+			controller.setOutputRate({ uri: docs[0].uri.toString(), rate: 12.5 });
+			controller.stop();
+			await tick();
+			assert.strictEqual(status.text, '$(circle-slash) Pipeline stopped');
 		});
 	});
 });

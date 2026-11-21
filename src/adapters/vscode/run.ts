@@ -13,6 +13,10 @@
 // whose output says `address already in use` within its first seconds (the port was taken between the
 // check and the child's bind; Redpanda Connect then runs on without its HTTP server) is restarted once
 // with a new free port; a second time, the error is shown and the run goes on.
+// Ticket 9 (board 5): while running, the status bar item opens a menu, Stop <file> / Show pipeline
+// metrics (the latter through `options.showMetrics`, the tab's resolver), and shows " · N/s", the
+// output rate, only while the Pipeline Metrics tab already reads that run (`setOutputRate`; no read of
+// its own). `runningUris` lists the files whose run lives (the tab's resolver and pick).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -23,12 +27,19 @@ import { activeSecretValues } from '../redpandaConnect/secretEnv';
 import { freePort } from '../metrics/source';
 import { isCloudSecretName } from '../../core/envUsage';
 import { isEnvName } from '../../shared/bloblangProtocol';
+import { formatRate } from '../../shared/metricsProtocol';
 import { SET_MISSING_COMMAND } from './environmentView';
 
 export const RUN_COMMAND = 'redpandaConnect.run';
 export const STOP_COMMAND = 'redpandaConnect.stop';
 export const RUN_UNTITLED_COMMAND = 'redpandaConnect.runUntitled';
 export const REVEAL_RUN_COMMAND = 'redpandaConnect.revealRun';
+/** Ticket 9: the running status bar item's menu (Stop / Show pipeline metrics); not in the palette. */
+export const RUN_MENU_COMMAND = 'redpandaConnect.runMenu';
+/** Ticket 9: the menu's second entry. */
+export const SHOW_METRICS_ACTION = 'Show pipeline metrics';
+/** Ticket 9: the menu's first entry, "Stop <file>". */
+export const stopAction = (fileName: string) => `Stop ${fileName}`;
 export const ACTIVE_DETECTED_KEY = 'redpandaConnect.activeEditorDetected';
 export const ACTIVE_RUNNING_KEY = 'redpandaConnect.activeEditorRunning';
 /** `fsPath`s of detected files, for the editor-title `resourcePath in …` clauses. */
@@ -154,6 +165,16 @@ export interface RunHost {
 	setVariable?(name: string, uri: vscode.Uri): Thenable<string | undefined>;
 }
 
+/** Ticket 9: the status bar menu's pick (a test seam: `RunController.ui`). */
+export interface RunUi {
+	/** Resolves with the entry chosen, `undefined` when dismissed. */
+	menu(title: string, entries: readonly string[]): Thenable<string | undefined>;
+}
+
+const defaultRunUi: RunUi = {
+	menu: (title, entries) => vscode.window.showQuickPick([...entries], { title, placeHolder: title }),
+};
+
 export interface RunOptions {
 	readonly binary: RunBinary;
 	readonly detection: RunDetection;
@@ -167,6 +188,8 @@ export interface RunOptions {
 	readonly graceMs?: number;
 	/** Ticket 46: the variables a run of `uri` would stop on (none: no check). */
 	readonly unsetVariables?: (uri: vscode.Uri) => readonly string[];
+	/** Ticket 9: the status bar menu's Show pipeline metrics on `uri` (none: the entry does nothing). */
+	readonly showMetrics?: (uri: vscode.Uri) => Thenable<unknown> | void;
 }
 
 /** How much of a run's output `outputOf` keeps (ticket 9). */
@@ -268,6 +291,10 @@ export class RunController implements vscode.Disposable {
 	private readonly graceMs: number;
 	/** Whether the status bar item is shown (`statusBarText`). */
 	private statusShown = false;
+	/** Ticket 9: the run the Pipeline Metrics tab reads now and its output rate (`setOutputRate`). */
+	private outputRate: { readonly uri: string; readonly rate: number } | undefined;
+	/** Ticket 9: the status bar menu's pick (a test seam). */
+	ui: RunUi = defaultRunUi;
 	private disposed = false;
 	private readonly runChanged = new vscode.EventEmitter<RunChange>();
 	/** Ticket 7.2: a run started, stopped or got another port. */
@@ -293,7 +320,60 @@ export class RunController implements vscode.Disposable {
 			vscode.commands.registerCommand(STOP_COMMAND, (uri?: vscode.Uri) => this.stop(uri)),
 			vscode.commands.registerCommand(RUN_UNTITLED_COMMAND, () => this.host.showInformationMessage(UNTITLED_MESSAGE)),
 			vscode.commands.registerCommand(REVEAL_RUN_COMMAND, (uri?: vscode.Uri) => this.reveal(uri)),
+			vscode.commands.registerCommand(RUN_MENU_COMMAND, (uri?: vscode.Uri) => this.menu(uri)),
 		];
+	}
+
+	/** Ticket 9: the files whose run lives (running or stopping), as URIs. */
+	runningUris(): vscode.Uri[] {
+		return [...this.sessions.values()]
+			.filter((s) => s.phase === 'running' || s.phase === 'stopping')
+			.map((s) => vscode.Uri.parse(s.key));
+	}
+
+	/**
+	 * Ticket 9: the run the Pipeline Metrics tab reads now (its URI string) and its output rate; the
+	 * running status bar item of that file shows " · N/s". `undefined` (or a `null` rate): none shown.
+	 */
+	setOutputRate(reading: { readonly uri: string; readonly rate: number | null } | undefined): void {
+		const next = reading && reading.rate !== null && Number.isFinite(reading.rate) ? { uri: reading.uri, rate: reading.rate } : undefined;
+		if (next?.uri === this.outputRate?.uri && next?.rate === this.outputRate?.rate) {
+			return;
+		}
+		this.outputRate = next;
+		this.refreshUi();
+	}
+
+	/**
+	 * Ticket 9: the running status bar item's click: Stop <file> / Show pipeline metrics. Stopping (the
+	 * item kills at once) or not running, it acts as the item did before. Never throws.
+	 */
+	async menu(uri?: vscode.Uri): Promise<void> {
+		try {
+			const target = uri ?? this.host.activeDocument()?.uri;
+			const session = target ? this.sessions.get(target.toString()) : undefined;
+			if (!target || !session) {
+				return;
+			}
+			if (session.phase !== 'running') {
+				if (session.phase === 'stopping') {
+					this.stop(target);
+				} else {
+					this.reveal(target);
+				}
+				return;
+			}
+			const name = path.basename(session.fsPath);
+			const stop = stopAction(name);
+			const choice = await this.ui.menu(`${name} is running`, [stop, SHOW_METRICS_ACTION]);
+			if (choice === stop) {
+				this.stop(target);
+			} else if (choice === SHOW_METRICS_ACTION) {
+				await this.options.showMetrics?.(target);
+			}
+		} catch (err) {
+			this.options.log(`Run menu failed: ${String(err)}`);
+		}
 	}
 
 	/** What `uri`'s run terminal was given to show, its last 64 KiB; `undefined` before its first run (test seam, ticket 9). */
@@ -639,12 +719,15 @@ export class RunController implements vscode.Disposable {
 			this.statusShown = false;
 			return;
 		}
-		this.status.text = statusText(session.phase, session.exit, session.stopRequested);
+		const rate = session.phase === 'running' && this.outputRate?.uri === session.key ? ` · ${formatRate(this.outputRate.rate)}/s` : '';
+		this.status.text = `${statusText(session.phase, session.exit, session.stopRequested)}${rate}`;
 		const uri = vscode.Uri.parse(session.key);
-		if (running) {
-			this.status.tooltip = session.phase === 'running'
-				? `Stop ${path.basename(session.fsPath)} (interrupt)`
-				: `Stopping ${path.basename(session.fsPath)}; click to kill it now`;
+		if (session.phase === 'running') {
+			// Ticket 9: a menu, Stop <file> / Show pipeline metrics.
+			this.status.tooltip = `Stop ${path.basename(session.fsPath)} or show its pipeline metrics`;
+			this.status.command = { title: 'Stop or show metrics', command: RUN_MENU_COMMAND, arguments: [uri] };
+		} else if (running) {
+			this.status.tooltip = `Stopping ${path.basename(session.fsPath)}; click to kill it now`;
 			this.status.command = { title: 'Stop', command: STOP_COMMAND, arguments: [uri] };
 		} else {
 			this.status.tooltip = `Show the terminal for ${path.basename(session.fsPath)}`;

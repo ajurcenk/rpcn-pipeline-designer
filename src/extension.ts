@@ -36,7 +36,7 @@ import { checkClient } from './adapters/logs/platformaticReader';
 import type { JsonObject } from './core/schema';
 import { catalogueOf } from './adapters/graphPanel/status';
 import { MetricsFeeds, type MetricsConfig } from './adapters/vscode/metricsFeed';
-import { MetricsPanel } from './adapters/vscode/metricsPanel';
+import { MetricsPanel, SHOW_METRICS_COMMAND, type LoadedCloudPipeline } from './adapters/vscode/metricsPanel';
 import { findMapping } from './adapters/vscode/cloudShared';
 import { parsedDocument } from './adapters/vscode/parseCache';
 import { buildPipelineModel, componentPaths } from './core/graph';
@@ -130,9 +130,11 @@ export interface ExtensionApi {
 	/**
 	 * The Pipeline Metrics tab (ticket 7.2): its state, rows and posted messages, and the source seam
 	 * the integration tests replace with the in-memory fake, and (ticket 7.3) the files' feeds, which the
-	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten. Only in `ExtensionMode.Test`.
+	 * graph shares, and (ticket 7.5) the Cloud feeds' timing, which the tests shorten, and (ticket 9) the pick's seam
+	 * (`ui`) and the run the tab reads (`readingRun`). Only in `ExtensionMode.Test`.
 	 */
-	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'>
+	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'
+		| 'ui' | 'readingRun'>
 		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
@@ -273,7 +275,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 
 	// Ticket 46: Run refuses a config that would stop on unset variables (`unsetVariables`, built below with the Environment view).
 	let unsetVariables: UnsetVariables | undefined;
-	const run = new RunController({ binary: redpandaConnect, detection, log, unsetVariables: (uri) => unsetVariables?.forRun(uri) ?? [] });
+	const run = new RunController({
+		binary: redpandaConnect, detection, log, unsetVariables: (uri) => unsetVariables?.forRun(uri) ?? [],
+		// Ticket 9: the running status bar item's Show pipeline metrics, through the tab's resolver.
+		showMetrics: (uri) => vscode.commands.executeCommand(SHOW_METRICS_COMMAND, uri),
+	});
 	context.subscriptions.push(run, ...run.registerCommands());
 	// The metrics feeds (tickets 7.2, 7.3, AD-25): one reader of the run's `/metrics` per file, shared by its
 	// Pipeline Metrics tab and its graph, reading while either is visible.
@@ -296,6 +302,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 			return { model: buildPipelineModel(parsed, text, catalogue), paths: componentPaths(parsed, text, catalogue), metricsType: metricsTypeOf(saved) };
 		},
 	});
+	// Ticket 9: the Cloud view's loaded pipelines, for the tab's pick (the view is built below).
+	let loadedCloudPipelines: () => readonly LoadedCloudPipeline[] = () => [];
 	// The Pipeline Metrics tab (ticket 7.2, AD-25): in the bottom panel next to Pipeline Logs.
 	const metricsPanel = new MetricsPanel({
 		extensionUri: context.extensionUri,
@@ -311,8 +319,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 			const m = at.read.mapping;
 			return { clusterId: m.clusterId, pipelineId: m.pipelineId, cluster: m.clusterName ?? m.clusterId, pipeline: m.pipelineName ?? m.pipelineId };
 		},
+		// Ticket 9: the resolver's runs, the active config, and the pick's Cloud pipelines (the Cloud view's loaded ones).
+		runningUris: () => run.runningUris(),
+		isConfig: (uri) => detection.isDetected(uri),
+		cloudPipelines: () => loadedCloudPipelines(),
 	});
 	context.subscriptions.push(metricsFeeds, metricsPanel, ...metricsPanel.register());
+	// Ticket 9: the running status bar item shows the output rate while the tab reads that run (no read of its own).
+	context.subscriptions.push(metricsPanel.onDidChange(() => run.setOutputRate(metricsPanel.readingRun)));
 
 	const graphPanels = new GraphPanels({
 		extensionUri: context.extensionUri,
@@ -418,6 +432,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		metrics: { showCloud: (binding) => metricsPanel.showCloud(binding) },
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
+	loadedCloudPipelines = () => cloud.loadedPipelines();
 
 	return {
 		redpandaConnect,

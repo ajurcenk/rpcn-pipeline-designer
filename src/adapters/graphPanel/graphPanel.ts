@@ -7,6 +7,7 @@
 // `nodeFigures` when it changed; while the YAML does
 // not parse the figures are frozen, and with no live run (stopped, not running, hidden) they are `{}`.
 // Ticket 7.7: each component's figures carry its share and marks (slowest, errors), the same as the tab's.
+// Ticket 9: the toolbar's Open Pipeline Metrics (`metricsRequested`) runs Show Pipeline Metrics on the file.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -21,6 +22,7 @@ import {
 	parseWebviewMessage, type HostMessage, type HostStatus, type NodeFiguresById, type NodeStatusById, type ParseError, type PipelineModel,
 } from '../../shared/protocol';
 import type { MetricsFeeds, MetricsSubscription, MetricsUpdate } from '../vscode/metricsFeed';
+import { SHOW_METRICS_COMMAND } from '../vscode/metricsPanel';
 import { parsedDocument } from '../vscode/parseCache';
 import { statusDiagnostics } from './status';
 import type { GraphPanelSource } from './groups';
@@ -247,6 +249,9 @@ export class GraphPanel implements GraphPanelHandle {
 				await this.actions()?.retry();
 			} else if (msg?.type === 'focusEditorRequested') {
 				await this.focusEditor();
+			} else if (msg?.type === 'metricsRequested') {
+				// Ticket 9: the tab on the file's source, through Show Pipeline Metrics' resolver (never another path).
+				await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, this.uri);
 			}
 		} catch (e) {
 			this.fail(e);

@@ -10,6 +10,7 @@
 // view state exactly one focusable region is named "Pipeline graph, read-only" and handles that Esc
 // (F3): the graph container, the no-binary empty state, or, with no model to draw (loading, no
 // schema, a first open on broken YAML), an empty canvas region.
+// Ticket 9: the graph's toolbar, Open Pipeline Metrics, posts `metricsRequested`.
 
 import '@vscode/codicons/dist/codicon.css';
 import '@xyflow/react/dist/style.css';
@@ -146,6 +147,7 @@ export function App() {
 					nodeFigures={view.nodeFigures}
 					onActivate={(nodeId, via) => post({ type: 'nodeActivated', nodeId, via })}
 					onFocusEditor={() => post({ type: 'focusEditorRequested' })}
+					onOpenMetrics={() => post({ type: 'metricsRequested' })}
 					broken={view.parseError !== null}
 					focusReturn={graphFocus}
 					{...(empty === 'nothingToDraw' ? { describedBy: NOTHING_TO_DRAW_ID } : {})}

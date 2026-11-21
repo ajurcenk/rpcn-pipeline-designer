@@ -10,6 +10,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HostMessage, NodeStatusById, PipelineModel } from '../../src/shared/protocol';
+import { GRAPH_TOOLBAR, OPEN_METRICS } from './Graph';
 import { App } from './main';
 import { BANNER_TEXT, GRAPH_NAME } from './state';
 
@@ -537,5 +538,46 @@ describe('NODE_FIGURES (ticket 7.3): the figures line on the drawn boxes', () =>
 		await send({ type: 'nodeFigures', byId: {} });
 		await until(() => !node(MAPPING)?.querySelector('.rpcn-node-band'), 'the marks cleared');
 		expect(node(MAPPING)!.querySelector('.rpcn-node')!.classList.contains('rpcn-node-slowest')).toBe(false);
+	});
+});
+
+describe('ticket 9, GRAPH TOOLBAR', () => {
+	it('Open Pipeline Metrics posts exactly one metricsRequested and changes nothing else in the graph', async () => {
+		await showGraph();
+		const toolbar = host.querySelector<HTMLElement>('[role="toolbar"]');
+		expect(toolbar?.getAttribute('aria-label')).toBe(GRAPH_TOOLBAR);
+		const button = [...toolbar!.querySelectorAll('button')].find((b) => b.textContent === OPEN_METRICS)!;
+		expect(button.querySelector('.codicon-pulse')).not.toBeNull();
+		expect(button.title).toBe(OPEN_METRICS);
+		// Outside the graph region: never one of its Tab stops.
+		expect(container().contains(button)).toBe(false);
+		const before = { nodes: nodes().map((n) => [n.dataset.id, n.getAttribute('aria-label'), n.className]), collapsed: JSON.stringify((vscodeStub.state as { collapsed?: unknown } | undefined)?.collapsed) };
+		vscodeStub.posted.length = 0;
+		await act(async () => {
+			button.click();
+		});
+		expect(vscodeStub.posted).toEqual([{ type: 'metricsRequested' }]);
+		expect({ nodes: nodes().map((n) => [n.dataset.id, n.getAttribute('aria-label'), n.className]), collapsed: JSON.stringify((vscodeStub.state as { collapsed?: unknown } | undefined)?.collapsed) }).toEqual(before);
+	});
+	it('BROKEN: while the YAML does not parse, the toolbar sits below the banner and still posts metricsRequested', async () => {
+		await showGraph();
+		expect(host.querySelector('[role="toolbar"]')!.classList.contains('rpcn-toolbar-below-banner')).toBe(false);
+		await send({ type: 'parseError', message: 'bad indentation', range: [0, 1] });
+		await until(() => host.querySelector('.rpcn-banner') !== null, 'the banner');
+		const toolbar = host.querySelector<HTMLElement>('[role="toolbar"]')!;
+		expect(toolbar.classList.contains('rpcn-toolbar-below-banner')).toBe(true);
+		// The rule moves it down past the banner's one line (no layout in happy-dom: the sheet is read).
+		const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'graph.css'), 'utf8');
+		expect(css).toMatch(/\.rpcn-toolbar-below-banner\s*\{[^}]*top:\s*calc\(/);
+		vscodeStub.posted.length = 0;
+		await act(async () => {
+			toolbar.querySelector('button')!.click();
+		});
+		expect(vscodeStub.posted).toEqual([{ type: 'metricsRequested' }]);
+	});
+	it('no toolbar without a graph (the no-binary empty state)', async () => {
+		await send({ type: 'snapshot', model: null, nodeStatus: {}, selection: null, hostStatus: { binary: 'missing', schema: 'none' } });
+		await until(() => host.querySelector('.rpcn-empty') !== null, 'the empty state');
+		expect(host.querySelector('[role="toolbar"]')).toBeNull();
 	});
 });

@@ -35,6 +35,15 @@
 // `metrics:` key, else the file's start), Read again and Retry now (the feed's), Set up metrics access… and
 // Forget metrics access (the Cloud view's commands on the bound cluster; while a set-up runs from the tab
 // its buttons are disabled), Show output (the "Redpanda Connect" channel).
+//
+// Ticket 9 (board 5): one resolver (`showFor`) decides the source for Show Pipeline Metrics, the Run's
+// status bar menu and the graph's Open Pipeline Metrics: the file (the argument, else the active config)
+// → its local run when one runs (`show`) → its own `.cloud.json` pipeline (Show metrics, the Cloud view's
+// command) → the file itself (Not running, with Run). With no active config, a pick of the running files
+// and the Cloud pipelines the Cloud view has loaded (`NO_CONFIG_MESSAGE` when there are none). A tab
+// opened by clicking it with nothing bound binds the same way without a pick (`bindOnOpen`): the active
+// config's run, else its mapping, else the only running file; else "No pipeline chosen" stays. While the
+// tab is visible and live on a local run, `readingRun` gives the run and its output rate (the status bar).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -78,7 +87,40 @@ export interface MetricsPanelOptions {
 	readonly mappingOf?: (uri: vscode.Uri) => Promise<MappedPipelineOf | undefined>;
 	/** Ticket 8: runs a command (default: VS Code's; a test seam). */
 	readonly executeCommand?: (command: string, ...args: unknown[]) => Thenable<unknown>;
+	/** Ticket 9: the files whose local run lives (default: none). */
+	readonly runningUris?: () => readonly vscode.Uri[];
+	/** Ticket 9: whether `uri` is a Redpanda Connect config (the active editor's file; default: any). */
+	readonly isConfig?: (uri: vscode.Uri) => boolean;
+	/** Ticket 9: the Cloud pipelines the Cloud view has already loaded (no request; default: none). */
+	readonly cloudPipelines?: () => readonly LoadedCloudPipeline[];
 }
+
+/** Ticket 9: a Cloud pipeline the Cloud view has loaded, as the pick lists it. */
+export interface LoadedCloudPipeline {
+	readonly clusterId: string;
+	readonly clusterName: string;
+	readonly pipelineId: string;
+	readonly pipelineName: string;
+}
+
+/** Ticket 9: an entry of the pick (no active config): a running file, or a loaded Cloud pipeline. */
+export type MetricsPickItem =
+	| { readonly kind: 'local'; readonly label: string; readonly description: string; readonly uri: vscode.Uri }
+	| { readonly kind: 'cloud'; readonly label: string; readonly description: string; readonly pipeline: LoadedCloudPipeline };
+
+/** Ticket 9: the pick's seam (`MetricsPanel.ui`). */
+export interface MetricsPanelUi {
+	pick(title: string, items: readonly MetricsPickItem[]): Thenable<MetricsPickItem | undefined>;
+}
+
+export const METRICS_PICK_TITLE = 'Show the metrics of';
+
+const defaultUi: MetricsPanelUi = {
+	pick: async (title, items) => {
+		const picked = await vscode.window.showQuickPick(items.map((item) => ({ label: item.label, description: item.description, item })), { title, placeHolder: 'A running file or a Cloud pipeline' });
+		return picked?.item;
+	},
+};
 
 /** Ticket 8: a config's mapped Cloud pipeline: its ids and the names its button shows. */
 export interface MappedPipelineOf extends MetricsMappedPipeline {
@@ -112,6 +154,12 @@ export class MetricsPanel implements vscode.Disposable {
 	private readonly settingUpFor = new Set<string>();
 	/** Ticket 8: the state buttons carried out, in order (test seam). */
 	readonly actions: MetricsActionType[] = [];
+	/** Ticket 9: the pick shown with no active config (a test seam). */
+	ui: MetricsPanelUi = defaultUi;
+	/** Ticket 9: a bind on the tab's own opening runs (`bindOnOpen`). */
+	private bindingOnOpen = false;
+	/** Ticket 9: the active config whose mapping a bind on opening tried (once per config, so its messages don't repeat). */
+	private mappingTriedFor: string | undefined;
 	private readonly changed = new vscode.EventEmitter<void>();
 	/** Fires when the rows or the state change (test seam). */
 	readonly onDidChange = this.changed.event;
@@ -121,7 +169,7 @@ export class MetricsPanel implements vscode.Disposable {
 	register(): vscode.Disposable[] {
 		return [
 			vscode.window.registerWebviewViewProvider(METRICS_VIEW_ID, this),
-			vscode.commands.registerCommand(SHOW_METRICS_COMMAND, (uri?: vscode.Uri) => this.showFor(uri)),
+			vscode.commands.registerCommand(SHOW_METRICS_COMMAND, (uri?: unknown) => this.showFor(uri instanceof vscode.Uri ? uri : undefined)),
 		];
 	}
 
@@ -196,6 +244,11 @@ export class MetricsPanel implements vscode.Disposable {
 				}
 				// Hidden, the feed drops its readings unless the graph still shows them.
 				this.subscription?.setVisible(view.visible);
+				if (view.visible) {
+					void this.bindOnOpen();
+				}
+				// Ticket 9: `readingRun` follows the tab's visibility.
+				this.changed.fire();
 			}),
 			view.onDidDispose(() => {
 				if (this.view === view) {
@@ -205,11 +258,59 @@ export class MetricsPanel implements vscode.Disposable {
 					this.viewSubscriptions = [];
 					// Nothing is kept after the tab closes.
 					this.subscription?.setVisible(false);
+					this.changed.fire();
 				}
 			}),
 		];
 		this.updateDescription();
 		this.subscription?.setVisible(view.visible);
+		if (view.visible) {
+			void this.bindOnOpen();
+		}
+	}
+
+	/**
+	 * Ticket 9: the tab opened by clicking it with nothing bound binds as Show Pipeline Metrics does, with
+	 * no pick: the active config's run, else its mapped Cloud pipeline, else the only running file; else
+	 * nothing ("No pipeline chosen" stays). Never throws.
+	 */
+	private async bindOnOpen(): Promise<void> {
+		if (this.uri || this.bindingOnOpen) {
+			return;
+		}
+		this.bindingOnOpen = true;
+		try {
+			const active = this.activeConfig();
+			if (active && this.isRunning(active)) {
+				await this.show(active);
+				return;
+			}
+			// Once per active config (a failing Show metrics would repeat its message on every reveal); a Show
+			// meanwhile (the command, a pick) wins over the tab's own bind.
+			if (active && this.mappingTriedFor !== active.toString()) {
+				this.mappingTriedFor = active.toString();
+				await this.showMapped(active, () => !this.uri);
+			}
+			const running = this.running();
+			if (!this.uri && running.length === 1) {
+				await this.show(running[0]);
+			}
+		} catch (err) {
+			this.options.log(`Pipeline metrics: binding the opened tab failed: ${errorText(err)}`);
+		} finally {
+			this.bindingOnOpen = false;
+		}
+	}
+
+	/**
+	 * Ticket 9: the local run the tab reads now, while it is visible and live, with its output rate
+	 * (`null`: none yet); `undefined` otherwise (hidden, not live, a Cloud pipeline). No read of its own.
+	 */
+	get readingRun(): { readonly uri: string; readonly rate: number | null } | undefined {
+		if (!this.uri || !this.visible || this.update?.source.kind !== 'local' || this.state.kind !== 'live') {
+			return undefined;
+		}
+		return { uri: this.uri.toString(), rate: this.configSummary?.outputRate ?? null };
 	}
 
 	/**
@@ -274,7 +375,7 @@ export class MetricsPanel implements vscode.Disposable {
 			this.actions.splice(0, this.actions.length - MAX_POSTED);
 		}
 		const source = sub.feed.update.source;
-		const run = this.options.executeCommand ?? ((command: string, ...args: unknown[]) => vscode.commands.executeCommand(command, ...args));
+		const run = this.command();
 		try {
 			switch (type) {
 				case 'runRequested':
@@ -364,14 +465,81 @@ export class MetricsPanel implements vscode.Disposable {
 		});
 	}
 
-	/** Show Pipeline Metrics: `uri` (default: the active editor's file) is bound, and the tab opens. */
+	/**
+	 * Show Pipeline Metrics (ticket 9's resolver, for the command, the status bar menu and the graph's
+	 * button): `uri` (default: the active config) → its local run when one runs → its own `.cloud.json`
+	 * pipeline (Show metrics) → the file itself (Not running). No active config: a pick of the running
+	 * files and the loaded Cloud pipelines; none: `NO_CONFIG_MESSAGE`.
+	 */
 	async showFor(uri?: vscode.Uri): Promise<void> {
-		const target = uri ?? (this.options.activeUri ?? (() => vscode.window.activeTextEditor?.document.uri))();
+		// Only a file on disk is a config here (an untitled or Cloud document can't run): else no config, the pick.
+		const target = uri ? (uri.scheme === 'file' ? uri : undefined) : this.activeConfig();
 		if (!target) {
-			(this.options.showInformationMessage ?? ((m: string) => { void vscode.window.showInformationMessage(m); }))(NO_CONFIG_MESSAGE);
+			await this.pick();
+			return;
+		}
+		if (!this.isRunning(target) && await this.showMapped(target)) {
 			return;
 		}
 		await this.show(target);
+	}
+
+	/** The active editor's file when it is a config on disk. */
+	private activeConfig(): vscode.Uri | undefined {
+		const active = (this.options.activeUri ?? (() => vscode.window.activeTextEditor?.document.uri))();
+		return active?.scheme === 'file' && (this.options.isConfig ?? (() => true))(active) ? active : undefined;
+	}
+
+	private running(): readonly vscode.Uri[] {
+		return this.options.runningUris?.() ?? [];
+	}
+
+	private isRunning(uri: vscode.Uri): boolean {
+		return this.running().some((u) => u.toString() === uri.toString());
+	}
+
+	private command(): (command: string, ...args: unknown[]) => Thenable<unknown> {
+		return this.options.executeCommand ?? ((command: string, ...args: unknown[]) => vscode.commands.executeCommand(command, ...args));
+	}
+
+	/** Shows `uri`'s own `.cloud.json` pipeline through Show metrics (its messages when it can't); `false`: no mapping. */
+	private async showMapped(uri: vscode.Uri, stillWanted: () => boolean = () => true): Promise<boolean> {
+		if (uri.scheme !== 'file' || !this.options.mappingOf) {
+			return false;
+		}
+		const m = await this.options.mappingOf(uri).then((v) => v, () => undefined);
+		if (!m) {
+			return false;
+		}
+		if (!stillWanted()) {
+			return true;
+		}
+		this.options.log(`Pipeline metrics: ${path.basename(uri.fsPath)} is not running; showing its Cloud pipeline ${m.pipeline} on ${m.cluster}.`);
+		await this.command()(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId });
+		return true;
+	}
+
+	/** No active config: a pick of the running files and the loaded Cloud pipelines (none: the message). */
+	private async pick(): Promise<void> {
+		const items: MetricsPickItem[] = [
+			...this.running().map((uri): MetricsPickItem => ({
+				// Its folder, so two runs of one name in different folders differ.
+				kind: 'local', label: path.basename(uri.fsPath), description: `Local run · ${vscode.workspace.asRelativePath(vscode.Uri.joinPath(uri, '..'))}`, uri,
+			})),
+			...(this.options.cloudPipelines?.() ?? []).map((p): MetricsPickItem => ({
+				kind: 'cloud', label: p.pipelineName, description: `Cloud · ${p.clusterName}`, pipeline: p,
+			})),
+		];
+		if (items.length === 0) {
+			(this.options.showInformationMessage ?? ((m: string) => { void vscode.window.showInformationMessage(m); }))(NO_CONFIG_MESSAGE);
+			return;
+		}
+		const picked = await this.ui.pick(METRICS_PICK_TITLE, items);
+		if (picked?.kind === 'local') {
+			await this.show(picked.uri);
+		} else if (picked?.kind === 'cloud') {
+			await this.command()(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: picked.pipeline.clusterId, id: picked.pipeline.pipelineId });
+		}
 	}
 
 	/**

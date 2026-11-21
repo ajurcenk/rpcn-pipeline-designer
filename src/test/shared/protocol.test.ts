@@ -71,6 +71,7 @@ const WEBVIEW_MESSAGES: readonly WebviewMessage[] = [
 	{ type: 'setPathRequested' },
 	{ type: 'retryRequested' },
 	{ type: 'focusEditorRequested' },
+	{ type: 'metricsRequested' },
 ];
 
 /** Every message, as the other side receives it: a structured-clone-like copy. */

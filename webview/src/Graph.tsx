@@ -71,6 +71,10 @@ const VIEW_MARGIN = 16;
 const REFIT_DELAY = 150;
 /** The Fit to view button's name and tooltip (ticket 4.19). */
 export const FIT_TO_VIEW = 'Fit to view';
+/** Ticket 9 (board 5): the toolbar's button, the Pipeline Metrics tab on the file's source. */
+export const OPEN_METRICS = 'Open Pipeline Metrics';
+/** Ticket 9: the toolbar's name. */
+export const GRAPH_TOOLBAR = 'Graph actions';
 
 /**
  * Fits the graph into the view between MIN_FIT_ZOOM and 100%, at once (no animation); a graph
@@ -86,7 +90,7 @@ function fitReadable(instance: ReactFlowInstance<ViewNode, Edge>, width: number)
 	});
 }
 
-export function Graph({ model, selection, nodeStatus, nodeFigures, onActivate, onFocusEditor, describedBy, broken = false, focusReturn }: {
+export function Graph({ model, selection, nodeStatus, nodeFigures, onActivate, onFocusEditor, onOpenMetrics, describedBy, broken = false, focusReturn }: {
 	readonly model: PipelineModel;
 	/** The node under the cursor in the driving editor (`null`: none). */
 	readonly selection: string | null;
@@ -97,6 +101,8 @@ export function Graph({ model, selection, nodeStatus, nodeFigures, onActivate, o
 	readonly onActivate: (nodeId: string, via: ActivationVia) => void;
 	/** Esc on the graph container (ticket 3.11): the host focuses the YAML editor. */
 	readonly onFocusEditor: () => void;
+	/** Ticket 9: the toolbar's Open Pipeline Metrics (absent: no toolbar). */
+	readonly onOpenMetrics?: () => void;
 	/** The id of an element describing the container (the nothing-to-draw text). */
 	readonly describedBy?: string;
 	/** The YAML does not parse (the banner shows): each node's name says a click does nothing (F8). */
@@ -417,6 +423,15 @@ export function Graph({ model, selection, nodeStatus, nodeFigures, onActivate, o
 				<button type="button" className="rpcn-fit-view" aria-label={FIT_TO_VIEW} title={FIT_TO_VIEW} onClick={fitToView}>
 					<span className="codicon codicon-screen-full" aria-hidden="true" />
 				</button>
+			)}
+			{/* Ticket 9: the toolbar, top right over the canvas, outside the graph region (after Fit to view in the Tab order). */}
+			{onOpenMetrics && (
+				<div className={broken ? 'rpcn-toolbar rpcn-toolbar-below-banner' : 'rpcn-toolbar'} role="toolbar" aria-label={GRAPH_TOOLBAR}>
+					<button type="button" className="rpcn-toolbar-button" title={OPEN_METRICS} onClick={onOpenMetrics}>
+						<span className="codicon codicon-pulse" aria-hidden="true" />
+						<span>{OPEN_METRICS}</span>
+					</button>
+				</div>
 			)}
 		</>
 	);

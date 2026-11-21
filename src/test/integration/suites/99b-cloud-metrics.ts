@@ -9,7 +9,10 @@
 // No access's Set up metrics access… opens the prompt (its buttons disabled while it runs) and, stored,
 // the tab reads; Refused's Forget metrics access gives the no-access state; Retry now reads at once within
 // the floor; no series is read again with Read again; a not-running file's `.cloud.json` pipeline is shown
-// with its Show button.
+// with its Show button (bound with `show`, the tab's direct bind).
+// Ticket 9 (board 5): MAPPED_NO_RUN, Show Pipeline Metrics on a not-running file with its own `.cloud.json`
+// opens the tab on that pipeline (not signed in: Show metrics' message); ROW_INLINE, the row's inline
+// icon (package.json) is the menu's command; NO_EDITOR, the pick lists the Cloud view's loaded pipelines.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -204,6 +207,13 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 		await vscode.commands.executeCommand('workbench.action.closePanel');
 		seenItems.push(...cloud().items());
+		// A test that disconnected (the NOT SIGNED IN ones) deleted the service account. A secret-storage
+		// delete resolves before VS Code has settled it (see `removeStored`), and the next setup's
+		// Connect, a few milliseconds later, could then be undone by it: the account, and with it the
+		// metrics access just set up, vanish under the next test. Let the delete settle first.
+		if (!cloud().connected) {
+			await new Promise((r) => setTimeout(r, 1_000));
+		}
 	});
 
 	suiteTeardown(async () => {
@@ -222,7 +232,7 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		}
 	});
 
-	test('package.json: Show metrics ($(pulse)) in the pipeline row\'s menu only, at 0_open@5 (around the error after it); no inline icon, no palette entry', () => {
+	test('package.json: Show metrics ($(pulse)) in the pipeline row\'s menu at 0_open@5 (around the error after it) and, ticket 9, inline at inline@4; no palette entry', () => {
 		const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
 			contributes: { commands: { command: string; title: string; icon?: string }[]; menus: Record<string, { command: string; when?: string; group?: string }[]> };
 		};
@@ -230,9 +240,13 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		assert.deepStrictEqual([command?.title, command?.icon], ['Show metrics', '$(pulse)']);
 		assert.strictEqual(pkg.contributes.menus.commandPalette.find((m) => m.command === SHOW_CLOUD_METRICS_COMMAND)?.when, 'false');
 		const entries = Object.entries(pkg.contributes.menus).flatMap(([menu, items]) => items.filter((m) => m.command === SHOW_CLOUD_METRICS_COMMAND).map((m) => ({ menu, ...m })));
-		assert.deepStrictEqual(entries.filter((e) => e.menu !== 'commandPalette'), [{
-			menu: 'view/item/context', command: SHOW_CLOUD_METRICS_COMMAND, when: 'view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/', group: '0_open@5',
-		}]);
+		// ROW_INLINE (ticket 9): the inline icon is the same command, on every pipeline row, as the menu item.
+		assert.deepStrictEqual(entries.filter((e) => e.menu !== 'commandPalette'), [
+			{ menu: 'view/item/context', command: SHOW_CLOUD_METRICS_COMMAND, when: 'view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/', group: 'inline@4' },
+			{ menu: 'view/item/context', command: SHOW_CLOUD_METRICS_COMMAND, when: 'view == redpandaConnect.cloud && viewItem =~ /^cloudPipeline\\b/', group: '0_open@5' },
+		]);
+		const inline = pkg.contributes.menus['view/item/context'].filter((m) => m.group?.startsWith('inline@')).map((m) => m.group);
+		assert.strictEqual(new Set(inline).size, inline.length, `one inline slot each: ${inline.join(', ')}`);
 		const around = pkg.contributes.menus['view/item/context'].find((m) => m.command === 'redpandaConnect.cloud.showLogsAroundError');
 		assert.strictEqual(around?.group, '0_open@6');
 	});
@@ -246,7 +260,7 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		const handle = api().graphPanels.panelFor(doc.uri)!;
 		assert.ok(handle, 'a graph panel');
 		const result = await showMetrics(A);
-		assert.deepStrictEqual(result, { kind: 'shown', pipelineId: A, file: fileA }, errors.join('\n'));
+		assert.deepStrictEqual(result, { kind: 'shown', pipelineId: A, file: fileA }, `${errors.join('\n')}\n${infos.join('\n')}\n${api().outputLines().slice(-25).join('\n')}`);
 		assert.ok(await waitFor(() => metrics().visible && metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
 		assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders');
 		assert.strictEqual(metrics().file, doc.uri.toString());
@@ -566,7 +580,8 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		try {
 			const doc = await vscode.workspace.openTextDocument(fileA);
 			await vscode.window.showTextDocument(doc);
-			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			// The tab's direct bind (Show Pipeline Metrics would go to the mapped pipeline, ticket 9).
+			await metrics().show(doc.uri);
 			assert.strictEqual(metrics().state.kind, 'notRunning');
 			assert.ok(await waitFor(() => lastPosted().mapped !== null && lastPosted().mapped !== undefined, 5_000), JSON.stringify(lastPosted().mapped));
 			assert.deepStrictEqual(lastPosted().mapped, { pipeline: 'orders', cluster: 'rpc-vilnius' });
@@ -588,13 +603,71 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 			infoAnswers = [undefined];
 			const doc = await vscode.workspace.openTextDocument(fileA);
 			await vscode.window.showTextDocument(doc);
-			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			await metrics().show(doc.uri);
 			assert.ok(await waitFor(() => lastPosted().mapped !== null && lastPosted().mapped !== undefined, 5_000), JSON.stringify(lastPosted().mapped));
 			await metrics().receive({ type: 'showMappedRequested' });
 			assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
 			assert.strictEqual(metrics().title, 'Local run · orders.yaml', 'the tab stays on the file');
 		} finally {
 			fs.rmSync(mapping, { force: true });
+		}
+	});
+	test('ticket 9, MAPPED_NO_RUN: Show Pipeline Metrics on a not-running file with its own .cloud.json opens the tab on that pipeline', async () => {
+		await setUpAccess();
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			// From the palette: the active config.
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+			assert.ok(await waitFor(() => metrics().title === 'Cloud · rpc-vilnius · orders', 10_000), String(metrics().title));
+			assert.ok(metrics().visible, 'the tab is focused');
+			assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), `${JSON.stringify(metrics().state)}\n${api().outputLines().slice(-25).join('\n')}`);
+			assert.strictEqual(lastPosted().file, 'orders.yaml');
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('ticket 9, MAPPED_NO_RUN, NOT SIGNED IN: Show metrics\' message, the tab not moved to the pipeline', async () => {
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			await cloud().disconnect();
+			infos.length = 0;
+			infoAnswers = [undefined];
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			const before = metrics().title;
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
+			assert.strictEqual(metrics().title, before);
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('ticket 9, NO_EDITOR: the pick lists the Cloud view\'s loaded pipelines (no listing call); one chosen opens the tab on it', async () => {
+		await setUpAccess();
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		const original = metrics().ui;
+		const shown: string[][] = [];
+		metrics().ui = {
+			pick: async (_title, items) => {
+				// Only the Cloud entries: no run is started in this suite.
+				shown.push(items.filter((i) => i.kind === 'cloud').map((i) => `${i.kind}:${i.label}:${i.description}`));
+				return items.find((i) => i.kind === 'cloud' && i.label === 'clicks');
+			},
+		};
+		try {
+			fake.requests.length = 0;
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+			assert.deepStrictEqual(shown, [['cloud:orders:Cloud · rpc-vilnius', 'cloud:clicks:Cloud · rpc-vilnius']]);
+			assert.ok(await waitFor(() => metrics().title === 'Cloud · rpc-vilnius · clicks', 10_000), String(metrics().title));
+			assert.ok(!fake.requests.some((r) => r.method === 'GET' && /\/v1\/redpanda-connect\/pipelines(\?|$)/.test(r.url)), 'no listing call for the pick');
+		} finally {
+			metrics().ui = original;
 		}
 	});
 });

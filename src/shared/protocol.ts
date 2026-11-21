@@ -166,7 +166,9 @@ export type WebviewMessage =
 	| { readonly type: 'setPathRequested' }
 	| { readonly type: 'retryRequested' }
 	/** Esc on the graph container (ticket 3.11): focus the file's driving editor, cursor unchanged. */
-	| { readonly type: 'focusEditorRequested' };
+	| { readonly type: 'focusEditorRequested' }
+	/** Ticket 9: the toolbar's Open Pipeline Metrics: the tab on the file's source (as Show Pipeline Metrics for it). */
+	| { readonly type: 'metricsRequested' };
 
 // ---------------------------------------------------------------------------------------------
 // Validators: pure, never throw; the typed message, or `undefined` for anything malformed.
@@ -318,6 +320,7 @@ export function parseWebviewMessage(message: unknown): WebviewMessage | undefine
 			case 'setPathRequested':
 			case 'retryRequested':
 			case 'focusEditorRequested':
+			case 'metricsRequested':
 				return { type: message.type };
 			case 'nodeActivated':
 				return isString(message.nodeId) && (message.via === 'click' || message.via === 'keyboard')

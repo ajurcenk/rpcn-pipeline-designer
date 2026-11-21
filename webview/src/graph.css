@@ -408,6 +408,41 @@ body {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: 1px;
 }
+/* Ticket 9 (board 5): the graph's toolbar, top right over the canvas, one secondary button: Open
+   Pipeline Metrics. Theme colours only. While the invalid-YAML banner shows (one line, full width,
+   z-index 10), the toolbar moves below it, so it stays clickable. */
+.rpcn-toolbar {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 5;
+	display: flex;
+	gap: 4px;
+}
+.rpcn-toolbar-below-banner {
+	/* The banner's height (one line, 8px padding and a 1px border each side) plus the 8px gap. */
+	top: calc(1.6em + 26px);
+}
+.rpcn-toolbar-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, transparent));
+	outline: 1px solid var(--vscode-contrastBorder, transparent);
+	border-radius: 2px;
+	background: var(--vscode-button-secondaryBackground, var(--vscode-editorWidget-background));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	font: inherit;
+	cursor: pointer;
+}
+.rpcn-toolbar-button:hover {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+.rpcn-toolbar-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
 /* With no model to draw, an empty canvas region is the named one (F3). */
 .rpcn-canvas-region {
 	position: absolute;
