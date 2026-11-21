@@ -3,7 +3,7 @@ title: "The tab's empty and error states"
 type: 'feature'
 ticket: '8'
 created: '2026-11-20'
-status: 'built'
+status: done
 baseline_revision: 'd7eebfd3bc62813a8aa374815447447d907a5d8c'
 route: 'full'
 route_source: 'auto'
