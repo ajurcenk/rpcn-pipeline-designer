@@ -137,3 +137,7 @@ All seven patches applied by the implementer. Verified after them: `npm run comp
 **Manual checks:**
 - In the dev host, run `metrics_a.yaml`, open Pipeline Metrics and its graph: `slow_one` is marked slowest in both; narrow the panel and scroll sideways: the Component column stays.
 
+
+## Manual Check
+
+- 2026-11-20, the user, in the dev host (VS Code 1.143.1 from `.vscode-test`, extension at `688a46e`, restarted on the new build) with `metrics_a.yaml` run locally: "tested, no issues".
