@@ -123,7 +123,7 @@ Proposed, not applied: the human decides what runs. The code fixes would go thro
 
 ## Acceptance verdict
 
-**accepted-with-open-items** (criteria declared in the epic file). Human decision (the user, 2026-11-21): accepted as rendered. The action items AI-1 to AI-9 stay proposed, none applied.
+**accepted-with-open-items** (criteria declared in the epic file). Human decision (the user, 2026-11-21): accepted as rendered. The action items AI-1 to AI-8 stay proposed. AI-9 was applied on 2026-11-21 in `_bmad/custom/bmad-build.toml`: review is set to thorough, and the four extra lenses run only when the ticket has `risk = "high"`.
 
 - **Done when 1, met:** local rows with rates, latency and errors (`61-run-real.ts:288`), two runs on two ports, the server on 127.0.0.1 (argv at `:322`; the socket in the behaviour check), and 7.2's manual check.
 - **Done when 2, met:** the `sleep` is the slowest in the tab and on its node (`metrics.test.ts:312`, `98-metrics.ts:429`), with the real binary in the behaviour check and 7.7's manual check.
