@@ -288,19 +288,26 @@ export class MetricsFeed {
 			this.failures = 0;
 			this.noSeriesReads = 0;
 			this.refusedMessage = undefined;
+			// Bug 59: the not-served state came from the old access.
+			this.notServed = undefined;
 			this.refreshState();
 			this.emit();
 			return;
 		}
 		// Set or replaced: a read in flight with the old access is dropped (its answer could be a stale
-		// refusal) and the feed reads again with the new one, within the floor.
+		// refusal) and the feed reads again with the new one, within the floor. Bug 59: its state starts
+		// over too (not served, no series), so the next read sets it from its own result.
 		this.pause();
 		this.generation++;
 		this.refusedMessage = undefined;
 		this.failures = 0;
-		if (this.panelState.kind !== 'live') {
-			this.panelState = { kind: 'waiting' };
-		}
+		this.noSeriesReads = 0;
+		this.notServed = undefined;
+		// The readings were the old access's (the header: dropped on an access change), so the tab waits for
+		// the first read with the new one rather than showing them as live.
+		this.readings = [];
+		this.last = undefined;
+		this.panelState = { kind: 'waiting' };
 		this.refreshState();
 		this.emit();
 		this.resume();

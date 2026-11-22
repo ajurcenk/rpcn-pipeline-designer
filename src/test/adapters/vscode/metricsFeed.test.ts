@@ -189,7 +189,7 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 	let feeds: MetricsFeeds;
 	let localReads: number;
 	let cloudReads: number[];
-	let answers: ('ok' | 'refused' | 'unreachable' | 'noSeries')[];
+	let answers: ('ok' | 'refused' | 'unreachable' | 'noSeries' | 'notServed')[];
 	let hasAccess: boolean;
 	let running: boolean;
 	let accessChanged: vscode.EventEmitter<void>;
@@ -218,6 +218,9 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 				}
 				if (next === 'noSeries') {
 					throw new FakeMetricsReadError('notServed', 'prom.example has no Redpanda Connect component series', true);
+				}
+				if (next === 'notServed') {
+					throw new FakeMetricsReadError('notServed', 'prom.example does not serve Prometheus metrics');
 				}
 				n += 100;
 				return { ...parsePrometheus(connectText([{ family: 'processor', path: 'root.pipeline.processors.0', received: n, sent: n }])), time: Date.now() };
@@ -430,6 +433,81 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 		await until(() => sub.feed.state.kind === 'live');
 		await tick(10);
 		assert.strictEqual(sub.feed.state.kind, 'live', 'not stuck in refused');
+		sub.dispose();
+	});
+
+	test('bug 59, ACCESS REPLACED after no series: the state starts over and the next read with the new access goes live', async () => {
+		answers = ['noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'notServed', 400);
+		const reads = cloudReads.length;
+		accessChanged.fire();
+		assert.strictEqual(sub.feed.state.kind, 'waiting', 'not the old access\'s not-served state');
+		await until(() => sub.feed.state.kind === 'live', 400);
+		assert.strictEqual(cloudReads.length, reads + 1, 'read once with the new access');
+		sub.dispose();
+	});
+
+	test('bug 59, ACCESS REPLACED after a not-served answer: the feed reads again and goes live', async () => {
+		answers = ['notServed'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'notServed', 400);
+		const state = sub.feed.state;
+		assert.ok(state.kind === 'notServed' && state.cause === 'answer', JSON.stringify(state));
+		accessChanged.fire();
+		assert.strictEqual(sub.feed.state.kind, 'waiting');
+		await until(() => sub.feed.state.kind === 'live', 400);
+		sub.dispose();
+	});
+
+	test('bug 59, ACCESS REPLACED mid-count: the no-series count starts over with the new access', async () => {
+		answers = ['noSeries', 'noSeries', 'noSeries', 'noSeries'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => cloudReads.length === 4, 400);
+		// One more no-series answer: the fifth in a row with the old count, the first with the new access.
+		// Set before the change: the feed may read with the new access at once.
+		answers = ['noSeries', 'ok'];
+		accessChanged.fire();
+		await until(() => cloudReads.length === 5, 400);
+		await tick(5);
+		assert.notStrictEqual(sub.feed.state.kind, 'notServed', 'the count was not carried over');
+		await until(() => sub.feed.state.kind === 'live', 400);
+		sub.dispose();
+	});
+
+	test('bug 59, ACCESS REPLACED after live then no series: the old access\'s readings are dropped, waiting until a read with the new one', async () => {
+		answers = ['ok', 'noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'notServed', 1_000);
+		let release: () => void = () => undefined;
+		hold = new Promise<void>((r) => { release = r; });
+		answers = ['ok'];
+		accessChanged.fire();
+		assert.strictEqual(sub.feed.state.kind, 'waiting', 'not live on the old access\'s figures');
+		assert.strictEqual(sub.feed.update.figures?.size ?? 0, 0, 'no figures before a read with the new access');
+		await until(() => hold === undefined, 400);
+		assert.strictEqual(sub.feed.state.kind, 'waiting', 'still waiting while the first read is in flight');
+		release();
+		await until(() => sub.feed.state.kind === 'live', 400);
+		sub.dispose();
+	});
+
+	test('bug 59, ACCESS REMOVED then set after not served: no access, then a fresh read', async () => {
+		answers = ['noSeries', 'noSeries', 'noSeries', 'noSeries', 'noSeries'];
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'notServed', 400);
+		hasAccess = false;
+		accessChanged.fire();
+		assert.strictEqual(sub.feed.state.kind, 'noAccess');
+		hasAccess = true;
+		accessChanged.fire();
+		assert.strictEqual(sub.feed.state.kind, 'waiting');
+		await until(() => sub.feed.state.kind === 'live', 400);
 		sub.dispose();
 	});
 
