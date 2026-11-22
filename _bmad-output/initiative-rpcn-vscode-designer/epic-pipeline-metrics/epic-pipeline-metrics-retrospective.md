@@ -123,7 +123,7 @@ Proposed, not applied: the human decides what runs. The code fixes would go thro
 
 ## Acceptance verdict
 
-**accepted-with-open-items** (criteria declared in the epic file). Human decision (the user, 2026-11-21): accepted as rendered. The action items AI-1 to AI-8 stay proposed. AI-9 was applied on 2026-11-21 in `_bmad/custom/bmad-build.toml`: review is set to thorough, and the four extra lenses run only when the ticket has `risk = "high"`.
+**accepted-with-open-items** (criteria declared in the epic file). Human decision (the user, 2026-11-21): accepted as rendered. AI-1, AI-2 and AI-3 were filed on 2026-11-21 as bugs 58, 59 and 60 in `_bmad-output/backlog/`. AI-4 to AI-8 stay proposed. AI-9 was applied on 2026-11-21 in `_bmad/custom/bmad-build.toml`: review is set to thorough, and the four extra lenses run only when the ticket has `risk = "high"`.
 
 - **Done when 1, met:** local rows with rates, latency and errors (`61-run-real.ts:288`), two runs on two ports, the server on 127.0.0.1 (argv at `:322`; the socket in the behaviour check), and 7.2's manual check.
 - **Done when 2, met:** the `sleep` is the slowest in the tab and on its node (`metrics.test.ts:312`, `98-metrics.ts:429`), with the real binary in the behaviour check and 7.7's manual check.
@@ -140,5 +140,5 @@ Proposed, not applied: the human decides what runs. The code fixes would go thro
 ## Open questions
 
 - Answered: the user accepted the verdict (2026-11-21).
-- AI-1: should a failed Cloud step fall through to the file's Not running state, as the plan's resolver order says, or stop with Show metrics' message, as now?
+- Answered: AI-1's failed Cloud step falls through to the file's Not running state (user, 2026-11-21; bug 58).
 - Does C9 matter in practice: does a file's feed stay on the Cloud after the tab closes with the graph open? A test would settle it (AI-8).
