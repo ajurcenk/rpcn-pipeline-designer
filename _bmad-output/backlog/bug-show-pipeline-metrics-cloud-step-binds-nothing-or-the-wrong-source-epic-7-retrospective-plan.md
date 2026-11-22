@@ -3,7 +3,7 @@ title: "Bug 58: Show Pipeline Metrics' Cloud step binds nothing, or the wrong so
 type: 'bugfix'
 ticket: '58'
 created: '2026-11-21'
-status: 'built'
+status: done
 baseline_revision: '55e6693da478274861f996c1521e88963ef0bbaf'
 route: 'full'
 route_source: 'auto'
