@@ -108,3 +108,7 @@ The race needs the panel to tell its own bind's `showCloud` from the user's, bec
 - `grep -rn "from 'vscode'" src/core src/shared src/adapters/metrics` -- expected: no output
 - `env -u WAYLAND_DISPLAY -u DISPLAY -u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11 timeout -k 15 1500 xvfb-run -a npx vscode-test --label stable` -- expected: all pass
 - the same with `--label multiroot` -- expected: all pass
+
+## Manual Check
+
+- 2026-11-21, the user, VS Code 1.143.1 dev host from `.vscode-test`: the three manual checks passed with no issues: Show Pipeline Metrics with the Cloud view never expanded, signed out (falls through to Not running), and the retry after Connect.
