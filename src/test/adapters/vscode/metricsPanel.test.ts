@@ -4,7 +4,8 @@ import { MetricsFeeds } from '../../../adapters/vscode/metricsFeed';
 import {
 	METRICS_PICK_TITLE, MetricsPanel, NO_CONFIG_MESSAGE, NO_SERIES_READS, QUIET_FAILURES, type LoadedCloudPipeline, type MappedPipelineOf, type MetricsPickItem,
 } from '../../../adapters/vscode/metricsPanel';
-import { SHOW_CLOUD_METRICS_COMMAND } from '../../../adapters/vscode/cloudMetrics';
+import { SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult } from '../../../adapters/vscode/cloudMetrics';
+import type { CloudMetricsBinding } from '../../../adapters/vscode/metricsFeed';
 import { RUN_COMMAND } from '../../../adapters/vscode/run';
 import type { RunChange } from '../../../adapters/vscode/run';
 import { parsePrometheus } from '../../../core/prometheus';
@@ -15,6 +16,8 @@ import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
 // Ticket 8: the state buttons carried out on the binding, a button the state does not show ignored.
 // Ticket 9: the resolver (run → mapping → the file; no active config: a pick), the bind on the tab's own
 // opening, and the run the tab reads for the status bar.
+// Bug 58: Show metrics' result (a not-started one falls through to the file, Not running), the request
+// token (a bind on opening's late binding loses to the user's choice), and the retry after a Cloud change.
 const PORT = 41500;
 const URI = vscode.Uri.file('/ws/m.yaml');
 const OTHER = vscode.Uri.file('/ws/m2.yaml');
@@ -58,6 +61,12 @@ suite('adapters/vscode MetricsPanel', () => {
 	let configs: Set<string> | undefined;
 	let loaded: LoadedCloudPipeline[];
 	let infos: string[];
+	/** Bug 58: what the fake Show metrics returns, and what it does first (default: nothing). */
+	let showResult: ShowMetricsResult;
+	let onShow: ((node: { readonly clusterId: string; readonly id: string; readonly request?: number }) => Promise<void>) | undefined;
+	/** Bug 58: the request token of each Show metrics call (`commands` holds its node without it). */
+	let requests: (number | undefined)[];
+	let cloudChanged: vscode.EventEmitter<void>;
 
 	setup(async () => {
 		reads = 0;
@@ -71,6 +80,10 @@ suite('adapters/vscode MetricsPanel', () => {
 		configs = undefined;
 		loaded = [];
 		infos = [];
+		showResult = { kind: 'shown', pipelineId: 'p1', file: undefined };
+		onShow = undefined;
+		requests = [];
+		cloudChanged = new vscode.EventEmitter<void>();
 		feeds = new MetricsFeeds({
 			log: () => undefined,
 			run: { portOf: () => (running ? PORT : undefined), onDidChangeRun: runChanged.event },
@@ -83,8 +96,15 @@ suite('adapters/vscode MetricsPanel', () => {
 			feeds,
 			focus: async () => undefined,
 			executeCommand: async (command, ...args) => {
-				commands.push([command, ...args]);
-				return undefined;
+				if (command !== SHOW_CLOUD_METRICS_COMMAND) {
+					commands.push([command, ...args]);
+					return undefined;
+				}
+				const { request, ...node } = args[0] as { readonly clusterId: string; readonly id: string; readonly request?: number };
+				commands.push([command, node]);
+				requests.push(request);
+				await onShow?.({ ...node, request });
+				return showResult;
 			},
 			showOutput: () => {
 				outputs++;
@@ -97,6 +117,7 @@ suite('adapters/vscode MetricsPanel', () => {
 			showInformationMessage: (m) => {
 				infos.push(m);
 			},
+			onCloudChanged: cloudChanged.event,
 		});
 		// Each read takes the next scripted answer; once the script is done, the counters' text.
 		let n = 0;
@@ -121,6 +142,7 @@ suite('adapters/vscode MetricsPanel', () => {
 	teardown(() => {
 		panel.dispose();
 		feeds.dispose();
+		cloudChanged.dispose();
 	});
 
 	async function showAndRead(count: number): Promise<void> {
@@ -393,6 +415,140 @@ suite('adapters/vscode MetricsPanel', () => {
 			await tick();
 			assert.strictEqual(panel.file, OTHER.toString());
 			assert.deepStrictEqual(commands, []);
+		});
+
+		const MAPPED: MappedPipelineOf = { clusterId: 'c1', pipelineId: 'p1', cluster: 'rpc-vilnius', pipeline: 'orders' };
+		/** A binding as Show metrics makes it (not read here: no access), with the node's request token. */
+		const binding = (request: number | undefined): CloudMetricsBinding => ({
+			clusterId: 'c1', clusterName: 'rpc-vilnius', pipelineId: 'p1', pipelineName: 'orders', host: 'prom.example', file: undefined,
+			source: () => undefined, onDidChangeAccess: new vscode.EventEmitter<void>().event, mask: (t) => t,
+			...(request === undefined ? {} : { request }),
+		});
+		const cloudTitle = 'Cloud · rpc-vilnius · orders';
+
+		test('bug 58, MAPPED_NOT_STARTED: Show metrics did not start: the tab shows the file, Not running', async () => {
+			running = false;
+			mapping = MAPPED;
+			showResult = { kind: 'notStarted' };
+			await panel.showFor(URI);
+			assert.strictEqual(commands.length, 1);
+			assert.ok(typeof requests[0] === 'number', 'the request carries a token');
+			assert.strictEqual(panel.file, URI.toString());
+			assert.strictEqual(panel.state.kind, 'notRunning');
+		});
+
+		test('bug 58, MAPPED_NO_ACCESS: the tab stays on the Cloud pipeline\'s no-access state', async () => {
+			running = false;
+			mapping = MAPPED;
+			showResult = { kind: 'noAccess', pipelineId: 'p1', file: undefined };
+			onShow = (node) => panel.showCloud(binding(node.request));
+			await panel.showFor(URI);
+			assert.strictEqual(panel.title, cloudTitle);
+			assert.strictEqual(panel.state.kind, 'noAccess');
+		});
+
+		test('bug 58, RACE: the bind on opening\'s Show metrics lands after the user showed another file: the user\'s source stays', async () => {
+			activeFile = URI;
+			mapping = MAPPED;
+			let release!: () => void;
+			const held = new Promise<void>((r) => { release = r; });
+			onShow = async (node) => {
+				await held;
+				await panel.showCloud(binding(node.request));
+			};
+			view.setVisible(false);
+			view.setVisible(true);
+			await until(() => commands.length === 1);
+			await panel.show(OTHER);
+			release();
+			await tick();
+			assert.strictEqual(panel.file, OTHER.toString());
+			assert.notStrictEqual(panel.title, cloudTitle);
+		});
+
+		test('bug 58, RACE: the user\'s Cloud choice lands while the bind on opening waits: the bind\'s late binding is dropped', async () => {
+			activeFile = URI;
+			mapping = MAPPED;
+			let release!: () => void;
+			const held = new Promise<void>((r) => { release = r; });
+			onShow = async (node) => {
+				await held;
+				await panel.showCloud(binding(node.request));
+			};
+			view.setVisible(false);
+			view.setVisible(true);
+			await until(() => commands.length === 1);
+			// A Cloud view row (no token) binds meanwhile; the bind's own binding comes later.
+			const row = { ...binding(undefined), pipelineId: 'p2', pipelineName: 'payments' };
+			await panel.showCloud(row);
+			release();
+			await tick();
+			assert.strictEqual(panel.title, 'Cloud · rpc-vilnius · payments');
+		});
+
+		test('bug 58, RACE: the user\'s own Show metrics lands; a bind on opening that starts meanwhile does not overwrite it', async () => {
+			running = false;
+			mapping = MAPPED;
+			activeFile = URI;
+			const holds: (() => void)[] = [];
+			onShow = async (node) => {
+				await new Promise<void>((r) => holds.push(r));
+				await panel.showCloud({ ...binding(node.request), pipelineName: node.request === requests[0] ? 'mine' : 'opened' });
+			};
+			const user = panel.showFor(URI);
+			await until(() => holds.length === 1);
+			view.setVisible(false);
+			view.setVisible(true);
+			await until(() => holds.length === 2);
+			holds[0]();
+			await user;
+			holds[1]();
+			await tick();
+			assert.strictEqual(panel.title, 'Cloud · rpc-vilnius · mine');
+		});
+
+		test('bug 58, RACE: the user\'s Show metrics did not start and falls through to the file; a bind on opening started after it is dropped', async () => {
+			running = false;
+			mapping = MAPPED;
+			activeFile = URI;
+			showResult = { kind: 'notStarted' };
+			const holds: (() => void)[] = [];
+			onShow = async (node) => {
+				await new Promise<void>((r) => holds.push(r));
+				// Only the bind on opening's request binds (the user's did not start).
+				if (node.request !== requests[0]) {
+					await panel.showCloud(binding(node.request));
+				}
+			};
+			const user = panel.showFor(URI);
+			await until(() => holds.length === 1);
+			view.setVisible(false);
+			view.setVisible(true);
+			await until(() => holds.length === 2);
+			holds[0]();
+			await user;
+			assert.strictEqual(panel.file, URI.toString());
+			holds[1]();
+			await tick();
+			assert.strictEqual(panel.file, URI.toString());
+			assert.strictEqual(panel.state.kind, 'notRunning');
+			assert.notStrictEqual(panel.title, cloudTitle);
+		});
+
+		test('bug 58, RETRY: a bind on opening that did not start is not tried again on a reveal, only after a Cloud change', async () => {
+			activeFile = URI;
+			mapping = MAPPED;
+			showResult = { kind: 'notStarted' };
+			await reveal();
+			await reveal();
+			assert.strictEqual(commands.length, 1, 'no retry without a Cloud change');
+			assert.strictEqual(panel.file, undefined);
+			cloudChanged.fire();
+			showResult = { kind: 'shown', pipelineId: 'p1', file: undefined };
+			onShow = (node) => panel.showCloud(binding(node.request));
+			await reveal();
+			assert.strictEqual(commands.length, 2, 'tried again after the change');
+			assert.strictEqual(panel.title, cloudTitle);
 		});
 
 		test('readingRun: the local run the visible, live tab reads, with its output rate; hidden: none', async () => {

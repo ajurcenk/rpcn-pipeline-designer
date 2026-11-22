@@ -83,6 +83,9 @@ export type ShowMetricsResult =
 	| { readonly kind: 'noAccess'; readonly pipelineId: string; readonly file: string | undefined }
 	| { readonly kind: 'shown'; readonly pipelineId: string; readonly file: string | undefined };
 
+/** Bug 58: Show metrics' node: a pipeline row, or the Pipeline Metrics tab's request with its token. */
+export type ShowMetricsNode = CloudNode & { readonly request?: number };
+
 /** How Forget metrics access ended (the command's result, for tests). */
 export type ForgetMetricsAccessResult = { readonly kind: 'notStarted' } | { readonly kind: 'forgotten'; readonly clusterId: string };
 
@@ -302,7 +305,7 @@ export class CloudMetricsAccess {
 	 * local file (a pick when it is in several folders; none: the tab alone). No access: the tab in its
 	 * no-access state, and Set up metrics access… offered. Never throws.
 	 */
-	async showMetrics(node?: CloudNode): Promise<ShowMetricsResult> {
+	async showMetrics(node?: ShowMetricsNode): Promise<ShowMetricsResult> {
 		try {
 			if (node?.kind !== 'pipeline') {
 				void this.ctx.showInfo('Choose a pipeline in the Cloud view.');
@@ -316,6 +319,18 @@ export class CloudMetricsAccess {
 					await this.ctx.connect();
 				}
 				return NOT_STARTED;
+			}
+			// Bug 58: from the Pipeline Metrics tab, the cluster list may not be loaded yet (the account row never
+			// expanded); as the palette target, it is read here. A first read that fails has shown its error.
+			if (this.ctx.clusters?.kind !== 'ok') {
+				const failedBefore = this.ctx.clusters?.kind === 'error';
+				this.ctx.requested = true;
+				await this.ctx.loadClusters(false);
+				// Read again: the load changed it (TypeScript keeps the narrowing across the await).
+				const after = (this.ctx as CloudContext).clusters;
+				if (!failedBefore && after?.kind === 'error') {
+					return NOT_STARTED;
+				}
 			}
 			const cluster = this.ctx.clusterById(node.clusterId);
 			// Ticket 8: from the Pipeline Metrics tab (a file's mapped pipeline), its cluster may not be expanded yet.
@@ -339,7 +354,7 @@ export class CloudMetricsAccess {
 			}
 			// The access as stored now (another window may have set or forgotten it).
 			const access = await this.readAccess(cluster.id);
-			const binding = this.binding(cluster, pipeline, url, file === undefined ? undefined : vscode.Uri.file(file));
+			const binding = this.binding(cluster, pipeline, url, file === undefined ? undefined : vscode.Uri.file(file), node.request);
 			this.ctx.log(`Redpanda Cloud: showing the metrics of pipeline ${pipeline.displayName} (${pipeline.id}) on ${cluster.name}`
 				+ `${file ? `, mapped to ${file}` : ''}${access ? `, read as ${access.username}` : ', which has no metrics access set'}.`);
 			await metrics.showCloud(binding);
@@ -361,7 +376,7 @@ export class CloudMetricsAccess {
 	}
 
 	/** What the tab's feed reads the pipeline with: the endpoint and the cluster's access held now (none: no access). */
-	private binding(cluster: CloudCluster, pipeline: CloudPipeline, url: string, file: vscode.Uri | undefined): CloudMetricsBinding {
+	private binding(cluster: CloudCluster, pipeline: CloudPipeline, url: string, file: vscode.Uri | undefined, request: number | undefined): CloudMetricsBinding {
 		let cached: { readonly access: MetricsAccess; readonly source: MetricsSource } | undefined;
 		const host = cloudAddress(url);
 		return {
@@ -371,6 +386,8 @@ export class CloudMetricsAccess {
 			pipelineName: pipeline.displayName,
 			host,
 			file,
+			// Bug 58: only a number (the node comes from a command's argument).
+			...(typeof request === 'number' ? { request } : {}),
 			source: () => {
 				const access = this.accesses.get(cluster.id);
 				if (!access) {

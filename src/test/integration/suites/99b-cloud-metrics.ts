@@ -13,6 +13,8 @@
 // Ticket 9 (board 5): MAPPED_NO_RUN, Show Pipeline Metrics on a not-running file with its own `.cloud.json`
 // opens the tab on that pipeline (not signed in: Show metrics' message); ROW_INLINE, the row's inline
 // icon (package.json) is the menu's command; NO_EDITOR, the pick lists the Cloud view's loaded pipelines.
+// Bug 58: a Show metrics that does not start (not signed in, a pipeline gone) leaves the tab on the file,
+// Not running; with the cluster list never loaded (a stored account, no row expanded), Show metrics loads it.
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,7 +27,7 @@ import {
 } from '../../../adapters/vscode/cloudView';
 import { CLOUD_REFUSED_TEXT, DEFAULT_PROMETHEUS_USER } from '../../../adapters/metrics/source';
 import { CLOUD_NO_SERIES_HINT, CLOUD_TIMING } from '../../../adapters/vscode/metricsFeed';
-import { SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
+import { METRICS_VIEW_ID, SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import type { NodeFiguresById } from '../../../shared/protocol';
 import { type ExtensionApi } from '../../../extension';
@@ -86,6 +88,26 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 	const lastPosted = () => metrics().posted.at(-1)!;
 	const figuresOf = (handle: GraphPanelHandle): NodeFiguresById[] => handle.posted.flatMap((m) => (m.type === 'nodeFigures' ? [m.byId] : []));
 	const lastFigures = (handle: GraphPanelHandle) => figuresOf(handle).at(-1) ?? {};
+	/**
+	 * Bug 58: Disconnect, settled: the setup's Connect stored the account a moment ago, and its late change
+	 * event can read it back before the delete has settled (see the teardown); disconnected again then.
+	 */
+	const disconnectSettled = async (): Promise<void> => {
+		for (let i = 0; i < 3; i++) {
+			await cloud().disconnect();
+			await new Promise((r) => setTimeout(r, 1_000));
+			if (!cloud().connected) {
+				return;
+			}
+		}
+		assert.fail('the service account stays connected after Disconnect');
+	};
+	/** Bug 58: a second config, so a tab left as it was would show another file. */
+	const otherFile = (): vscode.Uri => {
+		const file = path.join(dir, 'other.yaml');
+		fs.writeFileSync(file, CONFIG);
+		return vscode.Uri.file(file);
+	};
 
 	function pipeline(id: string, name: string, tags: Record<string, string>): FakePipeline {
 		return {
@@ -184,6 +206,7 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		c.prometheusPassword = PASSWORD;
 		c.prometheusFailure = undefined;
 		c.metricsBody = undefined;
+		fake.clustersError = undefined;
 		fake.delay = (req) => {
 			if (req.url.startsWith('/prom/')) {
 				promTimes.push(Date.now());
@@ -630,19 +653,130 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 		}
 	});
 
-	test('ticket 9, MAPPED_NO_RUN, NOT SIGNED IN: Show metrics\' message, the tab not moved to the pipeline', async () => {
+	test('ticket 9, MAPPED_NO_RUN, NOT SIGNED IN: Show metrics\' message, then (bug 58) the tab shows the file, Not running', async () => {
 		const mapping = `${fileA}.cloud.json`;
 		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
 		try {
-			await cloud().disconnect();
+			await disconnectSettled();
 			infos.length = 0;
 			infoAnswers = [undefined];
 			const doc = await vscode.workspace.openTextDocument(fileA);
 			await vscode.window.showTextDocument(doc);
-			const before = metrics().title;
+			// Another source first, so a tab left as it was would show it.
+			await metrics().show(otherFile());
 			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
 			assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
-			assert.strictEqual(metrics().title, before);
+			assert.strictEqual(metrics().title, 'Local run · orders.yaml');
+			assert.strictEqual(metrics().state.kind, 'notRunning');
+			assert.ok(await waitFor(() => lastPosted().mapped !== null, 5_000), 'its Show button is offered');
+			assert.deepStrictEqual(lastPosted().mapped, { pipeline: 'orders', cluster: 'rpc-vilnius' });
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('bug 58, CLUSTERS_NOT_LOADED: a stored account whose cluster list was never loaded: Show Pipeline Metrics loads it and shows the mapped pipeline', async () => {
+		await setUpAccess();
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			// As a new window: the account stored by another one, nothing read yet (96-cloud's startup case).
+			await disconnectSettled();
+			await cloud().storeAsAnotherWindow(CLIENT_SECRET_KEY, CLIENT_SECRET);
+			await cloud().storeAsAnotherWindow(CLIENT_ID_KEY, CLIENT_ID);
+			assert.ok(await waitFor(() => cloud().connected, 10_000), 'the stored account is read');
+			fake.requests.length = 0;
+			errors.length = 0;
+			infos.length = 0;
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.deepStrictEqual([errors, infos], [[], []]);
+			assert.ok(fake.requests.some((r) => r.method === 'GET' && r.url.startsWith('/v1/clusters')), 'the cluster list was read by Show metrics');
+			assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders');
+			assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('bug 58, CLUSTERS_NOT_LOADED, LOAD FAILS: the cluster list read by Show metrics fails: the Cloud view\'s error once, no "no longer" message, the file Not running', async () => {
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			// As CLUSTERS_NOT_LOADED: an account stored by another window, nothing read yet.
+			await disconnectSettled();
+			await cloud().storeAsAnotherWindow(CLIENT_SECRET_KEY, CLIENT_SECRET);
+			await cloud().storeAsAnotherWindow(CLIENT_ID_KEY, CLIENT_ID);
+			assert.ok(await waitFor(() => cloud().connected, 10_000), 'the stored account is read');
+			fake.clustersError = { status: 503, body: { code: 'UNAVAILABLE', message: 'control plane is down' } };
+			errors.length = 0;
+			infos.length = 0;
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			await metrics().show(otherFile());
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.deepStrictEqual(errors, ['Could not list the Redpanda Cloud clusters: control plane is down'], 'the Cloud view\'s error, once');
+			assert.ok(!infos.some((m) => m.includes('no longer in the Cloud view')), infos.join('\n'));
+			assert.strictEqual(metrics().title, 'Local run · orders.yaml');
+			assert.strictEqual(metrics().state.kind, 'notRunning');
+		} finally {
+			fake.clustersError = undefined;
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('bug 58, RACE: Show metrics with a stale request token (the tab\'s request a later choice superseded): its binding is dropped, the tab stays on the file', async () => {
+		await setUpAccess();
+		const other = otherFile();
+		await metrics().show(other);
+		const result = await vscode.commands.executeCommand<{ kind: string }>(SHOW_CLOUD_METRICS_COMMAND, { ...pipelineNode(A), request: 1 });
+		assert.strictEqual(result?.kind, 'shown', 'Show metrics itself ran');
+		assert.strictEqual(metrics().file, other.toString());
+		assert.strictEqual(metrics().title, 'Local run · other.yaml');
+		assert.ok(api().outputLines().some((l) => l.includes('Pipeline metrics: dropped the binding of pipeline orders on rpc-vilnius')), 'the binding was dropped');
+	});
+
+	test('bug 58, RETRY: the bind on opening failed signed out; after Connect (the Cloud view changed), opening the tab again binds the mapped pipeline', async () => {
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: A, clusterName: 'rpc-vilnius', pipelineName: 'orders' }));
+		try {
+			await disconnectSettled();
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			assert.ok(await waitFor(() => api().detection.isDetected(doc.uri), 5_000));
+			await closeTab();
+			metrics().unbind();
+			infos.length = 0;
+			infoAnswers = [undefined];
+			// Opened with nothing bound: the active config's mapping is tried, and Show metrics does not start.
+			await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
+			assert.ok(await waitFor(() => infos.length > 0, 10_000), 'Show metrics\' message');
+			assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
+			assert.strictEqual(metrics().file, undefined);
+			// Connect: the Cloud view's data change lets the bind on opening try again on the next reveal.
+			inputs = [CLIENT_ID, CLIENT_SECRET];
+			assert.strictEqual(await vscode.commands.executeCommand(CONNECT_COMMAND), true, errors.join('\n'));
+			await closeTab();
+			await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
+			assert.ok(await waitFor(() => metrics().title === 'Cloud · rpc-vilnius · orders', 10_000), String(metrics().title));
+		} finally {
+			fs.rmSync(mapping, { force: true });
+		}
+	});
+
+	test('bug 58, GENUINELY_GONE: the cluster list loaded, the mapped pipeline not in it: Show metrics\' message, then the file, Not running', async () => {
+		const gone = 'd5gone00000000000003';
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: gone, clusterName: 'rpc-vilnius', pipelineName: 'archived' }));
+		try {
+			const doc = await vscode.workspace.openTextDocument(fileA);
+			await vscode.window.showTextDocument(doc);
+			await metrics().show(otherFile());
+			await vscode.commands.executeCommand(SHOW_METRICS_COMMAND, doc.uri);
+			assert.deepStrictEqual(infos, ['That pipeline is no longer in the Cloud view. Refresh the view to read the pipelines again.']);
+			assert.strictEqual(metrics().title, 'Local run · orders.yaml');
+			assert.strictEqual(metrics().state.kind, 'notRunning');
 		} finally {
 			fs.rmSync(mapping, { force: true });
 		}

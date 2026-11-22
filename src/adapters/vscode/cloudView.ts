@@ -131,7 +131,7 @@ import { CHECK_COLLECTION, CloudDeploy, type OnlyPipeline } from './cloudDeploy'
 import { CloudLogs, FORGET_LOG_ACCESS_COMMAND, type ForgetLogAccessResult, LOG_ACCESS_PREFIX } from './cloudLogs';
 import {
 	CloudMetricsAccess, FORGET_METRICS_ACCESS_COMMAND, type ForgetMetricsAccessResult, METRICS_ACCESS_PREFIX, type MetricsAccessResult, SET_UP_METRICS_ACCESS_COMMAND,
-	SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult,
+	SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsNode, type ShowMetricsResult,
 } from './cloudMetrics';
 import type { CloudMetricsBinding } from './metricsFeed';
 import { CLOUD_READ_TIMEOUT_MS } from '../metrics/source';
@@ -733,7 +733,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 			vscode.commands.registerCommand(SHOW_LOGS_COMMAND, (node?: CloudNode) => this.showLogs(node)),
 			vscode.commands.registerCommand(SHOW_LOGS_AROUND_ERROR_COMMAND, (node?: CloudNode) => this.showLogsAroundError(node)),
 			// Ticket 7.5: a pipeline row's only (no palette entry).
-			vscode.commands.registerCommand(SHOW_CLOUD_METRICS_COMMAND, (node?: CloudNode) => this.showMetrics(node)),
+			vscode.commands.registerCommand(SHOW_CLOUD_METRICS_COMMAND, (node?: ShowMetricsNode) => this.showMetrics(node)),
 			vscode.workspace.registerTextDocumentContentProvider(DEPLOYED_SCHEME, {
 				onDidChange: this.deployedChanged.event,
 				provideTextDocumentContent: (uri) => this.provideTextDocumentContent(uri),
@@ -1478,7 +1478,7 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 	}
 
 	/** Ticket 7.5: Show metrics on a pipeline row: the Pipeline Metrics tab on that pipeline. Never throws. */
-	showMetrics(node?: CloudNode): Promise<ShowMetricsResult> {
+	showMetrics(node?: ShowMetricsNode): Promise<ShowMetricsResult> {
 		return this.metricsAccess.showMetrics(node);
 	}
 

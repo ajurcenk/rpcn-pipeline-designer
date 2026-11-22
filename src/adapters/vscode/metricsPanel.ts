@@ -44,6 +44,12 @@
 // opened by clicking it with nothing bound binds the same way without a pick (`bindOnOpen`): the active
 // config's run, else its mapping, else the only running file; else "No pipeline chosen" stays. While the
 // tab is visible and live on a local run, `readingRun` gives the run and its output rate (the status bar).
+//
+// Bug 58: a Show metrics that did not start (its `ShowMetricsResult`) falls through to the file, Not
+// running. Each Cloud request the tab makes carries a request token (`request` on the command's node,
+// copied into the binding); a binding older than the latest user choice is dropped (`showCloud`), so the
+// bind on opening never overwrites a source the user chose meanwhile. A bind on opening that did not bind
+// the mapping is tried again on the next reveal only after the Cloud view's data changed (`onCloudChanged`).
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -56,7 +62,7 @@ import { metricRows, metricsSectionRange, metricsSummary, sortRows } from '../..
 import { parseYaml } from '../../core/yamlPath';
 import { errorText } from '../../shared/errorText';
 import { webviewHtml } from '../graphPanel/html';
-import { FORGET_METRICS_ACCESS_COMMAND, SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND } from './cloudMetrics';
+import { FORGET_METRICS_ACCESS_COMMAND, SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult } from './cloudMetrics';
 import { RUN_COMMAND } from './run';
 import { cloudMetricsKey, type CloudMetricsBinding, type MetricsFeeds, type MetricsSourceFactory, type MetricsSubscription, type MetricsUpdate } from './metricsFeed';
 
@@ -91,6 +97,8 @@ export interface MetricsPanelOptions {
 	readonly isConfig?: (uri: vscode.Uri) => boolean;
 	/** Ticket 9: the Cloud pipelines the Cloud view has already loaded (no request; default: none). */
 	readonly cloudPipelines?: () => readonly LoadedCloudPipeline[];
+	/** Bug 58: fires when the Cloud view's account or cluster data change (a failed bind on opening may then be tried again). */
+	readonly onCloudChanged?: vscode.Event<void>;
 }
 
 /** Ticket 9: a Cloud pipeline the Cloud view has loaded, as the pick lists it. */
@@ -158,11 +166,36 @@ export class MetricsPanel implements vscode.Disposable {
 	private bindingOnOpen = false;
 	/** Ticket 9: the active config whose mapping a bind on opening tried (once per config, so its messages don't repeat). */
 	private mappingTriedFor: string | undefined;
+	/** Bug 58: the last request token issued (each Cloud request and user choice takes the next one). */
+	private requestSeq = 0;
+	/** Bug 58: the token of the latest user choice (Show Pipeline Metrics, a pick, a Show button, a local show, a Cloud row). */
+	private lastUserChoice = 0;
+	/** Bug 58: a token taken when a user's choice bound the tab (a bind on opening older than it is dropped). */
+	private lastUserBind = 0;
+	/** Bug 58: the token of the latest bind on opening. */
+	private openRequest: number | undefined;
+	private readonly cloudChanged: vscode.Disposable | undefined;
 	private readonly changed = new vscode.EventEmitter<void>();
 	/** Fires when the rows or the state change (test seam). */
 	readonly onDidChange = this.changed.event;
 
-	constructor(private readonly options: MetricsPanelOptions) {}
+	constructor(private readonly options: MetricsPanelOptions) {
+		// Bug 58: after a Cloud change, the bind on opening may try the active config's mapping again.
+		this.cloudChanged = options.onCloudChanged?.(() => {
+			this.mappingTriedFor = undefined;
+		});
+	}
+
+	/** Bug 58: a new user choice; its token (an older request's binding is dropped from now on). */
+	private userChoice(): number {
+		this.lastUserChoice = ++this.requestSeq;
+		return this.lastUserChoice;
+	}
+
+	/** Bug 58: whether a request is superseded: a user's by a later user choice; the bind on opening's by any user choice or bind since. */
+	private stale(token: number): boolean {
+		return token === this.openRequest ? token < Math.max(this.lastUserChoice, this.lastUserBind) : token < this.lastUserChoice;
+	}
 
 	register(): vscode.Disposable[] {
 		return [
@@ -174,6 +207,19 @@ export class MetricsPanel implements vscode.Disposable {
 	/** Test seam: the source a port is read through (default: the local `/metrics`), for every feed. */
 	setSourceFactory(factory: MetricsSourceFactory | undefined): void {
 		this.options.feeds.setSourceFactory(factory);
+	}
+
+	/** Test seam (bug 58): the tab bound to nothing, as before the first Show (a bind on opening may then run). */
+	unbind(): void {
+		this.subscription?.dispose();
+		this.subscription = undefined;
+		this.uri = undefined;
+		this.update = undefined;
+		this.mapped = undefined;
+		this.mappingTriedFor = undefined;
+		this.rowsFrom = undefined;
+		this.configRows = [];
+		this.configSummary = null;
 	}
 
 	/** The bound file's URI string; `undefined` before the first Show Pipeline Metrics. */
@@ -277,21 +323,27 @@ export class MetricsPanel implements vscode.Disposable {
 			return;
 		}
 		this.bindingOnOpen = true;
+		const token = ++this.requestSeq;
+		this.openRequest = token;
 		try {
 			const active = this.activeConfig();
 			if (active && this.isRunning(active)) {
-				await this.show(active);
+				await this.showLocal(active);
 				return;
 			}
-			// Once per active config (a failing Show metrics would repeat its message on every reveal); a Show
-			// meanwhile (the command, a pick) wins over the tab's own bind.
+			// Once per active config until the Cloud view changes (a failing Show metrics would repeat its
+			// message on every reveal); a Show meanwhile (the command, a pick, a button) wins over the tab's own
+			// bind (bug 58: its late binding is dropped by its token).
 			if (active && this.mappingTriedFor !== active.toString()) {
 				this.mappingTriedFor = active.toString();
-				await this.showMapped(active, () => !this.uri);
+				await this.showMapped(active, token);
+			}
+			if (this.stale(token)) {
+				return;
 			}
 			const running = this.running();
 			if (!this.uri && running.length === 1) {
-				await this.show(running[0]);
+				await this.showLocal(running[0]);
 			}
 		} catch (err) {
 			this.options.log(`Pipeline metrics: binding the opened tab failed: ${errorText(err)}`);
@@ -382,7 +434,7 @@ export class MetricsPanel implements vscode.Disposable {
 				case 'showMappedRequested': {
 					const m = this.mapped;
 					if (m) {
-						await run(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId });
+						await run(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId, request: this.userChoice() });
 					}
 					break;
 				}
@@ -476,10 +528,17 @@ export class MetricsPanel implements vscode.Disposable {
 			await this.pick();
 			return;
 		}
-		if (!this.isRunning(target) && await this.showMapped(target)) {
+		const token = this.userChoice();
+		// Bug 58: a Show metrics that did not start (signed out, gone, no endpoint, a cancelled pick) falls
+		// through to the file, Not running; a later choice meanwhile wins.
+		if (!this.isRunning(target) && await this.showMapped(target, token)) {
 			return;
 		}
-		await this.show(target);
+		if (!this.stale(token)) {
+			// The user's choice binds the tab: a bind on opening started meanwhile is superseded.
+			this.lastUserBind = ++this.requestSeq;
+			await this.showLocal(target);
+		}
 	}
 
 	/** The active editor's file when it is a config on disk. */
@@ -500,8 +559,12 @@ export class MetricsPanel implements vscode.Disposable {
 		return this.options.executeCommand ?? ((command: string, ...args: unknown[]) => vscode.commands.executeCommand(command, ...args));
 	}
 
-	/** Shows `uri`'s own `.cloud.json` pipeline through Show metrics (its messages when it can't); `false`: no mapping. */
-	private async showMapped(uri: vscode.Uri, stillWanted: () => boolean = () => true): Promise<boolean> {
+	/**
+	 * Shows `uri`'s own `.cloud.json` pipeline through Show metrics with the request `token` (its messages
+	 * when it can't). `true`: the tab got bound to it (shown, or its no-access state), or the request was
+	 * superseded; `false`: no mapping, or Show metrics did not start (bug 58).
+	 */
+	private async showMapped(uri: vscode.Uri, token: number): Promise<boolean> {
 		if (uri.scheme !== 'file' || !this.options.mappingOf) {
 			return false;
 		}
@@ -509,12 +572,12 @@ export class MetricsPanel implements vscode.Disposable {
 		if (!m) {
 			return false;
 		}
-		if (!stillWanted()) {
+		if (this.stale(token)) {
 			return true;
 		}
 		this.options.log(`Pipeline metrics: ${path.basename(uri.fsPath)} is not running; showing its Cloud pipeline ${m.pipeline} on ${m.cluster}.`);
-		await this.command()(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId });
-		return true;
+		const result = await this.command()(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: m.clusterId, id: m.pipelineId, request: token }) as ShowMetricsResult | undefined;
+		return result?.kind === 'shown' || result?.kind === 'noAccess';
 	}
 
 	/** No active config: a pick of the running files and the loaded Cloud pipelines (none: the message). */
@@ -536,7 +599,9 @@ export class MetricsPanel implements vscode.Disposable {
 		if (picked?.kind === 'local') {
 			await this.show(picked.uri);
 		} else if (picked?.kind === 'cloud') {
-			await this.command()(SHOW_CLOUD_METRICS_COMMAND, { kind: 'pipeline', clusterId: picked.pipeline.clusterId, id: picked.pipeline.pipelineId });
+			await this.command()(SHOW_CLOUD_METRICS_COMMAND, {
+				kind: 'pipeline', clusterId: picked.pipeline.clusterId, id: picked.pipeline.pipelineId, request: this.userChoice(),
+			});
 		}
 	}
 
@@ -546,6 +611,13 @@ export class MetricsPanel implements vscode.Disposable {
 	 * reading for both); otherwise its readings start again (ticket 7.2).
 	 */
 	async show(uri: vscode.Uri): Promise<void> {
+		// Bug 58: a user's choice (a bind on opening's late Cloud binding is dropped from now on).
+		this.userChoice();
+		await this.showLocal(uri);
+	}
+
+	/** `show` without making it a user choice (the resolver's and the bind on opening's own steps). */
+	private async showLocal(uri: vscode.Uri): Promise<void> {
 		const sub = this.bind(uri);
 		if (sub.feed.cloudBinding) {
 			// Ticket 7.5: last chosen wins: the file's tab and graph go back to its local run.
@@ -567,6 +639,18 @@ export class MetricsPanel implements vscode.Disposable {
 	 * with that file's graph, else its own) and opens; the feed reads the pipeline from now on.
 	 */
 	async showCloud(binding: CloudMetricsBinding): Promise<void> {
+		// Bug 58: a binding of a request the user superseded is dropped; one with no token (the Cloud view's
+		// row) is a user choice made now; a user's request that lands supersedes a bind on opening in flight.
+		const token = binding.request;
+		if (token !== undefined && this.stale(token)) {
+			this.options.log(`Pipeline metrics: dropped the binding of pipeline ${binding.pipelineName} on ${binding.clusterName}: another source was chosen meanwhile.`);
+			return;
+		}
+		if (token === undefined) {
+			this.userChoice();
+		} else if (token !== this.openRequest) {
+			this.lastUserBind = ++this.requestSeq;
+		}
 		const sub = this.bind(binding.file ?? cloudMetricsKey(binding.clusterId, binding.pipelineId));
 		this.rowsFrom = undefined;
 		this.configRows = [];
@@ -608,6 +692,7 @@ export class MetricsPanel implements vscode.Disposable {
 	}
 
 	dispose(): void {
+		this.cloudChanged?.dispose();
 		this.viewSubscriptions.forEach((s) => s.dispose());
 		this.subscription?.dispose();
 		this.subscription = undefined;

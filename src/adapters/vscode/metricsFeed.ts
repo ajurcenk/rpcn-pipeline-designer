@@ -100,6 +100,8 @@ export interface CloudMetricsBinding {
 	settingUp?(): boolean;
 	/** Ticket 8: fires when one starts or ends. */
 	readonly onDidChangeSettingUp?: vscode.Event<void>;
+	/** Bug 58: the Pipeline Metrics tab's request token (from Show metrics' node); `undefined`: not the tab's request (a Cloud view row). */
+	readonly request?: number;
 }
 
 /** What a feed reads, as its subscribers are told. */

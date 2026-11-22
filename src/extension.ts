@@ -131,7 +131,7 @@ export interface ExtensionApi {
 	 * The Pipeline Metrics tab's test seams (tickets 7.2–7.9). Only in `ExtensionMode.Test`.
 	 */
 	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'
-		| 'ui' | 'readingRun'>
+		| 'ui' | 'readingRun' | 'unbind'>
 		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
@@ -301,6 +301,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	});
 	// Ticket 9: the Cloud view's loaded pipelines, for the tab's pick (the view is built below).
 	let loadedCloudPipelines: () => readonly LoadedCloudPipeline[] = () => [];
+	// Bug 58: the Cloud view's data changed (connect, disconnect, refresh), for the tab's bind on opening (the view is built below).
+	const cloudChanged = new vscode.EventEmitter<void>();
+	context.subscriptions.push(cloudChanged);
 	// The Pipeline Metrics tab (ticket 7.2, AD-25): in the bottom panel next to Pipeline Logs.
 	const metricsPanel = new MetricsPanel({
 		extensionUri: context.extensionUri,
@@ -320,6 +323,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		runningUris: () => run.runningUris(),
 		isConfig: (uri) => detection.isDetected(uri),
 		cloudPipelines: () => loadedCloudPipelines(),
+		onCloudChanged: cloudChanged.event,
 	});
 	context.subscriptions.push(metricsFeeds, metricsPanel, ...metricsPanel.register());
 	// Ticket 9: the running status bar item shows the output rate while the tab reads that run (no read of its own).
@@ -430,6 +434,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 	loadedCloudPipelines = () => cloud.loadedPipelines();
+	context.subscriptions.push(cloud.onDidChangeTreeData(() => cloudChanged.fire()));
 
 	return {
 		redpandaConnect,
