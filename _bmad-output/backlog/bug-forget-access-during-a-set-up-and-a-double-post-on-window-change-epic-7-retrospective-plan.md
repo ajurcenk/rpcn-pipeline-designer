@@ -78,3 +78,7 @@ context: []
 - `env -u WAYLAND_DISPLAY -u DISPLAY -u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11 timeout -k 15 1500 xvfb-run -a npx vscode-test --label stable` -- expected: all pass, the new tests included
 - the same with `--label multiroot` -- expected: all pass
 
+
+## Manual Check
+
+- 2026-11-23, the user, VS Code 1.143.1 dev host from `.vscode-test`: the manual check passed with no issues. Forget access during a running Set up on rpc-vilnius was refused with the "already running" message from the row and the palette, and Forget worked once the Set up was escaped.
