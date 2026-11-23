@@ -325,7 +325,7 @@ export class SecretVariables implements vscode.Disposable {
 		}
 		this.emitter.fire();
 		await this.serialized(async () => {
-			await this.options.memento.update(SECRET_KEYS_STATE, this.recordedKeys().filter((k) => !keys.includes(k) || left.includes(k)));
+			await this.writeRecorded((now) => now.filter((k) => !keys.includes(k) || left.includes(k)));
 		});
 		if (failure !== undefined) {
 			this.options.log(`${SECRET_ENV_SETTING}: could not remove ${left.length} stored secret(s): ${failure}`);
@@ -479,9 +479,30 @@ export class SecretVariables implements vscode.Disposable {
 
 	private record(key: string, stored: boolean): Promise<void> {
 		return this.serialized(async () => {
-			const keys = this.recordedKeys().filter((k) => k !== key);
-			await this.options.memento.update(SECRET_KEYS_STATE, stored ? [...keys, key] : keys);
+			await this.writeRecorded((now) => {
+				const keys = now.filter((k) => k !== key);
+				return stored ? [...keys, key] : keys;
+			});
 		});
+	}
+
+	/**
+	 * Bug 61: applies `change` to the recorded keys and reads them back; while they differ, applies it
+	 * again to what is there now (3 writes in all). VS Code's memento can lose an update: an echo of an
+	 * earlier write of `globalState` that lands before the update's flush replaces it, and the flush then
+	 * sends the echoed value. Applying the change again, not writing a list made earlier, keeps another
+	 * window's newer write of the record.
+	 */
+	private async writeRecorded(change: (keys: readonly string[]) => string[]): Promise<void> {
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			const keys = change(this.recordedKeys());
+			await this.options.memento.update(SECRET_KEYS_STATE, keys);
+			const now = this.recordedKeys();
+			if (now.length === keys.length && now.every((k, i) => k === keys[i])) {
+				return;
+			}
+		}
+		this.options.log(`${SECRET_ENV_SETTING}: the recorded secret keys could not be written: the stored list still differs after 3 writes.`);
 	}
 
 	/** Runs `update` after every earlier update of the recorded keys; never rejects. */

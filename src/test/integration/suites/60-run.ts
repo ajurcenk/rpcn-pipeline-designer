@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ExtensionApi } from '../../../extension';
-import { type RemoveItem, SecretVariables } from '../../../adapters/vscode/secrets';
+import { type RemoveItem, SECRET_KEYS_STATE, SecretVariables } from '../../../adapters/vscode/secrets';
 import { connectScript, fixtureBodies, makeTempDir, readCounter, writeFakeBinary } from '../../helpers/fakeBinary';
 import { EXTENSION_ID, runOnEditor, userFilesHolding, waitFor } from '../helpers';
 
@@ -308,6 +308,88 @@ suite('Run and Stop (integration)', function () {
 		} finally {
 			secrets.dispose();
 			changed.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	/**
+	 * Bug 61: `fakeSecrets` on a memento that can lose updates of the recorded keys as VS Code's can.
+	 * `lose(n)`: the next `n` updates of `SECRET_KEYS_STATE` are replaced, before they resolve, by the
+	 * value before them (an echo of an earlier write landing before the flush). `otherWindow(key)`: the
+	 * next update of it is replaced by the value before it plus `key` (another window's newer write).
+	 */
+	function losingSecrets() {
+		const state = new Map<string, unknown>();
+		let losing = 0;
+		let theirs: string | undefined;
+		const lines: string[] = [];
+		const fake = fakeSecrets({
+			memento: {
+				keys: () => [...state.keys()],
+				get: <T>(key: string, fallback?: T) => (state.has(key) ? state.get(key) as T : fallback) as T,
+				update: async (key: string, value: unknown) => {
+					const before = state.get(key);
+					state.set(key, value);
+					await new Promise((r) => setTimeout(r, 0));
+					if (key !== SECRET_KEYS_STATE) {
+						return;
+					}
+					if (theirs !== undefined) {
+						state.set(key, [...((before as string[] | undefined) ?? []), theirs]);
+						theirs = undefined;
+					} else if (losing > 0) {
+						losing--;
+						state.set(key, before);
+					}
+				},
+			},
+			log: (l) => lines.push(l),
+		});
+		return { ...fake, lines, lose: (n: number) => { losing = n; }, otherWindow: (key: string) => { theirs = key; } };
+	}
+
+	test('bug 61: an update of the recorded keys lost once (an echo of an earlier write): a remove still drops the record, a set still adds it', async () => {
+		const fake = losingSecrets();
+		try {
+			assert.ok(await fake.secrets.set(undefined, 'LOST_61', 'tok-61-secret'));
+			assert.deepStrictEqual(fake.secrets.recordedKeys(), ['redpandaConnect.secret:window:LOST_61']);
+			fake.lose(1);
+			assert.ok(await fake.secrets.remove(undefined, 'LOST_61'));
+			assert.deepStrictEqual(fake.secrets.recordedKeys(), [], 'the removed key is not recorded');
+			fake.lose(1);
+			assert.ok(await fake.secrets.set(undefined, 'LOST_61', 'tok-61-secret'));
+			assert.deepStrictEqual(fake.secrets.recordedKeys(), ['redpandaConnect.secret:window:LOST_61'], 'the stored key is recorded');
+			assert.deepStrictEqual(fake.lines.filter((l) => l.includes('recorded secret keys')), []);
+		} finally {
+			fake.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('bug 61: another window records a key around this window\'s remove: its key is kept, the removed one is not', async () => {
+		const fake = losingSecrets();
+		try {
+			assert.ok(await fake.secrets.set(undefined, 'MINE_61', 'tok-61-mine'));
+			fake.otherWindow('redpandaConnect.secret:window:THEIRS_61');
+			assert.ok(await fake.secrets.remove(undefined, 'MINE_61'));
+			assert.deepStrictEqual(fake.secrets.recordedKeys(), ['redpandaConnect.secret:window:THEIRS_61']);
+			assert.deepStrictEqual(fake.lines.filter((l) => l.includes('recorded secret keys')), []);
+		} finally {
+			fake.dispose();
+			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
+		}
+	});
+
+	test('bug 61: a memento that never keeps the update: the remove still succeeds and the log says the record could not be written (no value)', async () => {
+		const fake = losingSecrets();
+		try {
+			assert.ok(await fake.secrets.set(undefined, 'NEVER_61', 'tok-61-never'));
+			fake.lose(Number.POSITIVE_INFINITY);
+			assert.ok(await fake.secrets.remove(undefined, 'NEVER_61'));
+			assert.ok(fake.lines.some((l) => l === 'redpandaConnect.secretEnv: the recorded secret keys could not be written: the stored list still differs after 3 writes.'), JSON.stringify(fake.lines));
+			assert.ok(!fake.lines.some((l) => l.includes('tok-61')));
+		} finally {
+			fake.dispose();
 			await config().update('secretEnv', undefined, vscode.ConfigurationTarget.Global);
 		}
 	});
