@@ -3,7 +3,7 @@ title: 'Bug 60: Forget access during a running Set up, and a double post on a wi
 type: 'bugfix'
 ticket: '60'
 created: '2026-11-23'
-status: 'built'
+status: done
 baseline_revision: '7236d402d74191dffb3df8d0fdc5d6359600e0ac'
 route: 'oneshot'
 route_source: 'auto'
