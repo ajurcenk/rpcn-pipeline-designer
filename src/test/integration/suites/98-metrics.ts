@@ -692,4 +692,39 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 			metrics().ui = original;
 		}
 	});
+	test('story 62 C12 rename: the tab and the graph of a running file follow its rename; the readings keep their rows; no "could not read"', async () => {
+		const doc = await open('rename-me.yaml', CONFIG);
+		const port = await runAndWait(doc);
+		fake.serve(port, text(100));
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+		assert.ok(await waitFor(() => metrics().visible && metrics().rows().length === 4, METRICS_INTERVAL_MS + 3_000), JSON.stringify(metrics().state));
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		const figuresOf = () => handle.posted.flatMap((m) => (m.type === 'nodeFigures' ? [m.byId] : []));
+		assert.ok(await waitFor(() => Object.keys(figuresOf().at(-1) ?? {}).length > 0, METRICS_INTERVAL_MS + 5_000), 'the graph has figures');
+		await vscode.commands.executeCommand(`${METRICS_VIEW_ID}.focus`);
+		assert.ok(await waitFor(() => metrics().visible, 5_000));
+		const rows = metrics().rows().map((r) => r.id);
+		const renamed = vscode.Uri.file(path.join(dir, 'renamed.yaml'));
+		const edit = new vscode.WorkspaceEdit();
+		edit.renameFile(doc.uri, renamed);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+		assert.ok(await waitFor(() => metrics().file === renamed.toString(), 5_000), String(metrics().file));
+		assert.strictEqual(metrics().title, 'Local run · renamed.yaml');
+		assert.deepStrictEqual(metrics().rows().map((r) => r.id), rows, 'its rows kept');
+		assert.strictEqual(api().graphPanels.panelFor(renamed), handle, 'the graph moved with the file');
+		// The run started under the old name goes on: both read it on.
+		const readsAt = fake.reads.length;
+		const figuresAt = figuresOf().length;
+		fake.serve(port, text(400));
+		assert.ok(await waitFor(() => fake.reads.length > readsAt && metrics().state.kind === 'live' && (metrics().rows()[1]?.inRate ?? 0) > 0, METRICS_INTERVAL_MS * 3 + 2_000),
+			JSON.stringify(metrics().state));
+		assert.strictEqual(metrics().rows().length, 4);
+		assert.ok(await waitFor(() => figuresOf().length > figuresAt, METRICS_INTERVAL_MS * 3), 'the graph has the new figures');
+		const couldNotRead = (l: string) => l.startsWith('Pipeline metrics: could not read');
+		assert.ok(!api().outputLines().some(couldNotRead), api().outputLines().filter(couldNotRead).join('\n'));
+		await stop(doc);
+		assert.ok(await waitFor(() => metrics().state.kind === 'stopped', 5_000), JSON.stringify(metrics().state));
+		handle.panel.dispose();
+	});
 });

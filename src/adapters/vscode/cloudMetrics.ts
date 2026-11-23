@@ -228,6 +228,16 @@ export class CloudMetricsAccess {
 
 	private async setUpAccessNow(node?: CloudNode): Promise<MetricsAccessResult> {
 		try {
+			// Story 62 (C12): signed out (the Pipeline Metrics tab's button after a Disconnect), the cluster
+			// is not "gone": a service account is to be connected first, as Show metrics says.
+			await this.ctx.ready;
+			if (!this.ctx.account) {
+				const choice = await this.ctx.showInfo(NOT_CONNECTED_FOR_METRICS_MESSAGE, CONNECT_ACTION);
+				if (choice === CONNECT_ACTION) {
+					await this.ctx.connect();
+				}
+				return NOT_STARTED;
+			}
 			const cluster = rowCluster(this.ctx, node);
 			if (!cluster) {
 				return NOT_STARTED;

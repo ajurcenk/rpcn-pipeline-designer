@@ -92,6 +92,11 @@ export interface RunChange {
 	readonly phase: RunPhase | undefined;
 	/** The metrics port while the run lives. */
 	readonly port: number | undefined;
+	/**
+	 * Story 62 (C12): `true` on the `running` of the automatic restart with a new port after a bind failure
+	 * (`rebind`): not a run the user started. Absent otherwise.
+	 */
+	readonly rebind?: true;
 }
 
 export const terminalName = (fsPath: string) => `Redpanda Connect: ${path.basename(fsPath)}`;
@@ -456,9 +461,9 @@ export class RunController implements vscode.Disposable {
 		this.refreshUi();
 	}
 
-	private fireChange(session: Session): void {
+	private fireChange(session: Session, rebind = false): void {
 		if (!this.disposed) {
-			this.runChanged.fire({ uri: session.key, phase: session.phase, port: this.portOf(session.key) });
+			this.runChanged.fire({ uri: session.key, phase: session.phase, port: this.portOf(session.key), ...(rebind ? { rebind: true as const } : {}) });
 		}
 	}
 
@@ -555,9 +560,10 @@ export class RunController implements vscode.Disposable {
 
 	/**
 	 * Spawns `built` in the session's terminal. With `rebindState` (the first try), a bind failure in
-	 * the output within `BIND_WINDOW_MS` restarts the run once with a new free port (ticket 7.2).
+	 * the output within `BIND_WINDOW_MS` restarts the run once with a new free port (ticket 7.2). With
+	 * `rebound` (story 62), this launch is that restart: its `running` change says so.
 	 */
-	private launch(session: Session, doc: vscode.TextDocument, built: ArgsResult & { readonly kind: 'ok' }, port: number | undefined, rebindState: BinaryState | undefined): void {
+	private launch(session: Session, doc: vscode.TextDocument, built: ArgsResult & { readonly kind: 'ok' }, port: number | undefined, rebindState: BinaryState | undefined, rebound = false): void {
 		const name = path.basename(session.fsPath);
 		const pty = this.terminalFor(session);
 		pty.write(`\x1b[2m$ ${[built.command, ...built.args].map(shellQuote).join(' ')}\x1b[0m\n`);
@@ -595,7 +601,7 @@ export class RunController implements vscode.Disposable {
 		session.exit = undefined;
 		session.stopRequested = false;
 		this.refreshUi();
-		this.fireChange(session);
+		this.fireChange(session, rebound);
 		void spawned.exited.then((exit) => {
 			// A child being replaced by `rebind` ends without a phase change (unless the user stopped it).
 			if (session.child !== spawned || (bindFailed && rebindState && !session.stopRequested)) {
@@ -636,7 +642,7 @@ export class RunController implements vscode.Disposable {
 			}
 			return;
 		}
-		this.launch(session, doc, built, next, undefined);
+		this.launch(session, doc, built, next, undefined, true);
 	}
 
 	/** Ticket 46: names the unset variables; "Set…" (when one is a name the settings take) sets each in turn; Escape, or a variable still unset after its set, stops. */

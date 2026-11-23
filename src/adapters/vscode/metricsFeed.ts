@@ -34,6 +34,12 @@
 // within the Cloud floor). Each update says when the next read is due (`nextReadAt`), for the
 // unreachable state's "Retrying in N s"; a not-served state says why (`cause`: the config's type, the
 // endpoint's answer, or no series yet).
+//
+// Story 62: the run's automatic restart on a new port (`RunChange.rebind`) does not take a file back
+// from the Cloud (the user started no run). After a Cloud view change, a file's feed bound to a Cloud
+// pipeline that is gone, or that the file's `.cloud.json` no longer maps, goes back to the local run
+// (`cloudChanged`). A file renamed (or moved with its folder) keeps its feed under the new name, readings
+// and all (`renamed`); a run started under the old name is still followed until it ends.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -43,6 +49,7 @@ import { DEFAULT_WINDOW_MINUTES, type MetricsPanelState, type MetricsWindowMinut
 import type { PipelineModel } from '../../shared/protocol';
 import { compactReading, figures, keepReading, type CompactReading, type ComponentFigures } from '../../core/metrics';
 import { isMetricsReadError, localMetricsSource, type MetricsSource } from '../metrics/source';
+import { renamedThrough, within } from '../graphPanel/tabs';
 import type { RunChange } from './run';
 
 /** A local run is read this often (ticket 7.2 decision). */
@@ -162,7 +169,28 @@ export interface MetricsFeedsOptions {
 	/** The config of `uri` now (the open document's text, else the file's; its `metrics` type from disk). */
 	readonly configFor: (uri: vscode.Uri) => MetricsConfig;
 	readonly intervalMs?: number;
+	/** Story 62 (C12): the workspace's file renames (default: none followed). */
+	readonly onDidRenameFiles?: vscode.Event<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>;
+	/** Story 62 (C9): fires when the Cloud view's data change (default: never). */
+	readonly onCloudChanged?: vscode.Event<void>;
+	/**
+	 * Story 62 (C9): whether the Cloud view knows a pipeline is gone: signed in, and its cluster's list (or
+	 * the cluster list) read without it. `false` when it can't tell (signed out, not read).
+	 */
+	readonly cloudPipelineGone?: (clusterId: string, pipelineId: string) => boolean;
+	/** Story 62 (C9): the Cloud pipeline a file's own `.cloud.json` maps it to; `undefined`: none (or unreadable). */
+	readonly mappedPipelineOf?: (uri: vscode.Uri) => Promise<{ readonly clusterId: string; readonly pipelineId: string } | undefined>;
+	/** Story 62 (C12): the workspace's renames about to happen (a config read meanwhile is skipped quietly). */
+	readonly onWillRenameFiles?: vscode.Event<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>;
+	/** Story 62: drops what `configFor` keeps of a file (its feed was released, or it was renamed). */
+	readonly forgetConfig?: (uri: vscode.Uri) => void;
 }
+
+/** Story 62: how long a rename about to happen is waited for (one that never happens is then forgotten). */
+const PENDING_RENAME_MS = 5_000;
+
+type MappedPipeline = { readonly clusterId: string; readonly pipelineId: string } | undefined;
+const samePipeline = (a: MappedPipeline, b: MappedPipeline) => a?.clusterId === b?.clusterId && a?.pipelineId === b?.pipelineId;
 
 const NONE: MetricsPanelState = { kind: 'none' };
 
@@ -174,6 +202,10 @@ interface Subscriber {
 /** One file's reader (see the header). */
 export class MetricsFeed {
 	private readonly subscribers = new Set<Subscriber>();
+	/** The file's URI (a rename replaces it, story 62). */
+	private fileUri: vscode.Uri;
+	/** Story 62 (C12): the old name the file's run was started under, while that run lives after a rename. */
+	private runKey: string | undefined;
 	private port: number | undefined;
 	private panelState: MetricsPanelState = NONE;
 	/** Ticket 7.6: the last 15 minutes of readings, oldest first (compact). */
@@ -194,18 +226,49 @@ export class MetricsFeed {
 	private reads = 0;
 	/** Ticket 7.5: the Cloud pipeline read instead of the local run (last chosen wins). */
 	private cloud: CloudMetricsBinding | undefined;
+	/**
+	 * Story 62 (C9): the file's `.cloud.json` pipeline as it was when the Cloud was bound (Show metrics finds
+	 * the file by the pipeline's tag, so it may already name another one); only a change from it unbinds.
+	 */
+	private boundMapping: Promise<MappedPipeline> | undefined;
 	private cloudInfo: MetricsSourceInfo = LOCAL;
 	private accessSubscription: vscode.Disposable | undefined;
 	/** Ticket 7.5: why the Cloud refused the last read (masked); not read again until the access changes. */
 	private refusedMessage: string | undefined;
 
 	constructor(
-		readonly uri: vscode.Uri,
+		uri: vscode.Uri,
 		private readonly feeds: MetricsFeeds,
 		private readonly options: MetricsFeedsOptions,
 		private readonly intervalMs: number,
 	) {
+		this.fileUri = uri;
 		this.refreshState();
+	}
+
+	/** The file's URI (its key); a rename replaces it. */
+	get uri(): vscode.Uri {
+		return this.fileUri;
+	}
+
+	/** The key the file's run is under: its old name while a run started before a rename lives (story 62). */
+	get runUri(): string {
+		return this.runKey ?? this.fileUri.toString();
+	}
+
+	/**
+	 * Story 62 (C12): the file was renamed to `uri`: the feed goes on under it, its readings kept. A run
+	 * of the old name that lives is still followed (it runs the file it started with) until it ends; a
+	 * Cloud binding's file is the new one.
+	 */
+	rekey(uri: vscode.Uri): void {
+		const old = this.runUri;
+		this.fileUri = uri;
+		this.runKey = this.options.run.portOf(old) !== undefined ? old : undefined;
+		if (this.cloudInfo.kind === 'cloud' && this.cloudInfo.file) {
+			this.cloudInfo = { ...this.cloudInfo, file: uri };
+		}
+		this.emit();
 	}
 
 	get state(): MetricsPanelState {
@@ -250,7 +313,13 @@ export class MetricsFeed {
 		// Ticket 8: a set-up of the cluster starting or ending (the tab's buttons follow it).
 		const setUp = binding.onDidChangeSettingUp?.(() => this.emit());
 		this.accessSubscription = { dispose: () => { access.dispose(); setUp?.dispose(); } };
+		this.boundMapping = this.uri.scheme === CLOUD_METRICS_SCHEME ? undefined : this.mappingNow();
 		this.restart();
+	}
+
+	/** Story 62 (C9): the file's own `.cloud.json` pipeline now (`undefined`: none, or unreadable). */
+	private mappingNow(): Promise<MappedPipeline> {
+		return this.options.mappedPipelineOf?.(this.uri).then((m) => m, () => undefined) ?? Promise.resolve(undefined);
 	}
 
 	/**
@@ -265,10 +334,43 @@ export class MetricsFeed {
 		this.restart();
 	}
 
+	/**
+	 * Story 62 (C9): the Cloud view's data changed: a file's feed bound to a pipeline the view knows is gone,
+	 * or that the file's own `.cloud.json` now maps to another pipeline, goes back to the local run (it
+	 * would read the old pipeline on and on). Signed out, or with no mapping, it stays (its access says so).
+	 */
+	async cloudChanged(): Promise<void> {
+		const binding = this.cloud;
+		if (!binding || this.uri.scheme === CLOUD_METRICS_SCHEME) {
+			return;
+		}
+		let why: string | undefined;
+		if (this.options.cloudPipelineGone?.(binding.clusterId, binding.pipelineId)) {
+			why = 'it is no longer in the Cloud view';
+		} else {
+			const before = await this.boundMapping;
+			const mapped = await this.mappingNow();
+			if (this.cloud !== binding) {
+				return;
+			}
+			// Only a mapping changed since the bind, to another pipeline: one that named another pipeline
+			// already when the user chose this one is the user's choice (last chosen wins).
+			if (mapped && !samePipeline(mapped, before) && !samePipeline(mapped, binding)) {
+				why = `${path.basename(this.uri.fsPath)}'s mapping now names another pipeline`;
+			}
+		}
+		if (why === undefined) {
+			return;
+		}
+		this.options.log(`Pipeline metrics: ${this.where()}: ${why}; showing the local run of ${path.basename(this.uri.fsPath)} again.`);
+		this.bindLocal();
+	}
+
 	private unbindCloud(): void {
 		this.accessSubscription?.dispose();
 		this.accessSubscription = undefined;
 		this.cloud = undefined;
+		this.boundMapping = undefined;
 		this.cloudInfo = LOCAL;
 		this.refusedMessage = undefined;
 		this.notServed = undefined;
@@ -445,7 +547,7 @@ export class MetricsFeed {
 			return;
 		}
 		const uri = this.uri;
-		const port = this.options.run.portOf(uri.toString());
+		const port = this.options.run.portOf(this.runUri);
 		if (port === undefined) {
 			this.port = undefined;
 			this.panelState = this.last !== undefined ? { kind: 'stopped' } : { kind: 'notRunning' };
@@ -489,12 +591,20 @@ export class MetricsFeed {
 
 	/** The file's run started, stopped or changed port. */
 	runChanged(change: RunChange): void {
-		if (change.uri !== this.uri.toString()) {
+		if (change.uri !== this.uri.toString() && change.uri !== this.runKey) {
 			return;
+		}
+		if (change.uri === this.uri.toString()) {
+			// Story 62: a run of the new name: the old name's run is no longer the file's.
+			this.runKey = undefined;
+		} else if (change.port === undefined) {
+			// Story 62: the old name's run ended: the next run is under the new name.
+			this.runKey = undefined;
 		}
 		if (this.cloud) {
 			// Ticket 7.5: a local run of the file starting takes it back from the Cloud (last chosen wins).
-			if (change.phase === 'running') {
+			// Story 62 (C12): not the run's own restart on a new port (no run the user started).
+			if (change.phase === 'running' && !change.rebind) {
 				this.unbindCloud();
 				this.restart();
 			}
@@ -758,6 +868,14 @@ export class MetricsFeeds implements vscode.Disposable {
 	private readonly cloudReads = new Map<string, number>();
 	/** Ticket 7.6: the window the figures are over, for the session (the tab's choice; none written anywhere). */
 	private window: MetricsWindowMinutes = DEFAULT_WINDOW_MINUTES;
+	/** Story 62 (C12): a feed moved to a new name by a rename (its subscribers follow it). */
+	private readonly rekeyed = new vscode.EventEmitter<{ readonly feed: MetricsFeed; readonly from: vscode.Uri }>();
+	readonly onDidRekey = this.rekeyed.event;
+	/** Story 62: a feed a rename onto its name displaced (`by`: the moved feed now under it); its subscribers should take `by`. */
+	private readonly displacedEmitter = new vscode.EventEmitter<{ readonly feed: MetricsFeed; readonly by: MetricsFeed }>();
+	readonly onDidDisplace = this.displacedEmitter.event;
+	/** Story 62: the files (or folders) whose rename is about to happen, with when it was announced. */
+	private readonly pendingRenames = new Map<string, number>();
 
 	get windowMinutes(): MetricsWindowMinutes {
 		return this.window;
@@ -788,7 +906,75 @@ export class MetricsFeeds implements vscode.Disposable {
 
 	constructor(private readonly options: MetricsFeedsOptions) {
 		this.intervalMs = options.intervalMs ?? METRICS_INTERVAL_MS;
-		this.subscriptions.push(options.run.onDidChangeRun((change) => this.feeds.get(change.uri)?.runChanged(change)));
+		this.subscriptions.push(options.run.onDidChangeRun((change) => {
+			// Story 62: a run started under a renamed file's old name reaches its feed too.
+			const feeds = [...this.feeds.values()].filter((f) => f.uri.toString() === change.uri || f.runUri === change.uri);
+			feeds.forEach((f) => f.runChanged(change));
+		}));
+		// Story 62: registered before the graph panels' own rename listener (built after the feeds), so a
+		// renamed graph finds its feed under the new name already.
+		if (options.onDidRenameFiles) {
+			this.subscriptions.push(options.onDidRenameFiles((e) => this.renamed(e.files)));
+		}
+		if (options.onWillRenameFiles) {
+			this.subscriptions.push(options.onWillRenameFiles((e) => {
+				e.files.forEach((f) => this.pendingRenames.set(f.oldUri.toString(), Date.now()));
+			}));
+		}
+		if (options.onCloudChanged) {
+			this.subscriptions.push(options.onCloudChanged(() => {
+				this.feeds.forEach((f) => void f.cloudChanged());
+			}));
+		}
+		this.subscriptions.push(this.rekeyed, this.displacedEmitter);
+	}
+
+	/** Story 62 (C12): whether a rename of `uri` (or of a folder holding it) is about to happen. */
+	renamePending(uri: vscode.Uri): boolean {
+		const key = uri.toString();
+		const now = Date.now();
+		for (const [from, at] of [...this.pendingRenames]) {
+			if (now - at > PENDING_RENAME_MS) {
+				this.pendingRenames.delete(from);
+			} else if (key === from || within(key, from)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Story 62 (C12): files renamed (a folder: every file in it): each feed of one goes on under its new
+	 * name, its readings kept (the batch as a whole, as the graph panels apply it). A feed already under a
+	 * new name is displaced (it lives on for its subscribers, unkeyed).
+	 */
+	renamed(files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[]): void {
+		const renames = files.map((f) => ({ from: f.oldUri.toString(), to: f.newUri.toString() }));
+		const moves: [MetricsFeed, string][] = [];
+		for (const [key, feed] of this.feeds) {
+			const to = feed.uri.scheme === CLOUD_METRICS_SCHEME ? undefined : renamedThrough(key, renames);
+			if (to !== undefined && to !== key) {
+				moves.push([feed, to]);
+			}
+		}
+		moves.forEach(([feed]) => this.feeds.delete(feed.uri.toString()));
+		for (const [feed, to] of moves) {
+			const from = feed.uri;
+			const exact = files.find((f) => f.newUri.toString() === to)?.newUri;
+			this.options.forgetConfig?.(from);
+			feed.rekey(exact ?? vscode.Uri.parse(to));
+			const displaced = this.feeds.get(to);
+			this.feeds.set(to, feed);
+			if (displaced) {
+				// The moved file's content is what is there now: the old feed's subscribers take the moved one.
+				this.options.forgetConfig?.(displaced.uri);
+				this.displacedEmitter.fire({ feed: displaced, by: feed });
+			}
+			this.options.log(`Pipeline metrics: ${path.basename(from.fsPath)} was renamed to ${path.basename(feed.uri.fsPath)}; its metrics follow it.`);
+			this.rekeyed.fire({ feed, from });
+		}
+		// Not before: a subscriber told of the move above reads the config under the new name only.
+		renames.forEach((r) => this.pendingRenames.delete(r.from));
 	}
 
 	/** Test seam: the source a port is read through (default: the local `/metrics`). */
@@ -824,7 +1010,9 @@ export class MetricsFeeds implements vscode.Disposable {
 
 	/** The config of `uri`, or `undefined` (logged) when it cannot be read; none for a Cloud pipeline with no file. */
 	configOf(uri: vscode.Uri): MetricsConfig | undefined {
-		if (uri.scheme === CLOUD_METRICS_SCHEME) {
+		// Story 62: a file whose rename is about to happen may be gone from its old name already: skipped
+		// quietly (it is read again under its new name).
+		if (uri.scheme === CLOUD_METRICS_SCHEME || this.renamePending(uri)) {
 			return undefined;
 		}
 		try {
@@ -841,6 +1029,7 @@ export class MetricsFeeds implements vscode.Disposable {
 		const key = feed.uri.toString();
 		if (this.feeds.get(key) === feed) {
 			this.feeds.delete(key);
+			this.options.forgetConfig?.(feed.uri);
 		}
 	}
 

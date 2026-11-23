@@ -3,7 +3,7 @@ import * as http from 'http';
 import * as net from 'net';
 import * as zlib from 'zlib';
 import {
-	CLOUD_READ_TIMEOUT_MS, CLOUD_REFUSED_TEXT, cloudMetricsSource, DEFAULT_PROMETHEUS_USER, freePort, isMetricsReadError, localMetricsSource, MetricsReadError,
+	CLOUD_ADDRESS_FALLBACK, CLOUD_READ_TIMEOUT_MS, CLOUD_REFUSED_TEXT, cloudAddress, cloudMetricsSource, DEFAULT_PROMETHEUS_USER, freePort, isMetricsReadError, localMetricsSource, MetricsReadError,
 	testCloudMetricsAccess,
 } from '../../../adapters/metrics/source';
 
@@ -311,5 +311,19 @@ suite('adapters/metrics Cloud source (ticket 7.4)', () => {
 		} finally {
 			await server.close();
 		}
+	});
+});
+
+suite('adapters/metrics cloudAddress (story 62)', () => {
+	test('story 62 C11: a URL that does not parse, carrying credentials, is shown as a fixed text, never as it is', () => {
+		for (const url of ['https://user:hunter2-62@[not-a-host/metrics', 'user:hunter2-62@prom example', '://user:hunter2-62@']) {
+			const shown = cloudAddress(url);
+			assert.strictEqual(shown, CLOUD_ADDRESS_FALLBACK, url);
+			assert.ok(!shown.includes('hunter2-62') && !shown.includes('user'), shown);
+		}
+	});
+
+	test('story 62 C11: a URL that parses is shown as its host alone (no credentials, path or query)', () => {
+		assert.strictEqual(cloudAddress('https://user:hunter2-62@prom.example:9090/api/cloud/prometheus/public_metrics?x=1'), 'prom.example:9090');
 	});
 });

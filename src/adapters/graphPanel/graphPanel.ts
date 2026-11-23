@@ -164,7 +164,8 @@ export class GraphPanel implements GraphPanelHandle {
 	set uri(uri: vscode.Uri) {
 		const changed = uri.toString() !== this.fileUri.toString();
 		this.fileUri = uri;
-		if (changed && this.metrics) {
+		// Story 62 (C12): a feed the rename moved here already (the feeds follow renames first) is kept, its readings with it.
+		if (changed && this.metrics && this.metricsSubscription?.feed.uri.toString() !== uri.toString()) {
 			this.subscribeMetrics();
 		}
 	}

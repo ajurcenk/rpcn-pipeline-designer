@@ -454,6 +454,18 @@ suite('adapters/vscode RunController', () => {
 			assert.strictEqual(controller.phaseOf(docs[0].uri), 'running', 'the run goes on');
 		});
 
+		test('story 62 C12 rebind: the restart on a new port is marked as one (`rebind`); the run the user started is not', async () => {
+			await controller.run();
+			children[0].handlers.onStderr?.('listen tcp 127.0.0.1:41001: bind: address already in use\n');
+			await tick();
+			assert.strictEqual(children.length, 2);
+			const running = changes.filter((c) => c.phase === 'running');
+			assert.deepStrictEqual(running, [
+				{ uri: docs[0].uri.toString(), phase: 'running', port: 41001 },
+				{ uri: docs[0].uri.toString(), phase: 'running', port: 41002, rebind: true },
+			]);
+		});
+
 		test('PORT_TAKEN: a Stop during the restart ends the run; no new child', async () => {
 			intDelayMs = 30;
 			await controller.run();

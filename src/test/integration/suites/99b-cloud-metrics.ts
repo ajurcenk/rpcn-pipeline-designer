@@ -27,6 +27,7 @@ import {
 } from '../../../adapters/vscode/cloudView';
 import { CLOUD_REFUSED_TEXT, DEFAULT_PROMETHEUS_USER } from '../../../adapters/metrics/source';
 import { CLOUD_NO_SERIES_HINT, CLOUD_TIMING } from '../../../adapters/vscode/metricsFeed';
+import { CLUSTER_GONE } from '../../../adapters/vscode/cloudShared';
 import { METRICS_VIEW_ID, SHOW_METRICS_COMMAND } from '../../../adapters/vscode/metricsPanel';
 import type { GraphPanelHandle } from '../../../adapters/graphPanel/panels';
 import type { NodeFiguresById } from '../../../shared/protocol';
@@ -802,6 +803,61 @@ suite('Metrics of a Cloud pipeline in the tab and on the graph (integration, tic
 			assert.ok(!fake.requests.some((r) => r.method === 'GET' && /\/v1\/redpanda-connect\/pipelines(\?|$)/.test(r.url)), 'no listing call for the pick');
 		} finally {
 			metrics().ui = original;
+		}
+	});
+	// Story 62: the risks epic 7 left unverified (the plan's matrix rows C12 disconnect and C9).
+	test('story 62 C12 disconnect: the tab Cloud-bound in no access after a sign-out; its Set up metrics access… offers Connect, not "cluster gone"', async () => {
+		await setUpAccess();
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		assert.ok(await waitFor(() => metrics().state.kind === 'live', 10_000), JSON.stringify(metrics().state));
+		await disconnectSettled();
+		assert.ok(await waitFor(() => metrics().state.kind === 'noAccess', 5_000), JSON.stringify(metrics().state));
+		assert.strictEqual(metrics().title, 'Cloud · rpc-vilnius · orders', 'still the Cloud pipeline');
+		infos.length = 0;
+		infoAnswers = [undefined];
+		const shownBefore = allShown.length;
+		await metrics().receive({ type: 'setUpAccessRequested' });
+		assert.deepStrictEqual(infos, [NOT_CONNECTED_FOR_METRICS_MESSAGE]);
+		assert.ok(!infos.includes(CLUSTER_GONE));
+		assert.ok(!allShown.slice(shownBefore).some((t) => t.startsWith('Set up metrics access for')), 'no prompt while signed out');
+	});
+
+	async function cloudBoundGraph(): Promise<{ readonly uri: vscode.Uri; readonly handle: GraphPanelHandle }> {
+		await setUpAccess();
+		const doc = await vscode.workspace.openTextDocument(fileA);
+		await vscode.window.showTextDocument(doc);
+		await vscode.commands.executeCommand('redpandaConnect.showGraph', doc.uri);
+		const handle = api().graphPanels.panelFor(doc.uri)!;
+		assert.strictEqual((await showMetrics(A))?.kind, 'shown');
+		await closeTab();
+		// The graph alone keeps the feed on the Cloud pipeline.
+		assert.ok(await waitFor(() => metrics().feeds.feedOf(doc.uri)?.update.source.kind === 'cloud', 5_000));
+		assert.ok(await readsDuring(TIMING.intervalMs * 2 + 200) >= 1, 'the graph alone reads');
+		return { uri: doc.uri, handle };
+	}
+
+	test('story 62 C9 gone: the graph reads A with the tab closed; A leaves the Cloud view on a refresh: its feed goes back to the local run, A no longer read', async () => {
+		const { uri } = await cloudBoundGraph();
+		fake.cluster(VILNIUS).pipelines = [pipeline(B, 'clicks', {})];
+		await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+		assert.ok(await waitFor(() => metrics().feeds.feedOf(uri)?.update.source.kind === 'local', 5_000),
+			JSON.stringify(metrics().feeds.feedOf(uri)?.update.source));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0, 'the old pipeline is not read on');
+	});
+
+	test('story 62 C9 remapped: the graph reads A with the tab closed; A\'s .cloud.json now maps B: after a Cloud change its feed goes back to the local run', async () => {
+		const { uri } = await cloudBoundGraph();
+		const mapping = `${fileA}.cloud.json`;
+		fs.writeFileSync(mapping, JSON.stringify({ clusterId: VILNIUS, pipelineId: B, clusterName: 'rpc-vilnius', pipelineName: 'clicks' }));
+		try {
+			await cloud().refresh({ kind: 'cluster', id: VILNIUS });
+			assert.ok(await waitFor(() => metrics().feeds.feedOf(uri)?.update.source.kind === 'local', 5_000),
+				JSON.stringify(metrics().feeds.feedOf(uri)?.update.source));
+			await new Promise((r) => setTimeout(r, 200));
+			assert.strictEqual(await readsDuring(TIMING.intervalMs * 3), 0, 'the old pipeline is not read on');
+		} finally {
+			fs.rmSync(mapping, { force: true });
 		}
 	});
 });

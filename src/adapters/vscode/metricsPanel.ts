@@ -50,6 +50,9 @@
 // copied into the binding); a binding older than the latest user choice is dropped (`showCloud`), so the
 // bind on opening never overwrites a source the user chose meanwhile. A bind on opening that did not bind
 // the mapping is tried again on the next reveal only after the Cloud view's data changed (`onCloudChanged`).
+//
+// Story 62: a renamed bound file keeps its feed (the feeds move it), and the tab follows it to the new
+// name (`onDidRekey`). A state button's failure is masked with the binding held when it was pressed.
 
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -177,6 +180,8 @@ export class MetricsPanel implements vscode.Disposable {
 	/** Bug 58: the token of the latest bind on opening. */
 	private openRequest: number | undefined;
 	private readonly cloudChanged: vscode.Disposable | undefined;
+	private readonly rekeyed: vscode.Disposable | undefined;
+	private readonly displaced: vscode.Disposable | undefined;
 	private readonly changed = new vscode.EventEmitter<void>();
 	/** Fires when the rows or the state change (test seam). */
 	readonly onDidChange = this.changed.event;
@@ -185,6 +190,33 @@ export class MetricsPanel implements vscode.Disposable {
 		// Bug 58: after a Cloud change, the bind on opening may try the active config's mapping again.
 		this.cloudChanged = options.onCloudChanged?.(() => {
 			this.mappingTriedFor = undefined;
+		});
+		// Story 62 (C12): the bound file was renamed: the tab goes on with it under its new name.
+		this.rekeyed = options.feeds.onDidRekey(({ feed }) => {
+			if (this.subscription?.feed !== feed) {
+				return;
+			}
+			this.uri = feed.uri;
+			this.refreshMapping();
+			// The rows of a reading skipped while the rename was pending are made now, under the new name.
+			this.updated(this.subscription, feed.update);
+		});
+		// Story 62: a rename onto the bound file's name: the tab takes the moved file's feed (its content is there now).
+		this.displaced = options.feeds.onDidDisplace(({ feed, by }) => {
+			const old = this.subscription;
+			if (old?.feed !== feed) {
+				return;
+			}
+			const added = by.subscribe((update) => this.updated(added, update), old !== undefined && this.visible);
+			this.subscription = added;
+			this.uri = by.uri;
+			old.dispose();
+			this.rowsFrom = undefined;
+			this.configRows = [];
+			this.configSummary = null;
+			this.update = undefined;
+			this.refreshMapping();
+			this.updated(added, by.update);
 		});
 	}
 
@@ -427,6 +459,8 @@ export class MetricsPanel implements vscode.Disposable {
 			this.actions.splice(0, this.actions.length - MAX_POSTED);
 		}
 		const source = sub.feed.update.source;
+		// Story 62: the binding as pressed (the tab may be bound elsewhere by the time the action fails).
+		const binding = source.kind === 'cloud' ? sub.feed.cloudBinding : undefined;
 		const run = this.command();
 		try {
 			switch (type) {
@@ -464,7 +498,6 @@ export class MetricsPanel implements vscode.Disposable {
 					break;
 			}
 		} catch (err) {
-			const binding = source.kind === 'cloud' ? sub.feed.cloudBinding : undefined;
 			const text = errorText(err);
 			this.options.log(`Pipeline metrics: ${type} failed: ${binding ? binding.mask(text) : text}`);
 		}
@@ -695,6 +728,8 @@ export class MetricsPanel implements vscode.Disposable {
 
 	dispose(): void {
 		this.cloudChanged?.dispose();
+		this.rekeyed?.dispose();
+		this.displaced?.dispose();
 		this.viewSubscriptions.forEach((s) => s.dispose());
 		this.subscription?.dispose();
 		this.subscription = undefined;
@@ -712,7 +747,8 @@ export class MetricsPanel implements vscode.Disposable {
 			// Ticket 8: the mapping is read again each time the file stops being run (a deploy may have written it).
 			this.refreshMapping();
 		}
-		if (update.figures !== this.rowsFrom) {
+		// Story 62: a reading while the file's rename is pending is mapped once it is under its new name.
+		if (update.figures !== this.rowsFrom && !this.options.feeds.renamePending(this.uri)) {
 			this.rowsFrom = update.figures;
 			if (update.figures) {
 				const config = this.options.feeds.configOf(this.uri);

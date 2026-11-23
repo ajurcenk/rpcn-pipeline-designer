@@ -171,12 +171,18 @@ export interface CloudMetricsOptions {
 	readonly timeoutMs?: number;
 }
 
-/** Where a Cloud endpoint is shown: its host (no path, query or credentials). */
+/** Story 62 (C11): what a Cloud endpoint is shown as when its URL has no host to show. */
+export const CLOUD_ADDRESS_FALLBACK = 'the Prometheus endpoint';
+
+/**
+ * Where a Cloud endpoint is shown: its host (no path, query or credentials). A URL that does not parse,
+ * or has no host, is never shown as it is (it may carry credentials): `CLOUD_ADDRESS_FALLBACK`.
+ */
 export function cloudAddress(url: string): string {
 	try {
-		return new URL(url).host || url;
+		return new URL(url).host || CLOUD_ADDRESS_FALLBACK;
 	} catch {
-		return url;
+		return CLOUD_ADDRESS_FALLBACK;
 	}
 }
 

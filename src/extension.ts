@@ -280,30 +280,42 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(run, ...run.registerCommands());
 	// The metrics feeds (tickets 7.2, 7.3, AD-25): one reader of the run's `/metrics` per file, shared by its
 	// Pipeline Metrics tab and its graph, reading while either is visible.
-	const metricsFeeds = new MetricsFeeds({
-		log,
-		run,
-		configFor: (uri): MetricsConfig => {
-			const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-			const { text, parsed } = doc ? parsedDocument(doc) : ((t: string) => ({ text: t, parsed: parseYaml(t) }))(fs.readFileSync(uri.fsPath, 'utf8'));
-			const catalogue = catalogueOf(schemaStore.current?.json);
-			// The run runs the saved file: its `metrics` section is read from disk, not from unsaved edits.
-			let saved = parsed;
-			if (doc) {
-				try {
-					saved = parseYaml(fs.readFileSync(uri.fsPath, 'utf8'));
-				} catch {
-					saved = undefined;
-				}
-			}
-			return { model: buildPipelineModel(parsed, text, catalogue), paths: componentPaths(parsed, text, catalogue), metricsType: metricsTypeOf(saved) };
-		},
-	});
 	// Ticket 9: the Cloud view's loaded pipelines, for the tab's pick (the view is built below).
 	let loadedCloudPipelines: () => readonly LoadedCloudPipeline[] = () => [];
+	// Story 62 (C9): whether the Cloud view knows a pipeline is gone (the view is built below).
+	let cloudPipelineGone: (clusterId: string, pipelineId: string) => boolean = () => false;
 	// Bug 58: the Cloud view's data changed (connect, disconnect, refresh), for the tab's bind on opening (the view is built below).
 	const cloudChanged = new vscode.EventEmitter<void>();
 	context.subscriptions.push(cloudChanged);
+	// Ticket 8: a config's own `.cloud.json` pipeline (the tab's mapped-pipeline button; story 62: a Cloud-bound feed's check).
+	const mappingOf = async (uri: vscode.Uri) => {
+		const at = await findMapping(uri.fsPath);
+		if (at.kind !== 'own' || at.read.kind !== 'ok') {
+			return undefined;
+		}
+		const m = at.read.mapping;
+		return { clusterId: m.clusterId, pipelineId: m.pipelineId, cluster: m.clusterName ?? m.clusterId, pipeline: m.pipelineName ?? m.pipelineId };
+	};
+	// Story 62 (C12): read and parsed once per file version (and per change on disk), not per reading.
+	const metricsConfig = metricsConfigReader({
+		documents: () => vscode.workspace.textDocuments,
+		readFile: (fsPath) => fs.readFileSync(fsPath, 'utf8'),
+		stat: (fsPath) => fs.statSync(fsPath),
+		schema: () => schemaStore.current?.json,
+	});
+	const metricsFeeds = new MetricsFeeds({
+		log,
+		run,
+		configFor: metricsConfig,
+		forgetConfig: (uri) => metricsConfig.forget(uri),
+		onWillRenameFiles: vscode.workspace.onWillRenameFiles,
+		// Story 62: renames are followed (before the graph panels, built below, hear them); a Cloud-bound feed
+		// whose pipeline is gone or remapped goes back to the local run.
+		onDidRenameFiles: vscode.workspace.onDidRenameFiles,
+		onCloudChanged: cloudChanged.event,
+		cloudPipelineGone: (clusterId, pipelineId) => cloudPipelineGone(clusterId, pipelineId),
+		mappedPipelineOf: mappingOf,
+	});
 	// The Pipeline Metrics tab (ticket 7.2, AD-25): in the bottom panel next to Pipeline Logs.
 	const metricsPanel = new MetricsPanel({
 		extensionUri: context.extensionUri,
@@ -311,14 +323,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		feeds: metricsFeeds,
 		// Ticket 8 (board 5): the state buttons' Show output and a not-running file's mapped Cloud pipeline.
 		showOutput: () => channel.show(true),
-		mappingOf: async (uri) => {
-			const at = await findMapping(uri.fsPath);
-			if (at.kind !== 'own' || at.read.kind !== 'ok') {
-				return undefined;
-			}
-			const m = at.read.mapping;
-			return { clusterId: m.clusterId, pipelineId: m.pipelineId, cluster: m.clusterName ?? m.clusterId, pipeline: m.pipelineName ?? m.pipelineId };
-		},
+		mappingOf,
 		// Ticket 9: the resolver's runs, the active config, and the pick's Cloud pipelines (the Cloud view's loaded ones).
 		runningUris: () => run.runningUris(),
 		isConfig: (uri) => detection.isDetected(uri),
@@ -434,6 +439,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	});
 	context.subscriptions.push(cloud, ...cloud.register());
 	loadedCloudPipelines = () => cloud.loadedPipelines();
+	cloudPipelineGone = (clusterId, pipelineId) => cloud.pipelineGone(clusterId, pipelineId);
 	context.subscriptions.push(cloud.onDidChangeTreeData(() => cloudChanged.fire()));
 
 	return {
@@ -452,6 +458,58 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: Object.assign(metricsPanel, { feeds: metricsFeeds }) } : {}),
 		outputLines: () => [...lines],
 	};
+}
+
+/**
+ * A config as the metrics need it (`MetricsFeedsOptions.configFor`): the open document's text, else the
+ * file's; its `metrics` type from disk (the run runs the saved file, not unsaved edits). Story 62 (C12):
+ * kept per file, and read and parsed again only when the document's version, the file on disk (its
+ * modification time and size) or the schema changed, not on each reading. Throws when there is neither
+ * an open document nor a file. `forget` drops a file's entry (its feed released, or the file renamed).
+ */
+export function metricsConfigReader(deps: {
+	readonly documents: () => readonly vscode.TextDocument[];
+	readonly readFile: (fsPath: string) => string;
+	readonly stat: (fsPath: string) => { readonly mtimeMs: number; readonly size: number };
+	readonly schema: () => JsonObject | undefined;
+}): ((uri: vscode.Uri) => MetricsConfig) & { forget(uri: vscode.Uri): void } {
+	const kept = new Map<string, { readonly key: string; readonly schema: JsonObject | undefined; readonly config: MetricsConfig }>();
+	const read = (uri: vscode.Uri): MetricsConfig => {
+		const id = uri.toString();
+		const doc = deps.documents().find((d) => d.uri.toString() === id);
+		let disk: string;
+		try {
+			const stat = deps.stat(uri.fsPath);
+			disk = `${stat.mtimeMs}:${stat.size}`;
+		} catch (err) {
+			if (!doc) {
+				kept.delete(id);
+				throw err;
+			}
+			disk = 'none';
+		}
+		const key = `${doc ? `open:${doc.version}` : 'closed'}|${disk}`;
+		const schema = deps.schema();
+		const hit = kept.get(id);
+		if (hit && hit.key === key && hit.schema === schema) {
+			return hit.config;
+		}
+		const { text, parsed } = doc ? parsedDocument(doc) : ((t: string) => ({ text: t, parsed: parseYaml(t) }))(deps.readFile(uri.fsPath));
+		const catalogue = catalogueOf(schema);
+		let saved = parsed;
+		if (doc) {
+			try {
+				saved = parseYaml(deps.readFile(uri.fsPath));
+			} catch {
+				saved = undefined;
+			}
+		}
+		const config: MetricsConfig = { model: buildPipelineModel(parsed, text, catalogue), paths: componentPaths(parsed, text, catalogue), metricsType: metricsTypeOf(saved) };
+		kept.set(id, { key, schema, config });
+		return config;
+	};
+	// Story 62: a file's entry goes with its feed (released, or renamed away).
+	return Object.assign(read, { forget: (uri: vscode.Uri) => { kept.delete(uri.toString()); } });
 }
 
 /** Ticket 38: the README's license section, from `package.json`'s repository (else the default). */

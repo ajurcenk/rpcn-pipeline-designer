@@ -1364,6 +1364,22 @@ export class CloudView implements vscode.TreeDataProvider<CloudNode>, vscode.Dis
 		});
 	}
 
+	/**
+	 * Story 62 (C9): whether the view knows the pipeline is gone: signed in, and the cluster list read
+	 * without its cluster, or its cluster's pipelines read without it. `false` when it can't tell (signed
+	 * out, a list not read or failed): nothing is requested.
+	 */
+	pipelineGone(clusterId: string, pipelineId: string): boolean {
+		if (!this.account || this.clusters?.kind !== 'ok') {
+			return false;
+		}
+		if (!this.clusters.value.some((c) => c.id === clusterId)) {
+			return true;
+		}
+		const loaded = this.pipelines.get(clusterId);
+		return loaded?.kind === 'ok' && !loaded.value.some((p) => p.id === pipelineId);
+	}
+
 	private pipelineById(clusterId: string, id: string): CloudPipeline | undefined {
 		const loaded = this.pipelines.get(clusterId);
 		return loaded?.kind === 'ok' ? loaded.value.find((p) => p.id === id) : undefined;

@@ -5,6 +5,7 @@ import { CLOUD_METRICS_INTERVAL_MS, CLOUD_MIN_GAP_MS, CLOUD_NO_SERIES_HINT, CLOU
 import type { RunChange } from '../../../adapters/vscode/run';
 import { parsePrometheus } from '../../../core/prometheus';
 import { connectText, FakeMetricsReadError } from '../../helpers/fakeMetrics';
+import { metricsConfigReader } from '../../../extension';
 
 // Ticket 7.3: one feed per file, shared by the tab and the graph; it reads while any subscriber is
 // visible, drops its readings when none is, and goes with its last subscriber.
@@ -19,15 +20,32 @@ suite('adapters/vscode MetricsFeeds (7.3)', () => {
 	let reads: string[];
 	let running: boolean;
 	const runChanged = new vscode.EventEmitter<RunChange>();
+	/** Story 62: the workspace's renames, the files whose config can't be read, and the log. */
+	const renames = new vscode.EventEmitter<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>();
+	let unreadable: Set<string>;
+	let logs: string[];
+	const willRename = new vscode.EventEmitter<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>();
+	let forgotten: string[];
 
 	setup(() => {
 		reads = [];
 		running = true;
+		unreadable = new Set();
+		logs = [];
+		forgotten = [];
 		feeds = new MetricsFeeds({
-			log: () => undefined,
+			log: (line) => logs.push(line),
 			run: { portOf: (uri) => (running && uri === URI.toString() ? PORT : undefined), onDidChangeRun: runChanged.event },
-			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined }),
+			configFor: (uri) => {
+				if (unreadable.has(uri.toString())) {
+					throw new Error('ENOENT: no such file');
+				}
+				return { model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined };
+			},
 			intervalMs: INTERVAL,
+			onDidRenameFiles: renames.event,
+			onWillRenameFiles: willRename.event,
+			forgetConfig: (uri) => forgotten.push(uri.toString()),
 		});
 		let n = 0;
 		feeds.setSourceFactory((port) => ({
@@ -42,8 +60,8 @@ suite('adapters/vscode MetricsFeeds (7.3)', () => {
 
 	teardown(() => feeds.dispose());
 
-	async function until(check: () => boolean): Promise<void> {
-		for (let i = 0; i < 200 && !check(); i++) {
+	async function until(check: () => boolean, tries = 200): Promise<void> {
+		for (let i = 0; i < tries && !check(); i++) {
 			await tick(5);
 		}
 	}
@@ -178,6 +196,66 @@ suite('adapters/vscode MetricsFeeds (7.3)', () => {
 		a.dispose();
 		b.dispose();
 	});
+
+	test('story 62 C12 rename: a renamed file keeps its feed under the new name, readings and all; the run started under the old name is followed until it ends', async () => {
+		const renamed = vscode.Uri.file('/ws/renamed.yaml');
+		const updates: MetricsUpdate[] = [];
+		const tab = feeds.subscribe(URI, (u) => updates.push(u), true);
+		await until(() => (updates.at(-1)?.figures?.size ?? 0) > 0);
+		const feed = tab.feed;
+		const figures = feed.update.figures;
+		unreadable.add(URI.toString());
+		renames.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+		assert.strictEqual(feeds.feedOf(renamed), feed, 'the same feed under the new name');
+		assert.strictEqual(feeds.feedOf(URI), undefined);
+		assert.strictEqual(feed.uri.toString(), renamed.toString());
+		assert.strictEqual(feed.update.figures, figures, 'its readings kept');
+		// The graph resubscribes under the new name and drops its old hold: the feed stays.
+		const graph = feeds.subscribe(renamed, () => undefined, true);
+		assert.strictEqual(graph.feed, feed);
+		const before = reads.length;
+		await until(() => reads.length > before);
+		assert.ok(reads.length > before, 'read on');
+		assert.strictEqual(feed.state.kind, 'live', 'the old name\'s run is still its run');
+		running = false;
+		runChanged.fire({ uri: URI.toString(), phase: 'exited', port: undefined });
+		assert.strictEqual(feed.state.kind, 'stopped', 'its end reaches the renamed feed');
+		assert.ok(!logs.some((l) => l.includes('could not read')), JSON.stringify(logs));
+		tab.dispose();
+		graph.dispose();
+		assert.strictEqual(feeds.feedOf(renamed), undefined, 'gone with its last subscriber');
+	});
+
+	test('story 62 C12 pending rename: a config read between the rename on disk and its event is skipped quietly; read again under the new name', () => {
+		const renamed = vscode.Uri.file('/ws/renamed.yaml');
+		const sub = feeds.subscribe(URI, () => undefined, false);
+		willRename.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+		unreadable.add(URI.toString());
+		assert.strictEqual(feeds.configOf(URI), undefined);
+		assert.ok(!logs.some((l) => l.includes('could not read')), JSON.stringify(logs));
+		renames.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+		assert.ok(feeds.configOf(renamed), 'read under the new name');
+		assert.strictEqual(feeds.configOf(URI), undefined, 'the old name no longer pending: read (and said) as before');
+		assert.ok(logs.some((l) => l.includes('could not read feed.yaml')), JSON.stringify(logs));
+		sub.dispose();
+	});
+
+	test('story 62 cache: a file\'s kept config is dropped when its feed is released or the file renamed', () => {
+		const renamed = vscode.Uri.file('/ws/renamed.yaml');
+		const a = feeds.subscribe(URI, () => undefined, false);
+		renames.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+		assert.deepStrictEqual(forgotten, [URI.toString()], 'renamed away');
+		a.dispose();
+		assert.deepStrictEqual(forgotten, [URI.toString(), renamed.toString()], 'released');
+	});
+
+	test('story 62 C12 rename: a folder renamed moves the feeds of the files in it', () => {
+		const sub = feeds.subscribe(vscode.Uri.file('/ws/dir/a.yaml'), () => undefined, false);
+		renames.fire({ files: [{ oldUri: vscode.Uri.file('/ws/dir'), newUri: vscode.Uri.file('/ws/moved') }] });
+		assert.strictEqual(sub.feed.uri.toString(), vscode.Uri.file('/ws/moved/a.yaml').toString());
+		assert.strictEqual(feeds.feedOf(vscode.Uri.file('/ws/moved/a.yaml')), sub.feed);
+		sub.dispose();
+	});
 });
 
 // Ticket 7.5: a feed bound to a Cloud pipeline: read at its own interval with a 5 s floor (shortened
@@ -194,6 +272,12 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 	let running: boolean;
 	let accessChanged: vscode.EventEmitter<void>;
 	const runChanged = new vscode.EventEmitter<RunChange>();
+	/** Story 62 (C9): the Cloud view's change, whether it knows the pipeline is gone, and the file's mapping. */
+	let cloudChanged: vscode.EventEmitter<void>;
+	let gone: boolean;
+	let mapped: { readonly clusterId: string; readonly pipelineId: string } | undefined;
+	/** Story 62 (C10): when each pipeline was read. */
+	let readsBy: Map<string, number[]>;
 
 	/** Ticket 7.5 review: a read held until released (an in-flight read across an access change). */
 	let hold: Promise<void> | undefined;
@@ -204,12 +288,15 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 			address: 'prom.example',
 			read: async () => {
 				cloudReads.push(Date.now());
+				readsBy.set(pipelineId, [...(readsBy.get(pipelineId) ?? []), Date.now()]);
+				// Story 62 (the flake): the answer is the one due when the read starts, not when a held read
+				// is released (a read started meanwhile would otherwise take it).
+				const next = answers.shift() ?? 'ok';
 				const held = hold;
 				if (held) {
 					hold = undefined;
 					await held;
 				}
-				const next = answers.shift() ?? 'ok';
 				if (next === 'refused') {
 					throw new FakeMetricsReadError('refused', `prom.example refused: the user or password is wrong (HTTP 401) ${SECRET}`);
 				}
@@ -242,11 +329,18 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 		hasAccess = true;
 		running = false;
 		accessChanged = new vscode.EventEmitter<void>();
+		cloudChanged = new vscode.EventEmitter<void>();
+		gone = false;
+		mapped = undefined;
+		readsBy = new Map();
 		feeds = new MetricsFeeds({
 			log: () => undefined,
 			run: { portOf: (uri) => (running && uri === URI.toString() ? PORT : undefined), onDidChangeRun: runChanged.event },
 			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: 'none' }),
 			intervalMs: INTERVAL,
+			onCloudChanged: cloudChanged.event,
+			cloudPipelineGone: () => gone,
+			mappedPipelineOf: async () => mapped,
 		});
 		feeds.cloudTiming = TIMING;
 		feeds.setSourceFactory(() => ({
@@ -261,6 +355,7 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 	teardown(() => {
 		feeds.dispose();
 		accessChanged.dispose();
+		cloudChanged.dispose();
 	});
 
 	async function until(check: () => boolean, tries = 200): Promise<void> {
@@ -552,5 +647,195 @@ suite('adapters/vscode MetricsFeeds, a Cloud pipeline (7.5)', () => {
 		await until(() => sub.feed.state.kind === 'live', 400);
 		assert.strictEqual(cloudReads.length, 6);
 		sub.dispose();
+	});
+	test('story 62 C12 rebind: the run\'s own restart on a new port keeps the Cloud binding; a run the user starts takes it back', async () => {
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		runChanged.fire({ uri: URI.toString(), phase: 'running', port: PORT + 1, rebind: true });
+		assert.strictEqual(sub.feed.update.source.kind, 'cloud', 'a rebind is no run the user chose');
+		assert.strictEqual(sub.feed.state.kind, 'live');
+		const at = cloudReads.length;
+		await until(() => cloudReads.length > at);
+		assert.ok(cloudReads.length > at, 'the Cloud is still read');
+		runChanged.fire({ uri: URI.toString(), phase: 'running', port: PORT });
+		assert.strictEqual(sub.feed.update.source.kind as string, 'local');
+		sub.dispose();
+	});
+
+	test('story 62 C9 remapped: after a Cloud change, a Cloud-bound file whose mapping names another pipeline, or whose pipeline is gone, goes back to local', async () => {
+		// The graph alone shows it (the tab closed): nothing else would ever unbind it.
+		const graph = feeds.subscribe(URI, () => undefined, true);
+		graph.feed.bindCloud(binding());
+		await until(() => graph.feed.state.kind === 'live');
+		// The same pipeline mapped, or no mapping (the file found by its tag): it stays.
+		mapped = { clusterId: 'c1', pipelineId: 'p1' };
+		cloudChanged.fire();
+		await tick(10);
+		mapped = undefined;
+		cloudChanged.fire();
+		await tick(10);
+		assert.strictEqual(graph.feed.update.source.kind, 'cloud');
+		mapped = { clusterId: 'c1', pipelineId: 'p9' };
+		cloudChanged.fire();
+		await until(() => graph.feed.update.source.kind === 'local');
+		assert.strictEqual(graph.feed.update.source.kind as string, 'local', 'remapped: back to local');
+		const at = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, at, 'the old pipeline is no longer read');
+		// Bound again, then the pipeline leaves the Cloud view.
+		mapped = undefined;
+		graph.feed.bindCloud(binding());
+		await until(() => graph.feed.state.kind === 'live');
+		gone = true;
+		cloudChanged.fire();
+		assert.strictEqual(graph.feed.update.source.kind as string, 'local', 'gone: back to local');
+		const goneAt = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, goneAt);
+		graph.dispose();
+	});
+
+	test('story 62 C9 mapped at bind: a file whose mapping already named another pipeline when Show metrics bound this one keeps it on a Cloud change; a later change of the mapping takes it back to local', async () => {
+		mapped = { clusterId: 'c1', pipelineId: 'p2' };
+		const graph = feeds.subscribe(URI, () => undefined, true);
+		graph.feed.bindCloud(binding(URI, 'p1'));
+		await until(() => graph.feed.state.kind === 'live');
+		cloudChanged.fire();
+		await tick(20);
+		assert.strictEqual(graph.feed.update.source.kind, 'cloud', 'the user\'s choice stays');
+		mapped = { clusterId: 'c1', pipelineId: 'p3' };
+		cloudChanged.fire();
+		await until(() => graph.feed.update.source.kind === 'local');
+		assert.strictEqual(graph.feed.update.source.kind as string, 'local', 'the mapping changed since: back to local');
+		graph.dispose();
+	});
+
+	test('story 62 C9 sign-out: Cloud-bound, then signed out (no access, the view can\'t tell the pipeline is gone): no access, no reads, still the Cloud', async () => {
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		hasAccess = false;
+		accessChanged.fire();
+		cloudChanged.fire();
+		await tick(10);
+		assert.deepStrictEqual(sub.feed.state, { kind: 'noAccess', cluster: 'rpc-vilnius' });
+		assert.strictEqual(sub.feed.update.source.kind, 'cloud');
+		const at = cloudReads.length;
+		await tick(TIMING.intervalMs * 2);
+		assert.strictEqual(cloudReads.length, at, 'no reads');
+		sub.dispose();
+	});
+
+	test('story 62 flake: a held read takes its answer when it starts, so the read the access change starts never takes the held read\'s refusal', async () => {
+		// No floor: the access change's read starts at once, while the held one is still in flight.
+		feeds.cloudTiming = { intervalMs: 40, minGapMs: 0, retryDelaysMs: [30] };
+		const sub = feeds.subscribe(URI, () => undefined, true);
+		sub.feed.bindCloud(binding());
+		await until(() => sub.feed.state.kind === 'live');
+		let release: () => void = () => undefined;
+		hold = new Promise<void>((r) => { release = r; });
+		answers = ['refused', 'ok'];
+		await until(() => hold === undefined, 400);
+		const inFlightAt = cloudReads.length;
+		accessChanged.fire();
+		assert.strictEqual(cloudReads.length, inFlightAt + 1, 'the access change\'s read started before the held one ended');
+		await until(() => sub.feed.state.kind === 'live', 400);
+		release();
+		await tick(10);
+		assert.strictEqual(sub.feed.state.kind, 'live', 'not refused');
+		sub.dispose();
+	});
+
+	test('story 62 C10: three feeds of one cluster share its floor, so each reads less often than its interval (the gap a shared per-cluster read would close)', async () => {
+		feeds.cloudTiming = { intervalMs: 40, minGapMs: 30, retryDelaysMs: [30] };
+		const subs = [URI, cloudMetricsKey('c1', 'p2'), cloudMetricsKey('c1', 'p3')].map((key) => feeds.subscribe(key, () => undefined, true));
+		subs.forEach((sub, i) => sub.feed.bindCloud(binding(i === 0 ? URI : undefined, `p${i + 1}`)));
+		await until(() => ['p1', 'p2', 'p3'].every((p) => (readsBy.get(p)?.length ?? 0) >= 4), 1_000);
+		const meanGap = (p: string) => {
+			const t = readsBy.get(p) ?? [];
+			return (t.at(-1)! - t[0]) / (t.length - 1);
+		};
+		// One read per cluster per floor: three feeds take turns, about 3 × 30 ms apart each on average (the
+		// turns are not strictly in order), so each reads less often than its 40 ms interval.
+		const gaps = ['p1', 'p2', 'p3'].map(meanGap);
+		assert.ok(gaps.every((g) => g >= 40 + 10), JSON.stringify(gaps));
+		assert.ok(gaps.reduce((a, g) => a + g, 0) / 3 >= 3 * 30 - 15, JSON.stringify(gaps));
+		const all = [...cloudReads].sort((x, y) => x - y);
+		assert.ok(all.slice(1).every((t, i) => t - all[i] >= 30 - 3), 'the floor held across the feeds');
+		subs.forEach((sub) => sub.dispose());
+	});
+});
+
+// Story 62 (C12): the config the metrics map their readings onto is read and parsed once per change, not per reading.
+suite('extension metricsConfigReader (story 62)', () => {
+	const YAML = ['input:', '  generate:', '    mapping: root = "tick"', 'pipeline:', '  processors:', '    - label: fast', '      mapping: root = this', 'output:', '  drop: {}', 'metrics:', '  prometheus: {}', ''].join('\n');
+
+	function reader(docs: vscode.TextDocument[] = []) {
+		const reads: string[] = [];
+		const disk = { text: YAML, mtimeMs: 1_000, size: YAML.length };
+		const read = metricsConfigReader({
+			documents: () => docs,
+			readFile: (fsPath) => {
+				reads.push(fsPath);
+				return disk.text;
+			},
+			stat: () => ({ mtimeMs: disk.mtimeMs, size: disk.size }),
+			schema: () => undefined,
+		});
+		return { read, reads, disk };
+	}
+
+	test('story 62 C12 re-parse: N readings of an unchanged closed file read and parse it once; a change on disk reads it again', () => {
+		const { read, reads, disk } = reader();
+		const first = read(URI);
+		for (let i = 0; i < 20; i++) {
+			assert.strictEqual(read(URI), first, 'the same config, not parsed again');
+		}
+		assert.deepStrictEqual(reads, [URI.fsPath], 'read once');
+		assert.strictEqual(first.metricsType, 'prometheus');
+		disk.text = YAML.replace('prometheus: {}', 'none: {}');
+		disk.mtimeMs = 2_000;
+		const second = read(URI);
+		assert.notStrictEqual(second, first);
+		assert.strictEqual(second.metricsType, 'none');
+		assert.strictEqual(reads.length, 2, 'read again after the change');
+		assert.strictEqual(read(URI), second);
+		assert.strictEqual(reads.length, 2);
+	});
+
+	test('story 62 C12 re-parse: an open document is parsed again only when its version changes', () => {
+		let version = 1;
+		let text = YAML;
+		const doc = { uri: URI, get version() { return version; }, getText: () => text } as unknown as vscode.TextDocument;
+		const { read, reads } = reader([doc]);
+		const first = read(URI);
+		assert.strictEqual(read(URI), first);
+		assert.strictEqual(read(URI), first);
+		assert.strictEqual(reads.length, 1, 'the saved file read once (its `metrics` type)');
+		version = 2;
+		text = YAML.replace('label: fast', 'label: faster');
+		const second = read(URI);
+		assert.notStrictEqual(second, first, 'parsed again');
+		assert.strictEqual(reads.length, 2);
+		assert.strictEqual(read(URI), second);
+	});
+
+	test('story 62 cache: `forget` drops a file\'s entry; the next reading reads it again', () => {
+		const { read, reads } = reader();
+		read(URI);
+		read.forget(URI);
+		read(URI);
+		assert.strictEqual(reads.length, 2);
+	});
+
+	test('story 62 C12 re-parse: a file that can\'t be read still throws (the feed logs it)', () => {
+		const read = metricsConfigReader({
+			documents: () => [],
+			readFile: () => { throw new Error('ENOENT'); },
+			stat: () => { throw new Error('ENOENT'); },
+			schema: () => undefined,
+		});
+		assert.throws(() => read(URI), /ENOENT/);
 	});
 });

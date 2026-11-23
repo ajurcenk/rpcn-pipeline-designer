@@ -4,7 +4,7 @@ import { MetricsFeeds } from '../../../adapters/vscode/metricsFeed';
 import {
 	METRICS_PICK_TITLE, MetricsPanel, NO_CONFIG_MESSAGE, NO_SERIES_READS, QUIET_FAILURES, type LoadedCloudPipeline, type MappedPipelineOf, type MetricsPickItem,
 } from '../../../adapters/vscode/metricsPanel';
-import { SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult } from '../../../adapters/vscode/cloudMetrics';
+import { SET_UP_METRICS_ACCESS_COMMAND, SHOW_CLOUD_METRICS_COMMAND, type ShowMetricsResult } from '../../../adapters/vscode/cloudMetrics';
 import type { CloudMetricsBinding } from '../../../adapters/vscode/metricsFeed';
 import { RUN_COMMAND } from '../../../adapters/vscode/run';
 import type { RunChange } from '../../../adapters/vscode/run';
@@ -67,6 +67,12 @@ suite('adapters/vscode MetricsPanel', () => {
 	/** Bug 58: the request token of each Show metrics call (`commands` holds its node without it). */
 	let requests: (number | undefined)[];
 	let cloudChanged: vscode.EventEmitter<void>;
+	/** Story 62: the log, a hook on every other command, the workspace's renames and the configs that can't be read. */
+	let logs: string[];
+	let onCommand: ((command: string) => Promise<void>) | undefined;
+	let renames: vscode.EventEmitter<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>;
+	let willRename: vscode.EventEmitter<{ readonly files: readonly { readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }[] }>;
+	let unreadable: Set<string>;
 
 	setup(async () => {
 		reads = 0;
@@ -84,20 +90,33 @@ suite('adapters/vscode MetricsPanel', () => {
 		onShow = undefined;
 		requests = [];
 		cloudChanged = new vscode.EventEmitter<void>();
+		logs = [];
+		onCommand = undefined;
+		renames = new vscode.EventEmitter();
+		willRename = new vscode.EventEmitter();
+		unreadable = new Set();
 		feeds = new MetricsFeeds({
-			log: () => undefined,
+			log: (line) => logs.push(line),
 			run: { portOf: () => (running ? PORT : undefined), onDidChangeRun: runChanged.event },
-			configFor: () => ({ model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined }),
+			configFor: (uri) => {
+				if (unreadable.has(uri.toString())) {
+					throw new Error('ENOENT: no such file');
+				}
+				return { model: { nodes: [], edges: [] }, paths: new Map(), metricsType: undefined };
+			},
 			intervalMs: INTERVAL,
+			onDidRenameFiles: renames.event,
+			onWillRenameFiles: willRename.event,
 		});
 		panel = new MetricsPanel({
 			extensionUri: vscode.Uri.file('/ext'),
-			log: () => undefined,
+			log: (line) => logs.push(line),
 			feeds,
 			focus: async () => undefined,
 			executeCommand: async (command, ...args) => {
 				if (command !== SHOW_CLOUD_METRICS_COMMAND) {
 					commands.push([command, ...args]);
+					await onCommand?.(command);
 					return undefined;
 				}
 				const { request, ...node } = args[0] as { readonly clusterId: string; readonly id: string; readonly request?: number };
@@ -143,6 +162,8 @@ suite('adapters/vscode MetricsPanel', () => {
 		panel.dispose();
 		feeds.dispose();
 		cloudChanged.dispose();
+		renames.dispose();
+		willRename.dispose();
 	});
 
 	async function showAndRead(count: number): Promise<void> {
@@ -563,6 +584,99 @@ suite('adapters/vscode MetricsPanel', () => {
 			sub.dispose();
 			assert.strictEqual(panel.readingRun, undefined);
 			assert.ok(changes > 0, 'a change is fired, so the status bar follows');
+		});
+	});
+	suite('story 62', () => {
+		const SECRET = 'panel-secret-62-Rt7';
+
+		test('story 62 C12 mask: a state button that fails after the tab was bound elsewhere meanwhile is masked with the binding held when it was pressed', async () => {
+			const cloud: CloudMetricsBinding = {
+				clusterId: 'c1', clusterName: 'rpc-vilnius', pipelineId: 'p1', pipelineName: 'orders', host: 'prom.example', file: URI,
+				source: () => undefined, onDidChangeAccess: new vscode.EventEmitter<void>().event, mask: (t) => t.split(SECRET).join('•••'),
+			};
+			await panel.showCloud(cloud);
+			assert.strictEqual(panel.state.kind, 'noAccess');
+			onCommand = async (command) => {
+				if (command === SET_UP_METRICS_ACCESS_COMMAND) {
+					// Show Pipeline Metrics on the file meanwhile: the same feed, bound back to the local run.
+					await panel.show(URI);
+					throw new Error(`the secret storage failed: ${SECRET}`);
+				}
+			};
+			await panel.receive({ type: 'setUpAccessRequested' });
+			const line = logs.find((l) => l.startsWith('Pipeline metrics: setUpAccessRequested failed'));
+			assert.ok(line, JSON.stringify(logs));
+			assert.ok(!line.includes(SECRET), line);
+			assert.ok(line.includes('•••'), line);
+		});
+
+		test('story 62 C12 rename: the tab follows its renamed file: the new name, its rows kept, no "could not read"', async () => {
+			const renamed = vscode.Uri.file('/ws/renamed.yaml');
+			await showAndRead(2);
+			const rows = panel.rows();
+			assert.ok(rows.length > 0);
+			unreadable.add(URI.toString());
+			renames.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+			assert.strictEqual(panel.file, renamed.toString());
+			assert.strictEqual(panel.title, 'Local run · renamed.yaml');
+			assert.strictEqual(panel.posted.at(-1)?.file, 'renamed.yaml');
+			assert.strictEqual(view.view.description, 'Local run · renamed.yaml');
+			assert.deepStrictEqual(panel.rows(), rows, 'its rows kept');
+			const before = reads;
+			for (let i = 0; i < 100 && reads < before + 2; i++) {
+				await tick(5);
+			}
+			assert.ok(reads >= before + 2, 'read on');
+			assert.strictEqual(panel.state.kind, 'live');
+			assert.ok(panel.rows().length > 0);
+			assert.ok(!logs.some((l) => l.includes('could not read')), JSON.stringify(logs));
+		});
+
+		test('story 62 C12 pending rename: a reading between the rename on disk and its event logs no "could not read"; its rows are made under the new name', async () => {
+			const renamed = vscode.Uri.file('/ws/renamed.yaml');
+			await showAndRead(2);
+			willRename.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+			unreadable.add(URI.toString());
+			const before = reads;
+			for (let i = 0; i < 100 && reads < before + 2; i++) {
+				await tick(5);
+			}
+			assert.ok(reads >= before + 2, 'read meanwhile');
+			assert.ok(panel.rows().length > 0, 'its rows kept');
+			assert.ok(!logs.some((l) => l.includes('could not read')), JSON.stringify(logs));
+			renames.fire({ files: [{ oldUri: URI, newUri: renamed }] });
+			assert.strictEqual(panel.file, renamed.toString());
+			assert.ok(panel.rows().length > 0);
+			assert.ok(!logs.some((l) => l.includes('could not read')), JSON.stringify(logs));
+		});
+
+		test('story 62 C12 rename onto the bound name: the tab on the overwritten file takes the moved file\'s feed; the displaced one stops', async () => {
+			await panel.show(OTHER);
+			for (let i = 0; i < 100 && panel.readCount < 2; i++) {
+				await tick(5);
+			}
+			const displaced = feeds.feedOf(OTHER)!;
+			// The moved file's graph holds its feed.
+			const graph = feeds.subscribe(URI, () => undefined, true);
+			renames.fire({ files: [{ oldUri: URI, newUri: OTHER }] });
+			assert.strictEqual(feeds.feedOf(OTHER), graph.feed);
+			assert.strictEqual(panel.file, OTHER.toString());
+			assert.strictEqual(panel.readCount, graph.feed.readCount, 'the tab reads the moved feed');
+			const stopped = displaced.readCount;
+			await tick(INTERVAL * 4);
+			assert.strictEqual(displaced.readCount, stopped, 'the displaced feed no longer reads');
+			assert.ok(graph.feed.readCount > 0);
+			assert.strictEqual(panel.state.kind, 'live');
+			graph.dispose();
+		});
+
+		test('story 62 untitled: Show Pipeline Metrics on an untitled file (the graph\'s button) is the pick, as designed', async () => {
+			const picked: (readonly MetricsPickItem[])[] = [];
+			panel.ui = { pick: async (_title, items) => { picked.push(items); return undefined; } };
+			loaded = [{ clusterId: 'c1', clusterName: 'rpc-vilnius', pipelineId: 'p1', pipelineName: 'orders' }];
+			await panel.showFor(vscode.Uri.parse('untitled:Untitled-1'));
+			assert.deepStrictEqual(picked.map((items) => items.map((i) => i.label)), [['orders']]);
+			assert.strictEqual(panel.file, undefined);
 		});
 	});
 });
