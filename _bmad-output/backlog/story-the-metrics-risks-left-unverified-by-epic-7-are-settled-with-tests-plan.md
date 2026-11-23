@@ -3,7 +3,7 @@ title: 'Story 62: the metrics risks epic 7 left unverified are settled with test
 type: 'bugfix'
 ticket: '62'
 created: '2026-11-23'
-status: 'built'
+status: done
 baseline_revision: 'e193882cd556a5969118518e950de2176142fceb'
 route: 'full'
 route_source: 'auto'
