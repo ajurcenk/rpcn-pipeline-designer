@@ -274,6 +274,37 @@ graph LR
   - **Mapping to nodes (AD-7, AD-17):** the host maps each series to a node id; the webview never maps. A non-empty `label` that is unique in the config gives `label:<label>` (`res:<kind>:<label>` for a resource), as the model has it. Otherwise (no label, or a label used more than once, which AD-7 and `src/core/componentId.ts` give the path id after its first use) the series maps by its `path`: `path:` plus Connect's path converted to AD-7's form: `root.` dropped and `.N` written `[N]` (`root.pipeline.processors.0` → `path:pipeline.processors[0]`). A series with no matching node is shown in the tab but not on the graph.
   - **Still open** (spike 7.1's "not proven"): resources' and nested processors' paths in the Cloud; several instances of one pipeline; a restart's new `pod`; larger clusters' body size; BYOC.
 
+### AD-26 — The RPCN AI Assistant: an embedded Agent SDK behind a host port, through a configurable Anthropic endpoint [PROPOSED]
+
+- **Binds:** the planned RPCN AI Assistant (design and author stages first: the `rpcn-design`, `rpcn-author` and `rpcn-test` skills of the `rpcn-skills` project), its assistant view, the new `src/adapters/assistant` (the agent host adapter, the tool server and the access), the tools that expose existing features to it, and the integration tests' in-memory fake of the host.
+- **Prevents:**
+  - the view coupled to one agent library;
+  - a second copy of `rpcn_check` behaviour that disagrees with the extension's lint;
+  - a model, endpoint or key the extension cannot set (the Redpanda ADP proxy);
+  - an API key in settings, files, argv or logs;
+  - an agent that runs, deploys or writes outside the workspace without the user;
+  - the stage held only in chat state, so a reload loses it.
+- **Rule:** (proposed 2026-11-23 by the user's choices in the assistant planning; adopted when spike 65 is done, with its findings amending this rule)
+  - **One host port.** `AssistantHost` gives `start`, `answer`, `approve` and `cancel`, and emits `progress`, `question`, `approval`, `fileWritten`, `result` and `error`. It has no `vscode` or SDK import. The assistant view and its controller see only this port, and the integration tests use an in-memory fake of it.
+  - **First adapter: the Claude Agent SDK, embedded in the extension host.**
+    - `query()` runs with: `model`; `env` holding `ANTHROPIC_BASE_URL` and the key (`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, per the proxy's auth); `plugins: [{ type: "local", path }]` naming a version-pinned copy of `rpcn-skills` bundled in the extension; `skills` limited to the RPCN skills; and `cwd` set to the workspace folder.
+    - Each `AskUserQuestion` reaching `canUseTool` becomes a `question` event, and every other call that needs approval becomes an `approval` event.
+    - The message stream becomes `progress`, and a file-write hook becomes `fileWritten`.
+    - Claude models only, through Anthropic, Bedrock, Vertex, Foundry or a proxy that serves the Anthropic Messages API.
+  - **One tool layer, written once.**
+    - `RpcnTools` give the `rpcn_check` operations (binary, list, fields, lint, Bloblang check, dry run, test, handoff check) on the extension's own binary resolution (AD-9) and lint arguments (AD-12). Each returns `rpcn_check`'s `SCHEMA.md` envelope.
+    - Feature tools add read-only views of existing features: metrics figures and the bottleneck (AD-25), recent log errors (AD-24), Cloud pipelines and their state (AD-23), the pipeline model, diagnostics, and environment variable names (never values).
+    - The tools are served to the SDK as an in-process MCP server (`createSdkMcpServer`). The same functions may later be registered as VS Code Language Model Tools, or as a standalone MCP server.
+    - Results are compact summaries, masked. Pipeline data (log messages, records) is marked as untrusted data in results.
+  - **Access.** `redpandaConnect.assistant.model` and `redpandaConnect.assistant.baseUrl` are settings. The key is in secret storage only, set by Set up assistant access… with a test call, and passed to the agent process only in its environment.
+  - **Boundaries.**
+    - Shell is limited to the skills' own `rpcn_check` calls. Any other shell command or tool call needs approval.
+    - Writes stay inside the workspace, and an existing pipeline is never overwritten.
+    - Run, Deploy and other actions with effects outside the editor are approval-only tools or user buttons, never automatic.
+    - The user's own Claude configuration is not loaded unless decided otherwise (`settingSources`).
+  - **Stage from files.** The stage comes from the artifacts on disk (the design note's `status` via the handoff check, the pipeline and the test report), not from the conversation.
+  - **Other models are a later adapter behind the same port** (the VS Code Language Model API, or an OpenAI-compatible endpoint). That adapter owns its agent loop, and is added only when a requirement asks for it.
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -391,7 +422,8 @@ Operational envelope:
 | Streams mode (multiple pipelines) | Out of scope in the brief. |
 | ~~BYOC deploy~~ Closed | Built in epic 5 (AD-23) for BYOC and Dedicated clusters, in its own `src/adapters/cloud` adapter; Dedicated is the verified type. |
 | ~~Metrics~~ Closed | Built in epic 7 (AD-25, `epic-pipeline-metrics`, done 2026-11-21) for a local run and a Cloud pipeline, in its own `src/adapters/metrics` adapter. |
-| Testing (`rpk connect test`), debugging, AI assist | Later phases in the brief. They will build on the RedpandaConnect adapter (AD-9). |
+| Testing (`rpk connect test`), debugging | Later phases in the brief. They will build on the RedpandaConnect adapter (AD-9). |
+| AI assist | AD-26 proposes the RPCN AI Assistant (design and author first); it is adopted when spike 65 is done. Tune, scale and deploy stages wait for their skills. |
 | elkjs license | Accepted for the POC. Revisit before 1.0 (alternative: @dagrejs/dagre 3.1.1, MIT). |
 | Bundled schema fallback | Parked in the brief. The schema always comes from the user's binary for now. |
 | Telemetry | Not needed for a POC. Not decided. |
