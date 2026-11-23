@@ -166,3 +166,7 @@ Left: the C10 backlog ticket (shared per-cluster fetch, AD-25 amended) is to be 
 - `env -u WAYLAND_DISPLAY -u DISPLAY -u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11 timeout -k 15 1500 xvfb-run -a npx vscode-test --label stable` -- expected: all pass, twice; and `--label multiroot` -- all pass
 - Run the integration suites one at a time. Never use `--label floor`.
 
+
+## Manual Check
+
+- 2026-11-23, the user, VS Code 1.143.1 dev host from `.vscode-test`: the manual checks passed with no issues. A locally running file renamed in the Explorer kept its tab (header and live rows under the new name, no "could not read"). After Show metrics on an rpc-vilnius pipeline and Disconnect, Set up metrics access in the tab offered Connect. The rebind, remap and masking fixes are covered only by the tests.
