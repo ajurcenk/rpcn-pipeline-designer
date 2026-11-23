@@ -3,7 +3,7 @@ title: 'Bug 61: a removed secret''s record can come back for good (the VALUE_DEF
 type: 'bugfix'
 ticket: '61'
 created: '2026-11-23'
-status: 'built'
+status: done
 baseline_revision: '05a32d23aa67d0ea8c32b95a49450a93f3020765'
 route: 'oneshot'
 route_source: 'auto'
