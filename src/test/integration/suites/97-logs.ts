@@ -42,6 +42,7 @@ import {
 	AROUND_ENDED_BY_LIVE_NOTE, AROUND_MS, ERROR_SEARCH_MS, focusNotShownText, FOLLOWING_STATUS, noMatchesBackText, LIVE_OFF_STATUS, livePausedStatus, LOGS_VIEW_ID, LOGS_WINDOW_MS, NO_ERROR_NOTE, OPEN_EXPORT_ACTION,
 	setUpRunningText, stoppedReadingStatus, type LogsExportUi,
 } from '../../../adapters/vscode/logsPanel';
+import { setUpRunningMessage } from '../../../adapters/vscode/cloudShared';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import { serializeMapping } from '../../../adapters/cloud/sidecar';
 import { resourcesOf } from '../../../adapters/cloud/dataPlane';
@@ -2222,6 +2223,40 @@ suite('Pipeline logs (integration, ticket 6.2)', function () {
 		assert.ok(!rows[0].group?.startsWith('inline'), 'in the menu, not inline');
 		const re = new RegExp(/viewItem =~ \/(.+)\/$/.exec(rows[0].when ?? '')![1]);
 		assert.deepStrictEqual(['cloudCluster logs', 'cloudCluster', 'cloudCluster noPipelineApi', 'cloudPipeline state-running logs'].map((v) => re.test(v)), [true, false, false, false]);
+	});
+
+	test('bug 60: Forget log access while a Set up of it runs for the cluster refuses with why; nothing is removed; it works once the Set up ends', async () => {
+		await setUpAccess();
+		let answerFirst: (v: string | undefined) => void = () => undefined;
+		const scripted = cloud().ui;
+		let held = false;
+		cloud().ui = {
+			...scripted,
+			input: (options) => {
+				if (!held) {
+					held = true;
+					return new Promise((resolve) => { answerFirst = resolve; });
+				}
+				return scripted.input(options);
+			},
+		};
+		teardowns.push(() => {
+			cloud().ui = scripted;
+		});
+		const running = setUp();
+		try {
+			assert.ok(await waitFor(() => held, 10_000), 'the Set up runs');
+			infos.length = 0;
+			assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'notStarted' });
+			assert.deepStrictEqual(infos, [setUpRunningMessage('log access', 'rpc-vilnius')]);
+			assert.ok(await cloud().storedValue(logAccessKey(VILNIUS)), 'nothing removed');
+		} finally {
+			answerFirst(undefined);
+			assert.notStrictEqual((await running)?.kind, 'stored', 'cancelled');
+		}
+		infos.length = 0;
+		assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+		assert.deepStrictEqual(infos, [logAccessForgottenMessage('rpc-vilnius')]);
 	});
 
 	test('FORGET (bug 52): Forget log access on a cluster row removes its record from the secret storage and memory only; its row loses "logs: <user>"; the open tab on it stops and shows No log access; Set up log access reads again', async () => {

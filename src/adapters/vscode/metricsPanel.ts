@@ -139,6 +139,8 @@ const NONE: MetricsPanelState = { kind: 'none' };
 export class MetricsPanel implements vscode.Disposable {
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: MetricsHostMessage[] = [];
+	/** Bug 60: how many shows were posted (never capped, unlike `posted`; the window change reads it). */
+	private shows = 0;
 	private view: vscode.WebviewView | undefined;
 	private viewSubscriptions: vscode.Disposable[] = [];
 	private ready = false;
@@ -385,9 +387,9 @@ export class MetricsPanel implements vscode.Disposable {
 			case 'window': {
 				// The feeds recompute their figures and emit (this tab's update posts the rows); with no
 				// readings nothing is emitted, so the tab posts the new window itself.
-				const before = this.posted.length;
+				const before = this.shows;
 				this.options.feeds.setWindowMinutes(m.minutes);
-				if (this.posted.length === before) {
+				if (this.shows === before) {
 					this.postShow();
 					this.changed.fire();
 				}
@@ -752,6 +754,7 @@ export class MetricsPanel implements vscode.Disposable {
 			settingUp: this.settingUp,
 			mapped: this.actionContext.mapped ? { pipeline: this.actionContext.mapped.pipeline, cluster: this.actionContext.mapped.cluster } : null,
 		};
+		this.shows++;
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {
 			this.posted.splice(0, this.posted.length - MAX_POSTED);

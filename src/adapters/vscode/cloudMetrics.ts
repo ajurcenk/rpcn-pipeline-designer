@@ -208,6 +208,7 @@ export class CloudMetricsAccess {
 		return forgetAccess(this.ctx, node, {
 			what: 'metrics access',
 			userOf: (clusterId) => this.metricsUsers.get(clusterId),
+			settingUp: (clusterId) => this.settingUp.has(clusterId),
 			key: metricsAccessKey,
 			remove: (clusterId) => this.removeAccess(clusterId),
 			noneSet: NO_CLUSTER_WITH_METRICS_ACCESS,

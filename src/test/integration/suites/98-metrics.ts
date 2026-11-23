@@ -243,6 +243,32 @@ suite('Pipeline metrics (integration, ticket 7.2)', function () {
 		await stop(doc);
 	});
 
+	test('bug 60: WINDOW past the posted cap: a window change on a live feed still posts one show and fires one change', async () => {
+		const doc = await open('window-cap.yaml', CONFIG);
+		const port = await runAndWait(doc);
+		fake.serve(port, text(100));
+		await vscode.commands.executeCommand(SHOW_METRICS_COMMAND);
+		assert.ok(await waitFor(() => metrics().state.kind === 'live' && metrics().rows().length > 0, METRICS_INTERVAL_MS * 4), JSON.stringify(metrics().state));
+		// Fill the posted log past its cap (200): each sort posts one show.
+		for (let i = 0; i < 210; i++) {
+			await metrics().receive({ type: 'sort', sort: i % 2 === 0 ? { column: 'share', dir: 'desc' } : null });
+		}
+		let changes = 0;
+		const sub = metrics().onDidChange(() => { changes++; });
+		try {
+			// Synchronous from the capture to the checks: no read can land in between.
+			const last = metrics().posted.at(-1);
+			void metrics().receive({ type: 'window', minutes: 1 });
+			assert.strictEqual(metrics().posted.at(-2), last, 'one show posted, not two');
+			assert.strictEqual(metrics().posted.at(-1)?.windowMinutes, 1);
+			assert.strictEqual(changes, 1, 'one change event');
+		} finally {
+			sub.dispose();
+			await metrics().receive({ type: 'sort', sort: null });
+		}
+		await stop(doc);
+	});
+
 	test('NOT_RUNNING / NOT_SERVED / UNREACHABLE, and their buttons (ticket 8)', async () => {
 		// NOT_RUNNING: the tab names the file; nothing is read. Run <file> starts it: waiting, then live.
 		const idle = await open('idle.yaml', CONFIG);

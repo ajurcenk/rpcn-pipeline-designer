@@ -152,6 +152,7 @@ export class CloudLogs {
 		return forgetAccess(this.ctx, node, {
 			what: 'log access',
 			userOf: (clusterId) => this.logUsers.get(clusterId)?.username,
+			settingUp: (clusterId) => this.settingUpLogs.has(clusterId),
 			key: logAccessKey,
 			remove: (clusterId) => this.removeLogAccess(clusterId),
 			noneSet: NO_CLUSTER_WITH_LOG_ACCESS,

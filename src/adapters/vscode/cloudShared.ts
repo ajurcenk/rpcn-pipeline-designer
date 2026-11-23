@@ -375,12 +375,19 @@ export class SetUpGuard {
 	}
 }
 
+/** Bug 51, bug 60: a request refused because Set up (log or metrics) access runs for the cluster. */
+export function setUpRunningMessage(what: string, cluster: string): string {
+	return `Set up ${what} is already running for ${cluster}; finish it first.`;
+}
+
 /** What Forget (log or metrics) access differs in (7.10: the flow itself is `forgetAccess`). */
 export interface ForgetHow {
 	/** "log access", "metrics access". */
 	readonly what: string;
 	/** The cluster's user held now (none: no access held; the palette offers only clusters with one). */
 	readonly userOf: (clusterId: string) => string | undefined;
+	/** Bug 60: whether a Set up of this access runs for the cluster now (then Forget refuses). */
+	readonly settingUp: (clusterId: string) => boolean;
 	/** The cluster's secret storage key. */
 	readonly key: (clusterId: string) => string;
 	/** Removes the cluster's access (the record and memory); throws when the secret storage does. */
@@ -429,6 +436,12 @@ export async function forgetAccess(
 			if (!cluster) {
 				return notStarted;
 			}
+		}
+		// Bug 60: a running Set up would store the access again after the removal; refuse, as the tab does.
+		if (how.settingUp(cluster.id)) {
+			ctx.log(`Redpanda Cloud: Set up ${how.what} is already running for ${cluster.name}; Forget ${how.what} was not run.`);
+			void ctx.showInfo(setUpRunningMessage(how.what, cluster.name));
+			return notStarted;
 		}
 		const user = how.userOf(cluster.id);
 		if (!user && (await ctx.options.store.get(how.key(cluster.id))) === undefined) {

@@ -109,6 +109,7 @@ import { atLogStart, mergeOlder, olderWindowMs, rangeFor, RECENT_MS, retentionTe
 import { compileFilter, Counter, levelOf, matches, sameFilter, SlotCounter, type CompiledFilter } from '../logs/filter';
 import { EXPORT_FAILED_PREFIX, exportedMessage, exportFileName, exportText } from '../logs/export';
 import { webviewHtml } from '../graphPanel/html';
+import { setUpRunningMessage } from './cloudShared';
 
 export const LOGS_VIEW_ID = 'redpandaConnect.pipelineLogs';
 /** The default range's look back (ticket 6.2's first read). */
@@ -154,7 +155,7 @@ export function stoppedSearchStatus(count: number): string {
 export const AROUND_ENDED_BY_LIVE_NOTE = 'Stopped looking for the newest ERROR record: Live is on, so the last 15 minutes are shown, then new records.';
 /** Bug 51: Set up log access… asked while it already runs for the cluster. */
 export function setUpRunningText(cluster: string): string {
-	return `Set up log access is already running for ${cluster}; finish it first.`;
+	return setUpRunningMessage('log access', cluster);
 }
 /** Around the error: the record found is not among those shown. */
 export function focusNotShownText(time: number): string {

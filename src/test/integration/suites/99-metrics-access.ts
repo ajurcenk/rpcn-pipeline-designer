@@ -14,6 +14,7 @@ import {
 	metricsAccessSetMessage, metricsRefusedMessage, NO_CLUSTER_WITH_METRICS_ACCESS, NO_METRICS_ACCESS, noPrometheusEndpointMessage, SET_UP_METRICS_ACCESS_COMMAND, type CloudItem, type CloudUi,
 } from '../../../adapters/vscode/cloudView';
 import { CLOUD_REFUSED_TEXT, cloudMetricsSource, DEFAULT_PROMETHEUS_USER } from '../../../adapters/metrics/source';
+import { setUpRunningMessage } from '../../../adapters/vscode/cloudShared';
 import { type ExtensionApi } from '../../../extension';
 import { FakeCloud, type FakePipeline } from '../../helpers/fakeCloud';
 import { makeTempDir } from '../../helpers/fakeBinary';
@@ -395,6 +396,42 @@ suite('Metrics access for a cluster (integration, ticket 7.4)', function () {
 		script({ inputs: [undefined] });
 		assert.deepStrictEqual(await setUp(clusterNode(BYOC)), { kind: 'notStarted' });
 		assert.strictEqual(asked.length, 1, 'asked: not locked by the other cluster');
+	});
+
+	test('bug 60: Forget metrics access while a Set up of it runs for the cluster refuses (row and palette); nothing is removed; another cluster\'s Set up does not block it', async () => {
+		await setUpAccess();
+		let release: (v: Input) => void = () => undefined;
+		const held = new Promise<Input>((resolve) => { release = resolve; });
+		script({ inputs: [() => held, PASSWORD], clusterPicks: ['rpc-vilnius'] });
+		const first = setUp();
+		try {
+			assert.ok(await waitFor(() => asked.length === 1, 5_000));
+			clearMessages();
+			assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'notStarted' }, 'the row, refused');
+			assert.deepStrictEqual(await forget(), { kind: 'notStarted' }, 'the palette, refused');
+			assert.deepStrictEqual(infos, [setUpRunningMessage('metrics access', 'rpc-vilnius'), setUpRunningMessage('metrics access', 'rpc-vilnius')]);
+			assert.ok(!infos.includes(metricsAccessForgottenMessage('rpc-vilnius')), 'no removal reported');
+			assert.ok(await stored(), 'nothing removed');
+		} finally {
+			// Always released, so a failure here leaves no Set up running for later tests.
+			release(DEFAULT_PROMETHEUS_USER);
+		}
+		assert.strictEqual((await first)?.kind, 'stored', errors.join('\n'));
+		assert.ok(await stored());
+		// Once it ends, Forget works again; a Set up of another cluster does not block it.
+		let escape: (v: Input) => void = () => undefined;
+		const gate = new Promise<Input>((resolve) => { escape = resolve; });
+		script({ inputs: [() => gate] });
+		const other = setUp(clusterNode(BYOC));
+		try {
+			assert.ok(await waitFor(() => asked.length === 1, 5_000));
+			clearMessages();
+			assert.deepStrictEqual(await forget(clusterNode(VILNIUS)), { kind: 'forgotten', clusterId: VILNIUS });
+			assert.deepStrictEqual(infos, [metricsAccessForgottenMessage('rpc-vilnius')]);
+		} finally {
+			escape(undefined);
+			assert.deepStrictEqual(await other, { kind: 'notStarted' });
+		}
 	});
 
 	test('FILTER and GZIP: the Cloud source on the fake\'s endpoint reads the gzip answer and holds only the asked pipeline_id\'s series; # lines kept', async () => {
