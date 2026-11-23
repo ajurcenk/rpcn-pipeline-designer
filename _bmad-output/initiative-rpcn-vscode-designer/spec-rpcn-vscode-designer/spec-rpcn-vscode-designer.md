@@ -112,7 +112,8 @@ Vision plus pain. Developers write Redpanda Connect pipeline YAML by hand, bounc
 - Any editing from the graph: add, remove, reorder, configure, schema-generated property forms; visual editing of nested structures.
 - Streams mode (multiple pipelines).
 - Bundled schema for use without a binary.
-- Writing or running `rpk connect test` unit tests, AI assistance, metrics, debugging and profiling (including groundwork such as per-processor run output), data-flow visualization, log-error node highlighting.
+- Writing or running `rpk connect test` unit tests, AI assistance, debugging and profiling (including groundwork such as per-processor run output), data-flow visualization, log-error node highlighting.
+- ~~Metrics.~~ In scope since 2026-11-18 (user, epic 7): a local run's and a Cloud pipeline's metrics in the Pipeline Metrics tab and on the graph (epic 7, done 2026-11-21). No capability covers them yet; the epic holds their requirements (E7 R1–R9), and architecture AD-25 their reading rules.
 - Large configs (thousands of lines).
 - Lint while typing.
 - A Bloblang language server, and Bloblang diagnostics outside CAP-15 (completion and hover are in CAP-4).

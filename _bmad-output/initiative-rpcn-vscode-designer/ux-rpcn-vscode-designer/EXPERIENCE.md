@@ -2,7 +2,7 @@
 title: "EXPERIENCE — Redpanda Connect Designer for VS Code"
 status: final
 created: 2026-10-05
-updated: 2026-11-11
+updated: 2026-11-23
 sources:
   - ../brief-rpcn-vscode-designer/brief-rpcn-vscode-designer.md
   - ../brief-rpcn-vscode-designer/addendum.md
@@ -231,6 +231,49 @@ Added 2026-11-11 (epic 6 retrospective AI-3), describing the surface as built in
 
 The state fills the list area; the header, toolbar and filter bar stay. Every name and message shown is masked.
 
+## Pipeline Metrics
+
+Added 2026-11-23 (epic 7 retrospective AI-6). It describes the surface as built in epic 7 (tickets 7.2–7.10) and as changed by bugs 58–60. Reading rules (the sources, intervals, the floor, figures and the share of time) are architecture AD-25.
+
+- **Where it opens:** a **Pipeline Metrics** tab in its own bottom-panel container, next to Pipeline Logs. It shows one source at a time. Its header names the source: "Local run · <file>" or "Cloud · <cluster> · <pipeline>". The line under the header gives the address and pace: "127.0.0.1:<port> · read every 2 s", or "<host> · mapped to <file> · read every 10 s" ("not mapped to a file" when no config is mapped). A file's tab and its graph share one feed. It reads while either one is visible, and when neither is, it stops and drops its readings. The footer says "Figures over the last 5 minutes · readings kept only while this tab is open".
+- **Entry points:**
+  - The Command Palette's **Show Pipeline Metrics** binds the active config. A running file shows its local run. A file that isn't running shows its mapped Cloud pipeline. If that can't start (signed out, the pipeline gone, no endpoint), the tab shows the file as Not running. With no active config, a pick titled "Show the metrics of" lists the running files and the Cloud pipelines.
+  - The Cloud view's pipeline row has **Show metrics**, inline and in the row menu.
+  - The graph toolbar has an **Open Pipeline Metrics** button, which works like the command.
+  - While a file runs, the status bar shows "Stop pipeline" (" · N/s" while the tab is live on that run). Its click opens a menu with **Stop <file>** and **Show pipeline metrics**.
+  - Opening the tab with nothing bound picks without asking: the active config's run, then its mapped pipeline, then the only running file. Otherwise it shows "No pipeline chosen".
+  - The last choice wins: Show metrics binds a file's tab and graph to the Cloud, and Show Pipeline Metrics or a new local run binds them back to the run.
+- **Metrics access:**
+  - **Set up metrics access…** on a cluster row asks for the Prometheus user (prefilled "prometheus"; the cluster's Overview › Prometheus in the Cloud UI) and its password in a password box. It checks them with one read, "Testing metrics access to <cluster>", then says "Metrics access for <cluster> is set." A refused password ("…refused: the user or password is wrong."), an unreachable endpoint or a cluster with no Prometheus endpoint stores nothing and says why. Escape stores nothing.
+  - The access is kept in VS Code's secret storage on this machine only. The row's description shows " · metrics" when access is set, and " · no metrics access" when the cluster has an endpoint but no access.
+  - **Forget metrics access** (the row menu, or the Command Palette with a pick of the clusters with access) says "Removed the metrics access to <cluster>." While a Set up of that cluster runs, it refuses with "Set up metrics access is already running for <cluster>; finish it first.", and the tab's own Set up and Forget buttons are disabled.
+- **The table:**
+  - One row per component in config order, nested components indented. The columns are Component, Path, In/s, Out/s, Batches in/s, Batches out/s, Errors/s, Error %, P50, P90, P99, Mean, Share and Trend.
+  - Rates have one decimal. Latencies are in ns, µs, ms or s, to three significant digits. A missing figure is "—".
+  - Every column but Trend sorts by its header: ascending, descending, then config order again.
+  - The headers of P50–P99, Mean, Error % and Share say what each figure is over. The quantiles come from the latest reading; the others are over the window.
+  - The **1 min / 5 min / 15 min** window (default 5 min, kept for the session and shared with the graphs) recomputes the figures without a new read.
+  - Trend is a small line of Out/s over the window, named "Out/s over the window: from X to Y" ("no trend yet" at first).
+  - The summary line above the table reads "Slowest: <name> · N% of the pipeline's time · p50 <latency>", then "Input X/s → Output Y/s · no gap" (or "· gap Z/s (N%)" above 5%), then "Errors: none" or each component with errors and its rate.
+- **Slowest and errors:**
+  - The slowest component is the one with the largest share of the pipeline's time over the window: its latency total over that of the top-level processors, the output and the resources. The input is never marked. On a tie, the first in config order wins.
+  - In the table, its row is highlighted and tagged "slowest", and a component with errors over the window is tagged "errors". Both marks are text as well as colour.
+- **On the graph:** while the feed is live (the local run, or the Cloud pipeline the file is bound to), each processor and output node shows "<out>/s · <p50> / <p99> · <errors>/s errors" under its name, and an input shows "<out>/s". The slowest node shows the band "SLOWEST · N% of the time" with a warning border, and a node with errors shows ERRORS. The figures are hidden when the run stops or isn't running, and frozen while the YAML doesn't parse. The boxes are laid out again only when figures start or stop.
+
+| State | Surface | Treatment |
+|---|---|---|
+| No pipeline | Pipeline Metrics tab | "No pipeline chosen": "Run a Redpanda Connect config, then use Show Pipeline Metrics on it." |
+| Not running | Pipeline Metrics tab | "<file> is not running. Run it to see its metrics…"; **Run <file>**. When the file is mapped, it also says it is deployed to <pipeline> on <cluster>, with **Show <pipeline> on <cluster>**. |
+| Waiting | Pipeline Metrics tab | "Waiting for the first reading": "Reading 127.0.0.1:<port>…" (or "Reading <host>…"). |
+| Stopped | Pipeline Metrics tab | "The run stopped. The figures are from its last reading."; **Run <file>**. The last figures stay in the table. |
+| No metrics served | Pipeline Metrics tab | The config's `metrics` section isn't Prometheus ("Set it to `prometheus` (or remove it) and run the file again"), or the endpoint's answer isn't metrics (with the reason); **Open the metrics section** (local only), **Read again**. Not read again by itself. |
+| No figures yet | Pipeline Metrics tab | After 5 answers in a row with no component series: "<address>/metrics has no Redpanda Connect component series", then "read again once it has processed messages" (local) or "once the pipeline runs" (Cloud); **Read again**. Not read again by itself. |
+| Can't read | Pipeline Metrics tab | After 3 failed reads in a row (earlier ones stay quiet): "The last read failed (<message>). Retrying in N s; the figures shown are from HH:MM:SS.", counted down; **Retry now**, **Show output**. It retries by itself: a local run every 2 s, a Cloud pipeline after 5, 10, 20, 30 and 60 s, then every 60 s. |
+| No metrics access | Pipeline Metrics tab | "<cluster> has no metrics access set." It says where to find the Prometheus user and password; **Set up metrics access…**. Nothing is read. |
+| Password refused | Pipeline Metrics tab | "<host> refused: the user or password is wrong (HTTP 401)…"; **Set up metrics access…**, **Forget metrics access**. Not read again until the access changes or Show metrics runs again. |
+
+The state fills the tab above the table, and the table stays under it only while it has rows (Stopped, Can't read). The password goes only in the read's authorization header: it is never shown, logged or written to a setting or file, and every message shown is masked. Each Run listens for metrics on its own free port on 127.0.0.1 and overrides the config's own `http` section; when no port is free, the run goes ahead without metrics.
+
 ## Deferred (later phases, not specced)
 
 - Data-flow visualization between steps.
@@ -239,7 +282,7 @@ The state fills the list area; the header, toolbar and filter bar stay. Every na
 - Lint while typing (architecture Deferred; revisit if save-only lint feels slow).
 - Restoring the graph panel after a window reload (architecture Deferred; reopens via auto-open or Show graph; an explicit Hide still persists).
 - Lint-warning flicker is accepted for the POC: a deprecation warning clears when an edit touches its line and returns on the next save; since ticket 10 (2026-10-24), edits elsewhere leave it in place (Flow 1 step 8). Revisit with the architecture's "lint while typing" deferral.
-- BYOC deploy, testing, AI assist, metrics, debugging (brief Vision).
+- BYOC deploy, testing, AI assist, debugging (brief Vision). Metrics were built in epic 7 (Pipeline Metrics above).
 
 ## Open Questions
 

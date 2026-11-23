@@ -7,7 +7,7 @@ paradigm: 'unidirectional data flow (host→webview) + ports-and-adapters in the
 scope: 'VS Code extension: read-only pipeline graph + Redpanda Connect-aware YAML editor + local run (POC / first release)'
 status: final
 created: '2026-10-05'
-updated: '2026-10-05'
+updated: '2026-11-23'
 binds: []
 sources:
   - ../brief-rpcn-vscode-designer/brief-rpcn-vscode-designer.md
@@ -390,7 +390,8 @@ Operational envelope:
 | Large configs (thousands of lines) | Out of scope. Complete-model resend (AD-6) is sized for typical configs. |
 | Streams mode (multiple pipelines) | Out of scope in the brief. |
 | ~~BYOC deploy~~ Closed | Built in epic 5 (AD-23) for BYOC and Dedicated clusters, in its own `src/adapters/cloud` adapter; Dedicated is the verified type. |
-| Testing (`rpk connect test`), debugging, metrics, AI assist | Later phases in the brief. They will build on the RedpandaConnect adapter (AD-9). |
+| ~~Metrics~~ Closed | Built in epic 7 (AD-25, `epic-pipeline-metrics`, done 2026-11-21) for a local run and a Cloud pipeline, in its own `src/adapters/metrics` adapter. |
+| Testing (`rpk connect test`), debugging, AI assist | Later phases in the brief. They will build on the RedpandaConnect adapter (AD-9). |
 | elkjs license | Accepted for the POC. Revisit before 1.0 (alternative: @dagrejs/dagre 3.1.1, MIT). |
 | Bundled schema fallback | Parked in the brief. The schema always comes from the user's binary for now. |
 | Telemetry | Not needed for a POC. Not decided. |
