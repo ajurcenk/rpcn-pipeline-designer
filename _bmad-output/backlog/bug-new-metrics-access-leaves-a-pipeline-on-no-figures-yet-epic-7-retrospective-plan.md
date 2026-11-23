@@ -53,3 +53,7 @@ context: []
 - `grep -rn "from 'vscode'" src/core src/shared src/adapters/metrics` -- expected: no output
 - `env -u WAYLAND_DISPLAY -u DISPLAY -u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11 timeout -k 15 1500 xvfb-run -a npx vscode-test --label stable` -- expected: all pass, the new `metricsFeed` tests included
 - the same with `--label multiroot` -- expected: all pass
+
+## Manual Check
+
+- 2026-11-23, the user, VS Code 1.143.1 dev host from `.vscode-test`: the manual check passed with no issues: with `metrics_a` stopped the tab reached "No figures yet", and after starting it and setting up metrics access again with the same credentials the tab went Waiting, then Live, without Read.
