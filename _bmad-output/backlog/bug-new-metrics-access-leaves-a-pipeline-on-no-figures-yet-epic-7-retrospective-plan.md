@@ -3,7 +3,7 @@ title: 'Bug 59: new metrics access leaves a pipeline on "No figures yet"'
 type: 'bugfix'
 ticket: '59'
 created: '2026-11-21'
-status: 'built'
+status: done
 baseline_revision: '6ea06ec07ee4aa478c432b957a11dad90b3e52cd'
 route: 'oneshot'
 route_source: 'auto'
