@@ -1,0 +1,10 @@
+n	step	outcome	ms
+01	messages-plain-x-api-key	error: TypeError	10510
+02	messages-plain-bearer	200	6802
+03	messages-stream	200	6994
+04	messages-tool-use	200	3321
+05	count-tokens	200	131
+06	models-list	200	283
+07	error-wrong-key	401	37
+08	error-unknown-model	403	40
+09	error-timeout	error: TimeoutError	5003

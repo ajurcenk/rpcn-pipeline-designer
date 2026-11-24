@@ -1,0 +1,66 @@
+{
+  "step": "error-unknown-model",
+  "request": {
+    "method": "POST",
+    "url": "<adp-base-url>/v1/messages",
+    "auth": "bearer",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "authorization",
+      "content-type"
+    ],
+    "body": {
+      "shape": {
+        "model": "string",
+        "max_tokens": "number",
+        "messages": [
+          "length 1",
+          {
+            "role": "string",
+            "content": "string"
+          }
+        ]
+      },
+      "model": "claude-no-such-model-spike-65",
+      "max_tokens": 512,
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "names": [
+        "connection",
+        "content-length",
+        "content-type",
+        "date",
+        "strict-transport-security",
+        "vary",
+        "x-request-id"
+      ],
+      "values": {
+        "content-length": "153",
+        "content-type": "application/json"
+      }
+    },
+    "bytes": 153,
+    "headers_ms": 40,
+    "first_byte_ms": 40,
+    "body_shape": {
+      "error": {
+        "code": "null",
+        "message": "string",
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": null,
+      "error": {
+        "type": "model_not_allowed",
+        "message_sample": "model \"claude-no-such-model-spike-65\" is not allowed for provider \"anthropic-api"
+      }
+    }
+  },
+  "ms": 40
+}

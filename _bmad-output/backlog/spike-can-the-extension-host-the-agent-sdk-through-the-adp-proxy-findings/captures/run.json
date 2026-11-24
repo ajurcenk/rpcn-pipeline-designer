@@ -1,0 +1,106 @@
+{
+  "date": "2026-11-24T00:12:37.482Z",
+  "dry_run": false,
+  "model": "claude-opus-5-5",
+  "anthropic_version": "2023-06-01",
+  "base_url_path_segments": 4,
+  "extra_header_names": [],
+  "max_calls": 10,
+  "auth": {
+    "x_api_key": "network error",
+    "bearer": 200,
+    "works": {
+      "bearer": true
+    },
+    "used_below": "bearer",
+    "sdk_env": "ANTHROPIC_AUTH_TOKEN"
+  },
+  "model_answered": "claude-opus-5-5",
+  "stream": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "event_types": [
+      "message_start",
+      "content_block_start",
+      "ping",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop"
+    ],
+    "first_byte_ms": 6751
+  },
+  "tool_use": {
+    "status": 200,
+    "stop_reason": "tool_use",
+    "tool_use": {
+      "name": "get_weather",
+      "input_keys": [
+        "city"
+      ]
+    }
+  },
+  "count_tokens": {
+    "status": 200,
+    "input_tokens": 11
+  },
+  "models": {
+    "status": 200,
+    "data_length": 15,
+    "ids_sample": [
+      "claude-fable-5-2",
+      "claude-haiku-5-5",
+      "claude-sonnet-5-5",
+      "claude-opus-5-5",
+      "claude-fable-5-1"
+    ]
+  },
+  "errors_seen": {
+    "wrong_key": {
+      "status": 401,
+      "error_type": null,
+      "body_shape": {
+        "code": "string",
+        "message": "string",
+        "details": [
+          "length 1",
+          {
+            "@type": "string",
+            "reason": "string",
+            "domain": "string",
+            "metadata": {}
+          }
+        ]
+      },
+      "client_error": null
+    },
+    "unknown_model": {
+      "status": 403,
+      "error_type": "model_not_allowed",
+      "body_shape": {
+        "error": {
+          "code": "null",
+          "message": "string",
+          "type": "string"
+        }
+      },
+      "client_error": null
+    },
+    "timeout": {
+      "status": null,
+      "error_type": null,
+      "body_shape": null,
+      "client_error": "TimeoutError",
+      "timed_out": true,
+      "timeout_ms": 5000
+    }
+  },
+  "calls": 9,
+  "errors": [],
+  "leak_scan": {
+    "clean": true,
+    "files": 11,
+    "secrets_checked": 4,
+    "hits": []
+  }
+}

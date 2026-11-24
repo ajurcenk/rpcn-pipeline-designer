@@ -1,0 +1,40 @@
+{
+  "step": "messages-plain-x-api-key",
+  "request": {
+    "method": "POST",
+    "url": "<adp-base-url>/v1/messages",
+    "auth": "x-api-key",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "content-type",
+      "x-api-key"
+    ],
+    "body": {
+      "shape": {
+        "model": "string",
+        "max_tokens": "number",
+        "messages": [
+          "length 1",
+          {
+            "role": "string",
+            "content": "string"
+          }
+        ]
+      },
+      "model": "claude-opus-5-5",
+      "max_tokens": 512,
+      "stream": false
+    }
+  },
+  "error": {
+    "name": "TypeError",
+    "message": "fetch failed",
+    "cause": {
+      "name": "ConnectTimeoutError",
+      "message": "Connect Timeout Error (attempted address: <adp-host>:443, timeout: 10000ms)",
+      "code": "UND_ERR_CONNECT_TIMEOUT"
+    }
+  },
+  "ms": 10510
+}

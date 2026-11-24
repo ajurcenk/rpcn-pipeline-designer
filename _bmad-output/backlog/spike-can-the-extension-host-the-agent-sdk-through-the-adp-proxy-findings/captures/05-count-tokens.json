@@ -1,0 +1,67 @@
+{
+  "step": "count-tokens",
+  "request": {
+    "method": "POST",
+    "url": "<adp-base-url>/v1/messages/count_tokens",
+    "auth": "bearer",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "authorization",
+      "content-type"
+    ],
+    "body": {
+      "shape": {
+        "model": "string",
+        "messages": [
+          "length 1",
+          {
+            "role": "string",
+            "content": "string"
+          }
+        ]
+      },
+      "model": "claude-opus-5-5",
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "names": [
+        "anthropic-organization-id",
+        "anthropic-workspace-id",
+        "cf-cache-status",
+        "cf-ray",
+        "connection",
+        "content-length",
+        "content-security-policy",
+        "content-type",
+        "date",
+        "request-id",
+        "server-timing",
+        "spendlimit",
+        "spendlimit-policy",
+        "strict-transport-security",
+        "vary",
+        "x-request-id",
+        "x-robots-tag"
+      ],
+      "values": {
+        "content-length": "19",
+        "content-type": "application/json"
+      }
+    },
+    "bytes": 19,
+    "headers_ms": 131,
+    "first_byte_ms": 131,
+    "body_shape": {
+      "input_tokens": "number"
+    },
+    "summary": {
+      "type": null,
+      "input_tokens": 11
+    }
+  },
+  "ms": 131
+}

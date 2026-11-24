@@ -1,0 +1,36 @@
+{
+  "step": "error-timeout",
+  "request": {
+    "method": "POST",
+    "url": "<adp-base-url>/v1/messages",
+    "auth": "bearer",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "authorization",
+      "content-type"
+    ],
+    "body": {
+      "shape": {
+        "model": "string",
+        "max_tokens": "number",
+        "messages": [
+          "length 1",
+          {
+            "role": "string",
+            "content": "string"
+          }
+        ]
+      },
+      "model": "claude-opus-5-5",
+      "max_tokens": 2048,
+      "stream": false
+    }
+  },
+  "error": {
+    "name": "TimeoutError",
+    "message": "The operation was aborted due to timeout",
+    "code": 23
+  },
+  "ms": 5003
+}

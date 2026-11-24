@@ -1,0 +1,177 @@
+{
+  "run": 1,
+  "date": "2026-11-24T00:03:21.268Z",
+  "model": "claude-opus-5-5",
+  "request_sample": "Design a Redpanda Connect pipeline: read orders from a topic and post them to an",
+  "platform": "linux-x64",
+  "vscode": "1.143.1",
+  "electron_node": "24.21.0",
+  "skills_commit": {
+    "commit": "0afd001ffdb5e2623839fa4d589216763a98bb71",
+    "dirty": true
+  },
+  "main_extension": {
+    "found": true,
+    "binary_state": "ok",
+    "binary_version": "4.112.0",
+    "schema": true
+  },
+  "env_names": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_AGENT_SDK_CLIENT_APP",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CONFIG_DIR",
+    "DISABLE_AUTOUPDATER",
+    "HOME",
+    "LANG",
+    "NO_COLOR",
+    "PATH",
+    "RPCN_BINARY",
+    "UV_CACHE_DIR",
+    "UV_PYTHON_INSTALL_DIR",
+    "UV_TOOL_DIR",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME"
+  ],
+  "init": {
+    "claude_code_version": "2.1.329",
+    "model": "claude-opus-5-5",
+    "api_key_source": "ANTHROPIC_API_KEY",
+    "permission_mode": "default",
+    "skills": [
+      "deep-research",
+      "rpcn-skills:rpcn-author",
+      "rpcn-skills:rpcn-design",
+      "rpcn-skills:rpcn-test",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "claude-api",
+      "workflow-authoring",
+      "run",
+      "run-skill-generator",
+      "plugin-authoring"
+    ],
+    "plugins": [
+      {
+        "name": "rpcn-skills",
+        "version": "0.1.0",
+        "path": "<rpcn-skills>"
+      },
+      {
+        "name": "cc-plugin-agents-md",
+        "path": "builtin"
+      },
+      {
+        "name": "cc-plugin-privacy",
+        "path": "builtin"
+      },
+      {
+        "name": "cc-plugin-plugin-authoring",
+        "path": "builtin"
+      }
+    ],
+    "mcp_servers": [
+      {
+        "name": "rpcn",
+        "status": "connected",
+        "source": "sdk"
+      }
+    ],
+    "tools": 27,
+    "mcp_tools": [
+      "mcp__rpcn__metrics_bottleneck",
+      "mcp__rpcn__rpcn_componentFields"
+    ],
+    "has_ask_user_question": true,
+    "slash_commands": 47,
+    "output_style": "default",
+    "cwd": "<workspace>"
+  },
+  "result": {
+    "subtype": "success",
+    "is_error": false,
+    "duration_ms": 2033,
+    "duration_api_ms": 78,
+    "num_turns": 9,
+    "total_cost_usd": 0.00126,
+    "usage": {
+      "input_tokens": 90,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 45,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "model_usage": [
+      "claude-opus-5-5"
+    ],
+    "permission_denials": [
+      "Bash",
+      "Bash",
+      "Write"
+    ],
+    "result_sample": "Fake answer: done."
+  },
+  "times": {
+    "sdk_import_ms": 87,
+    "command_to_query_ms": 102,
+    "first_message_ms": 287,
+    "command_to_first_message_ms": 389,
+    "confirmed_to_first_message_ms": 388,
+    "init_ms": 288,
+    "result_ms": 2305
+  },
+  "counts": {
+    "questions": 1,
+    "approvals": 4,
+    "denied": 2,
+    "hook_allow": 3,
+    "hook_deny": 1,
+    "tool_calls": {
+      "tool.rpcn_componentFields": 1,
+      "tool.metrics_bottleneck.error": 1
+    },
+    "write_attempts": [
+      "<repo>/.cache/assistant-host/fake-run/outside-the-workspace.txt",
+      "<workspace>/orders.design.md"
+    ]
+  },
+  "design_notes": [
+    {
+      "file": "orders.design.md",
+      "status": "ready"
+    }
+  ],
+  "leak_scan": {
+    "clean": true,
+    "hits": []
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "step": "models-list",
+  "request": {
+    "method": "GET",
+    "url": "<adp-base-url>/v1/models",
+    "auth": "bearer",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "authorization"
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "names": [
+        "anthropic-organization-id",
+        "anthropic-workspace-id",
+        "cache-control",
+        "cf-cache-status",
+        "cf-ray",
+        "connection",
+        "content-security-policy",
+        "content-type",
+        "date",
+        "request-id",
+        "server-timing",
+        "spendlimit",
+        "spendlimit-policy",
+        "strict-transport-security",
+        "transfer-encoding",
+        "vary",
+        "x-request-id",
+        "x-robots-tag"
+      ],
+      "values": {
+        "cache-control": "private, no-store",
+        "content-type": "application/json",
+        "transfer-encoding": "chunked"
+      }
+    },
+    "bytes": 15861,
+    "headers_ms": 246,
+    "first_byte_ms": 246,
+    "body_shape": {
+      "data": [
+        "length 15",
+        {
+          "type": "string",
+          "id": "string",
+          "display_name": "string",
+          "created_at": "string",
+          "line": "string",
+          "max_input_tokens": "number",
+          "max_tokens": "number",
+          "capabilities": {
+            "batch": {
+              "supported": "boolean"
+            },
+            "citations": {
+              "supported": "boolean"
+            },
+            "code_execution": {
+              "supported": "boolean"
+            },
+            "context_management": {
+              "supported": "boolean",
+              "clear_tool_uses_20250919": {
+                "supported": "boolean"
+              },
+              "clear_thinking_20251015": {
+                "supported": "boolean"
+              },
+              "compact_20260112": {
+                "supported": "boolean"
+              }
+            },
+            "effort": {
+              "supported": "boolean",
+              "low": {
+                "supported": "boolean"
+              },
+              "medium": {
+                "supported": "boolean"
+              },
+              "high": {
+                "supported": "boolean"
+              },
+              "xhigh": {
+                "supported": "boolean"
+              },
+              "max": {
+                "supported": "boolean"
+              }
+            },
+            "image_input": {
+              "supported": "boolean"
+            },
+            "pdf_input": {
+              "supported": "boolean"
+            },
+            "server_tools": {
+              "supported": "boolean",
+              "code_execution": {
+                "supported": "boolean"
+              },
+              "web_search": {
+                "supported": "boolean"
+              }
+            },
+            "structured_outputs": {
+              "supported": "boolean"
+            },
+            "thinking": {
+              "supported": "boolean",
+              "types": {
+                "enabled": {
+                  "supported": "…"
+                },
+                "adaptive": {
+                  "supported": "…"
+                },
+                "disabled": {
+                  "supported": "…"
+                },
+                "between_tools": {
+                  "supported": "…"
+                }
+              }
+            }
+          },
+          "lifecycle": "string",
+          "deprecated_at": "null",
+          "retires_at": "null"
+        }
+      ],
+      "has_more": "boolean",
+      "first_id": "string",
+      "last_id": "string"
+    },
+    "summary": {
+      "type": null,
+      "data_length": 15,
+      "ids_sample": [
+        "claude-fable-5-2",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1"
+      ]
+    }
+  },
+  "ms": 283
+}

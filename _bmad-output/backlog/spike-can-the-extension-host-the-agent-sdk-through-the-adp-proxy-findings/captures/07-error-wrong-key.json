@@ -1,0 +1,69 @@
+{
+  "step": "error-wrong-key",
+  "request": {
+    "method": "POST",
+    "url": "<adp-base-url>/v1/messages",
+    "auth": "bearer",
+    "header_names": [
+      "accept",
+      "anthropic-version",
+      "authorization",
+      "content-type"
+    ],
+    "body": {
+      "shape": {
+        "model": "string",
+        "max_tokens": "number",
+        "messages": [
+          "length 1",
+          {
+            "role": "string",
+            "content": "string"
+          }
+        ]
+      },
+      "model": "claude-opus-5-5",
+      "max_tokens": 512,
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "names": [
+        "connection",
+        "content-type",
+        "date",
+        "strict-transport-security",
+        "transfer-encoding",
+        "vary",
+        "www-authenticate",
+        "x-request-id"
+      ],
+      "values": {
+        "content-type": "application/json",
+        "transfer-encoding": "chunked"
+      }
+    },
+    "bytes": 182,
+    "headers_ms": 37,
+    "first_byte_ms": 37,
+    "body_shape": {
+      "code": "string",
+      "message": "string",
+      "details": [
+        "length 1",
+        {
+          "@type": "string",
+          "reason": "string",
+          "domain": "string",
+          "metadata": {}
+        }
+      ]
+    },
+    "summary": {
+      "type": null
+    }
+  },
+  "ms": 37
+}
