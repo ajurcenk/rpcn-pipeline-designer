@@ -3,7 +3,7 @@ title: 'Spike 65: can the extension host the Claude Agent SDK through the Redpan
 type: 'chore'
 ticket: '65'
 created: '2026-11-23'
-status: 'built'
+status: done
 baseline_revision: '233067d804dde7347eec4d4c578c93475999b32d'
 route: 'full'
 route_source: 'auto'
