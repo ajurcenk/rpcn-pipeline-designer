@@ -1,0 +1,134 @@
+# tickets.toml — epic 8, RPCN AI Assistant. The order of the tables is the build order.
+# Lanes:
+# - 1 is the tracer.
+# - 2 then 10 are packaging and the skills source, beside the app work.
+# - 3 then 5 touch the agent adapter, in that order.
+# - 4 then 8 are the tool layer.
+# - 6 → 7 → 9 are the view, in that order.
+# - 11 is the refactor sweep.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Tracer bullet: from a request to a ready design note in the assistant view"
+description = "The thinnest path through every layer AD-26 names: the AssistantHost port; an AgentSdkHost adapter on the pinned Agent SDK, loading a bundled `rpcn-skills` copy as a plugin with the model, base URL and key in its environment; minimal access (settings plus a key in secret storage); a plain assistant view where a request runs `rpcn-design`, its `AskUserQuestion` shows as answerable cards and the written note shows with its status. It also builds the two test fakes every later entry reuses: a scripted in-memory AssistantHost and a local fake Messages API with scripted turns."
+verify = "In the dev host the user's real request through their endpoint reaches the question cards and a `ready` note (the manual check, at most 2 runs); the integration suites repeat it on the fake host and on the real SDK against the fake Messages API, with no real model call."
+covers = ["R1", "R2", "R3"]
+after = ["epic-smart-yaml-editing"]
+hitl = true
+risk = "high"
+references = ["../../backlog/spike-can-the-extension-host-the-agent-sdk-through-the-adp-proxy-findings/findings.md", "../architecture-rpcn-vscode-designer/architecture-rpcn-vscode-designer.md"]
+notes = ["The user provides the endpoint and a test key for the manual check, as for spike 65."]
+
+[[entry]]
+id = 2
+type = "story"
+title = "One VSIX per platform, with the pinned skills and the Claude Code binary"
+description = "CI builds one VSIX per platform (Linux and macOS targets) carrying the pinned Agent SDK with only that platform's Claude Code binary and the bundled `rpcn-skills` copy at a recorded pin (a build script copies it in); adds the `path` override for a local skills checkout; records each package's size."
+verify = "CI produces the Linux and macOS VSIXes with their sizes; each installs on a clean VS Code and runs entry 1's request through a real endpoint in the user's manual check (macOS by the user)."
+covers = ["R9"]
+after = [1]
+hitl = true
+risk = "high"
+unknown = "Whether the SDK's optional per-platform packages can be limited to one platform in a VSIX build without its install falling back to downloading."
+
+[[entry]]
+id = 3
+type = "story"
+title = "Assistant access: set up, test connection, forget, the model list and the access states"
+description = "Set up assistant access… asks for the base URL, auth and key, makes one test call and stores the key in secret storage only; the model setting offers the endpoint's `/v1/models`; Forget assistant access removes it; the view shows the no binary, no access, key refused, model not allowed and unreachable states, mapping ADP's and Anthropic's error formats."
+verify = "Integration tests against a fake endpoint cover set up, the test call, forget, the model list and each access state's text and action, and find the key in no setting, file, argument, log or message."
+covers = ["R2", "R7", "R8"]
+after = [1]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "The rpcn tool layer, in process"
+description = "The `rpcn_*` tools (binary, list, fields, lint, Bloblang check, dry run, test, handoff check) on the extension's own binary resolution (AD-9) and lint arguments (AD-12), each returning `rpcn_check`'s SCHEMA.md envelope, served by an in-process MCP server with `alwaysLoad`."
+verify = "Unit tests show each tool's envelope equal to `rpcn_check.py`'s for the same inputs, errors included; a fake-model test shows the agent offered the tools from its first request."
+covers = ["R5"]
+after = [1]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Boundaries and approvals"
+description = "The shell rule, the write rules (a stage's own artifact without asking, other writes ask, outside the workspace denied) and reads inside the active skills copy, in one place for the pre-tool hook and `canUseTool`; approval prompts shown in the view; the agent's whole environment built by the extension with its config, `uv` and XDG folders in the extension's storage; `settingSources` empty."
+verify = "Fake-model tests: chained and foreign commands ask, a workspace `rpcn_check.py` asks, writes outside the workspace are denied, the stage's own file is written without asking, and a listing of the user's home shows no new entry after a run."
+covers = ["R6", "R8"]
+after = [3]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 6
+type = "story"
+title = "The Design stage, complete"
+description = "Everything the prototype's Design screens and states show: question rounds with \"(My pick)\" and an Other answer, the existing-note update-or-leave question, the note preview with its status and open decisions, Build off while a blocking decision is open (answered in place by a re-run), progress steps and the waiting state, follow-up messages, Stop and a new conversation, and the stage from files after a reload; settles whether to hide Claude Code's bundled skills further."
+verify = "Fake-host integration tests for each Design screen and state of the prototype, a fake-model test of a full design round, and a reload test that keeps the stage; one real run in the user's manual check."
+covers = ["R1", "R3", "R7"]
+after = [5]
+hitl = false
+risk = "medium"
+references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "The Author stage: build the pipeline from a ready note"
+description = "Build the pipeline from a `ready` note runs `rpcn-author`: the view shows each lint round, the files written and any deviation from the note, opens the graph beside the pipeline, never overwrites an existing pipeline, and shows the lint-still-failing state after 3 revisions."
+verify = "Fake-host tests for the Author screen and the lint-failing state, a fake-model test from a ready note to lint-clean files with the graph open, and one real run in the user's manual check."
+covers = ["R4", "R6", "R7"]
+after = [6, 4, "epic-pipeline-graph"]
+hitl = false
+risk = "medium"
+references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Read-only feature tools"
+description = "Metrics figures and the bottleneck for a running file or a Cloud pipeline (holding a short-lived feed), recent log errors, Cloud pipelines and their state, the pipeline model, diagnostics, and environment variable names, each a compact masked summary with pipeline data marked untrusted, added to the in-process server."
+verify = "Unit and integration tests per tool on the existing metrics, logs and Cloud fakes: compact and masked results, untrusted marking on pipeline data, and no secret value in any result."
+covers = ["R5", "R8"]
+after = [4, "epic-pipeline-metrics", "epic-pipeline-logs", "epic-deploy-to-redpanda-cloud"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 9
+type = "story"
+title = "Test hand-off"
+description = "After Author, Test the pipeline runs `rpcn-test` on the built pipeline and shows its verdict (pass or fail) with a link to `<name>.test-report.md`; the proposed diffs stay in the report."
+verify = "A fake-model test runs the hand-off to a pass and a fail verdict with the report link; one real run in the user's manual check."
+covers = ["R10"]
+after = [7]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 10
+type = "story"
+title = "Try the latest rpcn-skills from GitHub"
+description = "`redpandaConnect.assistant.skillsSource` chooses `bundled`, `latest` or `path`; Try the latest skills… downloads the newest version from the configured skills repository into the extension's storage, shows its version and changes, and switches only on the user's confirmation; Use the bundled skills reverts; the view names the copy in use; failed or invalid downloads, and a version needing a newer binary, keep the current copy with a message."
+verify = "Integration tests on a fake GitHub server cover download, confirm, switch, revert and each failure state, and show the shell rule allowing only the active copy's `rpcn_check.py`."
+covers = ["R9", "R6"]
+after = [2, 5]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 11
+type = "story"
+title = "Refactor sweep"
+description = "Cleanup only, its scope set when it starts from the epic's build records and the review findings deferred during it."
+verify = "The full stable suite passes twice and the multi-root suite once, with no test's expected values changed."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+hitl = false
+risk = "low"
