@@ -7,7 +7,7 @@ const watch = process.argv.includes('--watch');
 
 // Builds in flight across all contexts: "[watch] build started" prints when the first one starts
 // and "[watch] build finished" only when the last one ends, so a background task's problem
-// matcher sees one build that ends after dist/extension.js, dist/webview.js, dist/bloblang.js and dist/logs.js are written.
+// matcher sees one build that ends after dist/extension.js and every webview bundle are written.
 let inFlight = 0;
 
 /**
@@ -96,7 +96,10 @@ async function main() {
 		format: 'cjs',
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode'],
+		// Story 8.1 (AD-26): the Agent SDK is ESM only and ships its per-platform Claude Code binary beside
+		// itself; it stays in node_modules and is loaded with a dynamic `import()` (the `import.meta.url`
+		// define below applies only to bundled code, never to it).
+		external: ['vscode', '@anthropic-ai/claude-agent-sdk'],
 		// Ticket 6.2 (AD-24): @platformatic/kafka is ESM and reads files beside itself through
 		// `import.meta.url`, which a CommonJS bundle lacks: it is this file's own URL.
 		define: { 'import.meta.url': '__rpcn_import_meta_url' },
@@ -168,7 +171,22 @@ async function main() {
 			'process.env.NODE_ENV': production ? '"production"' : '"development"',
 		},
 	});
-	const contexts = [extension, webview, bloblang, logs, metrics];
+	// The RPCN AI Assistant view's webview bundle (browser, one IIFE script; story 8.1).
+	const assistant = await esbuild.context({
+		...shared,
+		entryPoints: [
+			'webview/src/assistant/main.tsx'
+		],
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2022',
+		jsx: 'automatic',
+		outfile: 'dist/assistant.js',
+		define: {
+			'process.env.NODE_ENV': production ? '"production"' : '"development"',
+		},
+	});
+	const contexts = [extension, webview, bloblang, logs, metrics, assistant];
 	if (watch) {
 		await Promise.all(contexts.map((ctx) => ctx.watch()));
 	} else {

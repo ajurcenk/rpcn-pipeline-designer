@@ -42,6 +42,9 @@ import { parsedDocument } from './adapters/vscode/parseCache';
 import { buildPipelineModel, componentPaths } from './core/graph';
 import { metricsTypeOf } from './core/metrics';
 import { parseYaml } from './core/yamlPath';
+import { AssistantAccess } from './adapters/vscode/assistantAccess';
+import { AssistantView } from './adapters/vscode/assistantView';
+import { agentSdkHost } from './adapters/assistant/agentSdkHost';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
 export const REFRESH_SCHEMA_COMMAND = 'redpandaConnect.refreshSchema';
@@ -133,6 +136,18 @@ export interface ExtensionApi {
 	readonly metrics?: Pick<MetricsPanel, 'file' | 'state' | 'rows' | 'readCount' | 'visible' | 'title' | 'posted' | 'onDidChange' | 'show' | 'setSourceFactory' | 'receive' | 'windowMinutes' | 'actions'
 		| 'ui' | 'readingRun' | 'unbind'>
 		& { feeds: Pick<MetricsFeeds, 'feedOf' | 'cloudTiming'> };
+	/**
+	 * The RPCN AI Assistant view (story 8.1, AD-26): the view (its state, posted messages, `receive`, its
+	 * approval prompt), the host factory each run uses (the suites' fake host), and the access a request
+	 * sees (the key stored or removed, settings, the binary state and the folder held in memory). Only in
+	 * `ExtensionMode.Test`.
+	 */
+	readonly assistant?: {
+		readonly view: Pick<AssistantView, 'state' | 'posted' | 'receive' | 'run' | 'stop' | 'running' | 'runsStarted' | 'visible' | 'onDidChange' | 'ui' | 'accessState' | 'idleTimeoutMs'>;
+		readonly access: Pick<AssistantAccess, 'ui' | 'setUpAccess' | 'mask' | 'hasKey' | 'storedSecret'>;
+		setHostFactory: AssistantView['setHostFactory'];
+		setAccessForTest: AssistantView['setAccessForTest'];
+	};
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
 }
@@ -224,9 +239,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	context.subscriptions.push(channel);
 
 	const lines: string[] = [];
+	// Story 8.1: the assistant's key (every value this window held) is masked too; the access is built below.
+	let assistantMask: (text: string) => string = (text) => text;
 	// Ticket 30: every loaded secret value is masked in the output channel (text from the binary may quote one).
 	const log = (raw: string) => {
-		const line = activeSecretValues()?.mask(raw) ?? raw;
+		const line = assistantMask(activeSecretValues()?.mask(raw) ?? raw);
 		lines.push(line);
 		channel.appendLine(line);
 	};
@@ -442,6 +459,21 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	cloudPipelineGone = (clusterId, pipelineId) => cloud.pipelineGone(clusterId, pipelineId);
 	context.subscriptions.push(cloud.onDidChangeTreeData(() => cloudChanged.fire()));
 
+	// The RPCN AI Assistant (story 8.1, AD-26): its access (the key in the secret storage, masked in every
+	// log line) and its view, in its own activity-bar container; each run's host is the embedded Agent SDK.
+	const assistantAccess = new AssistantAccess({ store: context.secrets, log });
+	assistantMask = (text) => assistantAccess.mask(text);
+	const assistantView = new AssistantView({
+		extensionUri: context.extensionUri,
+		storageDir: context.globalStorageUri.fsPath,
+		log,
+		access: assistantAccess,
+		binaryState: () => redpandaConnect.state,
+		onBinaryChange: redpandaConnect.onDidChange,
+		hostFactory: agentSdkHost,
+	});
+	context.subscriptions.push(assistantAccess, ...assistantAccess.register(), assistantView, ...assistantView.register());
+
 	return {
 		redpandaConnect,
 		activationResolved: redpandaConnect.refresh(),
@@ -455,7 +487,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		bloblangLens,
 		schemaContributor,
 		contributorRegistered,
-		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: Object.assign(metricsPanel, { feeds: metricsFeeds }) } : {}),
+		...(testMode ? { secrets, environment, unsetVariables, cloud, logs: Object.assign(logsPanel, { checkClient }), metrics: Object.assign(metricsPanel, { feeds: metricsFeeds }),
+				assistant: {
+					view: assistantView,
+					access: assistantAccess,
+					setHostFactory: (factory) => assistantView.setHostFactory(factory),
+					setAccessForTest: (next) => assistantView.setAccessForTest(next),
+				} } : {}),
 		outputLines: () => [...lines],
 	};
 }

@@ -1,0 +1,11 @@
+{
+  "name": "rpcn-skills",
+  "version": "0.1.0",
+  "description": "Lifecycle skills for Redpanda Connect pipelines, checked against your own rpk connect binary.",
+  "author": {
+    "name": "ajurcenk"
+  },
+  "homepage": "https://github.com/ajurcenk/rpcn-skills",
+  "repository": "https://github.com/ajurcenk/rpcn-skills",
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,114 @@
+// The RPCN AI Assistant's host port (AD-26, story 8.1): the one boundary between the assistant view and
+// whatever runs the agent. The view and its controller see only this port; the first adapter is the
+// embedded Claude Agent SDK (`agentSdkHost.ts`), the integration tests use a scripted in-memory one
+// (`src/test/helpers/fakeAssistantHost.ts`). No `vscode` or SDK import here (eslint keeps `vscode` out).
+//
+// A run: `start` with the request, events through the listener while it goes, then exactly one
+// `result` or `error` as its last event, and the promise settles. While a `question` or an `approval`
+// is open the run waits for `answer` or `approve` with its id (several may be open at once, each by its
+// id; `withdrawn` closes one the agent gave up on); `cancel` ends it (the open ones are refused, and the
+// run's last event is a `result` with `stopped`).
+
+/** The skills the bundled `rpcn-skills` plugin gives the model (the `skills` allowlist). */
+export const RPCN_SKILLS = ['rpcn-design', 'rpcn-author', 'rpcn-test'] as const;
+export type RpcnSkill = typeof RPCN_SKILLS[number];
+
+/** How the key is sent: `Authorization: Bearer` (`ANTHROPIC_AUTH_TOKEN`) or `x-api-key` (`ANTHROPIC_API_KEY`). */
+export type AssistantAuth = 'bearer' | 'x-api-key';
+
+export interface AssistantQuestionOption {
+	readonly label: string;
+	readonly description: string;
+}
+
+/** One `AskUserQuestion` question, as the skill asked it. */
+export interface AssistantQuestion {
+	readonly question: string;
+	readonly header: string;
+	readonly options: readonly AssistantQuestionOption[];
+	readonly multiSelect: boolean;
+}
+
+/** The answers to one `question` event, by question text (as `AskUserQuestion` takes them back). */
+export type AssistantAnswers = Readonly<Record<string, string>>;
+
+export type AssistantEvent =
+	/** One step of the run, already short and plain (a tool used, a check run, a line of the model's text). */
+	| { readonly type: 'progress'; readonly text: string }
+	/** The skill asks; answer with `answer(id, …)`. */
+	| { readonly type: 'question'; readonly id: string; readonly questions: readonly AssistantQuestion[] }
+	/** A tool call outside the boundaries asks; decide with `approve(id, …)`. */
+	| { readonly type: 'approval'; readonly id: string; readonly tool: string; readonly summary: string; readonly detail?: string }
+	/** An open `question` or `approval` the agent no longer waits for (its request was aborted): its card goes. */
+	| { readonly type: 'withdrawn'; readonly id: string }
+	/** A file the agent wrote (absolute path). */
+	| { readonly type: 'fileWritten'; readonly path: string }
+	/** The run ended: done, or (`stopped`) cancelled. */
+	| { readonly type: 'result'; readonly stopped: boolean; readonly text?: string }
+	/** The run ended with an error (its text, not yet masked by the view). */
+	| { readonly type: 'error'; readonly message: string };
+
+export type AssistantListener = (event: AssistantEvent) => void;
+
+/** What one run is asked to do. */
+export interface AssistantRequest {
+	/** The user's request, as typed. */
+	readonly prompt: string;
+	/** The skill the request runs (story 8.1: always `rpcn-design`). */
+	readonly skill: RpcnSkill;
+}
+
+/** Everything an adapter needs, as plain values (read by the vscode glue). */
+export interface AssistantHostConfig {
+	readonly model: string;
+	readonly baseUrl: string;
+	readonly auth: AssistantAuth;
+	/** The key, from the secret storage; only ever passed on in the agent's environment. */
+	readonly apiKey: string;
+	/** The workspace folder: the agent's `cwd`, the only place it may write. */
+	readonly workspace: string;
+	/** The bundled `rpcn-skills` copy (a Claude Code plugin folder). */
+	readonly skillsDir: string;
+	/** The Redpanda Connect binary AD-9 resolved (`RPCN_BINARY`). */
+	readonly rpcnBinary: string;
+	/** The extension's global storage: the agent's config, `uv` and XDG folders go under it. */
+	readonly storageDir: string;
+	/** The extension's environment the agent's is built from (only `PATH`, `HOME`, `LANG` and `PASS_THROUGH` are taken). */
+	readonly baseEnv: Readonly<Record<string, string | undefined>>;
+	/** A log line (the vscode glue masks it). */
+	readonly log: (line: string) => void;
+	/** No message from the agent this long, while nothing waits on the user, ends the run (default 5 min; a test's seam). */
+	readonly idleTimeoutMs?: number;
+}
+
+export interface AssistantHost {
+	/** Runs one request; settles once its last event (`result` or `error`) is sent. Never rejects. */
+	start(request: AssistantRequest, listener: AssistantListener): Promise<void>;
+	/** Answers an open `question` (`undefined`: dismissed, the skill gets a refusal). */
+	answer(id: string, answers: AssistantAnswers | undefined): void;
+	/** Decides an open `approval`. */
+	approve(id: string, allow: boolean): void;
+	/** Stops the run (no effect when none runs). */
+	cancel(): void;
+}
+
+export type AssistantHostFactory = (config: AssistantHostConfig) => AssistantHost;
+
+/** The questions of an `AskUserQuestion` input, or `undefined` when it holds none in the expected shape. */
+export function questionsOf(input: unknown): AssistantQuestion[] | undefined {
+	const list = (input as { questions?: unknown } | null)?.questions;
+	if (!Array.isArray(list) || list.length === 0) {
+		return undefined;
+	}
+	const out: AssistantQuestion[] = [];
+	for (const q of list as Record<string, unknown>[]) {
+		if (!q || typeof q.question !== 'string' || !Array.isArray(q.options)) {
+			return undefined;
+		}
+		const options = (q.options as Record<string, unknown>[])
+			.filter((o) => o && typeof o.label === 'string')
+			.map((o) => ({ label: o.label as string, description: typeof o.description === 'string' ? o.description : '' }));
+		out.push({ question: q.question, header: typeof q.header === 'string' ? q.header : '', options, multiSelect: q.multiSelect === true });
+	}
+	return out;
+}

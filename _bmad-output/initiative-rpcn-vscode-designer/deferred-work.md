@@ -228,3 +228,6 @@
 - source_plan: `_bmad-output/backlog/bug-environment-view-value-default-flake-recurs-after-bug-41-epic-7-retrospective-plan.md`
   summary: The same lost-update race applies to the extension's `workspaceState` writes, for example the graph panel's per-file "Hide graph" record in `panels.ts`. Bug 61 fixed only the recorded secret keys.
   evidence: `workspaceState` is the same `ExtensionMemento` class in VS Code 1.147.0, which replaces its whole value on an echo and flushes `_value` 0 ms later. A lost write there would bring back a hidden graph. It has not been seen to fail.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-rpcn-ai-assistant/story-tracer-bullet-from-a-request-to-a-ready-design-note-in-the-a-plan.md`
+  summary: Story 8.1's review deferred several items. To 8.5: a skills path with a space makes every rpcn_check call ask, and Stop doesn't close an open approval modal (8.5 moves approvals into the view). To 8.6: multi-root folder choice, a cross-check of the rendered webview fed by the real host, and a per-run cost budget if the SDK offers one. To story 1: Windows environment variables and rpk.exe.
+  evidence: The review triage log rows 27 to 32 in the story 8.1 plan.

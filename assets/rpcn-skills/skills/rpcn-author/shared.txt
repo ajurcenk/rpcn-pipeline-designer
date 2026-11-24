@@ -1,0 +1,8 @@
+# Shared files this skill carries, copied from tools/shared/ (AD-2).
+# One mapping per line: <source relative to tools/shared/> <dest relative to this folder>
+# Never edit a copy by hand: change the source, then run `uv run tools/sync_shared.py`.
+
+rpcn_check/rpcn_check.py scripts/rpcn_check.py
+formats/test-report-format.md references/test-report-format.md
+formats/design-format.md references/design-format.md
+formats/blobl-files.md references/blobl-files.md

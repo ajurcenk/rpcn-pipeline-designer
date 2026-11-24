@@ -131,4 +131,15 @@ export default [{
         "no-restricted-imports": ["error", { patterns: [yamlImport] }],
         "no-restricted-syntax": ["error", ...yamlSyntax],
     },
+}, {
+    // Story 8.1 (AD-26): the assistant's host port, its adapter and its rules have no vscode import
+    // (the vscode glue is src/adapters/vscode/assistant*.ts). Repeats the adapters' YAML rule, which
+    // this block's no-restricted-imports replaces.
+    files: ["src/adapters/assistant/**/*.ts"],
+    rules: {
+        "no-restricted-imports": ["error", { patterns: [{
+            ...vscodeImport,
+            message: "AD-26: src/adapters/assistant (the host port, its adapter and rules) must not import the vscode API.",
+        }, yamlImport] }],
+    },
 }, ...sharedBlocks, ...webviewBlocks];

@@ -1,0 +1,162 @@
+/* The RPCN AI Assistant view inherits the VS Code theme (DESIGN.md): every colour is a theme variable,
+   no branding. It sits in the side bar, so it uses the side bar's background. */
+html, body, #root {
+	margin: 0;
+	padding: 0;
+}
+body {
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+}
+.rpcn-assistant {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px 12px 16px;
+}
+.rpcn-assistant-title {
+	margin: 0;
+	font-size: 1em;
+	font-weight: 600;
+}
+.rpcn-assistant button {
+	font-family: inherit;
+	font-size: inherit;
+	padding: 4px 10px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 2px;
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	cursor: pointer;
+}
+.rpcn-assistant button:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+.rpcn-assistant button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.rpcn-assistant button:focus-visible,
+.rpcn-assistant input:focus-visible,
+.rpcn-assistant textarea:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.rpcn-assistant-stop {
+	color: var(--vscode-button-secondaryForeground) !important;
+	background: var(--vscode-button-secondaryBackground) !important;
+}
+.rpcn-assistant-request {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.rpcn-assistant-request textarea,
+.rpcn-assistant-other-text {
+	box-sizing: border-box;
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 2px;
+	padding: 4px 6px;
+}
+.rpcn-assistant-request textarea {
+	width: 100%;
+	min-height: 4.5em;
+	resize: vertical;
+}
+.rpcn-assistant-buttons {
+	display: flex;
+	gap: 6px;
+}
+.rpcn-assistant-asked {
+	margin: 0;
+	padding: 4px 8px;
+	border-left: 2px solid var(--vscode-textBlockQuote-border, var(--vscode-panel-border));
+	color: var(--vscode-descriptionForeground);
+	white-space: pre-wrap;
+}
+.rpcn-assistant-progress {
+	margin: 0;
+	padding-left: 1.5em;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-assistant-progress li {
+	overflow-wrap: anywhere;
+}
+.rpcn-assistant-questions {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.rpcn-assistant-card {
+	margin: 0;
+	padding: 6px 8px 8px;
+	border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+	border-radius: 3px;
+	background: var(--vscode-editorWidget-background, transparent);
+}
+.rpcn-assistant-card legend {
+	font-weight: 600;
+	padding: 0 4px;
+}
+.rpcn-assistant-question {
+	margin: 0 0 6px;
+}
+.rpcn-assistant-option {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	column-gap: 6px;
+	align-items: baseline;
+	padding: 2px 0;
+}
+.rpcn-assistant-option-description {
+	grid-column: 2;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-assistant-pick .rpcn-assistant-option-label {
+	font-weight: 600;
+}
+.rpcn-assistant-other-text {
+	grid-column: 2;
+	margin-top: 2px;
+}
+.rpcn-assistant-note {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-panel-border, transparent);
+	border-radius: 3px;
+}
+.rpcn-assistant-note-file {
+	font-family: var(--vscode-editor-font-family);
+	overflow-wrap: anywhere;
+}
+.rpcn-assistant-note-status {
+	padding: 0 6px;
+	border-radius: 8px;
+	color: var(--vscode-badge-foreground);
+	background: var(--vscode-badge-background);
+}
+.rpcn-assistant-status-ready {
+	color: var(--vscode-testing-iconPassed, var(--vscode-badge-foreground));
+	background: transparent;
+	border: 1px solid currentColor;
+}
+.rpcn-assistant-state-body,
+.rpcn-assistant-stopped,
+.rpcn-assistant-done,
+.rpcn-assistant-waiting {
+	margin: 0;
+}
+.rpcn-assistant-error {
+	margin: 0;
+	color: var(--vscode-errorForeground);
+	overflow-wrap: anywhere;
+}

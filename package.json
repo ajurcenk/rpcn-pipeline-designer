@@ -85,6 +85,32 @@
           "default": [],
           "scope": "resource",
           "markdownDescription": "Names of secret environment variables for lint, run and the Bloblang checks (live errors and the test panel). Only the names are here, so this is safe to commit; the values are kept in VS Code's secret storage on this machine, per workspace folder, and set with **Redpanda Connect: Set secret variable** (which also adds the name here). They reach the binary in its process environment only, so `#redpandaConnect.env#` and `#redpandaConnect.envFile#` win for the same name. A name must match `[A-Za-z_][A-Za-z0-9_]*`. User, workspace and folder lists do not merge: the most specific list is used."
+        },
+        "redpandaConnect.assistant.model": {
+          "type": "string",
+          "default": "claude-opus-5-5",
+          "scope": "application",
+          "markdownDescription": "The Claude model the RPCN AI Assistant runs on (every model the agent may call is set to it). The endpoint must allow it."
+        },
+        "redpandaConnect.assistant.baseUrl": {
+          "type": "string",
+          "default": "https://api.anthropic.com",
+          "scope": "application",
+          "markdownDescription": "The Anthropic Messages API endpoint the RPCN AI Assistant calls: Anthropic itself, or a proxy that serves the same API (for example Redpanda ADP). The key is set with **Set up assistant access…** and kept in VS Code's secret storage, never in a setting."
+        },
+        "redpandaConnect.assistant.auth": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "x-api-key"
+          ],
+          "enumDescriptions": [
+            "Send the key as `Authorization: Bearer` (ANTHROPIC_AUTH_TOKEN).",
+            "Send the key as an `x-api-key` header (ANTHROPIC_API_KEY)."
+          ],
+          "default": "bearer",
+          "scope": "application",
+          "markdownDescription": "How the RPCN AI Assistant sends its key to the endpoint."
         }
       }
     },
@@ -335,6 +361,17 @@
         "title": "Show metrics",
         "category": "Redpanda Connect",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "redpandaConnect.assistant.setUpAccess",
+        "title": "Set up assistant access…",
+        "category": "Redpanda Connect",
+        "icon": "$(key)"
+      },
+      {
+        "command": "redpandaConnect.assistant.run",
+        "title": "Run the assistant",
+        "category": "Redpanda Connect"
       }
     ],
     "menus": {
@@ -490,6 +527,10 @@
         },
         {
           "command": "redpandaConnect.cloud.showMetrics",
+          "when": "false"
+        },
+        {
+          "command": "redpandaConnect.assistant.run",
           "when": "false"
         }
       ],
@@ -793,6 +834,11 @@
           "id": "redpandaConnect",
           "title": "Redpanda Connect",
           "icon": "media/redpanda-connect.svg"
+        },
+        {
+          "id": "redpandaConnectAssistant",
+          "title": "RPCN AI Assistant",
+          "icon": "$(sparkle)"
         }
       ],
       "panel": [
@@ -837,6 +883,14 @@
           "id": "redpandaConnect.pipelineMetrics",
           "name": "Pipeline Metrics",
           "contextualTitle": "Pipeline Metrics"
+        }
+      ],
+      "redpandaConnectAssistant": [
+        {
+          "type": "webview",
+          "id": "redpandaConnect.assistant",
+          "name": "Assistant",
+          "contextualTitle": "RPCN AI Assistant"
         }
       ]
     },
@@ -894,12 +948,14 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.329",
     "@platformatic/kafka": "2.15.0",
     "@vscode/codicons": "0.0.46-24",
     "@xyflow/react": "12.12.0",
     "elkjs": "0.12.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "yaml": "2.9.1"
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
   }
 }
