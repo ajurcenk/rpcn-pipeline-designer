@@ -292,3 +292,8 @@ context:
 - `node scripts/gen-agent-runtime.mjs --check` -- expected: passes
 - `npx vsce package --no-dependencies && node scripts/check-vsix.mjs` -- expected: passes; no `@anthropic-ai/claude-agent-sdk*` in the VSIX
 - `npm run compile-tests`, then `--grep "Extension tracer path|assistant"`, then the full stable suite twice and `--label multiroot`. Run one at a time, never `--label floor`. Expected: all pass
+
+## Manual Check
+
+- 2026-11-25, the user, Fedora Linux, the packed VSIX in a clean VS Code profile, through the Redpanda ADP endpoint (within the 2-run cap): the manual check passed with no issues. The view offered Install assistant runtime…, the terms dialog gated the download, the runtime installed from npm, and 8.1's request reached a `ready` design note.
+- macOS: postponed by the user. The darwin binary package download is not yet checked by hand; the hash and platform-package checks in CI and `check-vsix` cover it until then.
