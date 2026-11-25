@@ -121,6 +121,7 @@ No spec capability covers this epic (Source conflict in Notes), so its requireme
 - Decision (replaced 2026-11-25): one VSIX per platform; no first-run download, no separate extension (the user, 2026-11-24).
 - Decision: the extension never redistributes Anthropic's SDK or binary. One VSIX for all platforms; the user installs the runtime on demand from VS Code, from the npm registry, integrity-checked against pinned hashes, after explicit agreement to Anthropic's terms, into the extension's global storage. This replaces per-platform VSIXes (the user, 2026-11-25).
 - Decision: the assistant view is a chat transcript, the prototype's option A, chosen over stage cards (B) and a Copilot-style view (C). Entry 12 builds it after entry 2 (the user, 2026-11-25).
+- Decision: an approval in the chat offers Allow for this session, which remembers a shell command's program and subcommand (not the exact text, and never a command with pipes, `;`, redirects or `$(…)`) until the window reloads. Entry 5 builds it (the user, 2026-11-25).
 - Decision: the assistant works on existing pipelines: describe, change through approved edits, explain (R11, entries 13 and 14). The skill side goes to `rpcn-skills` as two change requests, kept in `rpcn-skills-change-requests/` (the user, 2026-11-25).
 - Decision: Test is a hand-off only — run `rpcn-test` and show its verdict and report link (the user, 2026-11-24).
 - Decision: after a reload, the stage comes from the files; the conversation starts fresh, with no session resume (the user, 2026-11-24).
