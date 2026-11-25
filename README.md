@@ -9,15 +9,27 @@ A VS Code extension for [Redpanda Connect](https://docs.redpanda.com/redpanda-co
 The extension is not on the VS Code Marketplace or Open VSX yet; install it from a `.vsix` file.
 
 1. Get the `.vsix`, either way:
-   - **From CI:** every green build on `main` uploads it as the `rpcn-pipeline-designer-vsix` artifact. Download it from the run's page under **Actions** (it comes zipped), or with the GitHub CLI:
+   - **From CI:** every green build on `main` uploads the `rpcn-pipeline-designer-vsix` artifact, which holds one file, `rpcn-pipeline-designer-<version>.vsix`, for every platform (CI's packaging step logs its size). Download it from the run's page under **Actions** (it comes zipped), or with the GitHub CLI:
 
      ```sh
      gh run download --repo ajurcenk/rpcn-pipeline-designer -n rpcn-pipeline-designer-vsix
      ```
    - **Built locally:** `npm ci`, then `npx vsce package --no-dependencies`.
-2. Install it: `code --install-extension rpcn-pipeline-designer-0.0.1.vsix`, or in VS Code open the Extensions view, then **…** → **Install from VSIX…** and pick the file.
+2. Install it: `code --install-extension rpcn-pipeline-designer-<version>.vsix`, or in VS Code open the Extensions view, then **…** → **Install from VSIX…** and pick the file.
 
 VS Code installs [YAML by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml), which the extension depends on, from the Marketplace (internet access is needed the first time). The extension also needs your Redpanda Connect binary; see [Requirements](#requirements) and [Finding the binary](#finding-the-binary). The version stays 0.0.1 for now, so to update, install the newer `.vsix` with `code --install-extension <file> --force` (or uninstall first) and reload the window.
+
+### The RPCN AI Assistant's runtime
+
+The RPCN AI Assistant (its own view in the activity bar) runs Anthropic's [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) and its Claude Code binary. The `.vsix` doesn't include them: they are Anthropic's software, under [Anthropic's terms](https://code.claude.com/docs/en/legal-and-compliance). Until they are installed, the view says so and offers **Install assistant runtime…** (also in the Command Palette):
+
+1. A dialog names the two packages it will download, `@anthropic-ai/claude-agent-sdk` at the version the extension pins and your platform's `@anthropic-ai/claude-agent-sdk-<platform>`, and links Anthropic's terms. Nothing is downloaded unless you choose **Agree and install**; the agreement is remembered for that version only.
+2. The two tarballs come straight from `https://registry.npmjs.org` over HTTPS (no npm needed), with a progress notification you can cancel. The download honours VS Code's `http.proxy`, `http.noProxy` and `http.proxyStrictSSL`, and `HTTPS_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS`. With `http.proxySupport` set to `off`, no proxy is used. Only `http://` and `https://` proxies work (a `socks5://` one fails the install with that reason), and a proxy set only in the operating system (or a PAC file) is left to VS Code's own proxy support; through a proxy, the operating system's certificate store is used where Node can read it (Node 22.15 and later).
+3. Each tarball is checked against the sha512 hash pinned in the extension (`assets/agent-runtime.json`, generated from `package-lock.json`) before anything is unpacked, then unpacked into the extension's global storage (`agent-runtime/<version>/`). A failed or cancelled install leaves nothing behind; the view shows the reason, with **Retry**.
+
+The assistant loads the SDK and the binary only from there, never from another `node_modules` or `NODE_PATH`. When a new version of the extension pins another SDK version, the view offers **Update assistant runtime…**, which installs the new one and then removes the old one. **Remove assistant runtime** deletes it. Every platform Anthropic publishes a binary package for can install it (Linux x64 and arm64, glibc or musl, and macOS x64 and arm64 are the ones used so far; Windows is untested); on any other, the view says the assistant isn't available for that platform yet.
+
+The assistant uses the `rpcn-skills` copy bundled in the extension. `redpandaConnect.assistant.skillsPath` points it at a local `rpcn-skills` checkout instead: an absolute path (a leading `~` or `~/` is your home folder), holding `.claude-plugin/plugin.json` and the `rpcn-design`, `rpcn-author` and `rpcn-test` skills, outside the workspace folder. The view then says "Skills: local copy". The checkout's `rpcn_check.py` scripts run without asking. A value that isn't such a folder stops the assistant, and the view says why.
 
 ## Finding the binary
 
@@ -244,10 +256,14 @@ npm run test:corpus      # lint every test/corpus/*.yaml with both binaries and 
                          # that the graph model of every config matches test/corpus/<name>.graph/<ver>.json
                          # (graph accuracy); parity and graph accuracy need no binary
 npm run test:corpus:record   # rewrite the lint and graph records (and delete orphaned ones)
-npx vsce package --no-dependencies
+npx vsce package --no-dependencies                 # the one VSIX, for every platform (no Anthropic package in it)
+npm run check:vsix                                 # package one and check what it holds (or: node scripts/check-vsix.mjs --vsix <file>)
+node scripts/gen-agent-runtime.mjs                 # rewrite assets/agent-runtime.json after changing the SDK pin (--check: CI's comparison)
 ```
 
 Press F5 in VS Code to start an Extension Development Host, or run `scripts/dev-host.sh [folder] [file...]` to rebuild and (re)start a VS Code window with the extension loaded from source; its profile, YAML by Red Hat and default workspace live in the git-ignored `.dev-host/`.
+
+In the Extension Development Host and the tests, the assistant uses the SDK in the repository's `node_modules` (at the pinned version) when no runtime is installed; set `RPCN_ASSISTANT_DEV_RUNTIME=0` to try Install assistant runtime… there instead. An installed extension never does this.
 
 ## License
 

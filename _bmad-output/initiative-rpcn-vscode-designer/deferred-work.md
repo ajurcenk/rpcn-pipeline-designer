@@ -231,3 +231,6 @@
 - source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-rpcn-ai-assistant/story-tracer-bullet-from-a-request-to-a-ready-design-note-in-the-a-plan.md`
   summary: Story 8.1's review deferred several items. To 8.5: a skills path with a space makes every rpcn_check call ask, and Stop doesn't close an open approval modal (8.5 moves approvals into the view). To 8.6: multi-root folder choice, a cross-check of the rendered webview fed by the real host, and a per-run cost budget if the SDK offers one. To story 1: Windows environment variables and rpk.exe.
   evidence: The review triage log rows 27 to 32 in the story 8.1 plan.
+- source_plan: `_bmad-output/initiative-rpcn-vscode-designer/epic-rpcn-ai-assistant/story-one-vsix-per-platform-with-the-pinned-skills-and-the-claude-plan.md`
+  summary: Updating or removing the assistant runtime in one VS Code window deletes the runtime a run in another window is using (the busy check is per window).
+  evidence: `AssistantRuntime.remove()` and `installRuntime`'s removal of other versions check only this window's `running()`, while every window shares `<globalStorage>/agent-runtime`; settled by a cross-window in-use marker (story 8.2 review, P2-22).

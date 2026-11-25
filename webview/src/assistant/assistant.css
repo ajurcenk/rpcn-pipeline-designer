@@ -74,6 +74,10 @@ body {
 	display: flex;
 	gap: 6px;
 }
+.rpcn-assistant-skills {
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+}
 .rpcn-assistant-asked {
 	margin: 0;
 	padding: 4px 8px;

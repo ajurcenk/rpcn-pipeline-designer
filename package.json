@@ -111,6 +111,12 @@
           "default": "bearer",
           "scope": "application",
           "markdownDescription": "How the RPCN AI Assistant sends its key to the endpoint."
+        },
+        "redpandaConnect.assistant.skillsPath": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "A local `rpcn-skills` checkout the RPCN AI Assistant uses instead of its bundled copy: an absolute path (a leading `~` or `~/` is the home directory). It must hold `.claude-plugin/plugin.json` and the `rpcn-design`, `rpcn-author` and `rpcn-test` skills (`skills/<name>/SKILL.md`), and be outside the workspace folder (not the folder, inside it or around it); else the assistant does not start. **The checkout's `rpcn_check.py` scripts run without asking, and the assistant reads the folder without asking.** Empty: the bundled copy."
         }
       }
     },
@@ -371,6 +377,21 @@
       {
         "command": "redpandaConnect.assistant.run",
         "title": "Run the assistant",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.assistant.installRuntime",
+        "title": "Install assistant runtime…",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.assistant.updateRuntime",
+        "title": "Update assistant runtime…",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.assistant.removeRuntime",
+        "title": "Remove assistant runtime",
         "category": "Redpanda Connect"
       }
     ],

@@ -11,6 +11,16 @@
 // `status` (stage from files: never from the conversation). Stop cancels the run. The run's `result`
 // ends it (done or stopped), an `error` ends it with a masked error line; a new request works after both.
 //
+// Story 8.2: nothing starts, either, without the assistant runtime (the Agent SDK and this platform's
+// Claude Code binary, which the extension never ships; the user installs them: `assistantRuntime.ts`):
+// `runtimeMissing` (Install assistant runtime…), `runtimeInstalling`, `runtimeOutdated` (another version
+// installed: Update assistant runtime…), `runtimeFailed` (the reason, with Retry), `unavailable` (no binary
+// package exists for this platform); or when `redpandaConnect.assistant.skillsPath` is no usable checkout
+// (`badSkillsPath`, with why). A valid `skillsPath` is the skills copy a run uses (its plugin, and the
+// shell and read rules' copy) instead of the bundled one; the view says "Skills: local copy". A runtime
+// that passed the view's check but that the host cannot load ends the run as `runtimeMissing`: the
+// request cleared, no "run started" line, no error line.
+//
 // Every text posted or logged is masked: the key (and any credential-looking value) and the home folder.
 // As the metrics tab: the webview posts `ready` each time it loads and gets the whole state; `receive`
 // is the integration tests' seam; `posted` keeps the last messages (capped).
@@ -21,11 +31,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	MAX_PROGRESS_LINES, MAX_REQUEST_CHARS, orderOptions, parseAssistantWebviewMessage,
-	type AssistantAccess as AccessState, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
+	type AssistantAccess as AccessState, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
 } from '../../shared/assistantProtocol';
 import { errorText } from '../../shared/errorText';
 import { designNoteStatus, isDesignNote } from '../../core/designNote';
-import type { AssistantEvent, AssistantHost, AssistantHostFactory, AssistantQuestion } from '../assistant/host';
+import { RPCN_SKILLS, type AssistantEvent, type AssistantHost, type AssistantHostFactory, type AssistantQuestion } from '../assistant/host';
+import type { RuntimeView } from './assistantRuntime';
+import { INSTALL_RUNTIME_COMMAND, UPDATE_RUNTIME_COMMAND, type AssistantRuntime } from './assistantRuntime';
 import { isInside } from '../assistant/rules';
 import type { BinaryState } from '../redpandaConnect/binary';
 import { findOnPath } from '../redpandaConnect/process';
@@ -57,6 +69,11 @@ export interface AssistantViewOptions {
 	readonly hostFactory: AssistantHostFactory;
 	/** Review 7: whether `uv` is on the PATH (default: looked up on `PATH` at each check). */
 	readonly uvAvailable?: () => boolean;
+	/**
+	 * Story 8.2: the assistant runtime. Review 4: looked up when the view loads or becomes visible, a run
+	 * starts, an install or removal ends, or a test's access changes.
+	 */
+	readonly runtime: AssistantRuntime;
 }
 
 /** Test seam: the access, plus the binary state and the workspace folder a request sees (`null`: back to the real one). */
@@ -65,6 +82,65 @@ export interface AssistantTestAccess extends AssistantAccessOverrides {
 	readonly workspace?: string | null;
 	/** Review 7: whether `uv` is found. */
 	readonly uv?: boolean | null;
+}
+
+/** Story 8.2: the skills copy a run uses. */
+export interface SkillsCopy {
+	readonly kind: 'bundled' | 'local';
+	readonly dir: string;
+}
+
+/** Story 8.2: what a `skillsPath` value gives: a copy, or why it is no checkout to use (`badSkillsPath`). */
+export type SkillsChoice = SkillsCopy | { readonly kind: 'bad'; readonly problem: SkillsPathProblem };
+
+/** The files a `skillsPath` folder must hold to count as an `rpcn-skills` checkout (review 7). */
+export const SKILLS_CHECKOUT_FILES: readonly string[] = [
+	path.join('.claude-plugin', 'plugin.json'),
+	...RPCN_SKILLS.map((skill) => path.join('skills', skill, 'SKILL.md')),
+];
+
+function isFile(file: string): boolean {
+	try {
+		return fs.statSync(file).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Story 8.2: the skills copy for a `skillsPath` value. Anything but a non-empty string (review 8): the
+ * bundled copy. Otherwise `~` or a leading `~/` expands to the home folder (nothing else does); the path
+ * must be absolute, an existing folder, hold `SKILLS_CHECKOUT_FILES`, and (review 1) be neither the
+ * workspace folder, nor inside it, nor contain it: the agent may write in the workspace, and the copy's
+ * scripts run without asking.
+ */
+export function skillsCopy(setting: unknown, bundled: string, workspaces: string | undefined | readonly string[], home: string = os.homedir()): SkillsChoice {
+	const value = typeof setting === 'string' ? setting.trim() : '';
+	if (!value) {
+		return { kind: 'bundled', dir: bundled };
+	}
+	const expanded = value === '~' ? home : /^~[\\/]/.test(value) ? path.join(home, value.slice(2)) : value;
+	if (!path.isAbsolute(expanded)) {
+		return { kind: 'bad', problem: 'notAbsolute' };
+	}
+	const dir = path.resolve(expanded);
+	let folder = false;
+	try {
+		folder = fs.statSync(dir).isDirectory();
+	} catch {
+		folder = false;
+	}
+	if (!folder) {
+		return { kind: 'bad', problem: 'notFound' };
+	}
+	if (!SKILLS_CHECKOUT_FILES.every((f) => isFile(path.join(dir, f)))) {
+		return { kind: 'bad', problem: 'notCheckout' };
+	}
+	const folders = typeof workspaces === 'string' ? [workspaces] : workspaces ?? [];
+	if (folders.some((workspace) => isInside(workspace, dir) || isInside(dir, workspace))) {
+		return { kind: 'bad', problem: 'inWorkspace' };
+	}
+	return { kind: 'local', dir };
 }
 
 /**
@@ -111,6 +187,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	private testBinary: BinaryState | undefined;
 	private testWorkspace: string | undefined;
 	private testUv: boolean | undefined;
+	/** Review 3: a run's host found the runtime gone after the view's check passed (until the next lookup). */
+	private hostRuntimeGone = false;
 	private status: AssistantStatus = 'idle';
 	private request: string | null = null;
 	private progress: string[] = [];
@@ -127,6 +205,11 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.subscriptions.push(
 			this.changed,
 			options.access.onDidChange(() => this.post()),
+			// Any lookup of the runtime (an install or removal ending among them) replaces what a run's host found.
+			options.runtime.onDidChange(() => {
+				this.hostRuntimeGone = false;
+				this.post();
+			}),
 			options.onBinaryChange(() => this.post()),
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.post()),
 		);
@@ -165,6 +248,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		if (next.uv !== undefined) {
 			this.testUv = next.uv ?? undefined;
 		}
+		this.lookUp();
 		await this.options.access.setAccessForTest(next);
 		this.post();
 	}
@@ -186,12 +270,52 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return this.testBinary ?? this.options.binaryState();
 	}
 
+	/** Every workspace folder on disk (the test seam's folder too): `skillsPath` may be in or around none of them. */
+	private workspaceFolders(): string[] {
+		const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath);
+		return this.testWorkspace ? [this.testWorkspace, ...folders] : folders;
+	}
+
 	private workspaceFolder(): string | undefined {
 		return this.testWorkspace ?? vscode.workspace.workspaceFolders?.find((f) => f.uri.scheme === 'file')?.uri.fsPath;
 	}
 
+	/** Story 8.2, review 4: looks the runtime up again (clears a host's `runtimeMissing`). */
+	private lookUp(): RuntimeView {
+		this.hostRuntimeGone = false;
+		this.options.runtime.refresh();
+		return this.runtime();
+	}
+
+	/** Story 8.2: the runtime, as last looked up (or as a run's host found it). */
+	runtime(): RuntimeView {
+		const view = this.options.runtime.view();
+		return this.hostRuntimeGone && view.kind === 'installed' ? { kind: 'missing', platform: view.platform } : view;
+	}
+
+	/** Story 8.2: the skills copy a run uses, or why `skillsPath` gives none. */
+	skills(): SkillsChoice {
+		return skillsCopy(vscode.workspace.getConfiguration('redpandaConnect.assistant').get<unknown>('skillsPath'), bundledSkillsDir(this.options.extensionUri), this.workspaceFolders());
+	}
+
 	/** Whether a request can start now, and if not, why. */
 	accessState(): AccessState {
+		return this.access().state;
+	}
+
+	private access(): { readonly state: AccessState; readonly runtime: RuntimeView; readonly skills: SkillsChoice } {
+		const runtime = this.runtime();
+		const skills = this.skills();
+		const state: AccessState = runtime.kind === 'unavailable' ? 'unavailable'
+			: runtime.kind === 'installing' ? 'runtimeInstalling'
+				: runtime.kind === 'failed' ? 'runtimeFailed'
+					: runtime.kind === 'outdated' ? 'runtimeOutdated'
+						: runtime.kind === 'missing' ? 'runtimeMissing'
+							: skills.kind === 'bad' ? 'badSkillsPath' : this.accessRest();
+		return { state, runtime, skills };
+	}
+
+	private accessRest(): AccessState {
 		const settings = this.options.access.settings();
 		if (!this.options.access.hasKey) {
 			return 'noAccess';
@@ -209,6 +333,14 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			return 'noUv';
 		}
 		return this.workspaceFolder() ? 'ready' : 'noWorkspace';
+	}
+
+	private pinned(): string {
+		try {
+			return this.options.runtime.manifest().sdkVersion;
+		} catch {
+			return '';
+		}
 	}
 
 	/** `text` as the view shows and logs it: credentials and the home folder masked. */
@@ -229,9 +361,18 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				options: orderOptions(x.options.map((o) => ({ label: this.mask(o.label), description: this.mask(o.description) }))),
 			})),
 		} : null;
+		const access = this.access();
 		return {
 			type: 'state',
-			access: this.accessState(),
+			access: access.state,
+			platform: access.runtime.kind === 'unavailable' ? access.runtime.platform : null,
+			runtime: {
+				pinned: this.pinned(),
+				installed: access.runtime.kind === 'outdated' ? access.runtime.installed : null,
+				error: access.runtime.kind === 'failed' ? this.mask(access.runtime.error) : null,
+			},
+			skills: access.skills.kind === 'bad' ? null : access.skills.kind,
+			skillsProblem: access.skills.kind === 'bad' ? access.skills.problem : null,
 			status: this.status,
 			request: this.request === null ? null : this.mask(this.request),
 			progress: this.progress.map((l) => this.mask(l)),
@@ -245,6 +386,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.viewSubscriptions.forEach((s) => s.dispose());
 		this.view = view;
 		this.ready = false;
+		this.lookUp();
 		view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.options.extensionUri, 'dist')] };
 		view.webview.html = webviewHtml(view.webview, this.options.extensionUri, 'assistant', 'RPCN AI Assistant');
 		this.viewSubscriptions = [
@@ -253,6 +395,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				if (!view.visible) {
 					// Not retained while hidden: the page loads again (and posts `ready`) when shown.
 					this.ready = false;
+				} else {
+					this.lookUp();
 				}
 				this.changed.fire();
 			}),
@@ -294,6 +438,12 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'openSettingsRequested':
 				await vscode.commands.executeCommand('workbench.action.openSettings', 'redpandaConnect.assistant');
 				break;
+			case 'installRuntimeRequested':
+				await vscode.commands.executeCommand(INSTALL_RUNTIME_COMMAND);
+				break;
+			case 'updateRuntimeRequested':
+				await vscode.commands.executeCommand(UPDATE_RUNTIME_COMMAND);
+				break;
 		}
 	}
 
@@ -325,13 +475,15 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 
 	private async runClaimed(prompt: string): Promise<AssistantRunOutcome> {
 		await this.options.access.ready;
-		const access = this.accessState();
+		const apiKey = await this.options.access.apiKey();
+		// Review 1, 3: looked up again, and the skills path checked against the workspace, at each run's start.
+		const runtime = this.lookUp();
+		const { state: access, skills } = this.access();
 		const binary = this.binary();
 		const workspace = this.workspaceFolder();
-		const apiKey = await this.options.access.apiKey();
-		if (access !== 'ready' || binary.kind !== 'ok' || !workspace || !apiKey) {
+		if (access !== 'ready' || binary.kind !== 'ok' || !workspace || !apiKey || skills.kind === 'bad' || runtime.kind !== 'installed' || this.options.runtime.busy) {
 			this.post();
-			return access === 'ready' ? 'noAccess' : access;
+			return this.options.runtime.busy ? 'runtimeInstalling' : access === 'ready' ? 'noAccess' : access;
 		}
 		const settings = this.options.access.settings();
 		let host: AssistantHost;
@@ -340,8 +492,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				...settings,
 				apiKey,
 				workspace,
-				skillsDir: bundledSkillsDir(this.options.extensionUri),
+				skillsDir: skills.dir,
 				rpcnBinary: binary.path,
+				runtime: runtime.files,
 				storageDir: this.options.storageDir,
 				baseEnv: process.env,
 				log: (line) => this.options.log(this.mask(line)),
@@ -363,11 +516,17 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.noteFile = undefined;
 		this.note = null;
 		this.error = null;
-		this.options.log(`Assistant: a design run started (${settings.model}).`);
 		this.post();
+		// Review 3: "started" only once the host takes the run (its first event that is not `unavailable`).
+		let accepted = false;
+		const started = `Assistant: a design run started (${settings.model}${skills.kind === 'local' ? ', the local skills copy' : ''}).`;
 		try {
 			await host.start({ prompt, skill: 'rpcn-design' }, (event) => {
 				if (this.host === host) {
+					if (!accepted && !(event.type === 'error' && event.runtimeMissing)) {
+						accepted = true;
+						this.options.log(started);
+					}
 					this.event(host, event);
 				}
 			});
@@ -385,6 +544,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.readNote();
 		this.post();
 		const status = ended();
+		if (this.hostRuntimeGone) {
+			return 'runtimeMissing';
+		}
 		return status === 'done' ? 'done' : status === 'stopped' ? 'stopped' : 'error';
 	}
 
@@ -422,6 +584,17 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				break;
 			case 'error':
 				this.closeOpen();
+				if (event.runtimeMissing) {
+					// Story 8.2, review 3: the runtime went after the view's check: its state shows (until the next
+					// lookup), not an error line, and the request is not left as if it ran.
+					this.hostRuntimeGone = true;
+					this.status = 'idle';
+					this.error = null;
+					this.request = null;
+					this.progress = [];
+					this.options.log('Assistant: the assistant runtime is not installed; nothing ran.');
+					break;
+				}
 				this.status = 'error';
 				this.error = event.message;
 				this.options.log(`Assistant: the run failed: ${this.mask(event.message)}`);

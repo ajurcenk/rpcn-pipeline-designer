@@ -38,6 +38,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # story 8.1's assistant suite runs the skills' `uv run …/rpcn_check.py` (CI run 45532143932 failed
+      # without it: "uv: command not found"); uv fetches Python itself when it needs one
+      - uses: astral-sh/setup-uv@v10.3.3
+
       # unit + integration tests (needs a display): the latest stable VS Code is required; the 1.100.0
       # floor reports but doesn't fail the build (user decision 2026-10-16: its timing flakes are out of
       # scope and must not hide the steps below)
@@ -68,12 +72,29 @@ jobs:
       - if: ${{ !cancelled() }}
         run: npm run test:webview
 
-      - if: ${{ !cancelled() }}
-        run: npx vsce package --no-dependencies
+      # Story 8.2: the assistant runtime manifest (assets/agent-runtime.json) is what package-lock.json gives
+      - name: Check the assistant runtime manifest
+        if: ${{ !cancelled() }}
+        run: node scripts/gen-agent-runtime.mjs --check
+
+      # Story 8.2: exactly one VSIX, for every platform; it never carries Anthropic's SDK or Claude Code
+      # binary (the user installs the assistant runtime from VS Code). Checked, and its size logged.
+      - name: Package and check the VSIX
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          mkdir -p vsix
+          out="vsix/rpcn-pipeline-designer-${version}.vsix"
+          npx vsce package --no-dependencies --out "$out"
+          node scripts/check-vsix.mjs --vsix "$out"
+          du -h "$out"
 
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: rpcn-pipeline-designer-vsix
-          path: '*.vsix'
+          path: 'vsix/*.vsix'
           if-no-files-found: error
+          # VSIXes are zips already
+          compression-level: 0

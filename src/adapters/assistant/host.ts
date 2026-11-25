@@ -9,6 +9,8 @@
 // id; `withdrawn` closes one the agent gave up on); `cancel` ends it (the open ones are refused, and the
 // run's last event is a `result` with `stopped`).
 
+import type { RuntimeFiles } from './runtime';
+
 /** The skills the bundled `rpcn-skills` plugin gives the model (the `skills` allowlist). */
 export const RPCN_SKILLS = ['rpcn-design', 'rpcn-author', 'rpcn-test'] as const;
 export type RpcnSkill = typeof RPCN_SKILLS[number];
@@ -45,8 +47,12 @@ export type AssistantEvent =
 	| { readonly type: 'fileWritten'; readonly path: string }
 	/** The run ended: done, or (`stopped`) cancelled. */
 	| { readonly type: 'result'; readonly stopped: boolean; readonly text?: string }
-	/** The run ended with an error (its text, not yet masked by the view). */
-	| { readonly type: 'error'; readonly message: string };
+	/**
+	 * The run ended with an error (its text, not yet masked by the view). Story 8.2: `runtimeMissing` when
+	 * the assistant runtime the view found is gone (or cannot be loaded) as the run starts; the view then
+	 * shows its runtime state, not an error.
+	 */
+	| { readonly type: 'error'; readonly message: string; readonly runtimeMissing?: boolean };
 
 export type AssistantListener = (event: AssistantEvent) => void;
 
@@ -67,7 +73,7 @@ export interface AssistantHostConfig {
 	readonly apiKey: string;
 	/** The workspace folder: the agent's `cwd`, the only place it may write. */
 	readonly workspace: string;
-	/** The bundled `rpcn-skills` copy (a Claude Code plugin folder). */
+	/** The `rpcn-skills` copy in use (a Claude Code plugin folder): the bundled one, or `skillsPath`'s (story 8.2). */
 	readonly skillsDir: string;
 	/** The Redpanda Connect binary AD-9 resolved (`RPCN_BINARY`). */
 	readonly rpcnBinary: string;
@@ -79,6 +85,11 @@ export interface AssistantHostConfig {
 	readonly log: (line: string) => void;
 	/** No message from the agent this long, while nothing waits on the user, ends the run (default 5 min; a test's seam). */
 	readonly idleTimeoutMs?: number;
+	/**
+	 * Story 8.2 (review 3): the installed assistant runtime's SDK entry and Claude Code binary, as the view
+	 * found them when the run started; loaded only from there (gone by then: a `runtimeMissing` error).
+	 */
+	readonly runtime: RuntimeFiles;
 }
 
 export interface AssistantHost {

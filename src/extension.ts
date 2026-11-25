@@ -3,6 +3,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { BinaryState, LogLine, RedpandaConnect } from './adapters/redpandaConnect/binary';
 import { BinaryNotifier } from './adapters/redpandaConnect/notify';
@@ -43,7 +44,8 @@ import { buildPipelineModel, componentPaths } from './core/graph';
 import { metricsTypeOf } from './core/metrics';
 import { parseYaml } from './core/yamlPath';
 import { AssistantAccess } from './adapters/vscode/assistantAccess';
-import { AssistantView } from './adapters/vscode/assistantView';
+import { AssistantView, maskHome } from './adapters/vscode/assistantView';
+import { AssistantRuntime } from './adapters/vscode/assistantRuntime';
 import { agentSdkHost } from './adapters/assistant/agentSdkHost';
 
 const OUTPUT_CHANNEL_NAME = 'Redpanda Connect';
@@ -147,6 +149,8 @@ export interface ExtensionApi {
 		readonly access: Pick<AssistantAccess, 'ui' | 'setUpAccess' | 'mask' | 'hasKey' | 'storedSecret'>;
 		setHostFactory: AssistantView['setHostFactory'];
 		setAccessForTest: AssistantView['setAccessForTest'];
+		/** Story 8.2: the assistant runtime (its UI, the test overrides, install, remove and cancel). */
+		readonly runtime: Pick<AssistantRuntime, 'ui' | 'setForTest' | 'install' | 'remove' | 'cancel' | 'view' | 'root' | 'manifest' | 'busy' | 'onDidChange' | 'termsDetail'>;
 	};
 	/** Lines written to the output channel by this extension, in order. */
 	outputLines(): readonly string[];
@@ -463,7 +467,22 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 	// log line) and its view, in its own activity-bar container; each run's host is the embedded Agent SDK.
 	const assistantAccess = new AssistantAccess({ store: context.secrets, log });
 	assistantMask = (text) => assistantAccess.mask(text);
+	// Story 8.2: the assistant runtime, installed by the user into global storage (never shipped). The
+	// development override, the repository's node_modules, only in Development and Test (and not with
+	// RPCN_ASSISTANT_DEV_RUNTIME=0, for trying the install from the dev host).
+	const devRuntime = (context.extensionMode === vscode.ExtensionMode.Development || testMode) && process.env.RPCN_ASSISTANT_DEV_RUNTIME !== '0';
+	let assistantRunning = () => false;
+	const assistantRuntime = new AssistantRuntime({
+		extensionUri: context.extensionUri,
+		storageDir: context.globalStorageUri.fsPath,
+		globalState: context.globalState,
+		log,
+		mask: (text) => maskHome(assistantAccess.mask(text), [os.homedir(), process.env.HOME ?? '']),
+		...(devRuntime ? { devModules: path.join(context.extensionUri.fsPath, 'node_modules') } : {}),
+		running: () => assistantRunning(),
+	});
 	const assistantView = new AssistantView({
+		runtime: assistantRuntime,
 		extensionUri: context.extensionUri,
 		storageDir: context.globalStorageUri.fsPath,
 		log,
@@ -472,7 +491,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 		onBinaryChange: redpandaConnect.onDidChange,
 		hostFactory: agentSdkHost,
 	});
-	context.subscriptions.push(assistantAccess, ...assistantAccess.register(), assistantView, ...assistantView.register());
+	assistantRunning = () => assistantView.running;
+	context.subscriptions.push(assistantAccess, ...assistantAccess.register(), assistantRuntime, ...assistantRuntime.register(), assistantView, ...assistantView.register());
 
 	return {
 		redpandaConnect,
@@ -493,6 +513,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 					access: assistantAccess,
 					setHostFactory: (factory) => assistantView.setHostFactory(factory),
 					setAccessForTest: (next) => assistantView.setAccessForTest(next),
+					runtime: assistantRuntime,
 				} } : {}),
 		outputLines: () => [...lines],
 	};

@@ -12,24 +12,49 @@
 //   - a refusal by the endpoint (401, 403), which Claude Code retries for about three minutes, ends the
 //     run at its first `api_retry` with an error (the other retries are progress lines).
 // The SDK is ESM only: loaded with a dynamic `import()` on the first run (it is external to the bundle).
+// Story 8.2: it is never in the extension; the view hands over the installed assistant runtime it found
+// (`runtime.ts`: `<globalStorage>/agent-runtime/<sdkVersion>/`, or the development override): the SDK is
+// imported from that runtime's `sdk.mjs` by its path (review 2: never looked up by name), and its Claude
+// Code binary is `pathToClaudeCodeExecutable`. When either is gone as the run starts, or the SDK says its
+// binary is not found, the run ends with a `runtimeMissing` error (the view shows its runtime state).
 // No `vscode` import.
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import type { CanUseTool, HookCallback, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk' with { 'resolution-mode': 'import' };
 import { agentFolders, buildAgentEnv } from './env';
 import { progressOf, resultEventOf, retryOf } from './events';
 import {
 	RPCN_SKILLS, questionsOf, type AssistantAnswers, type AssistantEvent, type AssistantHost, type AssistantHostConfig, type AssistantListener, type AssistantRequest,
 } from './host';
+import { isExecutable } from './runtime';
 import { approvalSummary, canUseToolDecision, preToolUseDecision, type BoundaryContext } from './rules';
 
 type Sdk = typeof import('@anthropic-ai/claude-agent-sdk', { with: { 'resolution-mode': 'import' } });
 
 let loading: Promise<Sdk> | undefined;
+let loadingEntry = '';
 
-/** The SDK module, imported once (ESM from a CommonJS bundle); a failed import is tried again next time (review 16). */
-export function loadSdk(importer: () => Promise<Sdk> = () => import('@anthropic-ai/claude-agent-sdk')): Promise<Sdk> {
+/** The error of a run whose runtime went after the view's check. */
+export const RUNTIME_GONE_TEXT = 'The assistant runtime is no longer installed.';
+
+/** Whether an error is the SDK's own "binary not found" (its runtime is incomplete). */
+export function isBinaryMissing(message: string): boolean {
+	return /native cli binary[\s\S]*not found|claude code (executable|native binary) not found/i.test(message);
+}
+
+/** Review 2: the SDK imported from its own entry file (never looked up by name, which walks every ancestor `node_modules`). */
+export function importSdkFrom(entry: string): Promise<Sdk> {
+	return import(pathToFileURL(entry).href) as Promise<Sdk>;
+}
+
+/** The SDK module, imported once per entry (ESM from a CommonJS bundle); a failed import is tried again next time (review 16). */
+export function loadSdk(importer: () => Promise<Sdk>, entry = ''): Promise<Sdk> {
+	if (loading && loadingEntry !== entry) {
+		loading = undefined;
+	}
+	loadingEntry = entry;
 	if (!loading) {
 		const attempt = importer();
 		loading = attempt;
@@ -86,6 +111,11 @@ export class AgentSdkHost implements AssistantHost {
 			listener({ type: 'error', message: 'A run is already going.' });
 			return;
 		}
+		const runtime = this.config.runtime;
+		if (!fs.existsSync(runtime.sdk) || !isExecutable(runtime.binary)) {
+			listener({ type: 'error', message: RUNTIME_GONE_TEXT, runtimeMissing: true });
+			return;
+		}
 		const abort = new AbortController();
 		this.abort = abort;
 		let ended = false;
@@ -109,12 +139,19 @@ export class AgentSdkHost implements AssistantHost {
 			for (const dir of Object.values(agentFolders(this.config.storageDir))) {
 				fs.mkdirSync(dir, { recursive: true });
 			}
-			const sdk = await loadSdk();
+			let sdk: Sdk;
+			try {
+				sdk = await loadSdk(() => importSdkFrom(runtime.sdk), runtime.sdk);
+			} catch (err) {
+				this.config.log(`Assistant: the SDK could not be loaded from the runtime: ${errorMessage(err)}`);
+				emit({ type: 'error', message: RUNTIME_GONE_TEXT, runtimeMissing: true });
+				return;
+			}
 			if (abort.signal.aborted) {
 				emit({ type: 'result', stopped: true });
 				return;
 			}
-			const options = this.options(sdk, ctx, abort, emit);
+			const options = { ...this.options(sdk, ctx, abort, emit), pathToClaudeCodeExecutable: runtime.binary };
 			for await (const message of sdk.query({ prompt: promptFor(request), options })) {
 				if (abort.signal.aborted) {
 					break;
@@ -144,7 +181,9 @@ export class AgentSdkHost implements AssistantHost {
 				emit({ type: 'error', message: 'The assistant ended without a result.' });
 			}
 		} catch (err) {
-			emit(abort.signal.aborted ? { type: 'result', stopped: true } : { type: 'error', message: errorMessage(err) });
+			const message = errorMessage(err);
+			emit(abort.signal.aborted ? { type: 'result', stopped: true }
+				: isBinaryMissing(message) ? { type: 'error', message: RUNTIME_GONE_TEXT, runtimeMissing: true } : { type: 'error', message });
 		} finally {
 			this.disarm();
 			this.onIdle = undefined;

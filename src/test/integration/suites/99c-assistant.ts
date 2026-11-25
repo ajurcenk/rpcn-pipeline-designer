@@ -14,11 +14,18 @@ import { ASSISTANT_KEY_SECRET, ASSISTANT_KEY_URL_SECRET, SET_UP_ASSISTANT_ACCESS
 import { ASSISTANT_VIEW_ID, bundledSkillsDir, RUN_ASSISTANT_COMMAND, type AssistantRunOutcome, type AssistantViewUi } from '../../../adapters/vscode/assistantView';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import type { BinaryState } from '../../../adapters/redpandaConnect/binary';
-import type { AssistantStateMessage } from '../../../shared/assistantProtocol';
+import { RUNTIME_MISSING_TEXT, unavailableText, type AssistantStateMessage } from '../../../shared/assistantProtocol';
+import { agentSdkHost } from '../../../adapters/assistant/agentSdkHost';
+import { hostPlatform } from '../../../adapters/assistant/platform';
+import {
+	AGREE_AND_INSTALL, INSTALL_RUNTIME_COMMAND, READ_TERMS, REMOVE_RUNTIME_COMMAND, RUNTIME_BUSY_TEXT, RUNTIME_TERMS_URL, UPDATE_RUNTIME_COMMAND,
+	type AssistantRuntimeUi, type RuntimeInstallOutcome,
+} from '../../../adapters/vscode/assistantRuntime';
 import { type ExtensionApi } from '../../../extension';
 import { FakeAssistantHosts, happyScript, readyNote, RUN_2_QUESTIONS } from '../../helpers/fakeAssistantHost';
 import { makeTempDir, REPO_ROOT, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 import { ADP_401, FakeMessagesApi, toolUseId, type FakeTurn } from '../../helpers/fakeMessagesApi';
+import { FakeProxy, FakeRegistry, fakeRuntime, SDK, tarball, tarballPath } from '../../helpers/fakeRegistry';
 import { EXTENSION_ID, userFilesHolding, waitFor } from '../helpers';
 
 // Not sk-, so only the key mask itself can catch it. Random-looking throughout: the leak scan looks for any
@@ -77,6 +84,17 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(!lines.includes(piece), 'output channel');
 		}
 	};
+	/** Story 8.2: `redpandaConnect.assistant.skillsPath` in the user settings (`undefined`: removed). */
+	const setSkillsPath = async (value: string | undefined) => {
+		await vscode.workspace.getConfiguration('redpandaConnect.assistant').update('skillsPath', value, vscode.ConfigurationTarget.Global);
+	};
+	/** Story 8.2: a local copy of the bundled skills (a checkout's layout: `.claude-plugin/` and `skills/`). */
+	const localSkills = (): string => {
+		const dir = path.join(root, 'local-rpcn-skills');
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.cpSync(bundledSkillsDir(vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri), dir, { recursive: true });
+		return dir;
+	};
 	const resetWorkspace = () => {
 		fs.rmSync(ws, { recursive: true, force: true });
 		fs.mkdirSync(ws, { recursive: true });
@@ -112,6 +130,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		view().stop();
 		await waitFor(() => !view().running, 10_000);
 		assistant().setHostFactory(undefined);
+		await setSkillsPath(undefined);
 		await assistant().setAccessForTest({ key: null, model: null, baseUrl: null, auth: null, binary: null, workspace: null, uv: null });
 		view().idleTimeoutMs = undefined;
 		view().ui = originalViewUi;
@@ -137,7 +156,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			contributes: {
 				viewsContainers: { activitybar: { id: string; icon: string }[] }; views: Record<string, { id: string; type?: string }[]>;
 				commands: { command: string; title: string }[]; menus: { commandPalette: { command: string; when?: string }[] };
-				configuration: { properties: Record<string, { default?: unknown; enum?: unknown[]; scope?: string }> };
+				configuration: { properties: Record<string, { default?: unknown; enum?: unknown[]; scope?: string; markdownDescription?: string }> };
 			};
 		};
 		const c = pkg.contributes;
@@ -154,6 +173,12 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(Object.keys(props).filter((k) => k.startsWith('redpandaConnect.assistant.')).every((k) => props[k].scope === 'application'), 'user settings only');
 		assert.ok(!Object.keys(props).some((k) => /apiKey|key$/i.test(k)), 'no setting holds the key');
 		assert.ok(fs.existsSync(path.join(bundledSkillsDir(vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri), '.claude-plugin', 'plugin.json')), 'the bundled skills copy');
+		// Story 8.2: the runtime commands, and the skills path (empty by default; its scripts run without asking).
+		assert.deepStrictEqual([INSTALL_RUNTIME_COMMAND, UPDATE_RUNTIME_COMMAND, REMOVE_RUNTIME_COMMAND].map((id) => c.commands.find((x) => x.command === id)?.title),
+			['Install assistant runtime…', 'Update assistant runtime…', 'Remove assistant runtime']);
+		const skillsPath = props['redpandaConnect.assistant.skillsPath'] as { default?: unknown; markdownDescription?: string };
+		assert.strictEqual(skillsPath.default, '');
+		assert.ok(skillsPath.markdownDescription?.includes('run without asking'), skillsPath.markdownDescription);
 	});
 
 	test('NO_KEY: no key: the view says access isn\'t set up and offers the set-up; nothing starts. Escape stores nothing; the set-up stores the key', async () => {
@@ -442,6 +467,388 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(line.includes(CREDENTIAL_MASK) && !line.includes(KEY), line);
 	});
 
+	test('story 8.2: BAD_SKILLS_PATH: a skills path without .claude-plugin/plugin.json: the view says so; nothing starts', async () => {
+		const hosts = new FakeAssistantHosts(happyScript());
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const notACheckout = path.join(root, 'not-a-checkout');
+		fs.mkdirSync(path.join(notACheckout, 'skills'), { recursive: true });
+		await setSkillsPath(notACheckout);
+		try {
+			assert.ok(await waitFor(() => state().access === 'badSkillsPath', 5_000), JSON.stringify(state()));
+			assert.strictEqual(await view().run(REQUEST), 'badSkillsPath');
+			assert.strictEqual(hosts.made.length, 0, 'nothing starts');
+		} finally {
+			await setSkillsPath(undefined);
+		}
+		assert.strictEqual(state().access, 'ready');
+		assert.strictEqual(state().skills, 'bundled');
+	});
+
+	test('story 8.2: BAD_SKILLS_PATH (in the workspace): a checkout inside the workspace folder: inWorkspace; nothing starts', async () => {
+		const hosts = new FakeAssistantHosts(happyScript());
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const inside = path.join(ws, 'rpcn-skills');
+		fs.cpSync(bundledSkillsDir(vscode.extensions.getExtension(EXTENSION_ID)!.extensionUri), inside, { recursive: true });
+		await setSkillsPath(inside);
+		try {
+			assert.ok(await waitFor(() => state().access === 'badSkillsPath', 5_000), JSON.stringify(state()));
+			assert.strictEqual(state().skillsProblem, 'inWorkspace');
+			assert.strictEqual(state().skills, null);
+			assert.strictEqual(await view().run(REQUEST), 'badSkillsPath');
+			assert.strictEqual(hosts.made.length, 0, 'nothing starts');
+		} finally {
+			await setSkillsPath(undefined);
+		}
+	});
+
+	test('story 8.2: SKILLS_PATH (fake host): a valid skills path is the run\'s copy; the view says "Skills: local copy"', async () => {
+		const hosts = new FakeAssistantHosts(happyScript());
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const local = localSkills();
+		await setSkillsPath(local);
+		try {
+			assert.ok(await waitFor(() => state().skills === 'local', 5_000), JSON.stringify(state()));
+			assert.strictEqual(state().access, 'ready');
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000), JSON.stringify(state()));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+			assert.strictEqual(hosts.last?.config.skillsDir, local);
+			assert.ok(api().outputLines().some((l) => l.includes('a design run started') && l.includes('the local skills copy')));
+		} finally {
+			await setSkillsPath(undefined);
+		}
+		assert.strictEqual(state().skills, 'bundled');
+	});
+
+	// Story 8.2: the assistant runtime, installed by the user from VS Code, against a fake registry (never the
+	// real one). Each test starts with no runtime in a temporary folder, the development override off, no
+	// proxy, and no agreement remembered. Every row of the plan's matrix has a test.
+	suite('the assistant runtime (story 8.2)', () => {
+		const runtime = () => assistant().runtime;
+		const V1 = '9.0.1';
+		const V2 = '9.0.2';
+		const platform = hostPlatform();
+		let registry: FakeRegistry;
+		let rtRoot: string;
+		let originalRuntimeUi: AssistantRuntimeUi;
+		/** The terms modal's answers, in order (then Escape), and what it was shown. */
+		let agreeWith: (string | undefined)[] = [];
+		const asked: { readonly message: string; readonly detail: string }[] = [];
+		const opened: string[] = [];
+		const progressTitles: string[] = [];
+		let cancelInstall: (() => void) | undefined;
+		/** Everything under the runtime folder, relative. */
+		const tree = () => (fs.existsSync(rtRoot) ? fs.readdirSync(rtRoot, { recursive: true }).map(String).sort() : []);
+		const install = () => vscode.commands.executeCommand<RuntimeInstallOutcome>(INSTALL_RUNTIME_COMMAND);
+		const binaryOf = (version: string) => path.join(rtRoot, version, 'node_modules', '@anthropic-ai', `claude-agent-sdk-${platform}`, platform.startsWith('win32') ? 'claude.exe' : 'claude');
+
+		suiteSetup(async () => {
+			registry = new FakeRegistry();
+			await registry.start();
+			originalRuntimeUi = runtime().ui;
+			runtime().ui = {
+				agree: async (message, detail) => {
+					asked.push({ message, detail });
+					return agreeWith.shift();
+				},
+				openTerms: async (url) => opened.push(url),
+				progress: async (title, task, cancel) => {
+					progressTitles.push(title);
+					cancelInstall = cancel;
+					return task(() => undefined);
+				},
+				showInfo: async (m) => shown.push(m),
+				showError: async (m) => shown.push(m),
+			};
+			await assistant().setAccessForTest({ key: KEY });
+		});
+		suiteTeardown(async () => {
+			runtime().ui = originalRuntimeUi;
+			await runtime().setForTest({ root: null, manifest: null, devOverride: null, platform: null, proxy: null, agreed: null });
+			await registry?.stop();
+		});
+		setup(async () => {
+			registry.reset();
+			registry.files.clear();
+			registry.serve(V1, platform);
+			rtRoot = path.join(root, 'agent-runtime');
+			fs.rmSync(rtRoot, { recursive: true, force: true });
+			agreeWith = [AGREE_AND_INSTALL];
+			asked.length = 0;
+			opened.length = 0;
+			progressTitles.length = 0;
+			cancelInstall = undefined;
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			await runtime().setForTest({ root: rtRoot, manifest: registry.manifest(V1, [platform, 'darwin-arm64']), devOverride: false, platform: null, proxy: {}, agreed: null });
+			await assistant().setAccessForTest({ key: KEY });
+		});
+		teardown(async () => {
+			registry.release();
+			assert.ok(await waitFor(() => !runtime().busy, 10_000), 'no install left going');
+		});
+
+		test('FIRST_USE: no runtime: runtimeMissing with Install assistant runtime…; nothing starts; the runtime folder is in global storage', async () => {
+			const hosts = new FakeAssistantHosts(happyScript());
+			assistant().setHostFactory(hosts.factory);
+			const s = state();
+			assert.strictEqual(s.access, 'runtimeMissing', JSON.stringify(s));
+			assert.deepStrictEqual(s.runtime, { pinned: V1, installed: null, error: null });
+			assert.ok(RUNTIME_MISSING_TEXT.includes('Install assistant runtime…'));
+			assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
+			assert.strictEqual(hosts.made.length, 0, 'nothing starts');
+			assert.strictEqual(registry.requests.length, 0, 'nothing downloaded');
+			await runtime().setForTest({ root: null });
+			try {
+				assert.strictEqual(runtime().root(), path.join(REPO_ROOT, '.vscode-test', 'user-data', 'User', 'globalStorage', EXTENSION_ID, 'agent-runtime'));
+			} finally {
+				await runtime().setForTest({ root: rtRoot });
+			}
+		});
+
+		test('AGREE_AND_INSTALL: the terms named and linked; progress; the two tarballs; claude executable; ready; a run uses only that runtime', async () => {
+			agreeWith = [READ_TERMS, AGREE_AND_INSTALL];
+			// The view's button posts installRuntimeRequested, which runs the command.
+			await view().receive({ type: 'installRuntimeRequested' });
+			assert.deepStrictEqual(opened, [RUNTIME_TERMS_URL], 'the terms link opened, then the modal again');
+			assert.strictEqual(asked.length, 2);
+			const detail = asked[0].detail;
+			for (const text of [`${SDK} ${V1}`, `${SDK}-${platform} ${V1}`, registry.url, RUNTIME_TERMS_URL, AGREE_AND_INSTALL]) {
+				assert.ok(detail.includes(text), `${text} in ${detail}`);
+			}
+			assert.deepStrictEqual(progressTitles, ['Installing the assistant runtime']);
+			assert.deepStrictEqual(registry.requests.map((r) => r.url).sort(), [tarballPath(SDK, V1), tarballPath(`${SDK}-${platform}`, V1)].sort(), 'exactly the two tarballs');
+			assert.ok(fs.statSync(binaryOf(V1)).mode & 0o111, 'claude keeps its executable bit');
+			assert.deepStrictEqual(fs.readdirSync(rtRoot), [V1], 'no temporary folder left');
+			assert.strictEqual(state().access, 'ready', JSON.stringify(state()));
+			const hosts = new FakeAssistantHosts(happyScript());
+			assistant().setHostFactory(hosts.factory);
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+			assert.deepStrictEqual(hosts.last?.config.runtime, {
+				version: V1,
+				sdk: path.join(rtRoot, V1, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'sdk.mjs'),
+				binary: binaryOf(V1),
+			});
+			// Already installed: nothing asked, nothing downloaded.
+			const requests = registry.requests.length;
+			assert.strictEqual(await install(), 'current');
+			assert.strictEqual(registry.requests.length, requests);
+			assert.strictEqual(asked.length, 2);
+		});
+
+		test('DECLINE: Escape: nothing downloaded; still runtimeMissing. The agreement is remembered for that version only', async () => {
+			agreeWith = [undefined];
+			assert.strictEqual(await install(), 'declined');
+			assert.strictEqual(registry.requests.length, 0, 'nothing downloaded');
+			assert.deepStrictEqual(tree(), []);
+			assert.strictEqual(state().access, 'runtimeMissing');
+			agreeWith = [AGREE_AND_INSTALL];
+			assert.strictEqual(await install(), 'installed');
+			assert.strictEqual(asked.length, 2);
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_RUNTIME_COMMAND), 'removed');
+			agreeWith = [];
+			assert.strictEqual(await install(), 'installed', 'agreed to this version already: not asked again');
+			assert.strictEqual(asked.length, 2);
+		});
+
+		test('BAD_HASH: nothing unpacked; runtimeFailed with the reason (masked) and Retry; Retry installs', async () => {
+			registry.corrupt.add(tarballPath(`${SDK}-${platform}`, V1));
+			assert.strictEqual(await install(), 'failed');
+			assert.deepStrictEqual(tree(), [], 'nothing unpacked, no partial folder');
+			const s = state();
+			assert.strictEqual(s.access, 'runtimeFailed');
+			assert.ok(s.runtime.error?.includes('didn\'t match the expected integrity'), JSON.stringify(s.runtime));
+			assert.ok(api().outputLines().some((l) => l.startsWith('Assistant: the runtime install failed:') && l.includes('didn\'t match the expected integrity')));
+			assert.ok(!JSON.stringify(view().posted).includes(os.homedir() + path.sep), 'masked');
+			registry.corrupt.clear();
+			await view().receive({ type: 'installRuntimeRequested' });
+			assert.strictEqual(state().access, 'ready', JSON.stringify(state()));
+			assert.strictEqual(asked.length, 1, 'Retry does not ask again for the same version');
+		});
+
+		test('OFFLINE / PROXY: the download fails, or the proxy refuses: runtimeFailed with the reason; no partial folder', async () => {
+			await runtime().setForTest({ manifest: registry.manifest(V1, [platform], 'http://127.0.0.1:1') });
+			assert.strictEqual(await install(), 'failed');
+			assert.strictEqual(state().access, 'runtimeFailed');
+			assert.ok(state().runtime.error?.includes('ECONNREFUSED'), JSON.stringify(state().runtime));
+			assert.deepStrictEqual(tree(), []);
+			const proxy = new FakeProxy();
+			await proxy.start();
+			try {
+				await runtime().setForTest({ manifest: registry.manifest(V1, [platform], 'https://registry.example.invalid'), proxy: { proxy: proxy.url } });
+				assert.strictEqual(await install(), 'failed');
+				assert.ok(state().runtime.error?.includes('the proxy refused the connection (407)'), JSON.stringify(state().runtime));
+				assert.deepStrictEqual(proxy.connects, ['registry.example.invalid:443'], 'through the proxy');
+				assert.deepStrictEqual(tree(), []);
+			} finally {
+				await proxy.stop();
+			}
+		});
+
+		test('CANCEL: Cancel during the download: no partial folder; runtimeMissing; nothing starts meanwhile', async () => {
+			registry.hold = true;
+			const going = install();
+			assert.ok(await waitFor(() => registry.requests.length > 0 && cancelInstall !== undefined, 10_000));
+			assert.strictEqual(state().access, 'runtimeInstalling');
+			assert.strictEqual(await view().run(REQUEST), 'runtimeInstalling', 'nothing starts while it installs');
+			assert.strictEqual(await install(), 'busy');
+			cancelInstall!();
+			assert.strictEqual(await going, 'cancelled');
+			assert.deepStrictEqual(tree(), [], 'no partial folder');
+			assert.strictEqual(state().access, 'runtimeMissing');
+			assert.strictEqual(state().runtime.error, null);
+		});
+
+		test('UNSAFE_ARCHIVE: a tar entry with .. (its hash matching): refused; runtimeFailed; nothing outside', async () => {
+			registry.serve(V1, platform, { ...fakeRuntime(V1, platform), binary: tarball([{ name: 'package/../../escaped', content: 'x' }]) });
+			await runtime().setForTest({ manifest: registry.manifest(V1, [platform]) });
+			assert.strictEqual(await install(), 'failed');
+			assert.ok(state().runtime.error?.includes('the archive is unsafe'), JSON.stringify(state().runtime));
+			assert.strictEqual(state().access, 'runtimeFailed');
+			assert.deepStrictEqual(tree(), []);
+			assert.ok(!fs.existsSync(path.join(root, 'escaped')) && !fs.existsSync(path.join(path.dirname(root), 'escaped')));
+		});
+
+		test('NEW_PIN: an older version installed: runtimeOutdated with Update; Update asks for the new version, installs it, then removes the old', async () => {
+			assert.strictEqual(await install(), 'installed');
+			registry.serve(V2, platform);
+			await runtime().setForTest({ manifest: registry.manifest(V2, [platform]) });
+			const s = state();
+			assert.strictEqual(s.access, 'runtimeOutdated');
+			assert.deepStrictEqual(s.runtime, { pinned: V2, installed: V1, error: null });
+			assert.strictEqual(await view().run(REQUEST), 'runtimeOutdated', 'nothing starts on the old version');
+			agreeWith = [AGREE_AND_INSTALL];
+			await view().receive({ type: 'updateRuntimeRequested' });
+			assert.strictEqual(asked.length, 2, 'the new version asks again');
+			assert.ok(asked[1].message.includes(V2));
+			assert.deepStrictEqual(fs.readdirSync(rtRoot), [V2], 'the old one removed');
+			assert.strictEqual(state().access, 'ready');
+			assert.strictEqual(await vscode.commands.executeCommand(UPDATE_RUNTIME_COMMAND), 'current');
+		});
+
+		test('REMOVE: the folder is deleted; runtimeMissing', async () => {
+			assert.strictEqual(await install(), 'installed');
+			assert.strictEqual(state().access, 'ready');
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_RUNTIME_COMMAND), 'removed');
+			assert.ok(!fs.existsSync(rtRoot));
+			assert.strictEqual(state().access, 'runtimeMissing');
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_RUNTIME_COMMAND), 'none');
+		});
+
+		test('FOREIGN_COPY: an SDK in an ancestor node_modules and on NODE_PATH, no runtime: still runtimeMissing, never loaded', async () => {
+			const foreign = path.join(root, 'node_modules');
+			fs.mkdirSync(path.join(foreign, '@anthropic-ai'), { recursive: true });
+			fs.cpSync(path.join(REPO_ROOT, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'), path.join(foreign, '@anthropic-ai', 'claude-agent-sdk'), { recursive: true });
+			const before = process.env.NODE_PATH;
+			process.env.NODE_PATH = foreign;
+			const hosts = new FakeAssistantHosts(happyScript());
+			assistant().setHostFactory(hosts.factory);
+			try {
+				await runtime().setForTest({ manifest: registry.manifest(V1, [platform]) });
+				assert.strictEqual(state().access, 'runtimeMissing');
+				assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
+				assert.strictEqual(hosts.made.length, 0);
+			} finally {
+				if (before === undefined) {
+					delete process.env.NODE_PATH;
+				} else {
+					process.env.NODE_PATH = before;
+				}
+				fs.rmSync(foreign, { recursive: true, force: true });
+			}
+		});
+
+		test('NO_BINARY_FOR_PLATFORM: no package for the platform: unavailable "isn\'t available for <platform> yet"; no install, nothing starts', async () => {
+			await runtime().setForTest({ platform: 'aix-ppc64' });
+			const s = state();
+			assert.strictEqual(s.access, 'unavailable');
+			assert.strictEqual(s.platform, 'aix-ppc64');
+			assert.strictEqual(unavailableText('aix-ppc64'), 'The RPCN AI Assistant isn\'t available for aix-ppc64 yet: Anthropic publishes no Claude Code binary package for it.');
+			assert.strictEqual(await install(), 'unavailable');
+			assert.strictEqual(asked.length, 0);
+			assert.strictEqual(await view().run(REQUEST), 'unavailable');
+		});
+
+		test('REAL_HOST: the real SDK host imports the installed sdk.mjs (the fake SDK\'s own error); the SDK\'s binary-not-found: runtimeMissing, no error line', async () => {
+			assert.strictEqual(await install(), 'installed');
+			assistant().setHostFactory(undefined);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			assert.ok(state().error?.includes('fake SDK'), `the installed sdk.mjs ran: ${state().error}`);
+			// Another version whose SDK throws the SDK's own "binary not found".
+			const missing = 'export const query = () => { throw new Error("Native CLI binary for linux-x64 not found. Reinstall @anthropic-ai/claude-agent-sdk."); };\nexport const createSdkMcpServer = () => ({});\n';
+			registry.serve(V2, platform, { ...fakeRuntime(V2, platform), sdk: tarball([
+				{ name: 'package/package.json', content: JSON.stringify({ name: SDK, version: V2, type: 'module' }) },
+				{ name: 'package/sdk.mjs', content: missing },
+			]) });
+			await runtime().setForTest({ manifest: registry.manifest(V2, [platform]) });
+			agreeWith = [AGREE_AND_INSTALL];
+			assert.strictEqual(await install(), 'installed');
+			assert.strictEqual(state().access, 'ready');
+			assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
+			assert.strictEqual(state().error, null, 'no error line');
+			assert.strictEqual(state().request, null);
+			assert.strictEqual(state().access, 'runtimeMissing');
+		});
+
+		test('BUSY: Install, Update and Remove while a run goes: busy, the runtime kept, the reason shown', async () => {
+			assert.strictEqual(await install(), 'installed');
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			shown.length = 0;
+			assert.strictEqual(await vscode.commands.executeCommand(REMOVE_RUNTIME_COMMAND), 'busy');
+			assert.strictEqual(await vscode.commands.executeCommand(UPDATE_RUNTIME_COMMAND), 'busy');
+			assert.strictEqual(await install(), 'busy');
+			assert.ok(fs.existsSync(binaryOf(V1)), 'the runtime is still there');
+			assert.deepStrictEqual(shown, [RUNTIME_BUSY_TEXT, RUNTIME_BUSY_TEXT, RUNTIME_BUSY_TEXT]);
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+		});
+
+		test('BINARY_VANISHES: the runtime passes the view\'s check, then the host cannot load it: runtimeMissing; request cleared; no "run started" line, no error line', async () => {
+			assert.strictEqual(await install(), 'installed');
+			assert.strictEqual(state().access, 'ready');
+			const lines = api().outputLines().length;
+			// The real SDK host, with the binary removed between the view's check and the host's start.
+			assistant().setHostFactory((config) => {
+				fs.rmSync(config.runtime.binary);
+				return agentSdkHost(config);
+			});
+			assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
+			let s = state();
+			assert.strictEqual(s.access, 'runtimeMissing');
+			assert.strictEqual(s.status, 'idle');
+			assert.strictEqual(s.request, null, 'the request cleared');
+			assert.strictEqual(s.error, null, 'no error line');
+			assert.deepStrictEqual(s.progress, []);
+			const added = api().outputLines().slice(lines);
+			assert.ok(!added.some((l) => l.includes('a design run started')), added.join('\n'));
+			assert.ok(!added.some((l) => l.includes('the run failed')), added.join('\n'));
+			// Installed again from the view: ready at once, without the view being shown again.
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			await view().receive({ type: 'installRuntimeRequested' });
+			assert.strictEqual(state().access, 'ready', JSON.stringify(state()));
+			// A host that reports the runtime gone while its files are there: the same, until the next lookup.
+			assistant().setHostFactory(new FakeAssistantHosts([{ emit: { type: 'error', message: 'gone', runtimeMissing: true } }]).factory);
+			assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
+			s = state();
+			assert.strictEqual(s.access, 'runtimeMissing');
+			assert.strictEqual(s.error, null);
+			assert.strictEqual(s.request, null);
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000), 'the next run looks the runtime up again');
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+		});
+	});
+
 	suite('through the Agent SDK and the fake Messages API', () => {
 		let fakeApi: FakeMessagesApi;
 		let script: string;
@@ -551,6 +958,29 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(fs.existsSync(path.join(ws, 'orders.yaml')));
 			assert.strictEqual(fakeApi.results.get(toolUseId(0))?.isError, false);
 			assert.ok(state().progress.includes('Allowed'), JSON.stringify(state().progress));
+		});
+
+		test('story 8.2: SKILLS_PATH (fake model): the local copy\'s rpcn_check.py runs without asking; the bundled one asks', async () => {
+			const local = localSkills();
+			const localScript = path.join(local, 'skills', 'rpcn-design', 'scripts', 'rpcn_check.py');
+			await setSkillsPath(local);
+			try {
+				assert.ok(await waitFor(() => state().skills === 'local', 5_000));
+				fakeApi.turns = [
+					{ tool: 'Bash', input: { command: `uv run ${localScript} binary`, description: 'Check the binary' } },
+					{ tool: 'Bash', input: { command: `uv run ${script} binary`, description: 'Check the binary' } },
+				];
+				assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+				const check = fakeApi.results.get(toolUseId(0));
+				assert.ok(check && !check.isError && /\\?"ok\\?":\s*true/.test(check.text), `the local check ran: ${JSON.stringify(check)}`);
+				assert.strictEqual(approvals.length, 1, JSON.stringify(approvals));
+				// The approval text is masked (the bundled copy may be under the home folder): matched on its tail.
+				assert.ok(approvals[0].includes(path.join('assets', 'rpcn-skills', 'skills', 'rpcn-design', 'scripts', 'rpcn_check.py')), `the bundled copy's script asks: ${approvals[0]}`);
+				assert.ok(fakeApi.results.get(toolUseId(1))?.isError, 'denied');
+				assert.ok(fakeApi.mainCalls[0].body.includes('rpcn-design'), 'the model sees the rpcn skills');
+			} finally {
+				await setSkillsPath(undefined);
+			}
 		});
 
 		test('review 10: x-api-key: the key as an x-api-key header, no authorization; nothing leaks', async () => {

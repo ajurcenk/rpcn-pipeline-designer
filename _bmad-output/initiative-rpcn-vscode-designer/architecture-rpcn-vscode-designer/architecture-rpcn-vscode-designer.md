@@ -299,7 +299,12 @@ graph LR
       - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and `DISABLE_AUTOUPDATER`;
       - `RPCN_BINARY`, set to the binary AD-9 resolved;
       - `CLAUDE_CONFIG_DIR` and the `uv` and XDG data and cache folders, pointed into the extension's storage, so the agent writes nothing under the user's home.
-    - Packaging: the SDK bundles a per-platform Claude Code binary of about 380 MB (about 180 MB packed). It ships as one VSIX per platform, or as a first-run download of the binary. The epic decides which.
+    - **Runtime, installed by the user** (amended 2026-11-25): the extension never ships Anthropic's SDK or Claude Code binary. There is one VSIX for every platform.
+      - The assistant needs a runtime: the pinned SDK and this platform's binary package. The user installs it with Install assistant runtime…, after explicitly agreeing to Anthropic's terms (remembered per version).
+      - The extension downloads the two package tarballs straight from the npm registry over HTTPS, honouring proxy and CA settings, with no npm needed.
+      - It checks each tarball against the sha512 integrity pinned in the extension (`assets/agent-runtime.json`, generated from `package-lock.json` at build), and unpacks them into the extension's global storage.
+      - The SDK and binary are loaded only from there, at the pinned version. Missing or of another version gives the "install" state, not an error.
+      - Update assistant runtime follows a new pin, and Remove assistant runtime deletes it.
   - **One tool layer, written once.**
     - `RpcnTools` give the `rpcn_check` operations (binary, list, fields, lint, Bloblang check, dry run, test, handoff check) on the extension's own binary resolution (AD-9) and lint arguments (AD-12). Each returns `rpcn_check`'s `SCHEMA.md` envelope.
     - Feature tools add read-only views of existing features: metrics figures and the bottleneck (AD-25), recent log errors (AD-24), Cloud pipelines and their state (AD-23), the pipeline model, diagnostics, and environment variable names (never values).

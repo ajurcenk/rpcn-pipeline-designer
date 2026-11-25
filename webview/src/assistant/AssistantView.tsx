@@ -2,14 +2,17 @@
 // skill's questions as cards (the skill's pick first and chosen until another is, an Other text answer),
 // the design note written with its `status` (read from the file by the host), Stop, and an error line.
 // When a request cannot start, the reason instead (no access, with Set up assistant access…; no binary;
-// no folder). Every state comes from the host; the view keeps only what is being typed and chosen.
+// no folder; story 8.2: the assistant runtime missing, installing, outdated or failed, with Install, Update
+// or Retry; no binary package for the platform; a skills path that is no checkout),
+// and "Skills: local copy" while `skillsPath`'s copy is in use. Every state comes from the host; the view keeps only what is being typed and chosen.
 // Theme colours only.
 
 import { useEffect, useState, type FormEvent } from 'react';
 import {
-	ASSISTANT_TITLE, BAD_BASE_URL_TEXT, BASE_URL_CHANGED_TEXT, DONE_TEXT, MAX_REQUEST_CHARS, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
+	ASSISTANT_TITLE, BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, DONE_TEXT,
+	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL, MAX_REQUEST_CHARS, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
 	OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, REQUEST_PLACEHOLDER, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
-	type AssistantAccess, type AssistantQuestionsView, type AssistantQuestionView, type AssistantStateMessage, type AssistantWebviewMessage,
+	type AssistantAccess, type AssistantRuntimeView, type SkillsPathProblem, type AssistantQuestionsView, type AssistantQuestionView, type AssistantStateMessage, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 
 export const RUN_LABEL = 'Design';
@@ -33,11 +36,24 @@ export function initialChoices(questions: AssistantQuestionsView): Choice[] {
 }
 
 /** Each state a request cannot start in: its text, and its button (`undefined`: none). */
-export function accessPanel(access: Exclude<AssistantAccess, 'ready'>): { readonly text: string; readonly button?: { readonly label: string; readonly message: AssistantWebviewMessage } } {
+export function accessPanel(
+	access: Exclude<AssistantAccess, 'ready'>, platform: string | null = null, skillsProblem: SkillsPathProblem | null = null, runtime: AssistantRuntimeView | null = null,
+): { readonly text: string; readonly button?: { readonly label: string; readonly message: AssistantWebviewMessage } } {
+	const install = { label: INSTALL_RUNTIME_LABEL, message: { type: 'installRuntimeRequested' } as const };
 	const setUp = { label: SET_UP_ACCESS_LABEL, message: { type: 'setUpAccessRequested' } as const };
+	const openSettings = { label: OPEN_SETTINGS_LABEL, message: { type: 'openSettingsRequested' } as const };
 	switch (access) {
+		case 'unavailable': return { text: unavailableText(platform ?? 'this platform') };
+		case 'runtimeMissing': return { text: RUNTIME_MISSING_TEXT, button: install };
+		case 'runtimeInstalling': return { text: RUNTIME_INSTALLING_TEXT };
+		case 'runtimeOutdated': return {
+			text: runtimeOutdatedText(runtime?.installed ?? 'another version', runtime?.pinned ?? 'a newer one'),
+			button: { label: UPDATE_RUNTIME_LABEL, message: { type: 'updateRuntimeRequested' } },
+		};
+		case 'runtimeFailed': return { text: runtimeFailedText(runtime?.error ?? null), button: { label: RETRY_LABEL, message: install.message } };
+		case 'badSkillsPath': return { text: skillsProblem ? BAD_SKILLS_PATH_TEXTS[skillsProblem] : BAD_SKILLS_PATH_TEXT, button: openSettings };
 		case 'noAccess': return { text: NO_ACCESS_TEXT, button: setUp };
-		case 'badBaseUrl': return { text: BAD_BASE_URL_TEXT, button: { label: OPEN_SETTINGS_LABEL, message: { type: 'openSettingsRequested' } } };
+		case 'badBaseUrl': return { text: BAD_BASE_URL_TEXT, button: openSettings };
 		case 'baseUrlChanged': return { text: BASE_URL_CHANGED_TEXT, button: setUp };
 		case 'noBinary': return { text: NO_BINARY_TEXT };
 		case 'noUv': return { text: NO_UV_TEXT };
@@ -124,8 +140,11 @@ function QuestionCards({ questions, post }: { readonly questions: AssistantQuest
 	);
 }
 
-function AccessPanel({ access, post }: { readonly access: Exclude<AssistantAccess, 'ready'>; readonly post: (m: AssistantWebviewMessage) => void }) {
-	const panel = accessPanel(access);
+function AccessPanel({ access, platform, skillsProblem, runtime, post }: {
+	readonly access: Exclude<AssistantAccess, 'ready'>; readonly platform: string | null; readonly skillsProblem: SkillsPathProblem | null;
+	readonly runtime: AssistantRuntimeView; readonly post: (m: AssistantWebviewMessage) => void;
+}) {
+	const panel = accessPanel(access, platform, skillsProblem, runtime);
 	return (
 		<section className="rpcn-assistant-state" role="status">
 			<p className="rpcn-assistant-state-body">{panel.text}</p>
@@ -161,7 +180,8 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 	return (
 		<div className="rpcn-assistant">
 			<h1 className="rpcn-assistant-title">{ASSISTANT_TITLE}</h1>
-			{state && state.access !== 'ready' ? <AccessPanel access={state.access} post={post} /> : null}
+			{state && state.access !== 'ready' ? <AccessPanel access={state.access} platform={state.platform} skillsProblem={state.skillsProblem} runtime={state.runtime} post={post} /> : null}
+			{state?.skills === 'local' && state.access !== 'unavailable' ? <p className="rpcn-assistant-skills">{LOCAL_SKILLS_TEXT}</p> : null}
 			{/* Review 4: the box (and Stop) whenever a run is going, whatever the access says now. */}
 			{state && (state.access === 'ready' || busy) ? (
 				<form className="rpcn-assistant-request" onSubmit={run}>

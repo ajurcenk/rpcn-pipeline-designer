@@ -9,7 +9,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	BAD_BASE_URL_TEXT, BASE_URL_CHANGED_TEXT, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
+	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL,
+	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
 	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
 	type AssistantStateMessage, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
@@ -19,7 +20,7 @@ let host: HTMLDivElement;
 let root: Root;
 let posted: AssistantWebviewMessage[];
 
-const IDLE: AssistantStateMessage = { type: 'state', access: 'ready', status: 'idle', request: null, progress: [], questions: null, note: null, error: null };
+const IDLE: AssistantStateMessage = { type: 'state', access: 'ready', platform: null, runtime: { pinned: '0.3.329', installed: null, error: null }, skills: 'bundled', skillsProblem: null, status: 'idle', request: null, progress: [], questions: null, note: null, error: null };
 const QUESTIONS: AssistantStateMessage = {
 	...IDLE, status: 'question', request: 'orders to an API', progress: ['Running the rpcn-design skill', 'Checking with rpcn_check binary'],
 	questions: {
@@ -176,6 +177,70 @@ describe('AssistantView', () => {
 		expect(buttons()).toHaveLength(0);
 	});
 
+	it('story 8.2: unavailable names the platform, with no button and no request box; nothing to start', async () => {
+		await send({ ...IDLE, access: 'unavailable', platform: 'win32-arm64' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(unavailableText('win32-arm64'));
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent)
+			.toBe('The RPCN AI Assistant isn\'t available for win32-arm64 yet: Anthropic publishes no Claude Code binary package for it.');
+		expect(buttons()).toHaveLength(0);
+		expect(host.querySelector('textarea')).toBeNull();
+		expect(host.querySelector('.rpcn-assistant-skills')).toBeNull();
+	});
+
+	it('story 8.2: no runtime: the text and Install assistant runtime…; installing: no button; no request box', async () => {
+		await send({ ...IDLE, access: 'runtimeMissing' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(RUNTIME_MISSING_TEXT);
+		expect(RUNTIME_MISSING_TEXT).toContain('Anthropic\'s Claude Agent SDK');
+		expect(host.querySelector('textarea')).toBeNull();
+		await click(button(INSTALL_RUNTIME_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'installRuntimeRequested' });
+		await send({ ...IDLE, access: 'runtimeInstalling' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(RUNTIME_INSTALLING_TEXT);
+		expect(buttons()).toHaveLength(0);
+	});
+
+	it('story 8.2: outdated names both versions with Update; failed shows the reason with Retry', async () => {
+		await send({ ...IDLE, access: 'runtimeOutdated', runtime: { pinned: '0.3.330', installed: '0.3.329', error: null } });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(runtimeOutdatedText('0.3.329', '0.3.330'));
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toContain('0.3.329');
+		await click(button(UPDATE_RUNTIME_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'updateRuntimeRequested' });
+		await send({ ...IDLE, access: 'runtimeFailed', runtime: { pinned: '0.3.329', installed: null, error: 'x didn\'t match the expected integrity; nothing was unpacked' } });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent)
+			.toBe('The assistant runtime couldn\'t be installed: x didn\'t match the expected integrity; nothing was unpacked.');
+		expect(runtimeFailedText(null)).toBe('The assistant runtime couldn\'t be installed: unknown error.');
+		await click(button(RETRY_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'installRuntimeRequested' });
+	});
+
+	it('story 8.2: a bad skills path offers Open settings; a valid one shows "Skills: local copy"', async () => {
+		await send({ ...IDLE, access: 'badSkillsPath' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(BAD_SKILLS_PATH_TEXT);
+		expect(host.querySelector('textarea')).toBeNull();
+		await click(button(OPEN_SETTINGS_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'openSettingsRequested' });
+		await send(IDLE);
+		expect(host.querySelector('.rpcn-assistant-skills')).toBeNull();
+		await send({ ...IDLE, skills: 'local' });
+		expect(host.querySelector('.rpcn-assistant-skills')?.textContent).toBe(LOCAL_SKILLS_TEXT);
+		expect(LOCAL_SKILLS_TEXT).toBe('Skills: local copy');
+		expect(host.querySelector('textarea')).not.toBeNull();
+	});
+
+	it('review 1, 15: each bad skills path reason has its own text; no copy is named', async () => {
+		const texts = new Set<string>();
+		for (const problem of ['notAbsolute', 'notFound', 'notCheckout', 'inWorkspace'] as const) {
+			await send({ ...IDLE, access: 'badSkillsPath', skills: null, skillsProblem: problem });
+			const text = host.querySelector('.rpcn-assistant-state-body')?.textContent ?? '';
+			expect(text).toBe(BAD_SKILLS_PATH_TEXTS[problem]);
+			texts.add(text);
+			expect(host.querySelector('.rpcn-assistant-skills')).toBeNull();
+			expect(button(OPEN_SETTINGS_LABEL)).toBeDefined();
+		}
+		expect(texts.size).toBe(4);
+		expect(BAD_SKILLS_PATH_TEXTS.inWorkspace).toMatch(/workspace/);
+	});
+
 	it('ignores malformed messages', async () => {
 		await send(IDLE);
 		await send({ ...IDLE, access: 'nope' });
@@ -211,5 +276,21 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantHostMessage({ ...IDLE, progress: [1] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, note: { file: 'a' } })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, status: 'nope' })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' })).toEqual({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' });
+		for (const access of ['runtimeMissing', 'runtimeInstalling', 'runtimeOutdated', 'runtimeFailed'] as const) {
+			expect(parseAssistantHostMessage({ ...IDLE, access })).toEqual({ ...IDLE, access });
+		}
+		expect(parseAssistantHostMessage({ ...IDLE, runtime: null })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, runtime: { pinned: 1, installed: null, error: null } })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'installRuntimeRequested' })).toEqual({ type: 'installRuntimeRequested' });
+		expect(parseAssistantWebviewMessage({ type: 'updateRuntimeRequested', extra: 1 })).toEqual({ type: 'updateRuntimeRequested' });
+		expect(parseAssistantHostMessage({ ...IDLE, skills: 'latest' })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, platform: 1 })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, access: 'badSkillsPath', skills: null, skillsProblem: 'inWorkspace' }))
+			.toEqual({ ...IDLE, access: 'badSkillsPath', skills: null, skillsProblem: 'inWorkspace' });
+		expect(parseAssistantHostMessage({ ...IDLE, skillsProblem: 'nope' })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, skillsProblem: 'toString' })).toBeUndefined();
+		const { skills: _skills, ...noSkills } = IDLE;
+		expect(parseAssistantHostMessage(noSkills)).toBeUndefined();
 	});
 });
