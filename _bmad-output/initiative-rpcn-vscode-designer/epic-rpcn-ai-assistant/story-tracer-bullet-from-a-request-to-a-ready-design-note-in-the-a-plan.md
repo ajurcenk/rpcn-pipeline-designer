@@ -257,3 +257,7 @@ context:
 - `npm run compile-tests`, then `env -u WAYLAND_DISPLAY -u DISPLAY -u XDG_SESSION_TYPE ELECTRON_OZONE_PLATFORM_HINT=x11 timeout -k 15 900 xvfb-run -a npx vscode-test --label stable --grep "Extension tracer path|assistant"` -- expected: the new tests pass
 - the full stable suite, twice, and `--label multiroot` -- expected: all pass. Run one at a time; never `--label floor`.
 
+
+## Manual Check
+
+- 2026-11-24, the user, VS Code 1.143.1 dev host from `.vscode-test`, through the Redpanda ADP endpoint (within the 2-run cap): the manual check passed with no issues. A plain request in the RPCN AI Assistant view showed progress lines, then question cards with the pick first, and after the answers a `ready` design note in the view (acceptance criterion 1).
