@@ -2,7 +2,7 @@
 # Lanes:
 # - 1 is the tracer.
 # - 2 then 10 are packaging and the skills source, beside the app work.
-# - 3 then 5 touch the agent adapter, in that order.
+# - 5 follows 12 (approvals move into the chat), ahead of 3 (the user, 2026-11-25); 3 and 5 both touch the agent adapter, so not in parallel.
 # - 4 then 8 are the tool layer.
 # - 12 is the chat view, after 2 (both change the webview); 6 → 7 → 9 then fill it, in that order.
 # - 13 → 14 are existing pipelines, after 12 and their stages; they wait for the rpcn-skills modes.
@@ -47,6 +47,17 @@ references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq#artboard-ChatA"
 notes = ["Chosen by the user on 2026-11-25 over option B (stage cards) and option C (Copilot-style); option A's History button is left out, because the conversation starts fresh after a reload (epic Decision)."]
 
 [[entry]]
+id = 5
+type = "story"
+title = "Boundaries and approvals"
+description = "The shell rule, the write rules (a stage's own artifact without asking, other writes ask, outside the workspace denied) and reads inside the active skills copy, in one place for the pre-tool hook and `canUseTool`; approval prompts shown in the view, each with Allow once, Allow for this session and Deny. Allow for this session remembers a shell command's program and subcommand (for example `rpk connect list`), and a write's tool, until the window reloads. A pipeline of read-only programs (for example `rpk connect list … | python3 -I -c …`, `strings`, `grep`, `head`, `cut`) is remembered as its chain of programs; a command with `;`, `&&`, redirects to a file, `$(…)`, `rpk connect run` or any program that writes always asks again; the agent's whole environment built by the extension with its config, `uv` and XDG folders in the extension's storage; `settingSources` empty."
+verify = "Fake-model tests: chained and foreign commands ask, a workspace `rpcn_check.py` asks, writes outside the workspace are denied, the stage's own file is written without asking, and a listing of the user's home shows no new entry after a run."
+covers = ["R6", "R8"]
+after = [12]
+hitl = false
+risk = "high"
+
+[[entry]]
 id = 3
 type = "story"
 title = "Assistant access: set up, test connection, forget, the model list and the access states"
@@ -67,17 +78,6 @@ covers = ["R5"]
 after = [1]
 hitl = false
 risk = "medium"
-
-[[entry]]
-id = 5
-type = "story"
-title = "Boundaries and approvals"
-description = "The shell rule, the write rules (a stage's own artifact without asking, other writes ask, outside the workspace denied) and reads inside the active skills copy, in one place for the pre-tool hook and `canUseTool`; approval prompts shown in the view, each with Allow once, Allow for this session and Deny. Allow for this session remembers a shell command's program and subcommand (for example `rpk connect list`), and a write's tool, until the window reloads. A pipeline of read-only programs (for example `rpk connect list … | python3 -I -c …`, `strings`, `grep`, `head`, `cut`) is remembered as its chain of programs; a command with `;`, `&&`, redirects to a file, `$(…)`, `rpk connect run` or any program that writes always asks again; the agent's whole environment built by the extension with its config, `uv` and XDG folders in the extension's storage; `settingSources` empty."
-verify = "Fake-model tests: chained and foreign commands ask, a workspace `rpcn_check.py` asks, writes outside the workspace are denied, the stage's own file is written without asking, and a listing of the user's home shows no new entry after a run."
-covers = ["R6", "R8"]
-after = [3]
-hitl = false
-risk = "high"
 
 [[entry]]
 id = 6
