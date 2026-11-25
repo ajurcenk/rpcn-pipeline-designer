@@ -51,7 +51,7 @@ export function splitCommand(text: string): { readonly command: string | null; r
 
 export function Turn({ turn, latest, live, error, post, insert }: {
 	readonly turn: AssistantTurnView;
-	/** The last turn of the conversation (its steps unfolded; its Keep and Undo). */
+	/** The last turn of the conversation (the run's error line). */
 	readonly latest: boolean;
 	/** What the current run needs now (question cards, the approval row), shown in this turn. */
 	readonly live?: ReactNode;
@@ -81,7 +81,7 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 					<span className="rpcn-assistant-rpcn-name">rpcn</span>
 					<span className="rpcn-assistant-rpcn-skill">· {turn.skill}</span>
 				</p>
-				<StepRows steps={turn.steps} folded={!latest} outcome={turn.outcome} />
+				<StepRows steps={turn.steps} outcome={turn.outcome} />
 				{live}
 				{turn.reply ? <Markdown text={turn.reply} openLink={(href) => post({ type: 'openLink', href })} /> : null}
 				{turn.outcome === 'stopped' ? <p className="rpcn-assistant-stopped" role="status">{STOPPED_TEXT}</p> : null}

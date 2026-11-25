@@ -177,6 +177,10 @@ context:
   - The design note's file row shows its status badge (`rpcn-assistant-status-<status>`, styles restored).
   - Once the questions are answered, the host relabels the question's step row "Asked N questions · you kept K picks, answered M" (no separate "Answered" row).
   - Keep without a click: the webview posts `keepTurn` only from the Keep button's `onClick`, and the host's `keep()` is reached only from that message. Auto-keep on a new Send does not log "kept". The log line therefore means a click reached Keep. No autofocus, key handler or form encloses it. The likely cause is a click landing on Keep as it appears at the run's end, when the reply and the file rows push the transcript about. Keep and Undo now take no click for 800 ms after they appear (`SETTLE_ARM_MS`, shown with `aria-disabled`).
+- **Manual check 2 fixes (2026-11-25):**
+  - Approvals fold into their tool's step row. The SDK adapter passes `canUseTool`'s `toolUseID` as the approval's `stepId`. The decision becomes the step's result when the step has no other short result, and a denied step always shows "denied". A denied step takes the usual failed or warning mark. There are no "Asks to …", "Allowed" or "Denied" rows. An approval with no step to fold into (the fake host) is a single row of its own. The waiting-for-approval row still shows while the modal is open.
+  - A shell step's label is "Ran a shell command"; the command (masked, one line, clipped) is the step's new `detail`, shown as a muted second line with a title. Consecutive repeats group ("×N"), and a grouped row is a button (`aria-expanded`) that opens to each step's command, mark and result.
+  - The card collapses. While the turn runs it shows the last 6 rows under "… N earlier steps", which opens the rest. Once the turn ends (the latest one too) the card folds to "▸ N steps · W warnings · F failed", which opens on click. A turn that ended in error keeps its rows open.
 
 ## Plan Change Log
 

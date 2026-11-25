@@ -228,6 +228,8 @@ interface Turn {
 	readonly written: Set<string>;
 	/** The folders the turn's writes created (the topmost new one of each), for Undo to remove when empty. */
 	readonly createdFolders: Set<string>;
+	/** Manual check 2: the approvals decided, by the step (tool call) they were for. */
+	readonly decisions: Map<string, 'allowed' | 'denied'>;
 	files: TurnFile[];
 	review: AssistantReview;
 	noteFile: string | undefined;
@@ -560,7 +562,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			command: t.command,
 			text: this.mask(t.text),
 			skill: t.skill,
-			steps: t.steps.map((s) => ({ id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result) })),
+			steps: t.steps.map((s) => ({ id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result), ...(s.detail ? { detail: this.mask(s.detail) } : {}) })),
 			reply: this.mask(t.reply),
 			files: t.files.map((f) => ({ path: this.mask(f.path), added: f.added, removed: f.removed, created: f.created, tooLarge: f.tooLarge })),
 			review: t.review,
@@ -825,7 +827,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 
 	private addTurn(command: AssistantCommand, text: string, workspace: string): Turn {
 		const turn: Turn = {
-			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(),
+			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(), decisions: new Map(),
 			files: [], review: 'none', noteFile: undefined, note: null, outcome: 'running', notice: null, view: undefined,
 		};
 		this.turns.push(turn);
@@ -855,12 +857,15 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.addStep(turn, { id: `p${++this.stepSeq}`, label: event.text, mark: 'info', result: '' });
 				break;
 			case 'step':
-				this.addStep(turn, { id: event.id, label: event.label, mark: 'running', result: '' });
+				this.addStep(turn, { id: event.id, label: event.label, mark: 'running', result: '', ...(event.detail ? { detail: event.detail } : {}) });
 				break;
 			case 'stepDone': {
 				const i = turn.steps.findIndex((s) => s.id === event.id && s.mark === 'running');
 				if (i >= 0) {
-					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result: event.result.slice(0, 60) };
+					// Manual check 2: an approval's outcome is the step's result when it has no other (denied: always).
+					const decision = turn.decisions.get(event.id);
+					const result = decision === 'denied' ? 'denied' : event.result.slice(0, 60) || decision || '';
+					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result };
 				}
 				break;
 			}
@@ -885,8 +890,11 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'approval':
 				this.openApprovals.add(event.id);
 				this.status = this.openStatus();
-				this.addStep(turn, { id: `p${++this.stepSeq}`, label: `Asks to ${event.summary}`, mark: 'info', result: '' });
-				void this.askApproval(host, turn, event.id, event.summary, event.detail);
+				// Manual check 2: the approval folds into its tool's step row; with no such row, one row of its own.
+				if (!(event.stepId && turn.steps.some((s) => s.id === event.stepId && s.mark === 'running'))) {
+					this.addStep(turn, { id: event.id, label: `Asks to ${event.summary}`, mark: 'running', result: '' });
+				}
+				void this.askApproval(host, turn, event.id, event.summary, event.detail, event.stepId);
 				break;
 			case 'withdrawn':
 				// Review 5: the agent no longer waits for it (its request was aborted).
@@ -947,7 +955,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		turn.view = undefined;
 	}
 
-	private async askApproval(host: AssistantHost, turn: Turn, id: string, summary: string, detail: string | undefined): Promise<void> {
+	private async askApproval(host: AssistantHost, turn: Turn, id: string, summary: string, detail: string | undefined, stepId: string | undefined): Promise<void> {
 		let allowed = false;
 		try {
 			allowed = await this.ui.approve(this.mask(summary), detail === undefined ? undefined : this.mask(detail));
@@ -958,7 +966,18 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			return;
 		}
 		this.openApprovals.delete(id);
-		this.addStep(turn, { id: `p${++this.stepSeq}`, label: allowed ? 'Allowed' : 'Denied', mark: 'info', result: '' });
+		const decision = allowed ? 'allowed' : 'denied';
+		const own = turn.steps.findIndex((s) => s.id === id);
+		if (own >= 0) {
+			turn.steps[own] = { ...turn.steps[own], mark: allowed ? 'ok' : 'failed', result: decision };
+		} else if (stepId) {
+			turn.decisions.set(stepId, decision);
+			const at = turn.steps.findIndex((s) => s.id === stepId);
+			if (at >= 0 && turn.steps[at].result === '') {
+				turn.steps[at] = { ...turn.steps[at], result: decision };
+			}
+		}
+		turn.view = undefined;
 		this.status = this.openStatus();
 		host.approve(id, allowed);
 		this.post();

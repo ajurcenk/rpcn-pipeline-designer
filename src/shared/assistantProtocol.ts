@@ -65,6 +65,8 @@ export interface AssistantStepView {
 	readonly mark: AssistantStepMark;
 	/** The short result (at most 60 characters; may be empty). */
 	readonly result: string;
+	/** Manual check 2: a secondary line (a shell step's command, one line, clipped); absent: none. */
+	readonly detail?: string;
 }
 
 /** Story 8.12: a file the turn changed. */
@@ -259,6 +261,8 @@ export function parseCommand(text: string): { readonly command: AssistantCommand
 
 /** Manual check 1: the step label of a read or search inside the skills copy in use (the view folds them into one row). */
 export const SKILL_READ_LABEL = 'Reading a skill reference';
+/** Manual check 2: a shell command's step label (the command is its detail). */
+export const SHELL_LABEL = 'Ran a shell command';
 /** Manual check 1: the folded row of a turn's skill reads. */
 export function skillReadsText(n: number): string {
 	return `Read ${n} skill reference${n === 1 ? '' : 's'}`;
@@ -347,7 +351,8 @@ function parseList<T>(v: unknown, item: (x: unknown) => T | undefined): T[] | un
 
 function parseStep(v: unknown): AssistantStepView | undefined {
 	return isObject(v) && isString(v.id) && isString(v.label) && isString(v.mark) && MARKS.includes(v.mark) && isString(v.result)
-		? { id: v.id, label: v.label, mark: v.mark as AssistantStepMark, result: v.result } : undefined;
+		&& (v.detail === undefined || isString(v.detail))
+		? { id: v.id, label: v.label, mark: v.mark as AssistantStepMark, result: v.result, ...(isString(v.detail) ? { detail: v.detail } : {}) } : undefined;
 }
 
 function parseFile(v: unknown): AssistantFileView | undefined {

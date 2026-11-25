@@ -38,7 +38,7 @@ export type AssistantEvent =
 	/** A line of the run that is no tool call, already short and plain (such as "Started (model)", a retry). */
 	| { readonly type: 'progress'; readonly text: string }
 	/** Story 8.12: a top-level tool call began: its step row (`label` from `toolProgress`). */
-	| { readonly type: 'step'; readonly id: string; readonly label: string }
+	| { readonly type: 'step'; readonly id: string; readonly label: string; readonly detail?: string }
 	/** Story 8.12: that tool call's result: ok or failed, and a short result (at most `STEP_RESULT_CHARS`; may be empty). */
 	| { readonly type: 'stepDone'; readonly id: string; readonly ok: boolean; readonly result: string }
 	/** Story 8.12: top-level text of the model's reply, in order (the view joins the pieces). */
@@ -51,7 +51,7 @@ export type AssistantEvent =
 	/** The skill asks; answer with `answer(id, …)`. */
 	| { readonly type: 'question'; readonly id: string; readonly questions: readonly AssistantQuestion[] }
 	/** A tool call outside the boundaries asks; decide with `approve(id, …)`. */
-	| { readonly type: 'approval'; readonly id: string; readonly tool: string; readonly summary: string; readonly detail?: string }
+	| { readonly type: 'approval'; readonly id: string; readonly tool: string; readonly summary: string; readonly detail?: string; readonly stepId?: string }
 	/** An open `question` or `approval` the agent no longer waits for (its request was aborted): its card goes. */
 	| { readonly type: 'withdrawn'; readonly id: string }
 	/** A file the agent wrote (absolute path). */

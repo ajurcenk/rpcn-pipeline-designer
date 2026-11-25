@@ -743,7 +743,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		});
 
 		test('STEP_FAIL: a failed step is ✗ with the first line of its error', async () => {
-			await run([step('s1', 'Running a shell command: ls'), stepDone('s1', false, 'The user denied this.')]);
+			await run([step('s1', 'Ran a shell command'), stepDone('s1', false, 'The user denied this.')]);
 			assert.deepStrictEqual(turn().steps.map((x) => [x.mark, x.result]), [['failed', 'The user denied this.']]);
 		});
 
@@ -792,10 +792,11 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(await waitFor(() => resolve !== undefined, 10_000));
 			assert.strictEqual(state().status, 'approval');
 			assert.strictEqual(turn().outcome, 'running');
-			assert.deepStrictEqual(labels(), ['Asks to run `ls`']);
+			// Manual check 2: an approval with no step of its own (the fake host sends none) is one row; its outcome its result.
+			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'running', '']]);
 			resolve!(false);
 			assert.strictEqual(await done, 'done');
-			assert.deepStrictEqual(labels(), ['Asks to run `ls`', 'Denied']);
+			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'failed', 'denied']]);
 			await run([{ emit: { type: 'error', message: 'boom' } }]);
 			assert.strictEqual(turn().outcome, 'error');
 			assert.strictEqual(state().error, 'boom');
@@ -1288,6 +1289,10 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			const writes = turn().steps.filter((x) => x.mark !== 'info');
 			assert.strictEqual(writes.length, 3, JSON.stringify(turn().steps));
 			assert.ok(writes.every((x) => x.mark === 'failed' && x.result !== ''), JSON.stringify(writes));
+			// Manual check 2: the approvals folded into their steps (no "Asks to" or "Denied" rows); the denied ones say so.
+			assert.ok(!turn().steps.some((x) => x.label.startsWith('Asks to') || x.label === 'Denied' || x.label === 'Allowed'), JSON.stringify(turn().steps));
+			assert.deepStrictEqual(writes.map((x) => x.result), ['denied', writes[1].result, 'denied'], JSON.stringify(writes));
+			assert.ok(writes[1].result.startsWith('PreToolUse:Write hook error'), writes[1].result);
 		});
 
 		test('AGENT_ERROR (fake model): a 401 shows a masked error line; the run ends; a new request works', async () => {
@@ -1305,14 +1310,16 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(state().error, null);
 		});
 
-		test('review 9: an approval allowed: the write happens, its result is no error, progress shows Allowed', async () => {
+		test('review 9: an approval allowed: the write happens, its result is no error, its step row ends ok', async () => {
 			approveWith = async () => true;
 			fakeApi.turns = [{ tool: 'Write', input: { file_path: path.join(ws, 'orders.yaml'), content: 'input: {}\n' } }];
 			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
 			assert.strictEqual(approvals.length, 1);
 			assert.ok(fs.existsSync(path.join(ws, 'orders.yaml')));
 			assert.strictEqual(fakeApi.results.get(toolUseId(0))?.isError, false);
-			assert.ok(labels().includes('Allowed'), JSON.stringify(labels()));
+			// Manual check 2: folded into the Write's own row (its summary "written" wins over "allowed").
+			assert.ok(!labels().some((l) => l.startsWith('Asks to') || l === 'Allowed'), JSON.stringify(labels()));
+			assert.deepStrictEqual(turn().steps.filter((x) => x.mark !== 'info').map((x) => [x.label, x.mark, x.result]), [['Writing orders.yaml', 'ok', 'written']]);
 			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.added, f.removed, f.created]), [['orders.yaml', 1, 0, true]]);
 		});
 

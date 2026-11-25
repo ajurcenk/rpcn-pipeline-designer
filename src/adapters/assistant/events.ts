@@ -4,7 +4,7 @@
 // Plain functions over the messages' shapes, so they are tested without the SDK. No `vscode` or SDK import.
 
 import * as path from 'path';
-import { SKILL_READ_LABEL } from '../../shared/assistantProtocol';
+import { SHELL_LABEL, SKILL_READ_LABEL } from '../../shared/assistantProtocol';
 import { STEP_RESULT_CHARS, type AssistantEvent } from './host';
 import { isInside, QUESTION_TOOL } from './rules';
 
@@ -53,7 +53,8 @@ export function toolProgress(name: string, input: Record<string, unknown>, ctx: 
 		case 'Bash': {
 			const command = String(input.command ?? '');
 			const check = RPCN_CHECK_SUBCOMMAND.exec(command);
-			return check ? `Checking with rpcn_check ${check[1]}` : `Running a shell command: ${clip(command)}`;
+			// Manual check 2: a short label (the command is the step's detail), so repeats group.
+			return check ? `Checking with rpcn_check ${check[1]}` : SHELL_LABEL;
 		}
 		case 'Read':
 			// Manual check 1: the skills' own references are one folded row in the view, not their paths.
@@ -162,7 +163,9 @@ export class StreamMapper {
 			} else if (m.type === 'assistant' && b?.type === 'tool_use' && typeof b.name === 'string' && typeof b.id === 'string') {
 				const input = (b.input ?? {}) as Record<string, unknown>;
 				this.open.set(b.id, { name: b.name, input });
-				events.push({ type: 'step', id: b.id, label: toolProgress(b.name, input, this.ctx) });
+				const label = toolProgress(b.name, input, this.ctx);
+				const detail = label === SHELL_LABEL ? clip(String(input.command ?? '')) : '';
+				events.push({ type: 'step', id: b.id, label, ...(detail ? { detail } : {}) });
 			} else if (m.type === 'user' && b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
 				const call = this.open.get(b.tool_use_id);
 				if (call) {

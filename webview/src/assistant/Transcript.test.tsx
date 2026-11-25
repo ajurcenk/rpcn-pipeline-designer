@@ -51,15 +51,17 @@ describe('Transcript', () => {
 		expect(turns[1].querySelector('.live')).not.toBeNull();
 	});
 
-	it('two turns: the first folds its steps to one line, which opens on click; the latest shows them', async () => {
+	it('ended turns fold their steps to one line, which opens on click; a running latest turn shows them', async () => {
 		await render({ ...STATE, turns: [TURN, { ...TURN, id: 't2' }] });
 		const [first, second] = [...host.querySelectorAll('.rpcn-assistant-turn')];
 		expect(first.querySelector('.rpcn-assistant-step')).toBeNull();
-		expect(second.querySelectorAll('.rpcn-assistant-step')).toHaveLength(2);
+		expect(second.querySelector('.rpcn-assistant-step')).toBeNull();
 		const line = first.querySelector('.rpcn-assistant-fold-line') as HTMLButtonElement;
 		expect(line.textContent).toContain('2 steps');
 		await act(async () => line.click());
 		expect(first.querySelectorAll('.rpcn-assistant-step')).toHaveLength(2);
+		await render({ ...STATE, status: 'running', turns: [TURN, { ...TURN, id: 't2', outcome: 'running' }] });
+		expect(host.querySelectorAll('.rpcn-assistant-turn')[1].querySelectorAll('.rpcn-assistant-step')).toHaveLength(2);
 	});
 
 	it('an error with no failed turn to hold it stands alone', async () => {

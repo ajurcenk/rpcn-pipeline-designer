@@ -62,7 +62,7 @@ describe('Turn', () => {
 		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn· rpcn-design');
 		// The note's file row shows its status badge.
 		expect(host.querySelector('.rpcn-assistant-file .rpcn-assistant-status-ready')?.textContent).toBe('ready');
-		const order = ['.rpcn-assistant-steps', '.rpcn-assistant-reply', '.rpcn-assistant-files', '.rpcn-assistant-actions', '.rpcn-assistant-chips']
+		const order = ['.rpcn-assistant-fold', '.rpcn-assistant-reply', '.rpcn-assistant-files', '.rpcn-assistant-actions', '.rpcn-assistant-chips']
 			.map((sel) => host.querySelector(sel)!);
 		for (let i = 1; i < order.length; i++) {
 			expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

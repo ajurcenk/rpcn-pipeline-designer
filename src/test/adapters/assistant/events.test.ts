@@ -31,10 +31,12 @@ suite('assistant event mapping (story 8.1)', () => {
 		));
 		assert.deepStrictEqual(events[0], { type: 'reply', text: '\n  I will design it.\nMore detail.' });
 		assert.ok(events.slice(1).every((e) => e.type === 'step'));
+		// Manual check 2: a shell command is the step's detail, not its label (an rpcn_check call has none).
+		assert.deepStrictEqual(events.slice(1).map((e) => (e as { detail?: string }).detail), [undefined, undefined, 'ls -la', undefined, undefined, undefined, undefined, undefined]);
 		assert.deepStrictEqual(labels(events.slice(1)), [
 			'Running the rpcn-design skill',
 			'Checking with rpcn_check fields',
-			'Running a shell command: ls -la',
+			'Ran a shell command',
 			'Reading a skill reference',
 			'Writing orders.design.md',
 			'Asking 2 questions',

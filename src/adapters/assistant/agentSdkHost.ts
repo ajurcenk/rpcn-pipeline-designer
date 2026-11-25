@@ -327,7 +327,8 @@ export class AgentSdkHost implements AssistantHost {
 				}
 				case 'ask': {
 					const id = `approval-${++this.seq}`;
-					emit({ type: 'approval', id, tool: toolName, summary: approvalSummary(toolName, input), ...(opts.title ? { detail: opts.title } : {}) });
+					// Manual check 2: the tool call's id, so the view folds the approval into its step row.
+					emit({ type: 'approval', id, tool: toolName, summary: approvalSummary(toolName, input), ...(opts.title ? { detail: opts.title } : {}), ...(opts.toolUseID ? { stepId: opts.toolUseID } : {}) });
 					const allowed = await this.wait(id, opts.signal, emit);
 					return allowed === true ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'The user denied this.' };
 				}
