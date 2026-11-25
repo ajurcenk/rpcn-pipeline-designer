@@ -3,7 +3,7 @@ title: 'The chat view, in the prototype''s option A layout'
 type: 'feature'
 ticket: '12'
 created: '2026-11-25'
-status: 'built'
+status: done
 baseline_revision: '3934442c8c346bd7873ff77aa695db952686a6be'
 route: 'full'
 route_source: 'auto'
