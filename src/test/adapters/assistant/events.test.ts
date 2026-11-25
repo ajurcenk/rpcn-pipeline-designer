@@ -35,7 +35,7 @@ suite('assistant event mapping (story 8.1)', () => {
 			'Running the rpcn-design skill',
 			'Checking with rpcn_check fields',
 			'Running a shell command: ls -la',
-			'Reading rpcn-skills/skills/rpcn-design/references/questions.md',
+			'Reading a skill reference',
 			'Writing orders.design.md',
 			'Asking 2 questions',
 			'Writing n.ipynb',
@@ -52,6 +52,18 @@ suite('assistant event mapping (story 8.1)', () => {
 			[{ type: 'stepDone', id: bash.id, ok: false, result: 'The user denied this.' }]);
 		assert.deepStrictEqual(mapper.map(result(bash.id, 'again')), [], 'only once');
 		assert.deepStrictEqual(mapper.map(result('toolu_unknown', 'x')), [], 'no step, no end');
+	});
+
+	test('manual check 1: reads and searches inside the skills copy share one label; the workspace\'s keep their paths', () => {
+		const mapper = new StreamMapper(ctx);
+		const events = mapper.map(assistant(
+			use('Read', { file_path: path.join(skills, 'skills', 'rpcn-design', 'references', 'a.md') }),
+			use('Glob', { pattern: `${skills}/skills/**/*.md` }),
+			use('Grep', { path: path.join(skills, 'skills'), pattern: 'x' }),
+			use('Read', { file_path: path.join(ws, 'a.yaml') }),
+			use('Glob', { pattern: '**/*.yaml' }),
+		));
+		assert.deepStrictEqual(labels(events), ['Reading a skill reference', 'Reading a skill reference', 'Reading a skill reference', 'Reading a.yaml', 'Searching the workspace']);
 	});
 
 	test('story 8.12: short results: at most 60 characters; no summariser: empty', () => {

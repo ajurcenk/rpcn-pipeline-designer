@@ -257,6 +257,19 @@ export function parseCommand(text: string): { readonly command: AssistantCommand
 	return m ? { command: m[1] as AssistantCommand, rest: text.slice(m[0].length).trim() } : { command: null, rest: text.trim() };
 }
 
+/** Manual check 1: the step label of a read or search inside the skills copy in use (the view folds them into one row). */
+export const SKILL_READ_LABEL = 'Reading a skill reference';
+/** Manual check 1: the folded row of a turn's skill reads. */
+export function skillReadsText(n: number): string {
+	return `Read ${n} skill reference${n === 1 ? '' : 's'}`;
+}
+/** Manual check 1: one question step once answered: how many of the skill's picks were kept. */
+export function askedText(asked: number, kept: number): string {
+	const answered = asked - kept;
+	const parts = [kept > 0 ? `you kept ${kept} pick${kept === 1 ? '' : 's'}` : '', answered > 0 ? `${kept > 0 ? '' : 'you '}answered ${answered}` : ''].filter((x) => x);
+	return `Asked ${asked} question${asked === 1 ? '' : 's'} · ${parts.join(', ')}`;
+}
+
 /** Story 8.12: Undo's question when files changed after the turn ended. */
 export function undoLaterEditsText(files: readonly string[]): string {
 	return `Undo will discard your edits to ${files.map((f) => `\`${f}\``).join(', ')} since the turn.`;

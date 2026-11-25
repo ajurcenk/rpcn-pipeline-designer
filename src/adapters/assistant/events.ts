@@ -4,6 +4,7 @@
 // Plain functions over the messages' shapes, so they are tested without the SDK. No `vscode` or SDK import.
 
 import * as path from 'path';
+import { SKILL_READ_LABEL } from '../../shared/assistantProtocol';
 import { STEP_RESULT_CHARS, type AssistantEvent } from './host';
 import { isInside, QUESTION_TOOL } from './rules';
 
@@ -37,6 +38,11 @@ export function displayPath(p: unknown, ctx: ProgressContext): string {
 	return path.basename(abs);
 }
 
+/** Whether `p` is an absolute or workspace-relative path inside the skills copy in use. */
+function inSkills(p: unknown, ctx: ProgressContext): boolean {
+	return typeof p === 'string' && p !== '' && isInside(ctx.skillsDir, path.resolve(ctx.workspace, p));
+}
+
 /** One tool call's progress line. */
 export function toolProgress(name: string, input: Record<string, unknown>, ctx: ProgressContext): string {
 	switch (name) {
@@ -50,10 +56,11 @@ export function toolProgress(name: string, input: Record<string, unknown>, ctx: 
 			return check ? `Checking with rpcn_check ${check[1]}` : `Running a shell command: ${clip(command)}`;
 		}
 		case 'Read':
-			return `Reading ${displayPath(input.file_path, ctx)}`;
+			// Manual check 1: the skills' own references are one folded row in the view, not their paths.
+			return inSkills(input.file_path, ctx) ? SKILL_READ_LABEL : `Reading ${displayPath(input.file_path, ctx)}`;
 		case 'Glob':
 		case 'Grep':
-			return `Searching ${displayPath(input.path, ctx) || 'the workspace'}`;
+			return inSkills(input.path, ctx) || (name === 'Glob' && inSkills(input.pattern, ctx)) ? SKILL_READ_LABEL : `Searching ${displayPath(input.path, ctx) || 'the workspace'}`;
 		case 'Write':
 		case 'Edit':
 		case 'MultiEdit':

@@ -49,7 +49,7 @@ const send = async (message: unknown) => {
 	});
 };
 const buttons = () => [...host.querySelectorAll('button')];
-const button = (text: string) => buttons().find((b) => b.textContent === text) as HTMLButtonElement | undefined;
+const button = (text: string) => buttons().find((b) => b.textContent === text || b.getAttribute('aria-label') === text) as HTMLButtonElement | undefined;
 const click = async (el: Element) => {
 	await act(async () => {
 		(el as HTMLElement).click();
@@ -92,6 +92,9 @@ describe('AssistantView', () => {
 		expect(button(NEW_CONVERSATION_LABEL)).toBeUndefined();
 		await send({ ...IDLE, status: 'done', designReady: true, turns: [{ ...TURN, outcome: 'done' }] });
 		expect(host.querySelector('.rpcn-assistant-stage-done')?.textContent).toBe('✓ Design');
+		// An icon button (option A's "+"), named by its label and title.
+		expect(button(NEW_CONVERSATION_LABEL)?.title).toBe(NEW_CONVERSATION_LABEL);
+		expect(button(NEW_CONVERSATION_LABEL)?.querySelector('svg')).not.toBeNull();
 		await click(button(NEW_CONVERSATION_LABEL)!);
 		expect(posted.at(-1)).toEqual({ type: 'newConversation' });
 	});

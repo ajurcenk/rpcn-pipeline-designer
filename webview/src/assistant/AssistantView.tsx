@@ -190,7 +190,9 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 			<header className="rpcn-assistant-header">
 				<h1 className="rpcn-assistant-title">{HEADER_TITLE}</h1>
 				{state && (state.turns.length > 0 || busy) ? (
-					<button type="button" className="rpcn-assistant-new rpcn-assistant-secondary" onClick={() => post({ type: 'newConversation' })}>{NEW_CONVERSATION_LABEL}</button>
+					<button type="button" className="rpcn-assistant-new" aria-label={NEW_CONVERSATION_LABEL} title={NEW_CONVERSATION_LABEL} onClick={() => post({ type: 'newConversation' })}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+					</button>
 				) : null}
 			</header>
 			{state ? (

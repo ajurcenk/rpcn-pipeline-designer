@@ -132,8 +132,21 @@ body {
 	justify-content: space-between;
 	gap: 8px;
 }
-.rpcn-assistant .rpcn-assistant-new {
-	padding: 2px 8px;
+.rpcn-assistant button.rpcn-assistant-new {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	background: transparent;
+}
+.rpcn-assistant button.rpcn-assistant-new:hover {
+	background: var(--vscode-toolbar-hoverBackground, transparent);
+}
+.rpcn-assistant button[aria-disabled="true"] {
+	cursor: default;
 }
 .rpcn-assistant-stages {
 	display: flex;
@@ -194,15 +207,49 @@ body {
 	flex-direction: column;
 	gap: 6px;
 }
-.rpcn-assistant-user {
-	align-self: flex-end;
-	max-width: 90%;
-	margin: 0;
-	padding: 6px 8px;
-	border-radius: 4px;
-	color: var(--vscode-input-foreground);
+.rpcn-assistant-you {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.rpcn-assistant-avatar {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	flex-shrink: 0;
+	border-radius: 11px;
+	font-size: 10px;
+	color: var(--vscode-foreground);
 	background: var(--vscode-input-background);
-	border: 1px solid var(--vscode-input-border, var(--vscode-contrastBorder, transparent));
+	border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+.rpcn-assistant-who-name {
+	font-weight: 600;
+}
+.rpcn-assistant-badge {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	flex-shrink: 0;
+	border-radius: 4px;
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+.rpcn-assistant-user {
+	margin: 0;
+	padding: 10px 12px;
+	border-radius: 6px;
+	line-height: 1.5;
+	color: var(--vscode-foreground);
+	background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
@@ -217,7 +264,11 @@ body {
 	flex-direction: column;
 	gap: 6px;
 }
+.rpcn-assistant-who,
 .rpcn-assistant-rpcn-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
 	margin: 0;
 }
 .rpcn-assistant-rpcn-name {
@@ -233,7 +284,15 @@ body {
 	list-style: none;
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	border: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 6px;
+	overflow: hidden;
+}
+.rpcn-assistant-steps > li {
+	padding: 6px 12px;
+}
+.rpcn-assistant-steps > li + li {
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, transparent));
 }
 .rpcn-assistant-step {
 	display: grid;
@@ -259,6 +318,10 @@ body {
 .rpcn-assistant-step-failed .rpcn-assistant-step-mark,
 .rpcn-assistant-step-failed .rpcn-assistant-step-result {
 	color: var(--vscode-errorForeground);
+}
+.rpcn-assistant-step-warning .rpcn-assistant-step-mark {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+	font-weight: 600;
 }
 .rpcn-assistant-step-running .rpcn-assistant-step-mark {
 	color: var(--vscode-progressBar-background, var(--vscode-foreground));
@@ -447,4 +510,24 @@ body {
 }
 .rpcn-assistant-command-description {
 	color: var(--vscode-descriptionForeground);
+}
+
+/* Manual check 1: the design note's status badge on its file row. */
+.rpcn-assistant-file-end {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.rpcn-assistant-note-status {
+	font-size: 0.85em;
+	padding: 0 8px;
+	border-radius: 9px;
+	color: var(--vscode-badge-foreground);
+	background: var(--vscode-badge-background);
+	border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+.rpcn-assistant-status-ready {
+	color: var(--vscode-testing-iconPassed, var(--vscode-badge-foreground));
+	background: transparent;
+	border-color: currentColor;
 }

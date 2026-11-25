@@ -40,7 +40,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	COMMAND_HINTS, COMMAND_SKILLS, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
+	askedText, COMMAND_HINTS, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
 	undoLaterEditsText,
 	type AssistantAccess as AccessState, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
 	type AssistantTurnView, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
@@ -988,7 +988,21 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		});
 		this.openQuestions.delete(id);
 		this.status = this.openStatus();
-		this.addStep(turn, { id: `p${++this.stepSeq}`, label: `Answered ${asked.length} question${asked.length === 1 ? '' : 's'}`, mark: 'info', result: '' });
+		// Manual check 1: the question's own step row says what came of it (no second "Answered" row).
+		const kept = asked.filter((q, i) => q.options.some((o) => isPick(o.label) && o.label === answers[i])).length;
+		const label = askedText(asked.length, kept);
+		let at = -1;
+		for (let i = turn.steps.length - 1; i >= 0 && at < 0; i--) {
+			if (turn.steps[i].mark === 'running' && turn.steps[i].label.startsWith('Asking ')) {
+				at = i;
+			}
+		}
+		if (at >= 0) {
+			turn.steps[at] = { ...turn.steps[at], label };
+			turn.view = undefined;
+		} else {
+			this.addStep(turn, { id: `p${++this.stepSeq}`, label, mark: 'info', result: '' });
+		}
 		host.answer(id, back);
 		this.post();
 	}

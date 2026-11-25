@@ -170,6 +170,13 @@ context:
 - **Protocol additions beyond the Code Map's list:** each turn also carries `review` (`none` | `pending` | `kept` | `undone`), `note` (the design note and its `status`, for Open note and the stage ✓) and `notice` (Undo's error line); the state carries `folder` and `designReady`. Step marks add `info` for the run's own lines ("Started (model)", "Asks to …", "Allowed", "Answered 2 questions").
 - **Host seams:** `AssistantViewUi` gained `confirmUndo`, `info` and `openExternal`; the extension API's view exposes `keep`, `undo`, `openFileDiff`, `openLink` and `newConversation` for the suite. `run()` takes the command and returns `disabled` for `/build` and `/test`.
 - **Tests:** SUBAGENT is covered by the events unit test (the fake model has no subagent turns); NO_CHANGE and STEP_FAIL also through the real SDK adapter on the fake Messages API.
+- **Manual check 1 fixes (2026-11-25):**
+  - Step rows sit in a bordered card (radius 6px, 1px lines between rows). `StepRows.stepRows` merges consecutive steps with the same label into one row (`… ×N`, the worst mark of running > failed > ok, the last result). Reads and searches inside the skills copy get one label host-side (`SKILL_READ_LABEL`, from `toolProgress`), and the view shows them as a single row, "Read N skill references".
+  - A failed step followed by a later tool row, in a turn that did not end in error, shows a warning mark (`!`, `--vscode-editorWarning-foreground`). The red ✗ stays only on the last step or in an error turn.
+  - The user's message has a "You" header (a 22px round avatar and the bold name) and a full-width box. The rpcn header has the 22px sparkle badge (button colours). New conversation is the artboard's "+" icon button (inline SVG, with aria-label and title).
+  - The design note's file row shows its status badge (`rpcn-assistant-status-<status>`, styles restored).
+  - Once the questions are answered, the host relabels the question's step row "Asked N questions · you kept K picks, answered M" (no separate "Answered" row).
+  - Keep without a click: the webview posts `keepTurn` only from the Keep button's `onClick`, and the host's `keep()` is reached only from that message. Auto-keep on a new Send does not log "kept". The log line therefore means a click reached Keep. No autofocus, key handler or form encloses it. The likely cause is a click landing on Keep as it appears at the run's end, when the reply and the file rows push the transcript about. Keep and Undo now take no click for 800 ms after they appear (`SETTLE_ARM_MS`, shown with `aria-disabled`).
 
 ## Plan Change Log
 

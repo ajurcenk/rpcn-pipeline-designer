@@ -282,7 +282,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.strictEqual(end.status, 'done');
 		assert.strictEqual(end.questions, null);
 		assert.deepStrictEqual(turn().note, { file: 'orders_to_api.design.md', status: 'ready' });
-		assert.ok(labels().includes('Answered 2 questions'));
+		// Manual check 1: the question's own row says what came of it; no second "Answered" row.
+		assert.ok(labels().includes('Asked 2 questions · you kept 2 picks'), JSON.stringify(labels()));
+		assert.ok(!labels().some((l) => l.startsWith('Answered') || l.startsWith('Asking')), JSON.stringify(labels()));
 		assert.ok(end.designReady, 'Design ✓');
 	});
 
@@ -476,6 +478,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.strictEqual(await done, 'error');
 		assert.strictEqual(state().error, 'failed in ~/y');
 		assert.ok(!JSON.stringify(view().posted).includes(home + path.sep));
+		// Manual check 1: with no question step to fold into, one line: a kept pick and an answer.
+		assert.deepStrictEqual(labels(), ['Reading ~/x.yaml', 'Asked 2 questions · you kept 1 pick, answered 1']);
 		// Both questions have the same text: the record keeps the last, under the original (unmasked) text.
 		assert.deepStrictEqual(hosts.last!.answers.get('q1'), { [asked[0].question]: 'No' });
 	});

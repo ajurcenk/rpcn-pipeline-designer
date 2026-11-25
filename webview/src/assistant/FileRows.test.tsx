@@ -47,6 +47,17 @@ describe('FileRows', () => {
 		expect(opened).toEqual(['sub/a.yaml']);
 	});
 
+	it('manual check 1: the design note\'s row shows its status badge beside its counts', async () => {
+		await act(async () => {
+			root.render(<FileRows files={FILES} clickable note={{ file: 'orders.design.md', status: 'draft' }} open={(p) => opened.push(p)} />);
+		});
+		const rows = [...host.querySelectorAll('.rpcn-assistant-file')];
+		expect(rows[0].querySelector('.rpcn-assistant-note-status')?.textContent).toBe('draft');
+		expect(rows[0].querySelector('.rpcn-assistant-status-draft')).not.toBeNull();
+		expect(rows[0].querySelector('.rpcn-assistant-added')?.textContent).toBe('+42');
+		expect(rows[1].querySelector('.rpcn-assistant-note-status')).toBeNull();
+	});
+
 	it('not clickable (kept or undone): the rows stay, as text', async () => {
 		await render(false);
 		expect(host.querySelectorAll('.rpcn-assistant-file')).toHaveLength(3);

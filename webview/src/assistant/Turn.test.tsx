@@ -5,11 +5,11 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	KEEP_LABEL, OPEN_NOTE_LABEL, STOPPED_TEXT, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
-import { splitCommand, Turn } from './Turn';
+import { SETTLE_ARM_MS, splitCommand, Turn } from './Turn';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -52,11 +52,16 @@ afterEach(() => {
 });
 
 describe('Turn', () => {
-	it('HAPPY_DESIGN: the parts in order; the command highlighted; the header names the skill', async () => {
+	it('HAPPY_DESIGN: the parts in order; "You" with its avatar; the command highlighted; the header\'s badge names the skill', async () => {
 		await render(DONE_TURN);
+		expect(host.querySelector('.rpcn-assistant-who')?.textContent).toBe('YouYou');
+		expect(host.querySelector('.rpcn-assistant-avatar')?.getAttribute('aria-hidden')).toBe('true');
 		expect(host.querySelector('.rpcn-assistant-command')?.textContent).toBe('/design');
 		expect(host.querySelector('.rpcn-assistant-user')?.textContent).toBe('/design orders to an API');
-		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn · rpcn-design');
+		expect(host.querySelector('.rpcn-assistant-rpcn-header .rpcn-assistant-badge svg')).not.toBeNull();
+		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn· rpcn-design');
+		// The note's file row shows its status badge.
+		expect(host.querySelector('.rpcn-assistant-file .rpcn-assistant-status-ready')?.textContent).toBe('ready');
 		const order = ['.rpcn-assistant-steps', '.rpcn-assistant-reply', '.rpcn-assistant-files', '.rpcn-assistant-actions', '.rpcn-assistant-chips']
 			.map((sel) => host.querySelector(sel)!);
 		for (let i = 1; i < order.length; i++) {
@@ -66,7 +71,13 @@ describe('Turn', () => {
 	});
 
 	it('Keep, Undo, Open note and the file row post their messages; a disabled chip shows its hint', async () => {
-		await render(DONE_TURN);
+		vi.useFakeTimers();
+		try {
+			await render(DONE_TURN);
+			await act(async () => vi.advanceTimersByTime(SETTLE_ARM_MS));
+		} finally {
+			vi.useRealTimers();
+		}
 		await click(button(KEEP_LABEL)!);
 		await click(button(UNDO_LABEL)!);
 		await click(button(OPEN_NOTE_LABEL)!);
@@ -102,6 +113,24 @@ describe('Turn', () => {
 		expect(host.querySelector('[role="alert"]')?.textContent).toBe('Could not undo a.yaml (EACCES).');
 		await click(host.querySelector('.rpcn-assistant-link')!);
 		expect(posted.at(-1)).toEqual({ type: 'openLink', href: 'https://x.example' });
+	});
+
+	it('manual check 1: Keep and Undo take no click until they have shown for a moment (no stray settle as the run ends)', async () => {
+		vi.useFakeTimers();
+		try {
+			await render({ ...DONE_TURN, outcome: 'running', review: 'none' });
+			await render(DONE_TURN);
+			await click(button(KEEP_LABEL)!);
+			await click(button(UNDO_LABEL)!);
+			expect(posted).toEqual([]);
+			expect(button(KEEP_LABEL)!.getAttribute('aria-disabled')).toBe('true');
+			await act(async () => vi.advanceTimersByTime(SETTLE_ARM_MS));
+			expect(button(KEEP_LABEL)!.getAttribute('aria-disabled')).toBeNull();
+			await click(button(KEEP_LABEL)!);
+			expect(posted).toEqual([{ type: 'keepTurn', turn: 't1' }]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('PLAIN: a message with no command shows as typed, nothing highlighted', async () => {

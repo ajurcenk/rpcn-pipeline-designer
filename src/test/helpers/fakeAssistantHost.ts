@@ -67,7 +67,7 @@ export function happyScript(pipeline = 'orders_to_api'): FakeAssistantStep[] {
 		step('s3', 'Asking 2 questions'),
 		{ emit: { type: 'question', id: 'q1', questions: RUN_2_QUESTIONS } },
 		{ waitAnswer: 'q1' },
-		stepDone('s3', true, 'answered'),
+		stepDone('s3'),
 		step('s4', `Writing ${pipeline}.design.md`),
 		{ write: { file: `${pipeline}.design.md`, content: readyNote(pipeline) } },
 		stepDone('s4', true, 'written'),
