@@ -11,6 +11,19 @@
 //     click; a turn that ended in error keeps its rows open.
 
 import { useState } from 'react';
+import { CopyButton } from './CopyButton';
+
+export const COPY_COMMAND_LABEL = 'Copy command';
+
+/** Manual check 3: a step's command as selectable text, with its copy button (never inside a button). */
+function Command({ text }: { readonly text: string }) {
+	return (
+		<span className="rpcn-assistant-step-command">
+			<code className="rpcn-assistant-step-detail" title={text}>{text}</code>
+			<CopyButton label={COPY_COMMAND_LABEL} text={text} />
+		</span>
+	);
+}
 import { SKILL_READ_LABEL, skillReadsText, type AssistantOutcome, type AssistantStepMark, type AssistantStepView } from '../../../src/shared/assistantProtocol';
 
 /** A row's mark as shown: a step's, or `warning` for a failure the run went on past. */
@@ -120,29 +133,29 @@ function Mark({ mark }: { readonly mark: RowMark }) {
 
 function Row({ row }: { readonly row: StepRow }) {
 	const [open, setOpen] = useState(false);
-	const body = (
+	const body = (detail: boolean) => (
 		<>
 			<Mark mark={row.mark} />
 			<span className="rpcn-assistant-step-text">
 				<span className="rpcn-assistant-step-label">{row.label}</span>
-				{row.detail ? <span className="rpcn-assistant-step-detail" title={row.detail}>{row.detail}</span> : null}
+				{detail && row.detail ? <Command text={row.detail} /> : null}
 			</span>
 			{row.result ? <span className="rpcn-assistant-step-result">{row.result}</span> : null}
 		</>
 	);
 	if (row.members.length === 0) {
-		return <li className={`rpcn-assistant-step rpcn-assistant-step-${row.mark}`}>{body}</li>;
+		return <li className={`rpcn-assistant-step rpcn-assistant-step-${row.mark}`}>{body(true)}</li>;
 	}
 	return (
 		<li className={`rpcn-assistant-step-group rpcn-assistant-step-${row.mark}`}>
-			<button type="button" className="rpcn-assistant-step rpcn-assistant-step-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{body}</button>
+			<button type="button" className="rpcn-assistant-step rpcn-assistant-step-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{body(false)}</button>
 			{open ? (
 				<ol className="rpcn-assistant-step-members" aria-label={row.label}>
 					{row.members.map((m) => (
 						<li key={m.id} className={`rpcn-assistant-step rpcn-assistant-step-${m.mark}`}>
 							<Mark mark={m.mark} />
 							<span className="rpcn-assistant-step-text">
-								<span className="rpcn-assistant-step-label">{m.detail || m.label}</span>
+								{m.detail ? <Command text={m.detail} /> : <span className="rpcn-assistant-step-label">{m.label}</span>}
 							</span>
 							{m.result ? <span className="rpcn-assistant-step-result">{m.result}</span> : null}
 						</li>

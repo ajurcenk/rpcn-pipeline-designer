@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	KEEP_LABEL, OPEN_NOTE_LABEL, STOPPED_TEXT, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
-import { SETTLE_ARM_MS, splitCommand, Turn } from './Turn';
+import { CopyContext } from './CopyButton';
+import { COPY_REPLY_LABEL, SETTLE_ARM_MS, splitCommand, Turn } from './Turn';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -31,7 +32,11 @@ const DONE_TURN: AssistantTurnView = {
 };
 const render = async (turn: AssistantTurnView, latest = true) => {
 	await act(async () => {
-		root.render(<Turn turn={turn} latest={latest} error={null} post={(m) => posted.push(m)} insert={(c) => inserted.push(c)} />);
+		root.render(
+			<CopyContext.Provider value={(text) => posted.push({ type: 'copyText', text })}>
+				<Turn turn={turn} latest={latest} error={null} post={(m) => posted.push(m)} insert={(c) => inserted.push(c)} />
+			</CopyContext.Provider>,
+		);
 	});
 };
 const button = (text: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
@@ -128,6 +133,23 @@ describe('Turn', () => {
 			expect(button(KEEP_LABEL)!.getAttribute('aria-disabled')).toBeNull();
 			await click(button(KEEP_LABEL)!);
 			expect(posted).toEqual([{ type: 'keepTurn', turn: 't1' }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('manual check 3: Copy reply copies the reply\'s Markdown source, then says Copied for a moment', async () => {
+		vi.useFakeTimers();
+		try {
+			await render(DONE_TURN);
+			const copy = host.querySelector(`button[aria-label="${COPY_REPLY_LABEL}"]`) as HTMLButtonElement;
+			expect(copy.title).toBe(COPY_REPLY_LABEL);
+			await click(copy);
+			expect(posted).toEqual([{ type: 'copyText', text: 'The note is **ready**.' }]);
+			expect(copy.getAttribute('aria-label')).toBe('Copied');
+			expect(copy.textContent).toBe('Copied');
+			await act(async () => vi.advanceTimersByTime(2000));
+			expect(copy.getAttribute('aria-label')).toBe(COPY_REPLY_LABEL);
 		} finally {
 			vi.useRealTimers();
 		}

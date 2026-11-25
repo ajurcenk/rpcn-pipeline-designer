@@ -174,7 +174,9 @@ export type AssistantWebviewMessage =
 	| { readonly type: 'turnAction'; readonly turn: string; readonly action: string }
 	/** Story 8.12: a link in a reply clicked (the host opens only http(s) links and workspace files). */
 	| { readonly type: 'openLink'; readonly href: string }
-	| { readonly type: 'newConversation' };
+	| { readonly type: 'newConversation' }
+	/** Manual check 3: text to put on the clipboard (the host writes it; at most `MAX_COPY_CHARS`). */
+	| { readonly type: 'copyText'; readonly text: string };
 
 export const ASSISTANT_TITLE = 'RPCN AI Assistant';
 /** How a skill marks its pick in an option's label. */
@@ -263,6 +265,8 @@ export function parseCommand(text: string): { readonly command: AssistantCommand
 export const SKILL_READ_LABEL = 'Reading a skill reference';
 /** Manual check 2: a shell command's step label (the command is its detail). */
 export const SHELL_LABEL = 'Ran a shell command';
+/** Manual check 3: the longest text one copy puts on the clipboard. */
+export const MAX_COPY_CHARS = 100_000;
 /** Manual check 1: the folded row of a turn's skill reads. */
 export function skillReadsText(n: number): string {
 	return `Read ${n} skill reference${n === 1 ? '' : 's'}`;
@@ -435,6 +439,8 @@ export function parseAssistantWebviewMessage(v: unknown): AssistantWebviewMessag
 			return isString(v.turn) ? { type: v.type, turn: v.turn } : undefined;
 		case 'turnAction':
 			return isString(v.turn) && isString(v.action) ? { type: 'turnAction', turn: v.turn, action: v.action } : undefined;
+		case 'copyText':
+			return isString(v.text) && v.text !== '' && v.text.length <= MAX_COPY_CHARS ? { type: 'copyText', text: v.text } : undefined;
 		case 'openLink':
 			return isString(v.href) && v.href.length <= 4096 ? { type: 'openLink', href: v.href } : undefined;
 		case 'answered': {

@@ -7,16 +7,37 @@
 // approval dialog. Every state comes from the host; the view keeps only what is being typed and chosen,
 // and which folded steps are open. Theme colours only.
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText,
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
-	NEW_CONVERSATION_LABEL, OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, SET_UP_ACCESS_LABEL, STAGES,
+	MAX_COPY_CHARS, NEW_CONVERSATION_LABEL, OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, SET_UP_ACCESS_LABEL, STAGES,
 	type AssistantAccess, type AssistantRuntimeView, type SkillsPathProblem, type AssistantQuestionsView, type AssistantQuestionView, type AssistantStateMessage, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 
 import { Composer } from './Composer';
+import { CopyContext } from './CopyButton';
 import { Transcript } from './Transcript';
+
+/**
+ * Manual check 3: what a copy in the view puts on the clipboard: the selection in a text field (the
+ * composer, an Other answer) or the page's selection inside the view, at most `MAX_COPY_CHARS`; `''`:
+ * nothing selected there (the copy is left alone). The webview's own clipboard writes nothing in the
+ * assistant's view, so the host writes it (`copyText`).
+ */
+export function copiedText(doc: Document, root: HTMLElement | null): string {
+	const active = doc.activeElement;
+	if ((active instanceof HTMLTextAreaElement || (active instanceof HTMLInputElement && active.type === 'text')) && root?.contains(active)) {
+		const start = active.selectionStart ?? 0;
+		const end = active.selectionEnd ?? 0;
+		return active.value.slice(Math.min(start, end), Math.max(start, end)).slice(0, MAX_COPY_CHARS);
+	}
+	const selection = doc.getSelection();
+	if (!selection || selection.isCollapsed || !root || !selection.anchorNode || !root.contains(selection.anchorNode)) {
+		return '';
+	}
+	return selection.toString().slice(0, MAX_COPY_CHARS);
+}
 
 /** Story 8.12: the header (option A's "RPCN ASSISTANT"). */
 export const HEADER_TITLE = 'RPCN ASSISTANT';
@@ -170,6 +191,24 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 		post({ type: 'ready' });
 		return () => window.removeEventListener('message', listener);
 	}, [post]);
+	// Manual check 3: Ctrl/Cmd+C and the context menu's Copy go through the host (see `copiedText`).
+	const rootRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const onCopy = (e: ClipboardEvent) => {
+			const text = copiedText(document, rootRef.current);
+			if (text) {
+				e.preventDefault();
+				post({ type: 'copyText', text });
+			}
+		};
+		document.addEventListener('copy', onCopy);
+		return () => document.removeEventListener('copy', onCopy);
+	}, [post]);
+	const copy = useCallback((text: string) => {
+		if (text !== '') {
+			post({ type: 'copyText', text: text.slice(0, MAX_COPY_CHARS) });
+		}
+	}, [post]);
 
 	const busy = state?.status === 'running' || state?.status === 'question' || state?.status === 'approval';
 	const panel = state ? (
@@ -186,7 +225,8 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 	) : null;
 
 	return (
-		<div className="rpcn-assistant">
+		<CopyContext.Provider value={copy}>
+		<div className="rpcn-assistant" ref={rootRef}>
 			<header className="rpcn-assistant-header">
 				<h1 className="rpcn-assistant-title">{HEADER_TITLE}</h1>
 				{state && (state.turns.length > 0 || busy) ? (
@@ -220,5 +260,6 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 			{/* Review 4: the composer (and Stop) whenever a run is going, whatever the access says now. */}
 			{state && (state.access === 'ready' || busy) ? <Composer text={text} setText={setText} busy={busy} post={post} /> : null}
 		</div>
+		</CopyContext.Provider>
 	);
 }

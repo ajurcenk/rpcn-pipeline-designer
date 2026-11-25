@@ -79,6 +79,8 @@ export interface AssistantViewUi {
 	confirmUndo(message: string): Thenable<boolean>;
 	info(message: string): Thenable<unknown>;
 	openExternal(uri: vscode.Uri): Thenable<boolean>;
+	/** Manual check 3: puts text on the clipboard (the webview's own clipboard does not work in the view). */
+	writeClipboard(text: string): Thenable<void>;
 }
 
 /** Story 8.12: what a reply's link opens: an http(s) page, a file in the workspace, or nothing. */
@@ -352,6 +354,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		confirmUndo: async (message) => (await vscode.window.showWarningMessage(message, { modal: true }, 'Undo')) === 'Undo',
 		info: (message) => vscode.window.showInformationMessage(message),
 		openExternal: (uri) => vscode.env.openExternal(uri),
+		writeClipboard: (text) => vscode.env.clipboard.writeText(text),
 	};
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: AssistantHostMessage[] = [];
@@ -700,6 +703,14 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				break;
 			case 'newConversation':
 				await this.newConversation();
+				break;
+			case 'copyText':
+				// Masked again: the text came from the view, which shows only masked text.
+				try {
+					await this.ui.writeClipboard(this.mask(m.text));
+				} catch (err) {
+					this.options.log(`Assistant: could not copy to the clipboard: ${this.mask(errorText(err))}`);
+				}
 				break;
 		}
 	}

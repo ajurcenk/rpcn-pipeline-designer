@@ -267,6 +267,43 @@ describe('AssistantView', () => {
 		expect(BAD_SKILLS_PATH_TEXTS.inWorkspace).toMatch(/workspace/);
 	});
 
+	it('manual check 3: a copy with a selection in the view posts copyText (prevented); none: left alone; in the composer its selection', async () => {
+		await send({ ...IDLE, status: 'done', turns: [{ ...TURN, outcome: 'done', reply: 'Hello **world**' }] });
+		const copyEvent = () => {
+			const e = new Event('copy', { bubbles: true, cancelable: true });
+			document.dispatchEvent(e);
+			return e;
+		};
+		window.getSelection()?.removeAllRanges();
+		expect(copyEvent().defaultPrevented).toBe(false);
+		expect(posted.some((m) => m.type === 'copyText')).toBe(false);
+		const range = document.createRange();
+		range.selectNodeContents(host.querySelector('.rpcn-assistant-user')!);
+		window.getSelection()!.addRange(range);
+		expect(copyEvent().defaultPrevented).toBe(true);
+		expect(posted.at(-1)).toEqual({ type: 'copyText', text: 'orders to an API' });
+		// A selection outside the view is left alone.
+		const outside = document.createElement('p');
+		outside.textContent = 'elsewhere';
+		document.body.appendChild(outside);
+		window.getSelection()!.removeAllRanges();
+		const r2 = document.createRange();
+		r2.selectNodeContents(outside);
+		window.getSelection()!.addRange(r2);
+		const before = posted.length;
+		expect(copyEvent().defaultPrevented).toBe(false);
+		expect(posted.length).toBe(before);
+		outside.remove();
+		window.getSelection()!.removeAllRanges();
+		// The composer: its own selection.
+		const area = host.querySelector('textarea')!;
+		await type(area, 'copy this part');
+		area.focus();
+		area.setSelectionRange(5, 9);
+		expect(copyEvent().defaultPrevented).toBe(true);
+		expect(posted.at(-1)).toEqual({ type: 'copyText', text: 'this' });
+	});
+
 	it('ignores malformed messages', async () => {
 		await send(IDLE);
 		await send({ ...IDLE, access: 'nope' });
@@ -296,6 +333,10 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantWebviewMessage({ type: 'turnAction', turn: 't1', action: 'openNote' })).toEqual({ type: 'turnAction', turn: 't1', action: 'openNote' });
 		expect(parseAssistantWebviewMessage({ type: 'openLink', href: 'https://x' })).toEqual({ type: 'openLink', href: 'https://x' });
 		expect(parseAssistantWebviewMessage({ type: 'newConversation' })).toEqual({ type: 'newConversation' });
+		expect(parseAssistantWebviewMessage({ type: 'copyText', text: 'abc', extra: 1 })).toEqual({ type: 'copyText', text: 'abc' });
+		expect(parseAssistantWebviewMessage({ type: 'copyText', text: '' })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'copyText', text: 'x'.repeat(100_001) })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'copyText', text: 1 })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: '  ' })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: 'x'.repeat(8001) })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: ['b', 'c'] })).toEqual({ type: 'answered', id: 'q', answers: ['b', 'c'] });

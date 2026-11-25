@@ -5,6 +5,9 @@
 // which opens only http(s) links and workspace files; a link of any other kind is plain text.
 
 import { Fragment, type KeyboardEvent, type ReactNode } from 'react';
+import { CopyButton } from './CopyButton';
+
+export const COPY_CODE_LABEL = 'Copy code';
 
 export type OpenLink = (href: string) => void;
 
@@ -104,7 +107,13 @@ export function blocks(text: string, openLink: OpenLink): ReactNode[] {
 				i++;
 			}
 			i++;
-			out.push(<pre key={key()} className="rpcn-assistant-code"><code>{body.join('\n')}</code></pre>);
+			const code = body.join('\n');
+			out.push(
+				<div key={key()} className="rpcn-assistant-code-block">
+					<pre className="rpcn-assistant-code"><code>{code}</code></pre>
+					<CopyButton label={COPY_CODE_LABEL} text={code} className="rpcn-assistant-code-copy" />
+				</div>,
+			);
 			continue;
 		}
 		const heading = HEADING.exec(line);

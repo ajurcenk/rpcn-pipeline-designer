@@ -5,20 +5,23 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { linkable, Markdown } from './Markdown';
+import { CopyContext } from './CopyButton';
+import { COPY_CODE_LABEL, linkable, Markdown } from './Markdown';
 
 let host: HTMLDivElement;
 let root: Root;
 let opened: string[];
+let copied: string[];
 
 const render = async (text: string) => {
 	await act(async () => {
-		root.render(<Markdown text={text} openLink={(href) => opened.push(href)} />);
+		root.render(<CopyContext.Provider value={(t) => copied.push(t)}><Markdown text={text} openLink={(href) => opened.push(href)} /></CopyContext.Provider>);
 	});
 };
 
 beforeEach(() => {
 	opened = [];
+	copied = [];
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	root = createRoot(host);
@@ -73,6 +76,15 @@ describe('Markdown', () => {
 		expect([...host.querySelectorAll('*')].some((el) => [...el.attributes].some((a) => a.name.startsWith('on')))).toBe(false);
 		expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
 		expect(opened).toEqual([]);
+	});
+
+	it('manual check 3: each fenced code block has Copy code, which copies its raw text', async () => {
+		await render('Run:\n\n```sh\nrpk connect lint a.yaml\n  --env-file .env\n```\n\n```\nsecond\n```');
+		const buttons = [...host.querySelectorAll(`button[aria-label="${COPY_CODE_LABEL}"]`)];
+		expect(buttons).toHaveLength(2);
+		await act(async () => (buttons[0] as HTMLButtonElement).click());
+		await act(async () => (buttons[1] as HTMLButtonElement).click());
+		expect(copied).toEqual(['rpk connect lint a.yaml\n  --env-file .env', 'second']);
 	});
 
 	it('only http(s) links and plain paths are linkable', () => {

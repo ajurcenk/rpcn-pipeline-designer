@@ -60,6 +60,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	let undoWith = true;
 	const infos: string[] = [];
 	const externals: string[] = [];
+	/** Manual check 3: what went to the clipboard seam. */
+	const copied: string[] = [];
 	/** The approval prompt's answer (default: Deny). */
 	let approveWith: (summary: string) => Promise<boolean> = async () => false;
 
@@ -133,6 +135,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 				return undoWith;
 			},
 			info: async (message) => infos.push(message),
+			writeClipboard: async (text) => {
+				copied.push(text);
+			},
 			openExternal: async (uri) => {
 				externals.push(uri.toString());
 				return true;
@@ -177,6 +182,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		undoWith = true;
 		infos.length = 0;
 		externals.length = 0;
+		copied.length = 0;
 		// Story 8.12: each test starts a new conversation (the previous one's turns and snapshots go).
 		await view().newConversation();
 		resetWorkspace();
@@ -834,6 +840,15 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			}
 			assert.strictEqual(externals.length, 1);
 			assert.strictEqual(vscode.window.activeTextEditor, undefined);
+		});
+
+		test('manual check 3: copyText reaches the clipboard through the host (masked again); an empty or oversized one is refused', async () => {
+			await assistant().setAccessForTest({ key: KEY });
+			await view().receive({ type: 'copyText', text: '```yaml\ninput: {}\n```' });
+			await view().receive({ type: 'copyText', text: `token ${KEY}` });
+			await view().receive({ type: 'copyText', text: '' });
+			await view().receive({ type: 'copyText', text: 'x'.repeat(100_001) });
+			assert.deepStrictEqual(copied, ['```yaml\ninput: {}\n```', `token ${CREDENTIAL_MASK}`]);
 		});
 
 		test('LEAK: the key, a Bearer value and the home folder in the reply, a step result and a path are masked in every posted message', async () => {

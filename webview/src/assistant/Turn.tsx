@@ -8,11 +8,13 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
 	KEEP_LABEL, STOPPED_TEXT, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
+import { CopyButton } from './CopyButton';
 import { FileRows } from './FileRows';
 import { Markdown } from './Markdown';
 import { StepRows } from './StepRows';
 
 export const FAILED_TURN_TEXT = 'This run failed.';
+export const COPY_REPLY_LABEL = 'Copy reply';
 /**
  * Manual check 1: Keep and Undo take no click for this long after they appear: they show as the run ends,
  * when the reply and the file rows push the transcript about, so a click meant for something else could
@@ -83,7 +85,14 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 				</p>
 				<StepRows steps={turn.steps} outcome={turn.outcome} />
 				{live}
-				{turn.reply ? <Markdown text={turn.reply} openLink={(href) => post({ type: 'openLink', href })} /> : null}
+				{turn.reply ? (
+					<div className="rpcn-assistant-reply-wrap">
+						<Markdown text={turn.reply} openLink={(href) => post({ type: 'openLink', href })} />
+						<div className="rpcn-assistant-reply-tools">
+							<CopyButton label={COPY_REPLY_LABEL} text={turn.reply} />
+						</div>
+					</div>
+				) : null}
 				{turn.outcome === 'stopped' ? <p className="rpcn-assistant-stopped" role="status">{STOPPED_TEXT}</p> : null}
 				{turn.outcome === 'error' ? (
 					latest && error ? <p className="rpcn-assistant-error" role="alert">{error}</p> : <p className="rpcn-assistant-stopped">{FAILED_TURN_TEXT}</p>

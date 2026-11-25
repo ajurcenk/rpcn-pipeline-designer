@@ -7,10 +7,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AssistantOutcome, AssistantStepView } from '../../../src/shared/assistantProtocol';
 import { SKILL_READ_LABEL } from '../../../src/shared/assistantProtocol';
-import { foldedText, StepRows, stepRows } from './StepRows';
+import { CopyContext } from './CopyButton';
+import { COPY_COMMAND_LABEL, foldedText, StepRows, stepRows } from './StepRows';
 
 let host: HTMLDivElement;
 let root: Root;
+let copied: string[];
 const STEPS: AssistantStepView[] = [
 	{ id: 'p1', label: 'Started (claude-opus-5-5)', mark: 'info', result: '' },
 	{ id: 's1', label: 'Checking with rpcn_check lint', mark: 'ok', result: '0 errors · 1 fixed' },
@@ -19,7 +21,7 @@ const STEPS: AssistantStepView[] = [
 ];
 const render = async (steps: readonly AssistantStepView[], outcome: AssistantOutcome) => {
 	await act(async () => {
-		root.render(<StepRows steps={steps} outcome={outcome} />);
+		root.render(<CopyContext.Provider value={(t) => copied.push(t)}><StepRows steps={steps} outcome={outcome} /></CopyContext.Provider>);
 	});
 };
 const click = async (el: Element) => {
@@ -27,6 +29,7 @@ const click = async (el: Element) => {
 };
 
 beforeEach(() => {
+	copied = [];
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	root = createRoot(host);
@@ -88,7 +91,7 @@ describe('StepRows', () => {
 		await click(toggle);
 		expect(toggle.getAttribute('aria-expanded')).toBe('true');
 		const members = [...host.querySelectorAll('.rpcn-assistant-step-members > li')];
-		expect(members.map((m) => [m.querySelector('.rpcn-assistant-step-label')?.textContent, m.querySelector('.rpcn-assistant-step-mark')?.textContent, m.querySelector('.rpcn-assistant-step-result')?.textContent])).toEqual([
+		expect(members.map((m) => [m.querySelector('.rpcn-assistant-step-detail')?.textContent, m.querySelector('.rpcn-assistant-step-mark')?.textContent, m.querySelector('.rpcn-assistant-step-result')?.textContent])).toEqual([
 			['cmd 1', '✓', 'r1'], ['cmd 2', '✗', 'denied'], ['cmd 3', '✓', 'r3'],
 		]);
 		expect(stepRows(shells, 'done')[0].mark).toBe('warning');
@@ -124,5 +127,23 @@ describe('StepRows', () => {
 		expect(stepRows(steps, 'done').map((r) => r.mark)).toEqual(['warning', 'ok']);
 		expect(stepRows(steps, 'error').map((r) => r.mark)).toEqual(['failed', 'ok']);
 		expect(stepRows([steps[1], steps[0], step('i', 'Allowed', 'info')], 'done').map((r) => r.mark)).toEqual(['ok', 'failed', 'info']);
+	});
+
+	it('manual check 3: an opened group shows each command as selectable text outside the toggle, with Copy command', async () => {
+		const shells = [1, 2].map((i): AssistantStepView => ({ id: `b${i}`, label: 'Ran a shell command', detail: `rpk connect list ${i}`, mark: 'ok', result: '' }));
+		await render(shells, 'error');
+		await click(host.querySelector('.rpcn-assistant-step-toggle')!);
+		const commands = [...host.querySelectorAll('.rpcn-assistant-step-members .rpcn-assistant-step-detail')];
+		expect(commands.map((c) => c.textContent)).toEqual(['rpk connect list 1', 'rpk connect list 2']);
+		expect(commands.every((c) => c.closest('button') === null)).toBe(true);
+		const buttons = [...host.querySelectorAll(`.rpcn-assistant-step-members button[aria-label="${COPY_COMMAND_LABEL}"]`)];
+		expect(buttons).toHaveLength(2);
+		await click(buttons[1]);
+		expect(copied).toEqual(['rpk connect list 2']);
+		expect(buttons[1].getAttribute('aria-label')).toBe('Copied');
+		// A single step with a command: the same, in its row.
+		await render([shells[0]], 'error');
+		await click(host.querySelector(`button[aria-label="${COPY_COMMAND_LABEL}"]`)!);
+		expect(copied.at(-1)).toBe('rpk connect list 1');
 	});
 });
