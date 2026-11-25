@@ -3,7 +3,7 @@ title: 'Story 8.1: tracer bullet — from a request to a ready design note in th
 type: 'feature'
 ticket: '1'
 created: '2026-11-24'
-status: 'built'
+status: done
 baseline_revision: 'f13b51248166ad822a0f7ecc5f518c794aac60be'
 route: 'full'
 route_source: 'auto'
