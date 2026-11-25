@@ -40,7 +40,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	askedText, COMMAND_HINTS, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
+	askedText, COMMAND_HINTS, formatDuration, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
 	undoLaterEditsText,
 	type AssistantAccess as AccessState, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
 	type AssistantTurnView, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
@@ -232,14 +232,21 @@ interface Turn {
 	readonly createdFolders: Set<string>;
 	/** Manual check 2: the approvals decided, by the step (tool call) they were for. */
 	readonly decisions: Map<string, 'allowed' | 'denied'>;
+	/** Manual check 4: when the run began and ended (`now()`), the time waited on the user, and since when it waits. */
+	startedAt: number;
+	endedAt: number | undefined;
+	waitedMs: number;
+	waitingSince: number | undefined;
+	/** When each running step began. */
+	readonly stepStarts: Map<string, number>;
 	files: TurnFile[];
 	review: AssistantReview;
 	noteFile: string | undefined;
 	note: AssistantNoteView | null;
 	outcome: AssistantOutcome;
 	notice: string | null;
-	/** The masked view, until the turn changes. */
-	view: AssistantTurnView | undefined;
+	/** The masked view (without its times), until the turn changes. */
+	view: Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs'> | undefined;
 }
 
 export interface AssistantViewOptions {
@@ -362,6 +369,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	runsStarted = 0;
 	/** Review 8, test seam: the idle timeout handed to each run's host (`undefined`: the host's 5 minutes). */
 	idleTimeoutMs: number | undefined;
+	/** Manual check 4: the monotonic clock turns and steps are timed with (a test's seam). */
+	now: () => number = () => performance.now();
 	/** Review 2: a run is claimed (from the first line of `run`, before any await) until it ends. */
 	private claimed = false;
 	/** Story 8.12: the claimed run, until it ends (New conversation waits for it). */
@@ -550,8 +559,35 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return maskHome(this.options.access.mask(text), [os.homedir(), process.env.HOME ?? '']);
 	}
 
-	/** Story 8.12: a turn as posted (masked; kept until the turn changes). */
+	/** Manual check 4: the turn's wall time and its time waiting on the user, as of now. */
+	private times(t: Turn): { readonly elapsedMs: number; readonly waitingMs: number } {
+		const now = t.endedAt ?? this.now();
+		const waiting = t.waitedMs + (t.waitingSince !== undefined ? now - t.waitingSince : 0);
+		return { elapsedMs: Math.max(0, Math.round(now - t.startedAt)), waitingMs: Math.max(0, Math.round(waiting)) };
+	}
+
+	/** Manual check 4: starts or stops the current turn's waiting time as questions and approvals open and close. */
+	private trackWaiting(): void {
+		const t = this.current;
+		if (!t || t.endedAt !== undefined) {
+			return;
+		}
+		const waiting = this.openQuestions.size + this.openApprovals.size > 0;
+		if (waiting && t.waitingSince === undefined) {
+			t.waitingSince = this.now();
+		} else if (!waiting && t.waitingSince !== undefined) {
+			t.waitedMs += this.now() - t.waitingSince;
+			t.waitingSince = undefined;
+		}
+	}
+
+	/** Story 8.12: a turn as posted (masked; kept until the turn changes; its times always as of now). */
 	private turnView(t: Turn): AssistantTurnView {
+		const view = this.maskedTurn(t);
+		return { ...view, ...this.times(t) };
+	}
+
+	private maskedTurn(t: Turn): Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs'> {
 		if (t.view) {
 			return t.view;
 		}
@@ -560,12 +596,15 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		const chips: AssistantChipView[] = ended && t.command === 'design' && note
 			? (['build', 'test'] as const).map((command) => ({ label: `/${command}`, command, enabled: COMMAND_HINTS[command] === null, hint: COMMAND_HINTS[command] }))
 			: [];
-		t.view = {
+		const view = {
 			id: t.id,
 			command: t.command,
 			text: this.mask(t.text),
 			skill: t.skill,
-			steps: t.steps.map((s) => ({ id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result), ...(s.detail ? { detail: this.mask(s.detail) } : {}) })),
+			steps: t.steps.map((s) => ({
+				id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result), ...(s.detail ? { detail: this.mask(s.detail) } : {}),
+				...(s.durationMs !== undefined ? { durationMs: s.durationMs } : {}),
+			})),
 			reply: this.mask(t.reply),
 			files: t.files.map((f) => ({ path: this.mask(f.path), added: f.added, removed: f.removed, created: f.created, tooLarge: f.tooLarge })),
 			review: t.review,
@@ -575,7 +614,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			outcome: t.outcome,
 			notice: t.notice === null ? null : this.mask(t.notice),
 		};
-		return t.view;
+		t.view = view;
+		return view;
 	}
 
 	/** Story 8.12: this conversation's latest note (not undone) is `ready`. */
@@ -798,6 +838,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.host = host;
 		this.current = turn;
 		this.runsStarted++;
+		// Manual check 4: the turn's clock starts as the host takes the run.
+		turn.startedAt = this.now();
 		this.status = 'running';
 		this.post();
 		// Review 3: "started" only once the host takes the run (its first event that is not `unavailable`).
@@ -839,6 +881,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	private addTurn(command: AssistantCommand, text: string, workspace: string): Turn {
 		const turn: Turn = {
 			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(), decisions: new Map(),
+			startedAt: this.now(), endedAt: undefined, waitedMs: 0, waitingSince: undefined, stepStarts: new Map(),
 			files: [], review: 'none', noteFile: undefined, note: null, outcome: 'running', notice: null, view: undefined,
 		};
 		this.turns.push(turn);
@@ -851,7 +894,16 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	/** Story 8.12: the turn's run ended: its open steps closed, its file rows from the snapshots, its note read. */
 	private endTurn(turn: Turn, outcome: Exclude<AssistantOutcome, 'running'>): void {
 		turn.outcome = outcome;
-		turn.steps = turn.steps.map((s) => (s.mark === 'running' ? { ...s, mark: outcome === 'done' ? 'ok' : 'failed', result: outcome === 'stopped' ? 'stopped' : s.result } : s));
+		// Manual check 4: the clock stops (a wait still open ends with it).
+		const now = this.now();
+		if (turn.waitingSince !== undefined) {
+			turn.waitedMs += now - turn.waitingSince;
+			turn.waitingSince = undefined;
+		}
+		turn.endedAt = now;
+		turn.steps = turn.steps.map((s) => (s.mark === 'running' ? {
+			...s, mark: outcome === 'done' ? 'ok' : 'failed', result: outcome === 'stopped' ? 'stopped' : s.result, ...this.stepDuration(turn, s.id, now),
+		} : s));
 		turn.files = turnFiles(turn.snapshots, turn.written, turn.workspace, readText);
 		turn.review = turn.files.some((f) => !f.tooLarge) ? 'pending' : 'none';
 		if (turn.review === 'none') {
@@ -868,6 +920,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.addStep(turn, { id: `p${++this.stepSeq}`, label: event.text, mark: 'info', result: '' });
 				break;
 			case 'step':
+				turn.stepStarts.set(event.id, this.now());
 				this.addStep(turn, { id: event.id, label: event.label, mark: 'running', result: '', ...(event.detail ? { detail: event.detail } : {}) });
 				break;
 			case 'stepDone': {
@@ -876,7 +929,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 					// Manual check 2: an approval's outcome is the step's result when it has no other (denied: always).
 					const decision = turn.decisions.get(event.id);
 					const result = decision === 'denied' ? 'denied' : event.result.slice(0, 60) || decision || '';
-					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result };
+					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result, ...this.stepDuration(turn, event.id, this.now()) };
 				}
 				break;
 			}
@@ -926,7 +979,12 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				if (!event.stopped && turn.reply === '' && event.text) {
 					this.addReply(turn, event.text);
 				}
-				this.options.log(`Assistant: the run ${event.stopped ? 'was stopped' : 'ended'}.`);
+				{
+					// Manual check 4: how long it took, and how much of that waited on the user.
+					const { elapsedMs, waitingMs } = this.times(turn);
+					const waited = waitingMs >= 1000 ? `, ${formatDuration(waitingMs)} waiting on you` : '';
+					this.options.log(`Assistant: the run ${event.stopped ? 'was stopped' : 'ended'} after ${formatDuration(elapsedMs)}${waited}.`);
+				}
 				break;
 			case 'error':
 				this.closeOpen();
@@ -1190,7 +1248,15 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		this.post();
 	}
 
+	/** Manual check 4: a step's duration from its start to `now` (none when its start is unknown). */
+	private stepDuration(turn: Turn, id: string, now: number): { durationMs?: number } {
+		const start = turn.stepStarts.get(id);
+		turn.stepStarts.delete(id);
+		return start === undefined ? {} : { durationMs: Math.max(0, Math.round(now - start)) };
+	}
+
 	private post(): void {
+		this.trackWaiting();
 		const message = this.state();
 		this.posted.push(message);
 		if (this.posted.length > MAX_POSTED) {

@@ -6,7 +6,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-	KEEP_LABEL, STOPPED_TEXT, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
+	failedAfterText, formatClock, KEEP_LABEL, stoppedText, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 import { CopyButton } from './CopyButton';
 import { FileRows } from './FileRows';
@@ -34,6 +34,24 @@ function useArmed(shown: boolean): boolean {
 		return () => clearTimeout(timer);
 	}, [shown]);
 	return armed;
+}
+
+/**
+ * Manual check 4: a running turn's clock: the last posted elapsed time, ticking on each second from when it
+ * arrived (no re-post per second).
+ */
+function LiveClock({ elapsedMs }: { readonly elapsedMs: number }) {
+	const [base, setBase] = useState(() => ({ elapsedMs, at: Date.now() }));
+	const [, setTick] = useState(0);
+	if (base.elapsedMs !== elapsedMs) {
+		setBase({ elapsedMs, at: Date.now() });
+	}
+	useEffect(() => {
+		const timer = setInterval(() => setTick((n) => n + 1), 1000);
+		return () => clearInterval(timer);
+	}, []);
+	const shown = base.elapsedMs + (Date.now() - base.at);
+	return <span className="rpcn-assistant-clock" role="timer" aria-label={`Running for ${formatClock(shown)}`}>· {formatClock(shown)}</span>;
 }
 
 /** Option A's rpcn badge: a sparkle in a rounded square. */
@@ -82,8 +100,9 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 					<RpcnBadge />
 					<span className="rpcn-assistant-rpcn-name">rpcn</span>
 					<span className="rpcn-assistant-rpcn-skill">· {turn.skill}</span>
+					{turn.outcome === 'running' ? <LiveClock elapsedMs={turn.elapsedMs} /> : null}
 				</p>
-				<StepRows steps={turn.steps} outcome={turn.outcome} />
+				<StepRows steps={turn.steps} outcome={turn.outcome} elapsedMs={turn.elapsedMs} waitingMs={turn.waitingMs} />
 				{live}
 				{turn.reply ? (
 					<div className="rpcn-assistant-reply-wrap">
@@ -93,10 +112,11 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 						</div>
 					</div>
 				) : null}
-				{turn.outcome === 'stopped' ? <p className="rpcn-assistant-stopped" role="status">{STOPPED_TEXT}</p> : null}
+				{turn.outcome === 'stopped' ? <p className="rpcn-assistant-stopped" role="status">{stoppedText(turn.elapsedMs)}</p> : null}
 				{turn.outcome === 'error' ? (
 					latest && error ? <p className="rpcn-assistant-error" role="alert">{error}</p> : <p className="rpcn-assistant-stopped">{FAILED_TURN_TEXT}</p>
 				) : null}
+				{turn.outcome === 'error' ? <p className="rpcn-assistant-time">{failedAfterText(turn.elapsedMs)}</p> : null}
 				<FileRows files={turn.files} note={turn.note} clickable={turn.review === 'pending'} open={(path) => post({ type: 'openFileDiff', turn: turn.id, path })} />
 				{turn.notice ? <p className="rpcn-assistant-error" role="alert">{turn.notice}</p> : null}
 				{ended && (turn.review === 'pending' || turn.review === 'undone' || turn.actions.length > 0) ? (

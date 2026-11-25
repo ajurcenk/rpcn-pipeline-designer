@@ -67,6 +67,8 @@ export interface AssistantStepView {
 	readonly result: string;
 	/** Manual check 2: a secondary line (a shell step's command, one line, clipped); absent: none. */
 	readonly detail?: string;
+	/** Manual check 4: how long the step took (ended steps only); absent: not timed. */
+	readonly durationMs?: number;
 }
 
 /** Story 8.12: a file the turn changed. */
@@ -124,6 +126,12 @@ export interface AssistantTurnView {
 	readonly outcome: AssistantOutcome;
 	/** A line about Keep or Undo (an undo that could not restore every file); else `null`. */
 	readonly notice: string | null;
+	/**
+	 * Manual check 4: the turn's wall time from its start, as of this post (while `outcome` is `running`
+	 * the view ticks on from it), and how much of it was spent waiting on the user (questions, approvals).
+	 */
+	readonly elapsedMs: number;
+	readonly waitingMs: number;
 }
 
 export interface AssistantStateMessage {
@@ -221,6 +229,14 @@ export const LOCAL_SKILLS_TEXT = 'Skills: local copy';
 export const NO_BINARY_TEXT = 'The assistant needs Redpanda Connect: it checks every design against your own binary. Install rpk or redpanda-connect, or set redpandaConnect.binaryPath.';
 export const NO_WORKSPACE_TEXT = 'Open a folder first: the assistant writes its design note there.';
 export const STOPPED_TEXT = 'Stopped. Nothing more was written.';
+/** Manual check 4: a stopped turn's line, with its time. */
+export function stoppedText(elapsedMs: number): string {
+	return `Stopped after ${formatDuration(elapsedMs)}. Nothing more was written.`;
+}
+/** Manual check 4: a failed turn's time line. */
+export function failedAfterText(elapsedMs: number): string {
+	return `Failed after ${formatDuration(elapsedMs)}.`;
+}
 export const REQUEST_PLACEHOLDER = 'Describe the pipeline you want, in plain words; / for commands';
 /** Story 8.12: the most step rows a turn carries (the oldest dropped first). */
 export const MAX_STEPS = 200;
@@ -265,6 +281,35 @@ export function parseCommand(text: string): { readonly command: AssistantCommand
 export const SKILL_READ_LABEL = 'Reading a skill reference';
 /** Manual check 2: a shell command's step label (the command is its detail). */
 export const SHELL_LABEL = 'Ran a shell command';
+/**
+ * Manual check 4: a duration as the view and the log say it: under a minute "42s", under an hour
+ * "1m 12s", else "1h 3m" (whole seconds, rounded down).
+ */
+export function formatDuration(ms: number): string {
+	const s = Math.max(0, Math.floor(ms / 1000));
+	if (s < 60) {
+		return `${s}s`;
+	}
+	if (s < 3600) {
+		return `${Math.floor(s / 60)}m ${s % 60}s`;
+	}
+	return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** Manual check 4: a running turn's clock: "0:42", "12:05", "1:03:09". */
+export function formatClock(ms: number): string {
+	const s = Math.max(0, Math.floor(ms / 1000));
+	const pad = (n: number) => String(n).padStart(2, '0');
+	const h = Math.floor(s / 3600);
+	const m = Math.floor((s % 3600) / 60);
+	return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+/** Manual check 4: a turn's time ("1m 12s", with "(38s waiting on you)" once that is 1s or more). */
+export function turnTimeText(elapsedMs: number, waitingMs: number): string {
+	return `${formatDuration(elapsedMs)}${waitingMs >= 1000 ? ` (${formatDuration(waitingMs)} waiting on you)` : ''}`;
+}
+
 /** Manual check 3: the longest text one copy puts on the clipboard. */
 export const MAX_COPY_CHARS = 100_000;
 /** Manual check 1: the folded row of a turn's skill reads. */
@@ -355,8 +400,11 @@ function parseList<T>(v: unknown, item: (x: unknown) => T | undefined): T[] | un
 
 function parseStep(v: unknown): AssistantStepView | undefined {
 	return isObject(v) && isString(v.id) && isString(v.label) && isString(v.mark) && MARKS.includes(v.mark) && isString(v.result)
-		&& (v.detail === undefined || isString(v.detail))
-		? { id: v.id, label: v.label, mark: v.mark as AssistantStepMark, result: v.result, ...(isString(v.detail) ? { detail: v.detail } : {}) } : undefined;
+		&& (v.detail === undefined || isString(v.detail)) && (v.durationMs === undefined || isCount(v.durationMs))
+		? {
+			id: v.id, label: v.label, mark: v.mark as AssistantStepMark, result: v.result, ...(isString(v.detail) ? { detail: v.detail } : {}),
+			...(isCount(v.durationMs) ? { durationMs: v.durationMs } : {}),
+		} : undefined;
 }
 
 function parseFile(v: unknown): AssistantFileView | undefined {
@@ -376,7 +424,8 @@ function parseChip(v: unknown): AssistantChipView | undefined {
 
 function parseTurn(v: unknown): AssistantTurnView | undefined {
 	if (!isObject(v) || !isString(v.id) || !isCommand(v.command) || !isString(v.text) || !isString(v.skill) || !isString(v.reply)
-		|| !isString(v.review) || !REVIEWS.includes(v.review) || !isString(v.outcome) || !OUTCOMES.includes(v.outcome) || !isNullableString(v.notice)) {
+		|| !isString(v.review) || !REVIEWS.includes(v.review) || !isString(v.outcome) || !OUTCOMES.includes(v.outcome) || !isNullableString(v.notice)
+		|| !isCount(v.elapsedMs) || !isCount(v.waitingMs)) {
 		return undefined;
 	}
 	const steps = parseList(v.steps, parseStep);
@@ -389,7 +438,7 @@ function parseTurn(v: unknown): AssistantTurnView | undefined {
 	}
 	return {
 		id: v.id, command: v.command, text: v.text, skill: v.skill, steps, reply: v.reply, files, review: v.review as AssistantReview, note,
-		actions, chips, outcome: v.outcome as AssistantOutcome, notice: v.notice,
+		actions, chips, outcome: v.outcome as AssistantOutcome, notice: v.notice, elapsedMs: v.elapsedMs, waitingMs: v.waitingMs,
 	};
 }
 

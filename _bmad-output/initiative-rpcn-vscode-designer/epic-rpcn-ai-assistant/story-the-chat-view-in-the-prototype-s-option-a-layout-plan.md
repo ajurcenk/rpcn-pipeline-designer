@@ -185,6 +185,14 @@ context:
   - **Cause of the copy failure, as far as the code shows:** nothing in the view blocks selection. No CSS sets `user-select: none`, and a state re-post leaves unchanged text nodes alone, so a selection survives it. The failing part is the webview's own clipboard path in the side-bar view (Ctrl+C and Copy run the copy inside the webview, which put nothing on the clipboard). The extension's logs tab already falls back to the host for the same reason (`logsPanel.ts`, Copy JSON). The commands in an opened shell group were also inside the toggle `<button>`, where they could not be selected. This was not reproduced here (the tests run under xvfb with the clipboard seam).
   - **Copy goes through the host:** the view handles the document `copy` event. When there is a selection inside the view (or in its composer or Other field, whose native copy goes through the same broken path), it prevents the default and posts `copyText{text}`, at most 100,000 characters. The host masks the text again and writes it with `vscode.env.clipboard.writeText`, through the `ui.writeClipboard` seam. A selection outside the view, or none, is left alone.
   - **Copy buttons:** a reply has Copy reply (its Markdown source, as posted; "Copied" for 1.5 s). A fenced code block has Copy code (its raw text). A step's command, in a single row or an opened group, is selectable text outside any button, with Copy command. All three share `CopyButton` and its `CopyContext`, which posts `copyText`.
+- **Manual check 4: timing (2026-11-25):**
+  - **Host clock:** the view times each turn with a monotonic clock (`now()`, `performance.now()`, a test seam). The clock starts as the host takes the run and stops when the turn ends (done, stopped or error). Time waiting on the user (a question's cards or an approval's modal open) is added up apart, as questions and approvals open and close.
+  - **Posted times:** every post carries each turn's `elapsedMs` and `waitingMs` as of that moment (the masked turn stays cached; only the times are recomputed). There is no separate `running` field: `outcome: 'running'` already says so. Each tool step gets its own `durationMs` when it ends.
+  - **Live clock:** while a turn runs, its rpcn header shows "· 0:42", ticking each second from the last posted value (no re-post per second).
+  - **Totals:** once a turn ends, its summary line adds the total, e.g. "▸ 23 steps · 1 warning · 1m 12s (38s waiting on you)", leaving out the waiting part under 1s. A stopped turn says "Stopped after 1m 5s. Nothing more was written."; an errored one adds "Failed after 1m 5s."
+  - **Step times:** a step row shows its duration, muted, when it is 1s or more; a grouped row shows the group's total.
+  - **Log:** the log line is "Assistant: the run ended after 1m 12s, 38s waiting on you." (or "was stopped after …").
+  - **Format:** `formatDuration` gives "42s", "1m 12s" or "1h 3m"; `formatClock` gives "m:ss" or "h:mm:ss".
 
 ## Plan Change Log
 

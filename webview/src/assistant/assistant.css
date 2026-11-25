@@ -628,3 +628,23 @@ body {
 	flex: 1;
 	min-width: 0;
 }
+
+/* Manual check 4: timing. */
+.rpcn-assistant-clock,
+.rpcn-assistant-time,
+.rpcn-assistant-step-time {
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+.rpcn-assistant-time {
+	margin: 0;
+}
+.rpcn-assistant-step-end {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	justify-self: end;
+}
+.rpcn-assistant-step-time {
+	font-size: 0.9em;
+}

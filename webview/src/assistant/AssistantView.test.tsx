@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL,
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
-	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
+	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, stoppedText, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
 	NEW_CONVERSATION_LABEL, type AssistantStateMessage, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 import { AssistantView, HEADER_TITLE, SEND_ANSWERS_LABEL, WAITING_APPROVAL_TEXT } from './AssistantView';
@@ -30,7 +30,7 @@ const IDLE: AssistantStateMessage = {
 const TURN: AssistantTurnView = {
 	id: 't1', command: 'design', text: 'orders to an API', skill: 'rpcn-design',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Checking with rpcn_check binary', mark: 'running', result: '' }],
-	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null,
+	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null, elapsedMs: 0, waitingMs: 0,
 };
 const QUESTIONS: AssistantStateMessage = {
 	...IDLE, status: 'question', turns: [TURN],
@@ -161,7 +161,8 @@ describe('AssistantView', () => {
 		await send({ ...IDLE, status: 'approval', turns: [TURN] });
 		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-waiting')?.textContent).toBe(WAITING_APPROVAL_TEXT);
 		await send({ ...IDLE, status: 'stopped', turns: [{ ...TURN, outcome: 'stopped' }] });
-		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-stopped')?.textContent).toBe(STOPPED_TEXT);
+		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-stopped')?.textContent).toBe(stoppedText(0));
+		expect(STOPPED_TEXT).toBe('Stopped. Nothing more was written.');
 		await send({ ...IDLE, status: 'error', error: 'API Error: 401 •••••', turns: [{ ...TURN, outcome: 'error' }] });
 		expect(host.querySelector('.rpcn-assistant-turn [role="alert"]')?.textContent).toBe('API Error: 401 •••••');
 		await send({ ...IDLE, status: 'error', error: 'boom' });
@@ -355,6 +356,12 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, chips: [{ label: '/x', command: 'x', enabled: false, hint: null }] }] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, designReady: 'yes' })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [TURN] })).toEqual({ ...IDLE, turns: [TURN] });
+		const timed = { ...TURN, elapsedMs: 5, waitingMs: 2, steps: [{ ...TURN.steps[0], durationMs: 1200 }] };
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [timed] })).toEqual({ ...IDLE, turns: [timed] });
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, elapsedMs: -1 }] })).toBeUndefined();
+		const { waitingMs: _w, ...noWaiting } = TURN;
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [noWaiting] })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ ...TURN.steps[0], durationMs: 'x' }] }] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, status: 'nope' })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' })).toEqual({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' });
 		for (const access of ['runtimeMissing', 'runtimeInstalling', 'runtimeOutdated', 'runtimeFailed'] as const) {

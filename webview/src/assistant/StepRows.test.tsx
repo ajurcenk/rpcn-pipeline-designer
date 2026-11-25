@@ -68,7 +68,7 @@ describe('StepRows', () => {
 		await render(STEPS, 'done');
 		expect(host.querySelector('.rpcn-assistant-step')).toBeNull();
 		const line = host.querySelector('.rpcn-assistant-fold-line') as HTMLButtonElement;
-		expect(line.textContent).toBe('▸ 3 steps · 1 warning');
+		expect(line.textContent).toBe('▸ 3 steps · 1 warning · 0s');
 		expect(line.getAttribute('aria-expanded')).toBe('false');
 		await click(line);
 		expect(host.querySelectorAll('.rpcn-assistant-step')).toHaveLength(4);
@@ -145,5 +145,20 @@ describe('StepRows', () => {
 		await render([shells[0]], 'error');
 		await click(host.querySelector(`button[aria-label="${COPY_COMMAND_LABEL}"]`)!);
 		expect(copied.at(-1)).toBe('rpk connect list 1');
+	});
+
+	it('manual check 4: a step\'s duration when 1s or more, muted at its end; a group shows its total', async () => {
+		const timed: AssistantStepView[] = [
+			{ id: 'a', label: 'Ran a shell command', detail: 'one', mark: 'ok', result: '', durationMs: 2_500 },
+			{ id: 'b', label: 'Ran a shell command', detail: 'two', mark: 'ok', result: '', durationMs: 1_700 },
+			{ id: 'c', label: 'Reading a.yaml', mark: 'ok', result: '3 lines', durationMs: 400 },
+			{ id: 'd', label: 'Checking with rpcn_check lint', mark: 'ok', result: '0 errors', durationMs: 4_200 },
+		];
+		await render(timed, 'error');
+		const rows = [...host.querySelectorAll('.rpcn-assistant-steps > li')];
+		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-time')?.textContent ?? '')).toEqual(['4s', '', '4s']);
+		expect(rows[2].querySelector('.rpcn-assistant-step-result')?.textContent).toBe('0 errors');
+		await click(host.querySelector('.rpcn-assistant-step-toggle')!);
+		expect([...host.querySelectorAll('.rpcn-assistant-step-members .rpcn-assistant-step-time')].map((t) => t.textContent)).toEqual(['2s', '1s']);
 	});
 });

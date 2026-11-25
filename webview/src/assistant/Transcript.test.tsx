@@ -13,7 +13,7 @@ let root: Root;
 const TURN: AssistantTurnView = {
 	id: 't1', command: 'design', text: 'orders', skill: 'rpcn-design',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Reading a.yaml', mark: 'ok', result: '3 lines' }],
-	reply: 'Done.', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'done', notice: null,
+	reply: 'Done.', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'done', notice: null, elapsedMs: 72_000, waitingMs: 38_000,
 };
 const STATE: AssistantStateMessage = {
 	type: 'state', access: 'ready', platform: null, runtime: { pinned: '1', installed: null, error: null }, skills: 'bundled', skillsProblem: null,
@@ -57,7 +57,7 @@ describe('Transcript', () => {
 		expect(first.querySelector('.rpcn-assistant-step')).toBeNull();
 		expect(second.querySelector('.rpcn-assistant-step')).toBeNull();
 		const line = first.querySelector('.rpcn-assistant-fold-line') as HTMLButtonElement;
-		expect(line.textContent).toContain('2 steps');
+		expect(line.textContent).toBe('▸ 2 steps · 1m 12s (38s waiting on you)');
 		await act(async () => line.click());
 		expect(first.querySelectorAll('.rpcn-assistant-step')).toHaveLength(2);
 		await render({ ...STATE, status: 'running', turns: [TURN, { ...TURN, id: 't2', outcome: 'running' }] });

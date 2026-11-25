@@ -24,7 +24,7 @@ function Command({ text }: { readonly text: string }) {
 		</span>
 	);
 }
-import { SKILL_READ_LABEL, skillReadsText, type AssistantOutcome, type AssistantStepMark, type AssistantStepView } from '../../../src/shared/assistantProtocol';
+import { formatDuration, SKILL_READ_LABEL, skillReadsText, turnTimeText, type AssistantOutcome, type AssistantStepMark, type AssistantStepView } from '../../../src/shared/assistantProtocol';
 
 /** A row's mark as shown: a step's, or `warning` for a failure the run went on past. */
 export type RowMark = AssistantStepMark | 'warning';
@@ -51,6 +51,8 @@ export interface StepRow {
 	readonly count: number;
 	/** The steps a grouped row stands for (each with its own mark), in order; one step: none. */
 	readonly members: readonly StepRow[];
+	/** Manual check 4: how long the step (or the group, in total) took; 0: not timed. */
+	readonly durationMs: number;
 }
 
 const RANK: Readonly<Record<AssistantStepMark, number>> = { info: 0, ok: 1, failed: 2, running: 3 };
@@ -100,7 +102,7 @@ export function stepRows(steps: readonly AssistantStepView[], outcome: Assistant
 		}
 		drafts.push({ id: s.id, label: s.label, mark: s.mark, result: s.result, detail: s.detail ?? '', steps: [s], reads: false });
 	}
-	const one = (s: AssistantStepView): StepRow => ({ id: s.id, label: s.label, mark: shown(s), result: s.result, detail: s.detail ?? '', count: 1, members: [] });
+	const one = (s: AssistantStepView): StepRow => ({ id: s.id, label: s.label, mark: shown(s), result: s.result, detail: s.detail ?? '', count: 1, members: [], durationMs: s.durationMs ?? 0 });
 	return drafts.map((d) => {
 		if (d.steps.length === 1 && !d.reads) {
 			return one(d.steps[0]);
@@ -109,12 +111,16 @@ export function stepRows(steps: readonly AssistantStepView[], outcome: Assistant
 		// A group is a warning when its worst is a failure the run went on past (no member keeps the error mark).
 		const mark: RowMark = d.mark === 'failed' && !members.some((m) => m.mark === 'failed') ? 'warning' : d.mark;
 		const label = d.reads ? skillReadsText(d.steps.length) : `${d.label} ×${d.steps.length}`;
-		return { id: d.id, label, mark, result: d.reads ? '' : d.result, detail: '', count: d.steps.length, members: d.steps.length > 1 ? members : [] };
+		const durationMs = members.reduce((sum, m) => sum + m.durationMs, 0);
+		return { id: d.id, label, mark, result: d.reads ? '' : d.result, detail: '', count: d.steps.length, members: d.steps.length > 1 ? members : [], durationMs };
 	});
 }
 
-/** The folded line of a turn's steps: the steps, then how many warnings and failures ("27 steps · 1 warning"). */
-export function foldedText(rows: readonly StepRow[]): string {
+/**
+ * The folded line of a turn's steps: the steps, then how many warnings and failures, then (manual check 4)
+ * the turn's time when given ("27 steps · 1 warning · 1m 12s (38s waiting on you)").
+ */
+export function foldedText(rows: readonly StepRow[], time?: { readonly elapsedMs: number; readonly waitingMs: number }): string {
 	const tools = rows.filter((r) => r.mark !== 'info');
 	const n = tools.reduce((sum, r) => sum + r.count, 0) || rows.length;
 	const marks = rows.flatMap((r) => (r.members.length > 0 ? r.members : [r])).map((r) => r.mark);
@@ -124,11 +130,26 @@ export function foldedText(rows: readonly StepRow[]): string {
 		`${n} step${n === 1 ? '' : 's'}`,
 		...(warnings > 0 ? [`${warnings} warning${warnings === 1 ? '' : 's'}`] : []),
 		...(failed > 0 ? [`${failed} failed`] : []),
+		...(time ? [turnTimeText(time.elapsedMs, time.waitingMs)] : []),
 	].join(' · ');
 }
 
 function Mark({ mark }: { readonly mark: RowMark }) {
 	return <span className="rpcn-assistant-step-mark" aria-label={MARKS[mark].name || undefined} aria-hidden={MARKS[mark].name ? undefined : true}>{MARKS[mark].sign}</span>;
+}
+
+/** Manual check 4: a step's result and, when 1s or more, its duration (muted), at the row's end. */
+function StepEnd({ result, durationMs }: { readonly result: string; readonly durationMs: number }) {
+	const time = durationMs >= 1000 ? formatDuration(durationMs) : '';
+	if (!result && !time) {
+		return null;
+	}
+	return (
+		<span className="rpcn-assistant-step-end">
+			{result ? <span className="rpcn-assistant-step-result">{result}</span> : null}
+			{time ? <span className="rpcn-assistant-step-time">{time}</span> : null}
+		</span>
+	);
 }
 
 function Row({ row }: { readonly row: StepRow }) {
@@ -140,7 +161,7 @@ function Row({ row }: { readonly row: StepRow }) {
 				<span className="rpcn-assistant-step-label">{row.label}</span>
 				{detail && row.detail ? <Command text={row.detail} /> : null}
 			</span>
-			{row.result ? <span className="rpcn-assistant-step-result">{row.result}</span> : null}
+			<StepEnd result={row.result} durationMs={row.durationMs} />
 		</>
 	);
 	if (row.members.length === 0) {
@@ -157,7 +178,7 @@ function Row({ row }: { readonly row: StepRow }) {
 							<span className="rpcn-assistant-step-text">
 								{m.detail ? <Command text={m.detail} /> : <span className="rpcn-assistant-step-label">{m.label}</span>}
 							</span>
-							{m.result ? <span className="rpcn-assistant-step-result">{m.result}</span> : null}
+							<StepEnd result={m.result} durationMs={m.durationMs} />
 						</li>
 					))}
 				</ol>
@@ -174,7 +195,11 @@ function Rows({ rows }: { readonly rows: readonly StepRow[] }) {
 	);
 }
 
-export function StepRows({ steps, outcome }: { readonly steps: readonly AssistantStepView[]; readonly outcome: AssistantOutcome }) {
+export function StepRows({ steps, outcome, elapsedMs = 0, waitingMs = 0 }: {
+	readonly steps: readonly AssistantStepView[]; readonly outcome: AssistantOutcome;
+	/** Manual check 4: the turn's time, for the folded line. */
+	readonly elapsedMs?: number; readonly waitingMs?: number;
+}) {
 	const [open, setOpen] = useState(false);
 	if (steps.length === 0) {
 		return null;
@@ -199,7 +224,7 @@ export function StepRows({ steps, outcome }: { readonly steps: readonly Assistan
 	return (
 		<div className="rpcn-assistant-fold">
 			<button type="button" className="rpcn-assistant-fold-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-				<span aria-hidden="true">{open ? '▾' : '▸'}</span> {foldedText(rows)}
+				<span aria-hidden="true">{open ? '▾' : '▸'}</span> {foldedText(rows, { elapsedMs, waitingMs })}
 			</button>
 			{open ? <Rows rows={rows} /> : null}
 		</div>

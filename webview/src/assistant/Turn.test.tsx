@@ -7,7 +7,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	KEEP_LABEL, OPEN_NOTE_LABEL, STOPPED_TEXT, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
+	KEEP_LABEL, OPEN_NOTE_LABEL, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 import { CopyContext } from './CopyButton';
 import { COPY_REPLY_LABEL, SETTLE_ARM_MS, splitCommand, Turn } from './Turn';
@@ -28,7 +28,7 @@ const DONE_TURN: AssistantTurnView = {
 		{ label: '/build', command: 'build', enabled: false, hint: 'Arrives with the Author stage' },
 		{ label: '/test', command: 'test', enabled: false, hint: 'Arrives with the Test hand-off' },
 	],
-	outcome: 'done', notice: null,
+	outcome: 'done', notice: null, elapsedMs: 65_000, waitingMs: 500,
 };
 const render = async (turn: AssistantTurnView, latest = true) => {
 	await act(async () => {
@@ -114,7 +114,7 @@ describe('Turn', () => {
 
 	it('stopped: the muted line; an undo error: an alert; a reply link posts openLink', async () => {
 		await render({ ...DONE_TURN, outcome: 'stopped', reply: 'See [docs](https://x.example)', notice: 'Could not undo a.yaml (EACCES).' });
-		expect(host.querySelector('.rpcn-assistant-stopped')?.textContent).toBe(STOPPED_TEXT);
+		expect(host.querySelector('.rpcn-assistant-stopped')?.textContent).toBe('Stopped after 1m 5s. Nothing more was written.');
 		expect(host.querySelector('[role="alert"]')?.textContent).toBe('Could not undo a.yaml (EACCES).');
 		await click(host.querySelector('.rpcn-assistant-link')!);
 		expect(posted.at(-1)).toEqual({ type: 'openLink', href: 'https://x.example' });
@@ -153,6 +153,29 @@ describe('Turn', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('manual check 4: a running turn\'s header clock ticks each second from the posted time; an ended one shows the total in its summary', async () => {
+		vi.useFakeTimers();
+		try {
+			await render({ ...DONE_TURN, outcome: 'running', review: 'none', elapsedMs: 41_500 });
+			const clock = () => host.querySelector('.rpcn-assistant-rpcn-header .rpcn-assistant-clock')?.textContent;
+			expect(clock()).toBe('· 0:41');
+			await act(async () => vi.advanceTimersByTime(1000));
+			expect(clock()).toBe('· 0:42');
+			await act(async () => vi.advanceTimersByTime(60_000));
+			expect(clock()).toBe('· 1:42');
+			// A new post resets the base.
+			await render({ ...DONE_TURN, outcome: 'running', review: 'none', elapsedMs: 5_000 });
+			expect(clock()).toBe('· 0:05');
+		} finally {
+			vi.useRealTimers();
+		}
+		await render(DONE_TURN);
+		expect(host.querySelector('.rpcn-assistant-clock')).toBeNull();
+		expect(host.querySelector('.rpcn-assistant-fold-line')?.textContent).toBe('▸ 1 step · 1m 5s');
+		await render({ ...DONE_TURN, outcome: 'error' });
+		expect(host.querySelector('.rpcn-assistant-time')?.textContent).toBe('Failed after 1m 5s.');
 	});
 
 	it('PLAIN: a message with no command shows as typed, nothing highlighted', async () => {

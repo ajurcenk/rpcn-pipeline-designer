@@ -842,6 +842,35 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(vscode.window.activeTextEditor, undefined);
 		});
 
+		test('manual check 4: a turn with a question reports its waiting time apart; steps their own; the log line says both', async () => {
+			assistant().setHostFactory(new FakeAssistantHosts([
+				step('s1', 'Checking with rpcn_check binary'),
+				{ delayMs: 1100 },
+				stepDone('s1'),
+				{ emit: { type: 'question', id: 'q1', questions: [RUN_2_QUESTIONS[0]] } },
+				{ waitAnswer: 'q1' },
+				{ delayMs: 300 },
+			]).factory);
+			await assistant().setAccessForTest({ key: KEY });
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			assert.strictEqual(turn().outcome, 'running');
+			await new Promise((r) => setTimeout(r, 1200));
+			const mid = turn();
+			assert.ok(mid.waitingMs >= 1000 && mid.elapsedMs >= mid.waitingMs + 1000, JSON.stringify([mid.elapsedMs, mid.waitingMs]));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+			const t = turn();
+			assert.ok(t.waitingMs >= 1150, `waited ${t.waitingMs}`);
+			assert.ok(t.elapsedMs >= t.waitingMs + 1300, JSON.stringify([t.elapsedMs, t.waitingMs]));
+			const checked = t.steps.find((x) => x.id === 's1');
+			assert.ok(checked?.durationMs !== undefined && checked.durationMs >= 1000, JSON.stringify(checked));
+			// Ended: the times stay put.
+			await new Promise((r) => setTimeout(r, 50));
+			assert.deepStrictEqual([turn().elapsedMs, turn().waitingMs], [t.elapsedMs, t.waitingMs]);
+			assert.ok(api().outputLines().some((l) => /^Assistant: the run ended after \d+s, \d+s waiting on you\.$/.test(l)), api().outputLines().filter((l) => l.includes('the run ended')).join('\n'));
+		});
+
 		test('manual check 3: copyText reaches the clipboard through the host (masked again); an empty or oversized one is refused', async () => {
 			await assistant().setAccessForTest({ key: KEY });
 			await view().receive({ type: 'copyText', text: '```yaml\ninput: {}\n```' });
