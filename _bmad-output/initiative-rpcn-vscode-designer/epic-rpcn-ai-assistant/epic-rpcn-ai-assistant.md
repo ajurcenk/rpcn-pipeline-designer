@@ -29,6 +29,7 @@ No spec capability covers this epic (Source conflict in Notes), so its requireme
   - It shows the stages (Design, Author, Test; Tune and Scale greyed as later), the conversation, each progress step, the files written and the next-step buttons.
   - The stage and the next step come from the artifacts on disk: the design note's `status` through the handoff check, the pipeline, the test report. A reload loses no progress, and the conversation starts fresh.
   - Follow-up messages, Stop and a new conversation.
+  - The layout is the prototype's option A, a chat transcript: turns with the skill used, step rows with results, the files a turn wrote with a diff and Keep or Undo, next-step chips, and `/design`, `/build` and `/test` in the composer.
 - **E8 (R2) Assistant access.**
   - The settings: model, base URL, and auth (`bearer`, the default, or `x-api-key`).
   - The key is in secret storage only, set by Set up assistant access…, which ends with a test call, and removed by Forget assistant access.
@@ -68,19 +69,26 @@ No spec capability covers this epic (Source conflict in Notes), so its requireme
   - Every text shown or logged is masked.
   - Pipeline data in tool results (log messages, records) is marked untrusted.
   - Environment variable values never leave the extension.
-- **E8 (R9) Packaging and the skills source.**
-  - One VSIX per platform, with the pinned Agent SDK and its Claude Code binary, and a pinned copy of `rpcn-skills` bundled.
-  - `redpandaConnect.assistant.skillsSource` chooses `bundled` (the default), `latest` (downloaded from the skills repository on GitHub, confirmed by the user, revertible) or `path` (a local checkout).
-  - The view shows which copy is in use.
+- **E8 (R9) The assistant runtime and the skills source.**
+  - One VSIX for every platform, carrying a pinned copy of `rpcn-skills` but never Anthropic's SDK or Claude Code binary.
+  - The user installs the assistant runtime from VS Code (Install assistant runtime…), after agreeing to Anthropic's terms.
+  - The runtime is the pinned SDK and this platform's binary package, downloaded from the npm registry, checked against pinned integrity hashes, and kept in the extension's global storage. Update and Remove commands go with it.
+  - `redpandaConnect.assistant.skillsSource` chooses `bundled` (the default), `latest` (downloaded from the skills repository on GitHub, confirmed by the user, revertible) or `path` (a local checkout). The view shows which copy is in use.
 - **E8 (R10) The Test hand-off.** "Test the pipeline" runs `rpcn-test` on the built pipeline and shows its verdict, with a link to `<name>.test-report.md`.
+- **E8 (R11) Existing pipelines.**
+  - Ask RPCN Assistant on an open pipeline (editor title, Explorer, the graph) opens the chat with it attached. The stage comes from its files, so a hand-written pipeline with no note shows as built with no design.
+  - Describe writes a design note for what the pipeline does today and never changes the pipeline.
+  - Change applies the request as minimal edits, each shown as a diff the user applies or skips. A whole-file write over an existing pipeline is never allowed. Lint follows, and a departure from the note adds a Deviations row.
+  - Explain answers from the files and writes nothing.
 
 ## Done when
 
 1. In the assistant view, a plain request goes through question cards to a `ready` design note, and Build writes lint-clean pipeline files and opens the graph. A scripted fake host and a fake model each check this in the automated suites.
 2. Each state in R7 shows its text and next action, checked by an integration test.
-3. The Linux and macOS VSIXes each install on a clean VS Code and run the request in item 1 through a real endpoint, in the user's manual check.
+3. The one VSIX installs on a clean VS Code on Linux and on macOS. Install assistant runtime… gets the runtime there, and the request in item 1 runs through a real endpoint, in the user's manual check.
 4. Tests show no key, header value or home path in any setting, file, argument, log or capture after a full Design and Author run on the fake model.
 5. `skillsSource` switches between `bundled`, `latest` and `path`. The view names the copy in use, and the shell rule allows only that copy's `rpcn_check.py`.
+6. On a hand-written pipeline with no note, Describe writes a `ready` note and leaves the pipeline byte-identical, and a Change request lands as approved edits only, lint clean. A fake model checks this in the automated suites.
 
 ## Boundaries
 
@@ -110,7 +118,10 @@ No spec capability covers this epic (Source conflict in Notes), so its requireme
 ## Notes
 
 - Source conflict: spec Non-goals — "AI assistance" is a non-goal vs the user's decision on 2026-11-23 to build the RPCN AI Assistant. Settled by the user; no spec capability covers it yet (as epics 5–7).
-- Decision: one VSIX per platform; no first-run download, no separate extension (the user, 2026-11-24).
+- Decision (replaced 2026-11-25): one VSIX per platform; no first-run download, no separate extension (the user, 2026-11-24).
+- Decision: the extension never redistributes Anthropic's SDK or binary. One VSIX for all platforms; the user installs the runtime on demand from VS Code, from the npm registry, integrity-checked against pinned hashes, after explicit agreement to Anthropic's terms, into the extension's global storage. This replaces per-platform VSIXes (the user, 2026-11-25).
+- Decision: the assistant view is a chat transcript, the prototype's option A, chosen over stage cards (B) and a Copilot-style view (C). Entry 12 builds it after entry 2 (the user, 2026-11-25).
+- Decision: the assistant works on existing pipelines: describe, change through approved edits, explain (R11, entries 13 and 14). The skill side goes to `rpcn-skills` as two change requests, kept in `rpcn-skills-change-requests/` (the user, 2026-11-25).
 - Decision: Test is a hand-off only — run `rpcn-test` and show its verdict and report link (the user, 2026-11-24).
 - Decision: after a reload, the stage comes from the files; the conversation starts fresh, with no session resume (the user, 2026-11-24).
 - Decision: the tracer bullet is entry 1, from a request to a `ready` design note in the assistant view (the user, 2026-11-24).
@@ -119,6 +130,8 @@ No spec capability covers this epic (Source conflict in Notes), so its requireme
 - Decision: after the tracer bullet, the slice least certain is packaging (entry 2).
 - Decision: the skills repository's address is a setting default in the code, not in any ticket text.
 - Open question: whether to hide Claude Code's bundled skills and built-in plugins further than the skills allowlist (AD-26). Settled in entry 6's plan.
+- Decision: 8.2 adds `redpandaConnect.assistant.skillsPath` for a local checkout. 8.10 adds `redpandaConnect.assistant.skillsSource` (`bundled` | `latest` | `path`), whose `path` reads `skillsPath`. Done-when item 5 is met through both (8.2's review, 2026-11-25).
+- Settled: the redistribution question from 8.2's review goes away, because the extension no longer ships Anthropic's code. The user downloads it under Anthropic's terms, which the install shows and asks them to agree to (the user, 2026-11-25).
 - Waits on epic 2 because: the Run and its argument builder (AD-13), which the tools and the run step use.
 - Waits on epic 3 because: the graph panel, which Author opens.
 - Waits on epic 5 because: the Cloud view and its pipelines, for the Cloud feature tools.

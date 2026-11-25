@@ -4,7 +4,8 @@
 # - 2 then 10 are packaging and the skills source, beside the app work.
 # - 3 then 5 touch the agent adapter, in that order.
 # - 4 then 8 are the tool layer.
-# - 6 → 7 → 9 are the view, in that order.
+# - 12 is the chat view, after 2 (both change the webview); 6 → 7 → 9 then fill it, in that order.
+# - 13 → 14 are existing pipelines, after 12 and their stages; they wait for the rpcn-skills modes.
 # - 11 is the refactor sweep.
 
 [[entry]]
@@ -23,14 +24,27 @@ notes = ["The user provides the endpoint and a test key for the manual check, as
 [[entry]]
 id = 2
 type = "story"
-title = "One VSIX per platform, with the pinned skills and the Claude Code binary"
-description = "CI builds one VSIX per platform (Linux and macOS targets) carrying the pinned Agent SDK with only that platform's Claude Code binary and the bundled `rpcn-skills` copy at a recorded pin (a build script copies it in); adds the `path` override for a local skills checkout; records each package's size."
-verify = "CI produces the Linux and macOS VSIXes with their sizes; each installs on a clean VS Code and runs entry 1's request through a real endpoint in the user's manual check (macOS by the user)."
+title = "The assistant runtime, installed by the user from VS Code"
+description = "Install assistant runtime… (after explicit agreement to Anthropic's terms) downloads the pinned Agent SDK and this platform's binary package straight from the npm registry, checks them against sha512 hashes pinned in `assets/agent-runtime.json`, and unpacks them into the extension's global storage, where the assistant loads them from; Update and Remove commands, the not-installed, installing and failed states, one VSIX for all platforms again, and the `skillsPath` override for a local skills checkout."
+verify = "Integration tests on a fake registry cover agree-and-install, a bad hash, an interrupted or offline download, update and remove, and loading only from the installed runtime; CI packs one VSIX; in the user's manual check the VSIX installs on a clean VS Code on Linux and macOS, the runtime installs and 8.1's request runs through a real endpoint."
 covers = ["R9"]
 after = [1]
 hitl = true
 risk = "high"
-unknown = "Whether the SDK's optional per-platform packages can be limited to one platform in a VSIX build without its install falling back to downloading."
+unknown = "Whether the extension host's fetch honours VS Code's proxy settings for the registry download, or the download needs its own proxy handling."
+
+[[entry]]
+id = 12
+type = "story"
+title = "The chat view, in the prototype's option A layout"
+description = "Rebuild the assistant view as the prototype's option A (Chat transcript): a thin stage strip (Design › Author › Test) and New conversation; turns for the user and rpcn, each rpcn turn naming the skill it used; the agent's reply rendered as sanitised, masked Markdown; tool calls as step rows with a mark and a short result (for example `0 errors · 1 fixed`), earlier turns folding to one line; the files a turn wrote or changed with +N/−N, a click opening VS Code's diff against the copy from before the turn; Keep and Undo for the turn (Undo restores every file to its copy from before the turn); next-step buttons and chips; a composer with `/design`, `/build` and `/test` and their autocomplete. Every existing state (access, runtime, question cards, approval, stopped, error) renders inside the chat. It builds the slots; 8.6, 8.7 and 8.9 fill them for their stages (Open graph, Run locally, Test). Theme colours only."
+verify = "Webview unit tests for each part; fake-host integration tests for the turns, the step rows, a file row opening its diff, Undo restoring the files from before the turn, Keep, the slash commands and every existing state inside the chat; the user's manual check of the look against option A."
+covers = ["R1", "R6", "R8"]
+after = [2]
+hitl = false
+risk = "medium"
+references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq#artboard-ChatA"]
+notes = ["Chosen by the user on 2026-11-25 over option B (stage cards) and option C (Copilot-style); option A's History button is left out, because the conversation starts fresh after a reload (epic Decision)."]
 
 [[entry]]
 id = 3
@@ -72,7 +86,7 @@ title = "The Design stage, complete"
 description = "Everything the prototype's Design screens and states show: question rounds with \"(My pick)\" and an Other answer, the existing-note update-or-leave question, the note preview with its status and open decisions, Build off while a blocking decision is open (answered in place by a re-run), progress steps and the waiting state, follow-up messages, Stop and a new conversation, and the stage from files after a reload; settles whether to hide Claude Code's bundled skills further."
 verify = "Fake-host integration tests for each Design screen and state of the prototype, a fake-model test of a full design round, and a reload test that keeps the stage; one real run in the user's manual check."
 covers = ["R1", "R3", "R7"]
-after = [5]
+after = [5, 12]
 hitl = false
 risk = "medium"
 references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq"]
@@ -123,12 +137,38 @@ hitl = false
 risk = "medium"
 
 [[entry]]
+id = 13
+type = "story"
+title = "Start from an existing pipeline, and describe it"
+description = "Ask RPCN Assistant on an open pipeline (editor title, Explorer context menu, the graph) opens the chat with that pipeline attached; the stage strip comes from its files (pipeline, note, test report), so a hand-written pipeline shows Author done and no note; start chips (Describe this pipeline, Change it…, Explain it, Test it); Describe runs `rpcn-design`'s describe mode and writes `<name>.design.md` for what the pipeline does today, its questions shown as cards, the pipeline shown unchanged; Explain answers from the files with no write."
+verify = "Fake-host tests for each entry point, the attached pipeline, the stage from files for a pipeline with no note, and the describe turn ending with a note and an unchanged pipeline; a fake-model test of describe; one real run in the user's manual check."
+covers = ["R11", "R1", "R3"]
+after = [12, 6]
+hitl = false
+risk = "medium"
+references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq#artboard-ExistingDescribe", "rpcn-skills-change-requests/describe-an-existing-pipeline.md"]
+unknown = "Waits for the rpcn-skills release with rpcn-design's describe mode; the bundled copy's pin moves to it."
+
+[[entry]]
+id = 14
+type = "story"
+title = "Change an existing pipeline, one approved edit at a time"
+description = "`/change` (or Change it…) runs `rpcn-author`'s change mode on the attached pipeline: each Edit shows in the chat as a diff card with Apply and Skip (Open diff opens VS Code's diff); a skipped edit leaves the file as it was and is reported; lint runs on the changed files; the turn lists the files changed with +N/−N and any Deviations row added to the note, with Keep and Undo; Update the design note runs `rpcn-design`'s re-run; whole-file writes over an existing pipeline are always refused."
+verify = "Fake-host and fake-model tests: an approved edit changes only its lines, a skipped edit leaves the file byte-identical, a whole-file Write over the pipeline is refused, lint after the change, Undo restores the files, and the deviation shows; one real run in the user's manual check."
+covers = ["R11", "R4", "R6"]
+after = [13, 7]
+hitl = false
+risk = "high"
+references = ["https://claude.ai/artifact/AMTmvbHVtSS3wKBZudoWtq#artboard-ExistingChange", "rpcn-skills-change-requests/change-an-existing-pipeline.md"]
+unknown = "Waits for the rpcn-skills release with rpcn-author's change mode."
+
+[[entry]]
 id = 11
 type = "story"
 title = "Refactor sweep"
 description = "Cleanup only, its scope set when it starts from the epic's build records and the review findings deferred during it."
 verify = "The full stable suite passes twice and the multi-root suite once, with no test's expected values changed."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14]
 hitl = false
 risk = "low"
