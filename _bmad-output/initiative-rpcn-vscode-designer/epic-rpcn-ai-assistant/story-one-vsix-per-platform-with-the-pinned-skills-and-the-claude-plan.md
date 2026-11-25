@@ -3,7 +3,7 @@ title: 'Story 8.2: the assistant runtime, installed by the user from VS Code'
 type: 'feature'
 ticket: '2'
 created: '2026-11-24'
-status: 'built'
+status: done
 baseline_revision: '60bdf7772fcdef743ef23eaabf46b17f01d981b4'
 route: 'full'
 route_source: 'auto'
