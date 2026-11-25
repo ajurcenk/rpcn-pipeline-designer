@@ -21,6 +21,16 @@
 // that passed the view's check but that the host cannot load ends the run as `runtimeMissing`: the
 // request cleared, no "run started" line, no error line.
 //
+// Story 8.12: the view is a chat (the prototype's option A). Each request is a turn: the message as typed
+// (a leading `/design`; `/build` and `/test` are listed but do not run yet), its step rows (`step` and
+// `stepDone`, plus the run's own lines), the reply (`reply`, joined, at most 20,000 characters), and once
+// it ends the files it changed. Before a run's first write to a path the host sends the file's content
+// (`fileChanging`), kept in memory only; at the end each snapshotted file whose content differs is a file
+// row with its +N/−N, a click opening `vscode.diff` against an `rpcn-assistant-before:` copy. Keep drops
+// the snapshots; Undo restores every file (deleting those the turn created), asking first when a file
+// changed after the turn. A new Send keeps the previous turn's changes. New conversation stops a run
+// first, then clears the turns and their snapshots. At most 50 turns, 200 steps each.
+//
 // Every text posted or logged is masked: the key (and any credential-looking value) and the home folder.
 // As the metrics tab: the webview posts `ready` each time it loads and gets the whole state; `receive`
 // is the integration tests' seam; `posted` keeps the last messages (capped).
@@ -30,12 +40,15 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	MAX_PROGRESS_LINES, MAX_REQUEST_CHARS, orderOptions, parseAssistantWebviewMessage,
-	type AssistantAccess as AccessState, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
+	COMMAND_HINTS, COMMAND_SKILLS, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
+	undoLaterEditsText,
+	type AssistantAccess as AccessState, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
+	type AssistantTurnView, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
 } from '../../shared/assistantProtocol';
+import { lineDiff } from '../../shared/lineDiff';
 import { errorText } from '../../shared/errorText';
 import { designNoteStatus, isDesignNote } from '../../core/designNote';
-import { RPCN_SKILLS, type AssistantEvent, type AssistantHost, type AssistantHostFactory, type AssistantQuestion } from '../assistant/host';
+import { RPCN_SKILLS, SNAPSHOT_MAX_BYTES, type AssistantEvent, type AssistantHost, type AssistantHostFactory, type AssistantQuestion } from '../assistant/host';
 import type { RuntimeView } from './assistantRuntime';
 import { INSTALL_RUNTIME_COMMAND, UPDATE_RUNTIME_COMMAND, type AssistantRuntime } from './assistantRuntime';
 import { isInside } from '../assistant/rules';
@@ -49,13 +62,180 @@ export const RUN_ASSISTANT_COMMAND = 'redpandaConnect.assistant.run';
 /** How many of the posted messages `posted` keeps (test seam). */
 const MAX_POSTED = 200;
 
-/** How a run request ended: it ran (done, stopped or failed), or why it did not start. */
-export type AssistantRunOutcome = 'done' | 'stopped' | 'error' | 'busy' | 'empty' | Exclude<AccessState, 'ready'>;
+/** How a run request ended: it ran (done, stopped or failed), or why it did not start (story 8.12: `disabled`, a command not offered yet). */
+export type AssistantRunOutcome = 'done' | 'stopped' | 'error' | 'busy' | 'empty' | 'disabled' | Exclude<AccessState, 'ready'>;
 
-/** What a test may replace: the approval modal. */
+/** Story 8.12: how an Undo ended. */
+export type AssistantUndoOutcome = 'undone' | 'cancelled' | 'none';
+
+/** Story 8.12: the scheme of a file's copy from before a turn (the left side of its diff, read-only). */
+export const BEFORE_SCHEME = 'rpcn-assistant-before';
+
+/** What a test may replace: the approval modal; story 8.12: Undo's question, an info message, opening a link. */
 export interface AssistantViewUi {
 	/** Asks to allow a call; `true`: allowed. */
 	approve(summary: string, detail: string | undefined): Thenable<boolean>;
+	/** Undo over later edits: `true` to go on. */
+	confirmUndo(message: string): Thenable<boolean>;
+	info(message: string): Thenable<unknown>;
+	openExternal(uri: vscode.Uri): Thenable<boolean>;
+}
+
+/** Story 8.12: what a reply's link opens: an http(s) page, a file in the workspace, or nothing. */
+export type LinkTarget = { readonly kind: 'external'; readonly url: string } | { readonly kind: 'file'; readonly path: string } | undefined;
+
+/** Story 8.12: a reply link's target. Only `http(s)` URLs and paths inside the workspace (relative or absolute, a `#…` dropped); anything else none. */
+export function linkTarget(href: string, workspace: string | undefined): LinkTarget {
+	const h = href.trim();
+	if (/^https?:\/\//i.test(h)) {
+		try {
+			const url = new URL(h);
+			return url.protocol === 'http:' || url.protocol === 'https:' ? { kind: 'external', url: url.toString() } : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	if (!workspace || h === '' || /^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith('//')) {
+		return undefined;
+	}
+	let file = h.replace(/[#?].*$/, '');
+	try {
+		file = decodeURIComponent(file);
+	} catch {
+		return undefined;
+	}
+	if (file === '') {
+		return undefined;
+	}
+	const abs = path.resolve(workspace, file);
+	return isInside(workspace, abs) && abs !== path.resolve(workspace) ? { kind: 'file', path: abs } : undefined;
+}
+
+/** Story 8.12: a snapshot from before a turn's first write to a file (`before` `null`: it did not exist). */
+export interface TurnSnapshot {
+	readonly before: string | null;
+	readonly tooLarge: boolean;
+}
+
+/** Story 8.12: a file a turn changed, as its row shows it, with what Undo needs. */
+export interface TurnFile extends AssistantFileView {
+	readonly abs: string;
+	readonly before: string | null;
+	/** Its content when the turn ended (`null`: gone). */
+	readonly after: string | null;
+}
+
+/**
+ * Story 8.12: a turn's file rows: each snapshotted file whose content now differs (a file over 1 MB: when
+ * the turn wrote it), in the order first written. `read` gives a file's content now (`null`: none).
+ */
+export function turnFiles(
+	snapshots: ReadonlyMap<string, TurnSnapshot>, written: ReadonlySet<string>, workspace: string, read: (abs: string) => string | null,
+	sizeOf: (abs: string) => number | null = fileSize,
+): TurnFile[] {
+	const files: TurnFile[] = [];
+	for (const [abs, snap] of snapshots) {
+		const rel = path.relative(workspace, abs).split(path.sep).join('/');
+		if (snap.tooLarge) {
+			if (written.has(abs)) {
+				files.push({ abs, path: rel, before: null, after: null, added: 0, removed: 0, created: false, tooLarge: true });
+			}
+			continue;
+		}
+		// Over 1 MB after the turn (created or grown that big): no content kept, so no diff and no undo.
+		const size = sizeOf(abs);
+		if (size !== null && size > SNAPSHOT_MAX_BYTES) {
+			files.push({ abs, path: rel, before: null, after: null, added: 0, removed: 0, created: snap.before === null, tooLarge: true });
+			continue;
+		}
+		const after = read(abs);
+		if (after !== snap.before) {
+			const { added, removed } = lineDiff(snap.before, after);
+			files.push({ abs, path: rel, before: snap.before, after, added, removed, created: snap.before === null, tooLarge: false });
+		}
+	}
+	return files;
+}
+
+/** A file's size (`null`: no file). */
+function fileSize(file: string): number | null {
+	try {
+		return fs.statSync(file).size;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Story 8.12: the topmost folder of `file`'s path below `workspace` that does not exist yet (the folder
+ * a write of `file` would create), or `undefined` when its folder exists.
+ */
+export function firstMissingFolder(workspace: string, file: string): string | undefined {
+	const parts = path.relative(workspace, path.dirname(file)).split(path.sep).filter((p) => p !== '' && p !== '.');
+	let dir = workspace;
+	for (const part of parts) {
+		dir = path.join(dir, part);
+		if (!fs.existsSync(dir)) {
+			return dir;
+		}
+	}
+	return undefined;
+}
+
+/** Story 8.12: removes `dir` and the folders in it, bottom-up, only where they hold no file; whether `dir` went. */
+export function removeEmptyFolders(dir: string): boolean {
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return false;
+	}
+	let empty = true;
+	for (const e of entries) {
+		if (!(e.isDirectory() && !e.isSymbolicLink() && removeEmptyFolders(path.join(dir, e.name)))) {
+			empty = false;
+		}
+	}
+	if (!empty) {
+		return false;
+	}
+	try {
+		fs.rmdirSync(dir);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function readText(file: string): string | null {
+	try {
+		return fs.readFileSync(file, 'utf8');
+	} catch {
+		return null;
+	}
+}
+
+/** Story 8.12: one turn, as the view keeps it. */
+interface Turn {
+	readonly id: string;
+	readonly command: AssistantCommand;
+	readonly text: string;
+	readonly skill: string;
+	readonly workspace: string;
+	steps: AssistantStepView[];
+	reply: string;
+	readonly snapshots: Map<string, TurnSnapshot>;
+	readonly written: Set<string>;
+	/** The folders the turn's writes created (the topmost new one of each), for Undo to remove when empty. */
+	readonly createdFolders: Set<string>;
+	files: TurnFile[];
+	review: AssistantReview;
+	noteFile: string | undefined;
+	note: AssistantNoteView | null;
+	outcome: AssistantOutcome;
+	notice: string | null;
+	/** The masked view, until the turn changes. */
+	view: AssistantTurnView | undefined;
 }
 
 export interface AssistantViewOptions {
@@ -167,6 +347,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			const pick = await vscode.window.showWarningMessage(`The assistant asks to ${summary}.`, { modal: true, ...(detail ? { detail } : {}) }, 'Allow', 'Deny');
 			return pick === 'Allow';
 		},
+		confirmUndo: async (message) => (await vscode.window.showWarningMessage(message, { modal: true }, 'Undo')) === 'Undo',
+		info: (message) => vscode.window.showInformationMessage(message),
+		openExternal: (uri) => vscode.env.openExternal(uri),
 	};
 	/** The last messages posted to the webview, in order (test seam). */
 	readonly posted: AssistantHostMessage[] = [];
@@ -176,12 +359,15 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	idleTimeoutMs: number | undefined;
 	/** Review 2: a run is claimed (from the first line of `run`, before any await) until it ends. */
 	private claimed = false;
+	/** Story 8.12: the claimed run, until it ends (New conversation waits for it). */
+	private going: Promise<AssistantRunOutcome> | undefined;
 	private view: vscode.WebviewView | undefined;
 	private ready = false;
 	private viewSubscriptions: vscode.Disposable[] = [];
 	private readonly subscriptions: vscode.Disposable[] = [];
 	private readonly changed = new vscode.EventEmitter<void>();
 	readonly onDidChange = this.changed.event;
+	private readonly beforeChanged = new vscode.EventEmitter<vscode.Uri>();
 	private factory: AssistantHostFactory;
 	private host: AssistantHost | undefined;
 	private testBinary: BinaryState | undefined;
@@ -190,21 +376,27 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	/** Review 3: a run's host found the runtime gone after the view's check passed (until the next lookup). */
 	private hostRuntimeGone = false;
 	private status: AssistantStatus = 'idle';
-	private request: string | null = null;
-	private progress: string[] = [];
+	/** Story 8.12: the conversation, oldest first. */
+	private turns: Turn[] = [];
+	private turnSeq = 0;
+	private stepSeq = 0;
+	/** The turn of the run going now. */
+	private current: Turn | undefined;
 	/** Review 5: the open questions and approvals by id, oldest first (the oldest question's cards are shown). */
 	private readonly openQuestions = new Map<string, readonly AssistantQuestion[]>();
 	private readonly openApprovals = new Set<string>();
-	private noteFile: string | undefined;
-	private note: AssistantNoteView | null = null;
 	private error: string | null = null;
-	private workspace: string | undefined;
 
 	constructor(private readonly options: AssistantViewOptions) {
 		this.factory = options.hostFactory;
 		this.subscriptions.push(
 			this.changed,
-			options.access.onDidChange(() => this.post()),
+			this.beforeChanged,
+			options.access.onDidChange(() => {
+				// The mask may have changed: every turn is masked again.
+				this.turns.forEach((t) => (t.view = undefined));
+				this.post();
+			}),
 			// Any lookup of the runtime (an install or removal ending among them) replaces what a run's host found.
 			options.runtime.onDidChange(() => {
 				this.hostRuntimeGone = false;
@@ -222,6 +414,11 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				await vscode.commands.executeCommand(`${ASSISTANT_VIEW_ID}.focus`);
 				// Review 23: the webview's limit too.
 				return typeof request === 'string' && request.length <= MAX_REQUEST_CHARS ? this.run(request) : 'empty';
+			}),
+			// Story 8.12: the left side of a file row's diff (the copy from before the turn; empty for a new file).
+			vscode.workspace.registerTextDocumentContentProvider(BEFORE_SCHEME, {
+				onDidChange: this.beforeChanged.event,
+				provideTextDocumentContent: (uri) => this.beforeContent(uri),
 			}),
 		];
 	}
@@ -348,6 +545,45 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return maskHome(this.options.access.mask(text), [os.homedir(), process.env.HOME ?? '']);
 	}
 
+	/** Story 8.12: a turn as posted (masked; kept until the turn changes). */
+	private turnView(t: Turn): AssistantTurnView {
+		if (t.view) {
+			return t.view;
+		}
+		const ended = t.outcome !== 'running';
+		const note = t.note && t.review !== 'undone' ? t.note : null;
+		const chips: AssistantChipView[] = ended && t.command === 'design' && note
+			? (['build', 'test'] as const).map((command) => ({ label: `/${command}`, command, enabled: COMMAND_HINTS[command] === null, hint: COMMAND_HINTS[command] }))
+			: [];
+		t.view = {
+			id: t.id,
+			command: t.command,
+			text: this.mask(t.text),
+			skill: t.skill,
+			steps: t.steps.map((s) => ({ id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result) })),
+			reply: this.mask(t.reply),
+			files: t.files.map((f) => ({ path: this.mask(f.path), added: f.added, removed: f.removed, created: f.created, tooLarge: f.tooLarge })),
+			review: t.review,
+			note: note ? { file: this.mask(note.file), status: note.status === null ? null : this.mask(note.status) } : null,
+			actions: ended && note ? [{ id: OPEN_NOTE_ACTION, label: OPEN_NOTE_LABEL, enabled: true, hint: null }] : [],
+			chips,
+			outcome: t.outcome,
+			notice: t.notice === null ? null : this.mask(t.notice),
+		};
+		return t.view;
+	}
+
+	/** Story 8.12: this conversation's latest note (not undone) is `ready`. */
+	private designReady(): boolean {
+		for (let i = this.turns.length - 1; i >= 0; i--) {
+			const t = this.turns[i];
+			if (t.note && t.review !== 'undone') {
+				return t.note.status === 'ready';
+			}
+		}
+		return false;
+	}
+
 	/** The state as posted (masked). */
 	state(): AssistantStateMessage {
 		const first = [...this.openQuestions][0];
@@ -362,6 +598,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			})),
 		} : null;
 		const access = this.access();
+		const folder = this.workspaceFolder();
 		return {
 			type: 'state',
 			access: access.state,
@@ -374,10 +611,10 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			skills: access.skills.kind === 'bad' ? null : access.skills.kind,
 			skillsProblem: access.skills.kind === 'bad' ? access.skills.problem : null,
 			status: this.status,
-			request: this.request === null ? null : this.mask(this.request),
-			progress: this.progress.map((l) => this.mask(l)),
+			turns: this.turns.map((t) => this.turnView(t)),
+			folder: folder ? this.mask(path.basename(folder)) : null,
+			designReady: this.designReady(),
 			questions,
-			note: this.note ? { file: this.mask(this.note.file), status: this.note.status === null ? null : this.mask(this.note.status) } : null,
 			error: this.error === null ? null : this.mask(this.error),
 		};
 	}
@@ -424,7 +661,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.post();
 				break;
 			case 'runRequested':
-				await this.run(m.request);
+				await this.run(m.request, m.command);
 				break;
 			case 'answered':
 				this.answered(m.id, m.answers);
@@ -444,6 +681,24 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'updateRuntimeRequested':
 				await vscode.commands.executeCommand(UPDATE_RUNTIME_COMMAND);
 				break;
+			case 'openFileDiff':
+				await this.openFileDiff(m.turn, m.path);
+				break;
+			case 'keepTurn':
+				this.keep(m.turn);
+				break;
+			case 'undoTurn':
+				await this.undo(m.turn);
+				break;
+			case 'turnAction':
+				await this.turnAction(m.turn, m.action);
+				break;
+			case 'openLink':
+				await this.openLink(m.href);
+				break;
+			case 'newConversation':
+				await this.newConversation();
+				break;
 		}
 	}
 
@@ -455,25 +710,36 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		}
 	}
 
-	/** Runs one request through `rpcn-design`; settles when the run ends (or did not start). Never throws. */
-	async run(request: string): Promise<AssistantRunOutcome> {
-		const prompt = request.trim();
-		if (!prompt) {
-			return 'empty';
+	/**
+	 * Runs one message (its slash command, else `command`; story 8.12: only `design` runs, through
+	 * `rpcn-design`); settles when the run ends (or did not start). Never throws.
+	 */
+	run(request: string, command: AssistantCommand = 'design'): Promise<AssistantRunOutcome> {
+		const text = request.trim();
+		const parsed = parseCommand(text);
+		const cmd = parsed.command ?? command;
+		if (!parsed.rest) {
+			return Promise.resolve('empty');
+		}
+		if (COMMAND_HINTS[cmd] !== null) {
+			return Promise.resolve('disabled');
 		}
 		// Review 2: claimed before the first await, released on every exit.
 		if (this.claimed) {
-			return 'busy';
+			return Promise.resolve('busy');
 		}
 		this.claimed = true;
-		try {
-			return await this.runClaimed(prompt);
-		} finally {
+		const going = this.runClaimed(text, cmd, parsed.rest).finally(() => {
 			this.claimed = false;
-		}
+			if (this.going === going) {
+				this.going = undefined;
+			}
+		});
+		this.going = going;
+		return going;
 	}
 
-	private async runClaimed(prompt: string): Promise<AssistantRunOutcome> {
+	private async runClaimed(text: string, command: AssistantCommand, prompt: string): Promise<AssistantRunOutcome> {
 		await this.options.access.ready;
 		const apiKey = await this.options.access.apiKey();
 		// Review 1, 3: looked up again, and the skills path checked against the workspace, at each run's start.
@@ -485,6 +751,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			this.post();
 			return this.options.runtime.busy ? 'runtimeInstalling' : access === 'ready' ? 'noAccess' : access;
 		}
+		const turn = this.addTurn(command, text, workspace);
+		this.closeOpen();
+		this.error = null;
 		const settings = this.options.access.settings();
 		let host: AssistantHost;
 		try {
@@ -503,19 +772,20 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		} catch (err) {
 			this.error = errorText(err);
 			this.status = 'error';
+			this.endTurn(turn, 'error');
 			this.post();
 			return 'error';
 		}
+		// Story 8.12: a new Send keeps the previous turn's changes (only once its host is made: a failed one keeps their Undo).
+		for (const t of this.turns) {
+			if (t !== turn && t.review === 'pending') {
+				this.settleReview(t, 'kept');
+			}
+		}
 		this.host = host;
+		this.current = turn;
 		this.runsStarted++;
-		this.workspace = workspace;
 		this.status = 'running';
-		this.request = prompt;
-		this.progress = [];
-		this.closeOpen();
-		this.noteFile = undefined;
-		this.note = null;
-		this.error = null;
 		this.post();
 		// Review 3: "started" only once the host takes the run (its first event that is not `unavailable`).
 		let accepted = false;
@@ -527,21 +797,24 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 						accepted = true;
 						this.options.log(started);
 					}
-					this.event(host, event);
+					this.event(host, turn, event);
 				}
 			});
 		} catch (err) {
 			// The port never rejects; an adapter that does is an error of the run.
-			this.event(host, { type: 'error', message: errorText(err) });
+			this.event(host, turn, { type: 'error', message: errorText(err) });
 		}
 		// The listener changed the status meanwhile (TypeScript cannot tell).
 		const ended = (): AssistantStatus => this.status;
 		if (ended() === 'running' || ended() === 'question' || ended() === 'approval') {
-			this.event(host, { type: 'error', message: 'The assistant ended without a result.' });
+			this.event(host, turn, { type: 'error', message: 'The assistant ended without a result.' });
 		}
 		this.host = undefined;
+		this.current = undefined;
 		this.closeOpen();
-		this.readNote();
+		if (this.turns.includes(turn)) {
+			this.endTurn(turn, ended() === 'done' ? 'done' : ended() === 'stopped' ? 'stopped' : 'error');
+		}
 		this.post();
 		const status = ended();
 		if (this.hostRuntimeGone) {
@@ -550,10 +823,60 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return status === 'done' ? 'done' : status === 'stopped' ? 'stopped' : 'error';
 	}
 
-	private event(host: AssistantHost, event: AssistantEvent): void {
+	private addTurn(command: AssistantCommand, text: string, workspace: string): Turn {
+		const turn: Turn = {
+			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(),
+			files: [], review: 'none', noteFile: undefined, note: null, outcome: 'running', notice: null, view: undefined,
+		};
+		this.turns.push(turn);
+		if (this.turns.length > MAX_TURNS) {
+			this.turns.splice(0, this.turns.length - MAX_TURNS);
+		}
+		return turn;
+	}
+
+	/** Story 8.12: the turn's run ended: its open steps closed, its file rows from the snapshots, its note read. */
+	private endTurn(turn: Turn, outcome: Exclude<AssistantOutcome, 'running'>): void {
+		turn.outcome = outcome;
+		turn.steps = turn.steps.map((s) => (s.mark === 'running' ? { ...s, mark: outcome === 'done' ? 'ok' : 'failed', result: outcome === 'stopped' ? 'stopped' : s.result } : s));
+		turn.files = turnFiles(turn.snapshots, turn.written, turn.workspace, readText);
+		turn.review = turn.files.some((f) => !f.tooLarge) ? 'pending' : 'none';
+		if (turn.review === 'none') {
+			turn.snapshots.clear();
+			turn.createdFolders.clear();
+		}
+		this.readNote(turn);
+		turn.view = undefined;
+	}
+
+	private event(host: AssistantHost, turn: Turn, event: AssistantEvent): void {
 		switch (event.type) {
 			case 'progress':
-				this.addProgress(event.text);
+				this.addStep(turn, { id: `p${++this.stepSeq}`, label: event.text, mark: 'info', result: '' });
+				break;
+			case 'step':
+				this.addStep(turn, { id: event.id, label: event.label, mark: 'running', result: '' });
+				break;
+			case 'stepDone': {
+				const i = turn.steps.findIndex((s) => s.id === event.id && s.mark === 'running');
+				if (i >= 0) {
+					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result: event.result.slice(0, 60) };
+				}
+				break;
+			}
+			case 'reply':
+				this.addReply(turn, event.text);
+				break;
+			case 'fileChanging':
+				// The first snapshot of a path in the turn wins; only files in its workspace folder.
+				if (isInside(turn.workspace, event.path) && !turn.snapshots.has(event.path)) {
+					turn.snapshots.set(event.path, { before: event.tooLarge ? null : event.before, tooLarge: event.tooLarge === true });
+					// A new file: the folder its write will create (looked up now, before the write), for Undo.
+					const folder = event.before === null && !event.tooLarge ? firstMissingFolder(turn.workspace, event.path) : undefined;
+					if (folder) {
+						turn.createdFolders.add(folder);
+					}
+				}
 				break;
 			case 'question':
 				this.openQuestions.set(event.id, event.questions);
@@ -562,8 +885,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'approval':
 				this.openApprovals.add(event.id);
 				this.status = this.openStatus();
-				this.addProgress(`Asks to ${event.summary}`);
-				void this.askApproval(host, event.id, event.summary, event.detail);
+				this.addStep(turn, { id: `p${++this.stepSeq}`, label: `Asks to ${event.summary}`, mark: 'info', result: '' });
+				void this.askApproval(host, turn, event.id, event.summary, event.detail);
 				break;
 			case 'withdrawn':
 				// Review 5: the agent no longer waits for it (its request was aborted).
@@ -572,26 +895,29 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.status = this.openStatus();
 				break;
 			case 'fileWritten':
-				if (this.workspace && isDesignNote(path.basename(event.path)) && isInside(this.workspace, event.path)) {
-					this.noteFile = event.path;
-					this.readNote();
+				turn.written.add(event.path);
+				if (isDesignNote(path.basename(event.path)) && isInside(turn.workspace, event.path)) {
+					turn.noteFile = event.path;
+					this.readNote(turn);
 				}
 				break;
 			case 'result':
 				this.closeOpen();
 				this.status = event.stopped ? 'stopped' : 'done';
+				if (!event.stopped && turn.reply === '' && event.text) {
+					this.addReply(turn, event.text);
+				}
 				this.options.log(`Assistant: the run ${event.stopped ? 'was stopped' : 'ended'}.`);
 				break;
 			case 'error':
 				this.closeOpen();
 				if (event.runtimeMissing) {
 					// Story 8.2, review 3: the runtime went after the view's check: its state shows (until the next
-					// lookup), not an error line, and the request is not left as if it ran.
+					// lookup), not an error line, and the request is not left as if it ran: its turn goes.
 					this.hostRuntimeGone = true;
 					this.status = 'idle';
 					this.error = null;
-					this.request = null;
-					this.progress = [];
+					this.turns = this.turns.filter((t) => t !== turn);
 					this.options.log('Assistant: the assistant runtime is not installed; nothing ran.');
 					break;
 				}
@@ -600,10 +926,28 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.options.log(`Assistant: the run failed: ${this.mask(event.message)}`);
 				break;
 		}
+		turn.view = undefined;
 		this.post();
 	}
 
-	private async askApproval(host: AssistantHost, id: string, summary: string, detail: string | undefined): Promise<void> {
+	private addStep(turn: Turn, step: AssistantStepView): void {
+		turn.steps.push(step);
+		if (turn.steps.length > MAX_STEPS) {
+			turn.steps.splice(0, turn.steps.length - MAX_STEPS);
+		}
+		turn.view = undefined;
+	}
+
+	private addReply(turn: Turn, text: string): void {
+		if (turn.reply.length >= MAX_REPLY_CHARS || text.trim() === '') {
+			return;
+		}
+		const joined = turn.reply === '' ? text.trim() : `${turn.reply}\n\n${text.trim()}`;
+		turn.reply = joined.length > MAX_REPLY_CHARS ? `${joined.slice(0, MAX_REPLY_CHARS - 1)}…` : joined;
+		turn.view = undefined;
+	}
+
+	private async askApproval(host: AssistantHost, turn: Turn, id: string, summary: string, detail: string | undefined): Promise<void> {
 		let allowed = false;
 		try {
 			allowed = await this.ui.approve(this.mask(summary), detail === undefined ? undefined : this.mask(detail));
@@ -614,7 +958,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			return;
 		}
 		this.openApprovals.delete(id);
-		this.addProgress(allowed ? 'Allowed' : 'Denied');
+		this.addStep(turn, { id: `p${++this.stepSeq}`, label: allowed ? 'Allowed' : 'Denied', mark: 'info', result: '' });
 		this.status = this.openStatus();
 		host.approve(id, allowed);
 		this.post();
@@ -633,7 +977,8 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	private answered(id: string, answers: readonly string[]): void {
 		const asked = this.openQuestions.get(id);
 		const host = this.host;
-		if (!asked || !host || answers.length !== asked.length || answers.some((a) => a.trim() === '')) {
+		const turn = this.current;
+		if (!asked || !host || !turn || answers.length !== asked.length || answers.some((a) => a.trim() === '')) {
 			return;
 		}
 		// Review 20: the answers come by card index, and go back under each question's own (unmasked) text.
@@ -643,32 +988,162 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		});
 		this.openQuestions.delete(id);
 		this.status = this.openStatus();
-		this.addProgress(`Answered ${asked.length} question${asked.length === 1 ? '' : 's'}`);
+		this.addStep(turn, { id: `p${++this.stepSeq}`, label: `Answered ${asked.length} question${asked.length === 1 ? '' : 's'}`, mark: 'info', result: '' });
 		host.answer(id, back);
 		this.post();
 	}
 
-	private addProgress(text: string): void {
-		this.progress.push(text);
-		if (this.progress.length > MAX_PROGRESS_LINES) {
-			this.progress.splice(0, this.progress.length - MAX_PROGRESS_LINES);
+	/** The note the turn wrote, read from disk: its file and its frontmatter `status` (gone: none). */
+	private readNote(turn: Turn): void {
+		const file = turn.noteFile;
+		if (!file) {
+			return;
+		}
+		const text = readText(file);
+		turn.note = text === null ? null : { file: path.relative(turn.workspace, file).split(path.sep).join('/'), status: designNoteStatus(text) };
+		turn.view = undefined;
+	}
+
+	private turn(id: string): Turn | undefined {
+		return this.turns.find((t) => t.id === id);
+	}
+
+	/** Story 8.12: the turn's changes are settled (kept or undone): its snapshots go. */
+	private settleReview(turn: Turn, review: 'kept' | 'undone'): void {
+		turn.review = review;
+		turn.snapshots.clear();
+		turn.createdFolders.clear();
+		turn.files = turn.files.map((f) => ({ ...f, before: null, after: null }));
+		turn.view = undefined;
+	}
+
+	/** Story 8.12: Keep: the turn's snapshots dropped, its buttons gone (the rows stay, as text). */
+	keep(turnId: string): boolean {
+		const turn = this.turn(turnId);
+		if (!turn || turn.review !== 'pending') {
+			return false;
+		}
+		this.settleReview(turn, 'kept');
+		this.options.log('Assistant: the turn\'s changes kept.');
+		this.post();
+		return true;
+	}
+
+	/**
+	 * Story 8.12: Undo: every file restored to its copy from before the turn (a file it created deleted;
+	 * one over 1 MB left alone). A file changed since the turn ended asks first. A file that cannot be
+	 * restored is an error line in the turn; the others are still restored.
+	 */
+	async undo(turnId: string): Promise<AssistantUndoOutcome> {
+		const turn = this.turn(turnId);
+		if (!turn || turn.review !== 'pending') {
+			return 'none';
+		}
+		const files = turn.files.filter((f) => !f.tooLarge);
+		const edited = files.filter((f) => readText(f.abs) !== f.after);
+		if (edited.length > 0) {
+			let go = false;
+			try {
+				go = await this.ui.confirmUndo(this.mask(undoLaterEditsText(edited.map((f) => f.path))));
+			} catch (err) {
+				this.options.log(`Assistant: the undo prompt failed: ${this.mask(errorText(err))}`);
+			}
+			if (!go || turn.review !== 'pending') {
+				return 'cancelled';
+			}
+		}
+		const failed: string[] = [];
+		for (const f of files) {
+			const uri = vscode.Uri.file(f.abs);
+			try {
+				if (f.before === null) {
+					if (fs.existsSync(f.abs)) {
+						await vscode.workspace.fs.delete(uri, { useTrash: false });
+					}
+				} else {
+					await vscode.workspace.fs.writeFile(uri, Buffer.from(f.before, 'utf8'));
+				}
+			} catch (err) {
+				failed.push(`${f.path} (${errorText(err)})`);
+			}
+		}
+		// The folders the turn created for its new files go too, where they hold no file now (never a file).
+		for (const folder of turn.createdFolders) {
+			removeEmptyFolders(folder);
+		}
+		turn.notice = failed.length > 0 ? `Could not undo ${failed.join('; ')}.` : null;
+		this.settleReview(turn, 'undone');
+		this.readNote(turn);
+		this.options.log(failed.length > 0 ? `Assistant: the turn was undone, except: ${this.mask(failed.join('; '))}` : 'Assistant: the turn was undone.');
+		this.post();
+		return 'undone';
+	}
+
+	/** Story 8.12: the left side of a file row's diff: `/<turn>/<path>` → its copy from before the turn. */
+	private beforeContent(uri: vscode.Uri): string {
+		const [, turnId, ...rest] = uri.path.split('/');
+		const rel = rest.join('/');
+		return this.turn(turnId ?? '')?.files.find((f) => f.path === rel)?.before ?? '';
+	}
+
+	/** Story 8.12: a file row's diff: its copy from before the turn (empty for a new file) ↔ the file now. */
+	async openFileDiff(turnId: string, shown: string): Promise<boolean> {
+		const turn = this.turn(turnId);
+		const file = turn?.review === 'pending' ? turn.files.find((f) => !f.tooLarge && this.mask(f.path) === shown) : undefined;
+		if (!turn || !file) {
+			return false;
+		}
+		if (!fs.existsSync(file.abs)) {
+			await this.ui.info(this.mask(`${file.path} no longer exists, so there is no diff to show.`));
+			return false;
+		}
+		const left = vscode.Uri.from({ scheme: BEFORE_SCHEME, path: `/${turn.id}/${file.path}` });
+		this.beforeChanged.fire(left);
+		try {
+			await vscode.commands.executeCommand('vscode.diff', left, vscode.Uri.file(file.abs), `${path.basename(file.abs)} (before the turn) ↔ now`, { preview: true });
+			return true;
+		} catch (err) {
+			this.options.log(`Assistant: could not open the diff of ${this.mask(file.path)}: ${this.mask(errorText(err))}`);
+			return false;
 		}
 	}
 
-	/** The note written in this run, read from disk: its file and its frontmatter `status`. */
-	private readNote(): void {
-		const file = this.noteFile;
-		if (!file || !this.workspace) {
-			return;
+	/** Story 8.12: a next-step button (this story: Open note). */
+	async turnAction(turnId: string, action: string): Promise<void> {
+		const turn = this.turn(turnId);
+		if (action === OPEN_NOTE_ACTION && turn?.noteFile && turn.review !== 'undone' && fs.existsSync(turn.noteFile)) {
+			await vscode.window.showTextDocument(vscode.Uri.file(turn.noteFile), { preview: false });
 		}
-		let text: string;
-		try {
-			text = fs.readFileSync(file, 'utf8');
-		} catch {
-			this.note = null;
-			return;
+	}
+
+	/** Story 8.12: a reply's link: an http(s) page in the browser, a workspace file in the editor; anything else nothing. */
+	async openLink(href: string): Promise<LinkTarget> {
+		const target = linkTarget(href, this.workspaceFolder());
+		if (target?.kind === 'external') {
+			await this.ui.openExternal(vscode.Uri.parse(target.url, true));
+		} else if (target?.kind === 'file' && fs.existsSync(target.path) && fs.statSync(target.path).isFile()) {
+			await vscode.window.showTextDocument(vscode.Uri.file(target.path), { preview: true });
+		} else {
+			return undefined;
 		}
-		this.note = { file: path.relative(this.workspace, file).split(path.sep).join('/'), status: designNoteStatus(text) };
+		return target;
+	}
+
+	/** Story 8.12: New conversation: a run going is stopped first; then the turns and their snapshots go. */
+	async newConversation(): Promise<void> {
+		// A run claimed but not yet started has no host to stop: tried again until no run is going.
+		while (this.going) {
+			const going = this.going;
+			this.stop();
+			await Promise.race([going, new Promise((r) => setTimeout(r, 100))]);
+		}
+		this.turns = [];
+		this.current = undefined;
+		this.closeOpen();
+		this.error = null;
+		this.status = 'idle';
+		this.options.log('Assistant: a new conversation.');
+		this.post();
 	}
 
 	private post(): void {

@@ -9,6 +9,9 @@
 //     becomes a `question` event and waits for `answer`, any other call that asks an `approval` event
 //     that waits for `approve`;
 //   - a PostToolUse hook on the write tools, which becomes `fileWritten`;
+//   - story 8.12: each top-level tool call a `step` and its result a `stepDone`, the model's text `reply`;
+//     before a run's first write to a path in the workspace (the PreToolUse hook, unless denied), that
+//     file's content as a `fileChanging` (its snapshot, in memory only);
 //   - a refusal by the endpoint (401, 403), which Claude Code retries for about three minutes, ends the
 //     run at its first `api_retry` with an error (the other retries are progress lines).
 // The SDK is ESM only: loaded with a dynamic `import()` on the first run (it is external to the bundle).
@@ -24,12 +27,13 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import type { CanUseTool, HookCallback, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk' with { 'resolution-mode': 'import' };
 import { agentFolders, buildAgentEnv } from './env';
-import { progressOf, resultEventOf, retryOf } from './events';
+import { resultEventOf, retryOf, StreamMapper } from './events';
 import {
 	RPCN_SKILLS, questionsOf, type AssistantAnswers, type AssistantEvent, type AssistantHost, type AssistantHostConfig, type AssistantListener, type AssistantRequest,
 } from './host';
 import { isExecutable } from './runtime';
-import { approvalSummary, canUseToolDecision, preToolUseDecision, type BoundaryContext } from './rules';
+import { snapshotOf, SNAPSHOT_TOOLS } from './snapshot';
+import { approvalSummary, canUseToolDecision, isInside, preToolUseDecision, type BoundaryContext } from './rules';
 
 type Sdk = typeof import('@anthropic-ai/claude-agent-sdk', { with: { 'resolution-mode': 'import' } });
 
@@ -152,13 +156,14 @@ export class AgentSdkHost implements AssistantHost {
 				return;
 			}
 			const options = { ...this.options(sdk, ctx, abort, emit), pathToClaudeCodeExecutable: runtime.binary };
+			const mapper = new StreamMapper(ctx);
 			for await (const message of sdk.query({ prompt: promptFor(request), options })) {
 				if (abort.signal.aborted) {
 					break;
 				}
 				this.arm(idleMs);
-				for (const text of progressOf(message, ctx)) {
-					emit({ type: 'progress', text });
+				for (const event of mapper.map(message)) {
+					emit(event);
 				}
 				const retry = retryOf(message);
 				if (retry?.refused) {
@@ -268,11 +273,25 @@ export class AgentSdkHost implements AssistantHost {
 	}
 
 	private options(sdk: Sdk, ctx: BoundaryContext, abort: AbortController, emit: (event: AssistantEvent) => void): Options {
+		// Story 8.12: the paths this run has snapshotted (the first write to each only).
+		const snapshotted = new Set<string>();
 		const preToolUse: HookCallback = async (input) => {
 			if (input.hook_event_name !== 'PreToolUse') {
 				return {};
 			}
-			const decision = preToolUseDecision(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>, ctx);
+			const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+			const decision = preToolUseDecision(input.tool_name, toolInput, ctx);
+			if (SNAPSHOT_TOOLS.has(input.tool_name) && decision?.decision !== 'deny') {
+				const p = toolInput.file_path ?? toolInput.notebook_path;
+				const file = typeof p === 'string' ? path.resolve(ctx.workspace, p) : undefined;
+				if (file && isInside(ctx.workspace, file) && !snapshotted.has(file)) {
+					snapshotted.add(file);
+					const snapshot = await snapshotOf(file);
+					if (snapshot) {
+						emit(snapshot);
+					}
+				}
+			}
 			return decision
 				? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision.decision, permissionDecisionReason: decision.reason } }
 				: {};

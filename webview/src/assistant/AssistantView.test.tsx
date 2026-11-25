@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
-// The RPCN AI Assistant's plain view (story 8.1) in happy-dom: it posts `ready`; the states a request
-// cannot start in (no access with its set-up button, no binary, no folder); the request box posts the
-// request and is disabled while a run goes, with Stop; the progress lines; the question cards (the pick
-// first and chosen, an Other text answer, Send answers posting each card's answer by question); the note
-// with its status; the stopped and error lines; malformed messages ignored. The protocol's parsers too.
+// The RPCN AI Assistant's view (story 8.1; story 8.12: the chat) in happy-dom: it posts `ready`; the
+// header, New conversation and the stage strip; the states a request cannot start in, as a panel in the
+// transcript (no access with its set-up button, no binary, no folder, the runtime's, the skills path's);
+// the composer posts the message and stays while a run goes, with Stop; the question cards in the current
+// turn (the pick first and chosen, an Other text answer, Send answers posting each card's answer by
+// question); the approval row, the stopped and error lines in the turn; malformed messages ignored. The
+// protocol's parsers too.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -12,17 +14,26 @@ import {
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL,
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
 	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
-	type AssistantStateMessage, type AssistantWebviewMessage,
+	NEW_CONVERSATION_LABEL, type AssistantStateMessage, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
-import { AssistantView, RUN_LABEL, SEND_ANSWERS_LABEL, STOP_LABEL } from './AssistantView';
+import { AssistantView, HEADER_TITLE, SEND_ANSWERS_LABEL, WAITING_APPROVAL_TEXT } from './AssistantView';
+import { SEND_LABEL as RUN_LABEL, STOP_LABEL } from './Composer';
 
 let host: HTMLDivElement;
 let root: Root;
 let posted: AssistantWebviewMessage[];
 
-const IDLE: AssistantStateMessage = { type: 'state', access: 'ready', platform: null, runtime: { pinned: '0.3.329', installed: null, error: null }, skills: 'bundled', skillsProblem: null, status: 'idle', request: null, progress: [], questions: null, note: null, error: null };
+const IDLE: AssistantStateMessage = {
+	type: 'state', access: 'ready', platform: null, runtime: { pinned: '0.3.329', installed: null, error: null }, skills: 'bundled', skillsProblem: null, status: 'idle',
+	turns: [], folder: 'ws', designReady: false, questions: null, error: null,
+};
+const TURN: AssistantTurnView = {
+	id: 't1', command: 'design', text: 'orders to an API', skill: 'rpcn-design',
+	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Checking with rpcn_check binary', mark: 'running', result: '' }],
+	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null,
+};
 const QUESTIONS: AssistantStateMessage = {
-	...IDLE, status: 'question', request: 'orders to an API', progress: ['Running the rpcn-design skill', 'Checking with rpcn_check binary'],
+	...IDLE, status: 'question', turns: [TURN],
 	questions: {
 		id: 'q1',
 		questions: [
@@ -70,8 +81,19 @@ afterEach(() => {
 describe('AssistantView', () => {
 	it('posts ready and shows nothing but the title before the host answers', () => {
 		expect(posted).toEqual([{ type: 'ready' }]);
-		expect(host.querySelector('h1')?.textContent).toBe('RPCN AI Assistant');
+		expect(host.querySelector('h1')?.textContent).toBe(HEADER_TITLE);
 		expect(host.querySelector('textarea')).toBeNull();
+	});
+
+	it('story 8.12: the stage strip with the folder; Design ✓ once the note is ready; New conversation once a turn is there', async () => {
+		await send(IDLE);
+		expect([...host.querySelectorAll('.rpcn-assistant-stage')].map((l) => l.textContent)).toEqual(['Design', 'Author', 'Test']);
+		expect(host.querySelector('.rpcn-assistant-folder')?.textContent).toBe('ws');
+		expect(button(NEW_CONVERSATION_LABEL)).toBeUndefined();
+		await send({ ...IDLE, status: 'done', designReady: true, turns: [{ ...TURN, outcome: 'done' }] });
+		expect(host.querySelector('.rpcn-assistant-stage-done')?.textContent).toBe('✓ Design');
+		await click(button(NEW_CONVERSATION_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'newConversation' });
 	});
 
 	it('no access: says so and offers the set-up, which posts its request; no request box', async () => {
@@ -90,24 +112,25 @@ describe('AssistantView', () => {
 		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(NO_WORKSPACE_TEXT);
 	});
 
-	it('the request box posts the trimmed request; Design is off while empty or while a run goes, with Stop', async () => {
+	it('the composer posts the trimmed message as design; Send is off while empty; while a run goes Send becomes Stop', async () => {
 		await send(IDLE);
 		expect(button(RUN_LABEL)?.disabled).toBe(true);
 		await type(host.querySelector('textarea')!, '  orders to an API  ');
 		expect(button(RUN_LABEL)?.disabled).toBe(false);
 		await click(button(RUN_LABEL)!);
-		expect(posted.at(-1)).toEqual({ type: 'runRequested', request: 'orders to an API' });
-		await send({ ...IDLE, status: 'running', request: 'orders to an API', progress: ['Started (claude-opus-5-5)'] });
-		expect(button(RUN_LABEL)?.disabled).toBe(true);
-		expect(host.querySelector('textarea')?.disabled).toBe(true);
-		expect([...host.querySelectorAll('.rpcn-assistant-progress li')].map((l) => l.textContent)).toEqual(['Started (claude-opus-5-5)']);
-		expect(host.querySelector('.rpcn-assistant-asked')?.textContent).toBe('orders to an API');
+		expect(posted.at(-1)).toEqual({ type: 'runRequested', command: 'design', request: 'orders to an API' });
+		await send({ ...IDLE, status: 'running', turns: [TURN] });
+		expect(button(RUN_LABEL)).toBeUndefined();
+		expect(host.querySelector('textarea')).not.toBeNull();
+		expect(host.querySelector('.rpcn-assistant-user')?.textContent).toBe('orders to an API');
+		expect([...host.querySelectorAll('.rpcn-assistant-step-label')].map((l) => l.textContent)).toEqual(['Running the rpcn-design skill', 'Checking with rpcn_check binary']);
 		await click(button(STOP_LABEL)!);
 		expect(posted.at(-1)).toEqual({ type: 'stopRequested' });
 	});
 
-	it('question cards: the pick first and chosen; Send answers posts each card\'s answer by question', async () => {
+	it('question cards in the current turn: the pick first and chosen; Send answers posts each card\'s answer by question', async () => {
 		await send(QUESTIONS);
+		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-questions')).not.toBeNull();
 		const cards = [...host.querySelectorAll('.rpcn-assistant-card')];
 		expect(cards.map((c) => c.querySelector('legend')?.textContent)).toEqual(['Ordering', 'Duplicates']);
 		const labels = (card: Element) => [...card.querySelectorAll('.rpcn-assistant-option-label')].map((l) => l.textContent);
@@ -131,15 +154,15 @@ describe('AssistantView', () => {
 		expect(posted.at(-1)).toEqual({ type: 'answered', id: 'q1', answers: ['Per customer_id', 'Dedupe on order id and day'] });
 	});
 
-	it('the note with its status; the stopped line; the error line', async () => {
-		await send({ ...IDLE, status: 'done', note: { file: 'orders_to_api.design.md', status: 'ready' } });
-		expect(host.querySelector('.rpcn-assistant-note-file')?.textContent).toBe('orders_to_api.design.md');
-		expect(host.querySelector('.rpcn-assistant-note-status')?.textContent).toBe('ready');
-		expect(host.querySelector('.rpcn-assistant-status-ready')).not.toBeNull();
-		await send({ ...IDLE, status: 'stopped' });
-		expect(host.querySelector('.rpcn-assistant-stopped')?.textContent).toBe(STOPPED_TEXT);
-		await send({ ...IDLE, status: 'error', error: 'API Error: 401 •••••' });
-		expect(host.querySelector('[role="alert"]')?.textContent).toBe('API Error: 401 •••••');
+	it('in the turn: the approval row; the stopped line; the error line (alone without a turn)', async () => {
+		await send({ ...IDLE, status: 'approval', turns: [TURN] });
+		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-waiting')?.textContent).toBe(WAITING_APPROVAL_TEXT);
+		await send({ ...IDLE, status: 'stopped', turns: [{ ...TURN, outcome: 'stopped' }] });
+		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-stopped')?.textContent).toBe(STOPPED_TEXT);
+		await send({ ...IDLE, status: 'error', error: 'API Error: 401 •••••', turns: [{ ...TURN, outcome: 'error' }] });
+		expect(host.querySelector('.rpcn-assistant-turn [role="alert"]')?.textContent).toBe('API Error: 401 •••••');
+		await send({ ...IDLE, status: 'error', error: 'boom' });
+		expect(host.querySelector('[role="alert"]')?.textContent).toBe('boom');
 	});
 
 	it('review 20: two cards with the same text are answered each by its own index', async () => {
@@ -153,7 +176,7 @@ describe('AssistantView', () => {
 	});
 
 	it('review 4: Stop stays while a run goes, whatever the access says', async () => {
-		await send({ ...IDLE, status: 'question', access: 'noAccess', questions: QUESTIONS.questions });
+		await send({ ...IDLE, status: 'question', access: 'noAccess', turns: [TURN], questions: QUESTIONS.questions });
 		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(NO_ACCESS_TEXT);
 		expect(button(STOP_LABEL)).toBeDefined();
 		await click(button(STOP_LABEL)!);
@@ -260,7 +283,16 @@ describe('assistantProtocol', () => {
 
 	it('parses webview messages field by field', () => {
 		expect(parseAssistantWebviewMessage({ type: 'ready', extra: 1 })).toEqual({ type: 'ready' });
-		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: 'x' })).toEqual({ type: 'runRequested', request: 'x' });
+		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: 'x' })).toEqual({ type: 'runRequested', command: 'design', request: 'x' });
+		expect(parseAssistantWebviewMessage({ type: 'runRequested', command: 'build', request: '/build x' })).toEqual({ type: 'runRequested', command: 'build', request: '/build x' });
+		expect(parseAssistantWebviewMessage({ type: 'runRequested', command: 'deploy', request: 'x' })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'openFileDiff', turn: 't1', path: 'a.yaml', extra: 1 })).toEqual({ type: 'openFileDiff', turn: 't1', path: 'a.yaml' });
+		expect(parseAssistantWebviewMessage({ type: 'openFileDiff', turn: 't1' })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'keepTurn', turn: 't1' })).toEqual({ type: 'keepTurn', turn: 't1' });
+		expect(parseAssistantWebviewMessage({ type: 'undoTurn', turn: 1 })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'turnAction', turn: 't1', action: 'openNote' })).toEqual({ type: 'turnAction', turn: 't1', action: 'openNote' });
+		expect(parseAssistantWebviewMessage({ type: 'openLink', href: 'https://x' })).toEqual({ type: 'openLink', href: 'https://x' });
+		expect(parseAssistantWebviewMessage({ type: 'newConversation' })).toEqual({ type: 'newConversation' });
 		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: '  ' })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'runRequested', request: 'x'.repeat(8001) })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: ['b', 'c'] })).toEqual({ type: 'answered', id: 'q', answers: ['b', 'c'] });
@@ -273,8 +305,12 @@ describe('assistantProtocol', () => {
 
 	it('parses host messages field by field', () => {
 		expect(parseAssistantHostMessage({ ...QUESTIONS, extra: true })).toEqual(QUESTIONS);
-		expect(parseAssistantHostMessage({ ...IDLE, progress: [1] })).toBeUndefined();
-		expect(parseAssistantHostMessage({ ...IDLE, note: { file: 'a' } })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ id: 's', label: 'x', mark: 'nope', result: '' }] }] })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, note: { file: 'a' } }] })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, files: [{ path: 'a', added: -1, removed: 0, created: true, tooLarge: false }] }] })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, chips: [{ label: '/x', command: 'x', enabled: false, hint: null }] }] })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, designReady: 'yes' })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [TURN] })).toEqual({ ...IDLE, turns: [TURN] });
 		expect(parseAssistantHostMessage({ ...IDLE, status: 'nope' })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' })).toEqual({ ...IDLE, access: 'unavailable', platform: 'darwin-x64' });
 		for (const access of ['runtimeMissing', 'runtimeInstalling', 'runtimeOutdated', 'runtimeFailed'] as const) {

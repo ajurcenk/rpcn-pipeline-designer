@@ -1,22 +1,25 @@
-// The RPCN AI Assistant's plain view (story 8.1, AD-26): a request box, the run's progress lines, the
-// skill's questions as cards (the skill's pick first and chosen until another is, an Other text answer),
-// the design note written with its `status` (read from the file by the host), Stop, and an error line.
-// When a request cannot start, the reason instead (no access, with Set up assistant access…; no binary;
-// no folder; story 8.2: the assistant runtime missing, installing, outdated or failed, with Install, Update
-// or Retry; no binary package for the platform; a skills path that is no checkout),
-// and "Skills: local copy" while `skillsPath`'s copy is in use. Every state comes from the host; the view keeps only what is being typed and chosen.
-// Theme colours only.
+// The RPCN AI Assistant's view (story 8.1, AD-26; story 8.12: a chat, the prototype's option A): the
+// header with New conversation, the stage strip (Design › Author › Test, Design ✓ once this
+// conversation's note is `ready`; the target folder), the transcript (`Transcript.tsx`: the turns, and
+// before them the reason a request cannot start, with its button, and "Skills: local copy"), and the
+// composer (`Composer.tsx`). The current turn holds the skill's questions as cards (the skill's pick
+// first and chosen until another is, an Other text answer) and the row saying the run waits for the
+// approval dialog. Every state comes from the host; the view keeps only what is being typed and chosen,
+// and which folded steps are open. Theme colours only.
 
 import { useEffect, useState, type FormEvent } from 'react';
 import {
-	ASSISTANT_TITLE, BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, DONE_TEXT,
-	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL, MAX_REQUEST_CHARS, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
-	OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, REQUEST_PLACEHOLDER, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
+	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText,
+	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
+	NEW_CONVERSATION_LABEL, OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, SET_UP_ACCESS_LABEL, STAGES,
 	type AssistantAccess, type AssistantRuntimeView, type SkillsPathProblem, type AssistantQuestionsView, type AssistantQuestionView, type AssistantStateMessage, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 
-export const RUN_LABEL = 'Design';
-export const STOP_LABEL = 'Stop';
+import { Composer } from './Composer';
+import { Transcript } from './Transcript';
+
+/** Story 8.12: the header (option A's "RPCN ASSISTANT"). */
+export const HEADER_TITLE = 'RPCN ASSISTANT';
 export const SEND_ANSWERS_LABEL = 'Send answers';
 export const WAITING_APPROVAL_TEXT = 'Waiting for your decision in the dialog.';
 
@@ -155,7 +158,7 @@ function AccessPanel({ access, platform, skillsProblem, runtime, post }: {
 
 export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMessage) => void }) {
 	const [state, setState] = useState<AssistantStateMessage | null>(null);
-	const [request, setRequest] = useState('');
+	const [text, setText] = useState('');
 	useEffect(() => {
 		const listener = (e: MessageEvent) => {
 			const m = parseAssistantHostMessage(e.data);
@@ -169,53 +172,51 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 	}, [post]);
 
 	const busy = state?.status === 'running' || state?.status === 'question' || state?.status === 'approval';
-	const run = (e: FormEvent) => {
-		e.preventDefault();
-		const text = request.trim();
-		if (text && !busy) {
-			post({ type: 'runRequested', request: text });
-		}
-	};
+	const panel = state ? (
+		<>
+			{state.access !== 'ready' ? <AccessPanel access={state.access} platform={state.platform} skillsProblem={state.skillsProblem} runtime={state.runtime} post={post} /> : null}
+			{state.skills === 'local' && state.access !== 'unavailable' ? <p className="rpcn-assistant-skills">{LOCAL_SKILLS_TEXT}</p> : null}
+		</>
+	) : null;
+	const live = state ? (
+		<>
+			{state.questions ? <QuestionCards key={state.questions.id} questions={state.questions} post={post} /> : null}
+			{state.status === 'approval' ? <p className="rpcn-assistant-waiting" role="status">{WAITING_APPROVAL_TEXT}</p> : null}
+		</>
+	) : null;
 
 	return (
 		<div className="rpcn-assistant">
-			<h1 className="rpcn-assistant-title">{ASSISTANT_TITLE}</h1>
-			{state && state.access !== 'ready' ? <AccessPanel access={state.access} platform={state.platform} skillsProblem={state.skillsProblem} runtime={state.runtime} post={post} /> : null}
-			{state?.skills === 'local' && state.access !== 'unavailable' ? <p className="rpcn-assistant-skills">{LOCAL_SKILLS_TEXT}</p> : null}
-			{/* Review 4: the box (and Stop) whenever a run is going, whatever the access says now. */}
-			{state && (state.access === 'ready' || busy) ? (
-				<form className="rpcn-assistant-request" onSubmit={run}>
-					<textarea
-						aria-label="Request"
-						placeholder={REQUEST_PLACEHOLDER}
-						maxLength={MAX_REQUEST_CHARS}
-						value={request}
-						disabled={busy}
-						onChange={(e) => setRequest(e.target.value)}
-					/>
-					<div className="rpcn-assistant-buttons">
-						<button type="submit" disabled={busy || request.trim() === ''}>{RUN_LABEL}</button>
-						{busy ? <button type="button" className="rpcn-assistant-stop" onClick={() => post({ type: 'stopRequested' })}>{STOP_LABEL}</button> : null}
-					</div>
-				</form>
+			<header className="rpcn-assistant-header">
+				<h1 className="rpcn-assistant-title">{HEADER_TITLE}</h1>
+				{state && (state.turns.length > 0 || busy) ? (
+					<button type="button" className="rpcn-assistant-new rpcn-assistant-secondary" onClick={() => post({ type: 'newConversation' })}>{NEW_CONVERSATION_LABEL}</button>
+				) : null}
+			</header>
+			{state ? (
+				<nav className="rpcn-assistant-stages" aria-label="Stages">
+					<ol>
+						{STAGES.map((stage, i) => (
+							<li key={stage} className={`rpcn-assistant-stage${i === 0 && state.designReady ? ' rpcn-assistant-stage-done' : ''}`}>
+								{i === 0 && state.designReady ? <span className="rpcn-assistant-stage-check" aria-label="done">✓ </span> : null}
+								{stage}
+							</li>
+						))}
+					</ol>
+					{state.folder ? <span className="rpcn-assistant-folder" title="Target folder">{state.folder}</span> : null}
+				</nav>
 			) : null}
-			{state?.request ? <p className="rpcn-assistant-asked">{state.request}</p> : null}
-			{state && state.progress.length > 0 ? (
-				<ol className="rpcn-assistant-progress" aria-label="Progress">
-					{state.progress.map((line, i) => <li key={i}>{line}</li>)}
-				</ol>
+			{state ? (
+				<Transcript
+					state={state}
+					panel={panel}
+					live={live}
+					post={post}
+					insert={(command) => setText(`/${command} `)}
+				/>
 			) : null}
-			{state?.questions ? <QuestionCards key={state.questions.id} questions={state.questions} post={post} /> : null}
-			{state?.status === 'approval' ? <p className="rpcn-assistant-waiting" role="status">{WAITING_APPROVAL_TEXT}</p> : null}
-			{state?.note ? (
-				<section className="rpcn-assistant-note" aria-label="Design note">
-					<span className="rpcn-assistant-note-file">{state.note.file}</span>
-					<span className={`rpcn-assistant-note-status rpcn-assistant-status-${state.note.status ?? 'none'}`}>{state.note.status ?? 'no status'}</span>
-				</section>
-			) : null}
-			{state?.status === 'stopped' ? <p className="rpcn-assistant-stopped" role="status">{STOPPED_TEXT}</p> : null}
-			{state?.status === 'done' ? <p className="rpcn-assistant-done" role="status">{DONE_TEXT}</p> : null}
-			{state?.error ? <p className="rpcn-assistant-error" role="alert">{state.error}</p> : null}
+			{/* Review 4: the composer (and Stop) whenever a run is going, whatever the access says now. */}
+			{state && (state.access === 'ready' || busy) ? <Composer text={text} setText={setText} busy={busy} post={post} /> : null}
 		</div>
 	);
 }

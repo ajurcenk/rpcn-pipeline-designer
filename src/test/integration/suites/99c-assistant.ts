@@ -4,17 +4,18 @@
 // embedded Agent SDK talking to a local fake Messages API (`helpers/fakeMessagesApi.ts`). The stable run
 // opens no folder: the seam holds a temporary folder as the workspace, and an `ok` binary state on a fake
 // binary. The key goes through Set up assistant access… into the secret storage. Every row of the plan's
-// matrix has a test (HAPPY_HOST, HAPPY_MODEL, NO_KEY, NO_BINARY, AGENT_ERROR, STOP, NO_LEAK).
+// matrix has a test (HAPPY_HOST, HAPPY_MODEL, NO_KEY, NO_BINARY, AGENT_ERROR, STOP, NO_LEAK). Story 8.12:
+// every state test reads the chat's turns; the chat's own rows are in "the chat (story 8.12)".
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ASSISTANT_KEY_SECRET, ASSISTANT_KEY_URL_SECRET, SET_UP_ASSISTANT_ACCESS_COMMAND, type AssistantAccessUi } from '../../../adapters/vscode/assistantAccess';
-import { ASSISTANT_VIEW_ID, bundledSkillsDir, RUN_ASSISTANT_COMMAND, type AssistantRunOutcome, type AssistantViewUi } from '../../../adapters/vscode/assistantView';
+import { ASSISTANT_VIEW_ID, BEFORE_SCHEME, bundledSkillsDir, RUN_ASSISTANT_COMMAND, type AssistantRunOutcome, type AssistantViewUi } from '../../../adapters/vscode/assistantView';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import type { BinaryState } from '../../../adapters/redpandaConnect/binary';
-import { RUNTIME_MISSING_TEXT, unavailableText, type AssistantStateMessage } from '../../../shared/assistantProtocol';
+import { RUNTIME_MISSING_TEXT, unavailableText, type AssistantStateMessage, type AssistantTurnView } from '../../../shared/assistantProtocol';
 import { agentSdkHost } from '../../../adapters/assistant/agentSdkHost';
 import { hostPlatform } from '../../../adapters/assistant/platform';
 import {
@@ -22,7 +23,7 @@ import {
 	type AssistantRuntimeUi, type RuntimeInstallOutcome,
 } from '../../../adapters/vscode/assistantRuntime';
 import { type ExtensionApi } from '../../../extension';
-import { FakeAssistantHosts, happyScript, readyNote, RUN_2_QUESTIONS } from '../../helpers/fakeAssistantHost';
+import { FakeAssistantHosts, happyScript, readyNote, reply, RUN_2_QUESTIONS, step, stepDone, type FakeAssistantStep } from '../../helpers/fakeAssistantHost';
 import { makeTempDir, REPO_ROOT, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 import { ADP_401, FakeMessagesApi, toolUseId, type FakeTurn } from '../../helpers/fakeMessagesApi';
 import { FakeProxy, FakeRegistry, fakeRuntime, SDK, tarball, tarballPath } from '../../helpers/fakeRegistry';
@@ -39,6 +40,14 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	const assistant = () => api().assistant!;
 	const view = () => assistant().view;
 	const state = (): AssistantStateMessage => view().state();
+	/** Story 8.12: the conversation's last turn (the current or last run's). */
+	const turn = (): AssistantTurnView => {
+		const t = state().turns.at(-1);
+		assert.ok(t, `a turn: ${JSON.stringify(state())}`);
+		return t;
+	};
+	/** Story 8.12: the last turn's step labels. */
+	const labels = (): string[] => turn().steps.map((x) => x.label);
 	let root: string;
 	let ws: string;
 	let binary: BinaryState;
@@ -46,6 +55,11 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	let originalAccessUi: AssistantAccessUi;
 	const approvals: string[] = [];
 	const shown: string[] = [];
+	/** Story 8.12: Undo's questions, its answer, the info messages, the links opened outside. */
+	const undoAsked: string[] = [];
+	let undoWith = true;
+	const infos: string[] = [];
+	const externals: string[] = [];
 	/** The approval prompt's answer (default: Deny). */
 	let approveWith: (summary: string) => Promise<boolean> = async () => false;
 
@@ -109,10 +123,21 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		binary = { kind: 'ok', path: bin, version: '4.112.0', invocation: [bin] };
 		originalViewUi = view().ui;
 		originalAccessUi = assistant().access.ui;
-		view().ui = { approve: async (summary) => {
-			approvals.push(summary);
-			return approveWith(summary);
-		} };
+		view().ui = {
+			approve: async (summary) => {
+				approvals.push(summary);
+				return approveWith(summary);
+			},
+			confirmUndo: async (message) => {
+				undoAsked.push(message);
+				return undoWith;
+			},
+			info: async (message) => infos.push(message),
+			openExternal: async (uri) => {
+				externals.push(uri.toString());
+				return true;
+			},
+		};
 		assistant().access.ui = {
 			input: async () => KEY,
 			showInfo: async (m) => shown.push(m),
@@ -144,10 +169,16 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(await waitFor(() => !view().running, 30_000), 'the run ended after Stop');
 	});
 
-	setup(() => {
+	setup(async () => {
 		approveWith = async () => false;
 		approvals.length = 0;
 		shown.length = 0;
+		undoAsked.length = 0;
+		undoWith = true;
+		infos.length = 0;
+		externals.length = 0;
+		// Story 8.12: each test starts a new conversation (the previous one's turns and snapshots go).
+		await view().newConversation();
 		resetWorkspace();
 	});
 
@@ -224,15 +255,17 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		const { done } = await startRun();
 		assert.ok(await waitFor(() => state().status === 'question', 10_000), JSON.stringify(state()));
 		const s = state();
-		assert.deepStrictEqual(s.progress, ['Running the rpcn-design skill', 'Checking with rpcn_check binary']);
-		assert.strictEqual(s.request, REQUEST);
+		assert.deepStrictEqual(labels(), ['Running the rpcn-design skill', 'Checking with rpcn_check binary', 'Asking 2 questions']);
+		assert.deepStrictEqual(turn().steps.map((x) => x.mark), ['ok', 'ok', 'running']);
+		assert.strictEqual(turn().text, REQUEST);
+		assert.strictEqual(turn().skill, 'rpcn-design');
 		assert.deepStrictEqual(s.questions?.questions.map((q) => q.header), ['Ordering', 'Duplicates']);
 		assert.deepStrictEqual(s.questions?.questions.map((q) => q.options.map((o) => o.label)), [
 			['No ordering (My pick)', 'Per customer_id', 'Overall'],
 			['No dedupe (My pick)', 'Dedupe on order id', 'API dedupes on id'],
 		], 'the pick first, then the skill\'s order');
 		assert.deepStrictEqual(s.questions?.questions.map((q) => q.options.map((o) => o.pick)), [[true, false, false], [true, false, false]]);
-		assert.strictEqual(s.note, null);
+		assert.strictEqual(turn().note, null);
 		// A malformed answer (a missing question) changes nothing.
 		await view().receive({ type: 'answered', id: s.questions!.id, answers: ['Overall'] });
 		assert.strictEqual(state().status, 'question');
@@ -248,8 +281,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		const end = state();
 		assert.strictEqual(end.status, 'done');
 		assert.strictEqual(end.questions, null);
-		assert.deepStrictEqual(end.note, { file: 'orders_to_api.design.md', status: 'ready' });
-		assert.ok(end.progress.includes('Answered 2 questions'));
+		assert.deepStrictEqual(turn().note, { file: 'orders_to_api.design.md', status: 'ready' });
+		assert.ok(labels().includes('Answered 2 questions'));
+		assert.ok(end.designReady, 'Design ✓');
 	});
 
 	test('HAPPY_HOST: the note\'s status is the file\'s on disk (a draft note shows draft)', async () => {
@@ -259,7 +293,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(await waitFor(() => state().status === 'question', 10_000));
 		await answerPicks();
 		assert.strictEqual(await done, 'done');
-		assert.deepStrictEqual(state().note, { file: 'clicks.design.md', status: 'draft' });
+		assert.deepStrictEqual(turn().note, { file: 'clicks.design.md', status: 'draft' });
+		assert.strictEqual(state().designReady, false);
 	});
 
 	test('AGENT_ERROR (fake host): the error line is masked; the run ends; a new request works', async () => {
@@ -293,7 +328,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(hosts.last?.cancelled);
 		assert.strictEqual(state().status, 'stopped');
 		assert.strictEqual(state().questions, null);
-		assert.strictEqual(state().note, null);
+		assert.strictEqual(turn().note, null);
+		assert.strictEqual(turn().outcome, 'stopped');
+		assert.deepStrictEqual(turn().files, []);
 		assert.deepStrictEqual(fs.readdirSync(ws), [], 'nothing was written');
 		assert.ok(!view().running);
 	});
@@ -432,7 +469,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		const { done } = await startRun();
 		assert.ok(await waitFor(() => state().status === 'question', 10_000));
 		const s = state();
-		assert.deepStrictEqual(s.progress, ['Reading ~/x.yaml']);
+		assert.deepStrictEqual(labels(), ['Reading ~/x.yaml']);
 		assert.deepStrictEqual(s.questions?.questions.map((q) => q.question), ['Write the note to ~/notes?', 'Write the note to ~/notes?']);
 		assert.strictEqual(s.questions?.questions[0].options[0].description, '~/notes');
 		await view().receive({ type: 'answered', id: 'q1', answers: ['Yes (My pick)', 'No'] });
@@ -455,7 +492,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assistant().setHostFactory(hosts.factory);
 		await assistant().setAccessForTest({ key: KEY });
 		assert.strictEqual(await view().run(REQUEST), 'done');
-		assert.deepStrictEqual(state().note, { file: 'orders_to_api.design.md', status: 'ready' });
+		assert.deepStrictEqual(turn().note, { file: 'orders_to_api.design.md', status: 'ready' });
 	});
 
 	test('review 12: a line another component logs with the key in it is masked in the output channel', async () => {
@@ -522,6 +559,307 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			await setSkillsPath(undefined);
 		}
 		assert.strictEqual(state().skills, 'bundled');
+	});
+
+	// Story 8.12: the chat (option A) against the scripted fake host: the turns, the step rows, the file rows
+	// and their diff, Keep and Undo, the slash commands, New conversation, the links, and masking.
+	suite('the chat (story 8.12)', () => {
+		const NOTE = 'orders_to_api.design.md';
+		const run = async (script: FakeAssistantStep[], request = REQUEST) => {
+			const hosts = new FakeAssistantHosts(script);
+			assistant().setHostFactory(hosts.factory);
+			await assistant().setAccessForTest({ key: KEY });
+			const outcome = await view().run(request);
+			return { outcome, hosts };
+		};
+		const happy = async () => {
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			await assistant().setAccessForTest({ key: KEY });
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000), JSON.stringify(state()));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+		};
+		const diffTab = () => {
+			const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+			return input instanceof vscode.TabInputTextDiff ? input : undefined;
+		};
+
+		teardown(async () => {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+		});
+
+		test('HAPPY_DESIGN: one turn: steps ✓ with results, the reply, a row for the note with +N, Keep, Undo, Open note, /build and /test off with their hints', async () => {
+			await happy();
+			const t = turn();
+			assert.strictEqual(state().turns.length, 1);
+			assert.strictEqual(t.command, 'design');
+			assert.strictEqual(t.outcome, 'done');
+			assert.ok(t.steps.filter((x) => x.mark !== 'info').every((x) => x.mark === 'ok'), JSON.stringify(t.steps));
+			assert.strictEqual(t.steps.find((x) => x.id === 's2')?.result, 'ok · 4.112.0');
+			assert.strictEqual(t.reply, `The design note **${NOTE}** is \`ready\`.`);
+			assert.deepStrictEqual(t.files, [{ path: NOTE, added: readyNote('orders_to_api').split('\n').length - 1, removed: 0, created: true, tooLarge: false }]);
+			assert.strictEqual(t.review, 'pending');
+			assert.deepStrictEqual(t.actions.map((a) => [a.id, a.label, a.enabled]), [['openNote', 'Open note', true]]);
+			assert.deepStrictEqual(t.chips, [
+				{ label: '/build', command: 'build', enabled: false, hint: 'Arrives with the Author stage' },
+				{ label: '/test', command: 'test', enabled: false, hint: 'Arrives with the Test hand-off' },
+			]);
+			assert.strictEqual(state().folder, path.basename(ws));
+			// Open note opens the note.
+			await view().receive({ type: 'turnAction', turn: t.id, action: 'openNote' });
+			assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === path.join(ws, NOTE), 5_000));
+		});
+
+		test('DIFF: a click on the note\'s row opens vscode.diff: an empty left side (a new file), the note on the right; gone: an info message', async () => {
+			await happy();
+			const t = turn();
+			assert.ok(await view().openFileDiff(t.id, NOTE));
+			assert.ok(await waitFor(() => diffTab() !== undefined, 5_000), 'a diff tab');
+			const diff = diffTab()!;
+			assert.strictEqual(diff.original.scheme, BEFORE_SCHEME);
+			assert.strictEqual((await vscode.workspace.openTextDocument(diff.original)).getText(), '');
+			assert.strictEqual(diff.modified.fsPath, path.join(ws, NOTE));
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			fs.rmSync(path.join(ws, NOTE));
+			assert.strictEqual(await view().openFileDiff(t.id, NOTE), false);
+			assert.strictEqual(infos.length, 1);
+			assert.ok(infos[0].includes(NOTE) && infos[0].includes('no longer exists'), infos[0]);
+			assert.strictEqual(diffTab(), undefined, 'no diff');
+		});
+
+		test('UNDO_EDIT and DIFF of an edit: the left side is the file before the turn; Undo makes it byte-identical', async () => {
+			const before = 'input:\r\n  generate: {}\r\n# ünïcödé\r\n';
+			fs.writeFileSync(path.join(ws, 'a.yaml'), before);
+			await run([{ write: { file: 'a.yaml', content: 'input:\n  kafka: {}\n' } }, { write: { file: 'a.yaml', content: 'input:\n  kafka: {}\n  x: 1\n' } }]);
+			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.added, f.removed, f.created]), [['a.yaml', 2, 2, false]], 'the first snapshot wins');
+			assert.ok(await view().openFileDiff(turn().id, 'a.yaml'));
+			assert.ok(await waitFor(() => diffTab() !== undefined, 5_000));
+			assert.strictEqual((await vscode.workspace.openTextDocument(diffTab()!.original)).getText(), before);
+			assert.strictEqual(await view().undo(turn().id), 'undone');
+			assert.deepStrictEqual(fs.readFileSync(path.join(ws, 'a.yaml')), Buffer.from(before, 'utf8'));
+			assert.strictEqual(turn().review, 'undone');
+			assert.deepStrictEqual(undoAsked, [], 'no later edits: not asked');
+		});
+
+		test('UNDO_NEW: the turn created a.yaml and the note; Undo deletes both; the turn shows Undone; Design ✓ goes', async () => {
+			await run([{ write: { file: 'a.yaml', content: 'input: {}\n' } }, { write: { file: NOTE, content: readyNote('orders_to_api') } }]);
+			assert.ok(state().designReady);
+			assert.strictEqual(await view().undo(turn().id), 'undone');
+			assert.deepStrictEqual(fs.readdirSync(ws), []);
+			assert.strictEqual(turn().review, 'undone');
+			assert.strictEqual(turn().notice, null);
+			assert.strictEqual(turn().note, null);
+			assert.deepStrictEqual(turn().actions, []);
+			assert.strictEqual(state().designReady, false);
+			assert.strictEqual(await view().undo(turn().id), 'none', 'once');
+			assert.strictEqual(await view().openFileDiff(turn().id, 'a.yaml'), false, 'the rows are text now');
+		});
+
+		test('UNDO_NEW (new folders): Undo deletes the files and the folders the turn created for them; a folder holding another file stays', async () => {
+			fs.mkdirSync(path.join(ws, 'existing'));
+			await run([
+				{ write: { file: 'flows/x/a.yaml', content: 'a\n' } },
+				{ write: { file: 'flows/y/b.yaml', content: 'b\n' } },
+				{ write: { file: 'existing/c.yaml', content: 'c\n' } },
+			]);
+			fs.writeFileSync(path.join(ws, 'flows', 'y', 'mine.txt'), 'mine');
+			assert.strictEqual(await view().undo(turn().id), 'undone');
+			assert.deepStrictEqual(undoAsked, []);
+			assert.ok(!fs.existsSync(path.join(ws, 'flows', 'x')), 'the new folder went');
+			assert.ok(!fs.existsSync(path.join(ws, 'flows', 'y', 'b.yaml')));
+			assert.ok(fs.existsSync(path.join(ws, 'flows', 'y', 'mine.txt')), 'a folder holding a file stays');
+			assert.ok(fs.existsSync(path.join(ws, 'existing')) && !fs.existsSync(path.join(ws, 'existing', 'c.yaml')), 'a folder that was there stays');
+		});
+
+		test('UNDO_NEW (a delete fails): an error line in the turn; the other files are still restored', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) {
+				this.skip();
+			}
+			fs.writeFileSync(path.join(ws, 'b.yaml'), 'old\n');
+			const locked = path.join(ws, 'locked');
+			await run([{ write: { file: 'locked/a.yaml', content: 'x\n' } }, { write: { file: 'b.yaml', content: 'new\n' } }]);
+			fs.chmodSync(locked, 0o555);
+			try {
+				assert.strictEqual(await view().undo(turn().id), 'undone');
+				assert.ok(turn().notice?.startsWith('Could not undo locked/a.yaml'), String(turn().notice));
+				assert.strictEqual(fs.readFileSync(path.join(ws, 'b.yaml'), 'utf8'), 'old\n', 'the other file restored');
+			} finally {
+				fs.chmodSync(locked, 0o755);
+			}
+		});
+
+		test('UNDO_LATER_EDIT: the user edited the file after the turn: Undo asks; Cancel restores nothing; OK restores every file', async () => {
+			fs.writeFileSync(path.join(ws, 'a.yaml'), 'v1\n');
+			await run([{ write: { file: 'a.yaml', content: 'v2\n' } }, { write: { file: 'b.yaml', content: 'new\n' } }]);
+			fs.writeFileSync(path.join(ws, 'a.yaml'), 'v3 by hand\n');
+			undoWith = false;
+			assert.strictEqual(await view().undo(turn().id), 'cancelled');
+			assert.deepStrictEqual(undoAsked, ['Undo will discard your edits to `a.yaml` since the turn.']);
+			assert.strictEqual(fs.readFileSync(path.join(ws, 'a.yaml'), 'utf8'), 'v3 by hand\n');
+			assert.ok(fs.existsSync(path.join(ws, 'b.yaml')), 'Cancel restores nothing');
+			assert.strictEqual(turn().review, 'pending');
+			undoWith = true;
+			assert.strictEqual(await view().undo(turn().id), 'undone');
+			assert.strictEqual(fs.readFileSync(path.join(ws, 'a.yaml'), 'utf8'), 'v1\n');
+			assert.ok(!fs.existsSync(path.join(ws, 'b.yaml')));
+		});
+
+		test('KEEP: the buttons go, the snapshots drop; the rows stay, no longer clickable', async () => {
+			await happy();
+			const t = turn();
+			assert.ok(view().keep(t.id));
+			assert.strictEqual(turn().review, 'kept');
+			assert.strictEqual(turn().files.length, 1, 'the row stays');
+			assert.strictEqual(await view().openFileDiff(t.id, NOTE), false);
+			assert.strictEqual(await view().undo(t.id), 'none');
+			assert.ok(fs.existsSync(path.join(ws, NOTE)));
+		});
+
+		test('NO_CHANGE: a write of the same bytes, or a write announced and never made: no row, no Keep or Undo', async () => {
+			fs.writeFileSync(path.join(ws, 'same.yaml'), 'same\n');
+			await run([
+				{ write: { file: 'same.yaml', content: 'same\n' } },
+				{ emit: { type: 'fileChanging', path: path.join(ws, 'denied.yaml'), before: null } },
+			]);
+			assert.deepStrictEqual(turn().files, []);
+			assert.strictEqual(turn().review, 'none');
+		});
+
+		test('BIG_FILE: a file over 1 MB: its row says too large to undo; no diff; Undo leaves it alone', async () => {
+			const big = path.join(ws, 'big.json');
+			fs.writeFileSync(big, 'x'.repeat(1024 * 1024 + 1));
+			const after = 'y'.repeat(1024 * 1024 + 2);
+			await run([{ write: { file: 'big.json', content: after } }, { write: { file: 'small.yaml', content: 'a\n' } }]);
+			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.tooLarge]), [['big.json', true], ['small.yaml', false]]);
+			assert.strictEqual(await view().openFileDiff(turn().id, 'big.json'), false);
+			assert.strictEqual(await view().undo(turn().id), 'undone');
+			assert.strictEqual(fs.readFileSync(big, 'utf8'), after, 'left alone');
+			assert.ok(!fs.existsSync(path.join(ws, 'small.yaml')));
+		});
+
+		test('STEP_FAIL: a failed step is ✗ with the first line of its error', async () => {
+			await run([step('s1', 'Running a shell command: ls'), stepDone('s1', false, 'The user denied this.')]);
+			assert.deepStrictEqual(turn().steps.map((x) => [x.mark, x.result]), [['failed', 'The user denied this.']]);
+		});
+
+		test('PLAIN and /design: both run rpcn-design; the turn shows the text as typed; the prompt is the text after the command', async () => {
+			const { hosts } = await run([reply('ok')], 'orders to an API');
+			assert.strictEqual(hosts.last?.requests[0].skill, 'rpcn-design');
+			assert.strictEqual(hosts.last?.requests[0].prompt, 'orders to an API');
+			assert.strictEqual(turn().text, 'orders to an API');
+			await view().receive({ type: 'runRequested', command: 'design', request: '/design  clicks to a table' });
+			assert.ok(await waitFor(() => !view().running && state().turns.length === 2, 5_000));
+			assert.strictEqual(hosts.last?.requests[0].prompt, 'clicks to a table');
+			assert.strictEqual(turn().text, '/design  clicks to a table');
+			assert.strictEqual(await view().run('/design'), 'empty');
+		});
+
+		test('/build and /test: disabled; nothing runs, no turn', async () => {
+			const hosts = new FakeAssistantHosts([reply('x')]);
+			assistant().setHostFactory(hosts.factory);
+			await assistant().setAccessForTest({ key: KEY });
+			assert.strictEqual(await view().run('/build the pipeline'), 'disabled');
+			await view().receive({ type: 'runRequested', command: 'test', request: 'the pipeline' });
+			assert.strictEqual(hosts.made.length, 0);
+			assert.deepStrictEqual(state().turns, []);
+		});
+
+		test('two turns: a new Send keeps the previous turn\'s changes; only the latest offers Keep and Undo', async () => {
+			await run([{ write: { file: 'a.yaml', content: 'a\n' } }]);
+			const first = turn().id;
+			assert.strictEqual(turn().review, 'pending');
+			await run([{ write: { file: 'b.yaml', content: 'b\n' } }]);
+			const [one, two] = state().turns;
+			assert.strictEqual(one.id, first);
+			assert.strictEqual(one.review, 'kept');
+			assert.strictEqual(two.review, 'pending');
+			assert.strictEqual(await view().undo(first), 'none');
+			assert.ok(fs.existsSync(path.join(ws, 'a.yaml')));
+		});
+
+		test('STATES in the chat: the approval row (status approval) in the running turn; stopped; an error', async () => {
+			let resolve: ((allow: boolean) => void) | undefined;
+			approveWith = () => new Promise((r) => (resolve = r));
+			const hosts = new FakeAssistantHosts([{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `ls`' } }, { waitApproval: 'a1' }]);
+			assistant().setHostFactory(hosts.factory);
+			await assistant().setAccessForTest({ key: KEY });
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => resolve !== undefined, 10_000));
+			assert.strictEqual(state().status, 'approval');
+			assert.strictEqual(turn().outcome, 'running');
+			assert.deepStrictEqual(labels(), ['Asks to run `ls`']);
+			resolve!(false);
+			assert.strictEqual(await done, 'done');
+			assert.deepStrictEqual(labels(), ['Asks to run `ls`', 'Denied']);
+			await run([{ emit: { type: 'error', message: 'boom' } }]);
+			assert.strictEqual(turn().outcome, 'error');
+			assert.strictEqual(state().error, 'boom');
+		});
+
+		test('NEW_CONV: idle: the transcript and snapshots cleared; busy: the run stops first, then everything is cleared', async () => {
+			await run([{ write: { file: 'a.yaml', content: 'a\n' } }]);
+			const id = turn().id;
+			await view().receive({ type: 'newConversation' });
+			assert.deepStrictEqual(state().turns, []);
+			assert.strictEqual(await view().undo(id), 'none', 'the snapshots went');
+			assert.ok(fs.existsSync(path.join(ws, 'a.yaml')), 'the files stay');
+			const hosts = new FakeAssistantHosts(happyScript());
+			assistant().setHostFactory(hosts.factory);
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			await view().newConversation();
+			assert.strictEqual(await done, 'stopped');
+			assert.ok(hosts.last?.cancelled);
+			assert.ok(!view().running);
+			assert.deepStrictEqual(state().turns, []);
+			assert.strictEqual(state().status, 'idle');
+			assert.strictEqual(state().questions, null);
+		});
+
+		test('links: http(s) opens outside, a workspace file in the editor; javascript: and paths outside nothing', async () => {
+			fs.writeFileSync(path.join(ws, 'a.yaml'), 'input: {}\n');
+			await view().receive({ type: 'openLink', href: 'https://docs.redpanda.com/redpanda-connect/' });
+			assert.deepStrictEqual(externals, ['https://docs.redpanda.com/redpanda-connect/']);
+			await view().receive({ type: 'openLink', href: 'a.yaml' });
+			assert.ok(await waitFor(() => vscode.window.activeTextEditor?.document.uri.fsPath === path.join(ws, 'a.yaml'), 5_000));
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			for (const href of ['javascript:alert(1)', 'command:workbench.action.reloadWindow', '../outside.yaml', path.join(root, 'x.yaml'), 'file:///etc/hosts']) {
+				assert.strictEqual(await view().openLink(href), undefined, href);
+			}
+			assert.strictEqual(externals.length, 1);
+			assert.strictEqual(vscode.window.activeTextEditor, undefined);
+		});
+
+		test('LEAK: the key, a Bearer value and the home folder in the reply, a step result and a path are masked in every posted message', async () => {
+			const home = os.homedir();
+			await run([
+				step('s1', `Reading ${home}/secret.yaml`),
+				stepDone('s1', false, `Authorization: Bearer ${KEY}`),
+				reply(`The key is ${KEY}; see ${home}/notes and Bearer ${KEY}`),
+				{ write: { file: `${KEY}.yaml`, content: 'x\n' } },
+			]);
+			const posted = JSON.stringify(view().posted);
+			assert.ok(!posted.includes(KEY), 'the key');
+			assert.ok(!posted.includes(home + path.sep), 'the home folder');
+			assert.ok(turn().reply.includes(CREDENTIAL_MASK) && turn().reply.includes('~/notes'), turn().reply);
+			assert.ok(turn().files[0].path.includes(CREDENTIAL_MASK), turn().files[0].path);
+			assertNoLeak();
+		});
+
+		test('limits: at most 50 turns, the oldest dropped first; at most 200 steps a turn', async () => {
+			const steps: FakeAssistantStep[] = Array.from({ length: 210 }, (_, i) => step(`s${i}`, `step ${i}`));
+			await run(steps);
+			assert.strictEqual(turn().steps.length, 200);
+			assert.strictEqual(turn().steps[0].label, 'step 10');
+			const hosts = new FakeAssistantHosts([reply('x')]);
+			assistant().setHostFactory(hosts.factory);
+			for (let i = 0; i < 50; i++) {
+				assert.strictEqual(await view().run(`request ${i}`), 'done');
+			}
+			assert.strictEqual(state().turns.length, 50);
+			assert.strictEqual(state().turns[0].text, 'request 0');
+		});
 	});
 
 	// Story 8.2: the assistant runtime, installed by the user from VS Code, against a fake registry (never the
@@ -790,9 +1128,10 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			agreeWith = [AGREE_AND_INSTALL];
 			assert.strictEqual(await install(), 'installed');
 			assert.strictEqual(state().access, 'ready');
+			const turnsBefore = state().turns.map((t) => t.id);
 			assert.strictEqual(await view().run(REQUEST), 'runtimeMissing');
 			assert.strictEqual(state().error, null, 'no error line');
-			assert.strictEqual(state().request, null);
+			assert.deepStrictEqual(state().turns.map((t) => t.id), turnsBefore, 'the run left no turn');
 			assert.strictEqual(state().access, 'runtimeMissing');
 		});
 
@@ -824,9 +1163,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			let s = state();
 			assert.strictEqual(s.access, 'runtimeMissing');
 			assert.strictEqual(s.status, 'idle');
-			assert.strictEqual(s.request, null, 'the request cleared');
+			assert.deepStrictEqual(s.turns, [], 'the request cleared: no turn');
 			assert.strictEqual(s.error, null, 'no error line');
-			assert.deepStrictEqual(s.progress, []);
 			const added = api().outputLines().slice(lines);
 			assert.ok(!added.some((l) => l.includes('a design run started')), added.join('\n'));
 			assert.ok(!added.some((l) => l.includes('the run failed')), added.join('\n'));
@@ -840,7 +1178,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			s = state();
 			assert.strictEqual(s.access, 'runtimeMissing');
 			assert.strictEqual(s.error, null);
-			assert.strictEqual(s.request, null);
+			assert.deepStrictEqual(s.turns, []);
 			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
 			const { done } = await startRun();
 			assert.ok(await waitFor(() => state().status === 'question', 10_000), 'the next run looks the runtime up again');
@@ -883,13 +1221,20 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(await waitFor(() => state().status === 'question' || !view().running, 90_000), JSON.stringify(state()));
 			const s = state();
 			assert.strictEqual(s.status, 'question', JSON.stringify(s));
-			assert.ok(s.progress.includes('Running the rpcn-design skill'), JSON.stringify(s.progress));
-			assert.ok(s.progress.includes('Checking with rpcn_check binary'), JSON.stringify(s.progress));
+			assert.ok(labels().includes('Running the rpcn-design skill'), JSON.stringify(labels()));
+			assert.ok(labels().includes('Checking with rpcn_check binary'), JSON.stringify(labels()));
+			// Story 8.12: the check's step row ended ok (its tool_result matched by id); the question's still runs.
+			assert.strictEqual(turn().steps.find((x) => x.label === 'Checking with rpcn_check binary')?.mark, 'ok', JSON.stringify(turn().steps));
 			assert.deepStrictEqual(s.questions?.questions.map((q) => q.options[0].label), ['No ordering (My pick)', 'No dedupe (My pick)']);
 			await answerPicks();
 			assert.strictEqual(await done, 'done', JSON.stringify(state()));
-			assert.deepStrictEqual(state().note, { file: 'orders_to_api.design.md', status: 'ready' });
+			assert.deepStrictEqual(turn().note, { file: 'orders_to_api.design.md', status: 'ready' });
 			assert.ok(fs.existsSync(path.join(ws, 'orders_to_api.design.md')));
+			// Story 8.12: the PreToolUse hook snapshotted the note (it did not exist): a new file's row, Keep and Undo.
+			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.created, f.removed]), [['orders_to_api.design.md', true, 0]]);
+			assert.ok(turn().files[0].added > 0);
+			assert.strictEqual(turn().review, 'pending');
+			assert.ok(turn().steps.every((x) => x.mark !== 'running'), JSON.stringify(turn().steps));
 			assert.deepStrictEqual(approvals, [], 'the check and the note did not ask');
 			const asked = fakeApi.results.get(toolUseId(2));
 			assert.ok(asked && !asked.isError && asked.text.includes('No ordering (My pick)') && asked.text.includes('No dedupe (My pick)'), JSON.stringify(asked));
@@ -933,6 +1278,12 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(approvals[1].includes('echo chained'), approvals[1]);
 			assert.ok(!fs.existsSync(path.join(ws, 'orders.yaml')) && !fs.existsSync(outside));
 			assert.ok(fakeApi.results.get(toolUseId(0))?.isError && fakeApi.results.get(toolUseId(1))?.isError && fakeApi.results.get(toolUseId(2))?.isError);
+			// Story 8.12: NO_CHANGE (a denied write: snapshotted, never written: no row, no Keep or Undo) and STEP_FAIL (✗).
+			assert.deepStrictEqual(turn().files, []);
+			assert.strictEqual(turn().review, 'none');
+			const writes = turn().steps.filter((x) => x.mark !== 'info');
+			assert.strictEqual(writes.length, 3, JSON.stringify(turn().steps));
+			assert.ok(writes.every((x) => x.mark === 'failed' && x.result !== ''), JSON.stringify(writes));
 		});
 
 		test('AGENT_ERROR (fake model): a 401 shows a masked error line; the run ends; a new request works', async () => {
@@ -957,7 +1308,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(approvals.length, 1);
 			assert.ok(fs.existsSync(path.join(ws, 'orders.yaml')));
 			assert.strictEqual(fakeApi.results.get(toolUseId(0))?.isError, false);
-			assert.ok(state().progress.includes('Allowed'), JSON.stringify(state().progress));
+			assert.ok(labels().includes('Allowed'), JSON.stringify(labels()));
+			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.added, f.removed, f.created]), [['orders.yaml', 1, 0, true]]);
 		});
 
 		test('story 8.2: SKILLS_PATH (fake model): the local copy\'s rpcn_check.py runs without asking; the bundled one asks', async () => {

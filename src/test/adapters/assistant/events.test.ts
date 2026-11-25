@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import * as path from 'path';
-import { displayPath, progressOf, PROGRESS_CHARS, resultEventOf, retryOf } from '../../../adapters/assistant/events';
+import { displayPath, resultEventOf, retryOf, stepResult, StreamMapper } from '../../../adapters/assistant/events';
 import { questionsOf } from '../../../adapters/assistant/host';
 
-// Story 8.1 (AD-26): the SDK's stream as the port's events: progress lines, the result or error, and
+// Story 8.1 (AD-26): the SDK's stream as the port's events (story 8.12: steps, their ends and the reply), the result or error, and
 // `AskUserQuestion`'s input as question data.
 suite('assistant event mapping (story 8.1)', () => {
 	const ws = path.resolve('/w/project');
@@ -11,20 +11,27 @@ suite('assistant event mapping (story 8.1)', () => {
 	const ctx = { workspace: ws, skillsDir: skills };
 	const assistant = (...content: unknown[]) => ({ type: 'assistant', parent_tool_use_id: null, message: { content } });
 
-	test('each tool call and the first line of each text become one progress line', () => {
-		const lines = progressOf(assistant(
+	let n = 0;
+	const use = (name: string, input: unknown) => ({ type: 'tool_use', id: `toolu_${++n}`, name, input });
+	const result = (id: string, content: unknown, isError = false) => ({ type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] } });
+	const labels = (events: unknown[]) => events.map((e) => (e as { label?: string }).label);
+
+	test('story 8.12: each top-level tool call is a step with its label; each text block a reply, in full', () => {
+		const mapper = new StreamMapper(ctx);
+		const events = mapper.map(assistant(
 			{ type: 'text', text: '\n  I will design it.\nMore detail.' },
-			{ type: 'tool_use', name: 'Skill', input: { skill: 'rpcn-skills:rpcn-design' } },
-			{ type: 'tool_use', name: 'Bash', input: { command: `uv run ${skills}/skills/rpcn-design/scripts/rpcn_check.py fields inputs redpanda` } },
-			{ type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } },
-			{ type: 'tool_use', name: 'Read', input: { file_path: path.join(skills, 'skills', 'rpcn-design', 'references', 'questions.md') } },
-			{ type: 'tool_use', name: 'Write', input: { file_path: path.join(ws, 'orders.design.md') } },
-			{ type: 'tool_use', name: 'AskUserQuestion', input: { questions: [{}, {}] } },
-			{ type: 'tool_use', name: 'NotebookEdit', input: { notebook_path: path.join(ws, 'n.ipynb') } },
-			{ type: 'tool_use', name: 'TodoWrite', input: {} },
-		), ctx);
-		assert.deepStrictEqual(lines, [
-			'I will design it.',
+			use('Skill', { skill: 'rpcn-skills:rpcn-design' }),
+			use('Bash', { command: `uv run ${skills}/skills/rpcn-design/scripts/rpcn_check.py fields inputs redpanda` }),
+			use('Bash', { command: 'ls -la' }),
+			use('Read', { file_path: path.join(skills, 'skills', 'rpcn-design', 'references', 'questions.md') }),
+			use('Write', { file_path: path.join(ws, 'orders.design.md') }),
+			use('AskUserQuestion', { questions: [{}, {}] }),
+			use('NotebookEdit', { notebook_path: path.join(ws, 'n.ipynb') }),
+			use('TodoWrite', {}),
+		));
+		assert.deepStrictEqual(events[0], { type: 'reply', text: '\n  I will design it.\nMore detail.' });
+		assert.ok(events.slice(1).every((e) => e.type === 'step'));
+		assert.deepStrictEqual(labels(events.slice(1)), [
 			'Running the rpcn-design skill',
 			'Checking with rpcn_check fields',
 			'Running a shell command: ls -la',
@@ -36,14 +43,32 @@ suite('assistant event mapping (story 8.1)', () => {
 		]);
 	});
 
-	test('init names the model; subagent turns, user turns and other messages give none; long text is clipped', () => {
-		assert.deepStrictEqual(progressOf({ type: 'system', subtype: 'init', model: 'claude-opus-5-5' }, ctx), ['Started (claude-opus-5-5)']);
-		assert.deepStrictEqual(progressOf({ ...assistant({ type: 'text', text: 'x' }), parent_tool_use_id: 'toolu_1' }, ctx), []);
-		assert.deepStrictEqual(progressOf({ type: 'user', message: { content: [{ type: 'tool_result' }] } }, ctx), []);
-		assert.deepStrictEqual(progressOf({ type: 'stream_event' }, ctx), []);
-		assert.deepStrictEqual(progressOf(null, ctx), []);
-		const [long] = progressOf(assistant({ type: 'text', text: 'a'.repeat(500) }), ctx);
-		assert.strictEqual(long.length, PROGRESS_CHARS);
+	test('story 8.12: a tool_result ends its step (by tool_use_id): ok with the summary, failed with the error\'s first line', () => {
+		const mapper = new StreamMapper(ctx);
+		const [read] = mapper.map(assistant(use('Read', { file_path: path.join(ws, 'a.yaml') }))) as { id: string }[];
+		const [bash] = mapper.map(assistant(use('Bash', { command: 'ls' }))) as { id: string }[];
+		assert.deepStrictEqual(mapper.map(result(read.id, [{ type: 'text', text: '1\tinput:\n2\t  x: 1\n' }])), [{ type: 'stepDone', id: read.id, ok: true, result: '2 lines' }]);
+		assert.deepStrictEqual(mapper.map(result(bash.id, '<tool_use_error>The user denied this.\nmore</tool_use_error>', true)),
+			[{ type: 'stepDone', id: bash.id, ok: false, result: 'The user denied this.' }]);
+		assert.deepStrictEqual(mapper.map(result(bash.id, 'again')), [], 'only once');
+		assert.deepStrictEqual(mapper.map(result('toolu_unknown', 'x')), [], 'no step, no end');
+	});
+
+	test('story 8.12: short results: at most 60 characters; no summariser: empty', () => {
+		assert.strictEqual(stepResult('Bash', {}, 'lots of output', true), '');
+		assert.strictEqual(stepResult('Bash', {}, `Error: ${'x'.repeat(100)}`, false).length, 60);
+		assert.strictEqual(stepResult('Glob', {}, 'No files found', true), '0 files');
+		assert.strictEqual(stepResult('Glob', {}, 'a.yaml\nb.yaml', true), '2 files');
+	});
+
+	test('init names the model; subagent turns (SUBAGENT) and other messages give none', () => {
+		const mapper = new StreamMapper(ctx);
+		assert.deepStrictEqual(mapper.map({ type: 'system', subtype: 'init', model: 'claude-opus-5-5' }), [{ type: 'progress', text: 'Started (claude-opus-5-5)' }]);
+		assert.deepStrictEqual(mapper.map({ ...assistant({ type: 'text', text: 'x' }, use('Read', {})), parent_tool_use_id: 'toolu_1' }), []);
+		assert.deepStrictEqual(mapper.map({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), []);
+		assert.deepStrictEqual(mapper.map(assistant({ type: 'text', text: '   ' })), [], 'blank text');
+		assert.deepStrictEqual(mapper.map({ type: 'stream_event' }), []);
+		assert.deepStrictEqual(mapper.map(null), []);
 	});
 
 	test('a path outside the workspace and the skills shows only its name', () => {

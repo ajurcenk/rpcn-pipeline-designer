@@ -1,7 +1,9 @@
 // A scripted, in-memory `AssistantHost` (story 8.1, AD-26): the integration suites run the assistant
 // view against it without the SDK or a model. Each run plays `script` in order:
 //   { emit }         sends one event;
-//   { write }        writes a file in the run's workspace folder, then sends its `fileWritten`;
+//   { write }        story 8.12: the file's snapshot first (`fileChanging`, the first write to it in the run
+//                    only), then writes it in the run's workspace folder and sends its `fileWritten`
+//                    (`content` `null`: deletes it instead);
 //   { waitAnswer }   waits for `answer(id, …)` of the question it names (send the `question` first);
 //   { waitApproval } waits for `approve(id, …)`;
 //   { delayMs }      waits that long.
@@ -11,13 +13,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { snapshotOf } from '../../adapters/assistant/snapshot';
 import type {
 	AssistantAnswers, AssistantEvent, AssistantHost, AssistantHostConfig, AssistantHostFactory, AssistantListener, AssistantQuestion, AssistantRequest,
 } from '../../adapters/assistant/host';
 
 export type FakeAssistantStep =
 	| { readonly emit: AssistantEvent }
-	| { readonly write: { readonly file: string; readonly content: string } }
+	| { readonly write: { readonly file: string; readonly content: string | Buffer | null } }
 	| { readonly waitAnswer: string }
 	| { readonly waitApproval: string }
 	| { readonly delayMs: number };
@@ -47,15 +50,28 @@ export function readyNote(pipeline: string, status = 'ready'): string {
 	return `---\nartifact: design\nformat: design@1\npipeline: ${pipeline}\nstatus: ${status}\nproduced_by: rpcn-design@0.1.0\nrpcn_version: 4.112.0\ninputs: []\nupdated: 2026-11-24\n---\n\n# ${pipeline}\n\nA fake note.\n`;
 }
 
-/** The happy path: progress, the two questions, then the note written and the run done. */
+/** Story 8.12: a step row begins. */
+export const step = (id: string, label: string): FakeAssistantStep => ({ emit: { type: 'step', id, label } });
+/** Story 8.12: a step row ends. */
+export const stepDone = (id: string, ok = true, result = ''): FakeAssistantStep => ({ emit: { type: 'stepDone', id, ok, result } });
+/** Story 8.12: a piece of the reply. */
+export const reply = (text: string): FakeAssistantStep => ({ emit: { type: 'reply', text } });
+
+/** The happy path: the skill and its check as steps, the two questions, then the note written, the reply, and the run done. */
 export function happyScript(pipeline = 'orders_to_api'): FakeAssistantStep[] {
 	return [
-		{ emit: { type: 'progress', text: 'Running the rpcn-design skill' } },
-		{ emit: { type: 'progress', text: 'Checking with rpcn_check binary' } },
+		step('s1', 'Running the rpcn-design skill'),
+		stepDone('s1'),
+		step('s2', 'Checking with rpcn_check binary'),
+		stepDone('s2', true, 'ok · 4.112.0'),
+		step('s3', 'Asking 2 questions'),
 		{ emit: { type: 'question', id: 'q1', questions: RUN_2_QUESTIONS } },
 		{ waitAnswer: 'q1' },
-		{ emit: { type: 'progress', text: `Writing ${pipeline}.design.md` } },
+		stepDone('s3', true, 'answered'),
+		step('s4', `Writing ${pipeline}.design.md`),
 		{ write: { file: `${pipeline}.design.md`, content: readyNote(pipeline) } },
+		stepDone('s4', true, 'written'),
+		reply(`The design note **${pipeline}.design.md** is \`ready\`.`),
 		{ emit: { type: 'result', stopped: false, text: 'The design note is ready.' } },
 	];
 }
@@ -66,6 +82,7 @@ export class FakeAssistantHost implements AssistantHost {
 	readonly answers = new Map<string, AssistantAnswers | undefined>();
 	readonly approvals = new Map<string, boolean>();
 	cancelled = false;
+	private readonly snapshotted = new Set<string>();
 	private waiting: { readonly id: string; readonly resolve: () => void } | undefined;
 	private stopped = false;
 
@@ -90,8 +107,19 @@ export class FakeAssistantHost implements AssistantHost {
 				emit(step.emit);
 			} else if ('write' in step) {
 				const file = path.resolve(this.config.workspace, step.write.file);
-				fs.mkdirSync(path.dirname(file), { recursive: true });
-				fs.writeFileSync(file, step.write.content);
+				if (!this.snapshotted.has(file)) {
+					this.snapshotted.add(file);
+					const snapshot = await snapshotOf(file);
+					if (snapshot) {
+						emit(snapshot);
+					}
+				}
+				if (step.write.content === null) {
+					fs.rmSync(file, { force: true });
+				} else {
+					fs.mkdirSync(path.dirname(file), { recursive: true });
+					fs.writeFileSync(file, step.write.content);
+				}
 				emit({ type: 'fileWritten', path: file });
 			} else if ('waitAnswer' in step) {
 				await this.wait(step.waitAnswer, () => this.answers.has(step.waitAnswer));

@@ -35,8 +35,19 @@ export interface AssistantQuestion {
 export type AssistantAnswers = Readonly<Record<string, string>>;
 
 export type AssistantEvent =
-	/** One step of the run, already short and plain (a tool used, a check run, a line of the model's text). */
+	/** A line of the run that is no tool call, already short and plain (such as "Started (model)", a retry). */
 	| { readonly type: 'progress'; readonly text: string }
+	/** Story 8.12: a top-level tool call began: its step row (`label` from `toolProgress`). */
+	| { readonly type: 'step'; readonly id: string; readonly label: string }
+	/** Story 8.12: that tool call's result: ok or failed, and a short result (at most `STEP_RESULT_CHARS`; may be empty). */
+	| { readonly type: 'stepDone'; readonly id: string; readonly ok: boolean; readonly result: string }
+	/** Story 8.12: top-level text of the model's reply, in order (the view joins the pieces). */
+	| { readonly type: 'reply'; readonly text: string }
+	/**
+	 * Story 8.12: the run is about to write `path` (absolute) for the first time: its content before
+	 * (`null`: it did not exist). `tooLarge`: over `SNAPSHOT_MAX_BYTES`, so not kept (`before` is `null`).
+	 */
+	| { readonly type: 'fileChanging'; readonly path: string; readonly before: string | null; readonly tooLarge?: boolean }
 	/** The skill asks; answer with `answer(id, …)`. */
 	| { readonly type: 'question'; readonly id: string; readonly questions: readonly AssistantQuestion[] }
 	/** A tool call outside the boundaries asks; decide with `approve(id, …)`. */
@@ -53,6 +64,11 @@ export type AssistantEvent =
 	 * shows its runtime state, not an error.
 	 */
 	| { readonly type: 'error'; readonly message: string; readonly runtimeMissing?: boolean };
+
+/** Story 8.12: the longest short result of a step row. */
+export const STEP_RESULT_CHARS = 60;
+/** Story 8.12: files larger than this are not snapshotted before a write (their row says "too large to undo"). */
+export const SNAPSHOT_MAX_BYTES = 1024 * 1024;
 
 export type AssistantListener = (event: AssistantEvent) => void;
 

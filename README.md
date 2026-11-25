@@ -151,6 +151,14 @@ A deployed pipeline's log, where its errors are told, can be read in VS Code: th
 
 The topic is read only while the tab is visible: hiding or closing it stops the reading (and a lost connection's tries, which start again when it is shown), and showing it again goes on from where it stopped (a range not yet read to its end is read again). Reading uses no consumer group and commits nothing, and nothing is written to the cluster. Pipeline logs need VS Code running Node 22.22 or later; an older VS Code says so instead of reading.
 
+## RPCN AI Assistant
+
+The assistant's view (its own icon in the activity bar) is a chat. Type a request in plain words and press Enter (Shift+Enter starts a new line); it runs the `rpcn-design` skill against your own binary and writes a design note in the workspace folder. Typing `/` at the start lists the commands: `/design` (the default for a message with no command), and `/build` and `/test`, which are listed but not available yet. While a run goes, **Send** becomes **Stop**.
+
+Each turn shows your message, the skill rpcn used, a row per step (✓ done, ✗ failed, with a short result), the reply, and the files the turn changed with their added and removed line counts. Click a file to open VS Code's diff of the file before the turn and now. **Keep** accepts the turn's changes; **Undo** puts every file back as it was before the turn (a file the turn created is deleted), and asks first if you edited one of them since. Sending the next message keeps the previous turn's changes. A file over 1 MB is not copied before the turn, so its row says "too large to undo" and Undo leaves it alone. The copies from before the turn are kept in memory only, until Keep, Undo, the next message, **New conversation** or a reload; the conversation itself starts fresh after a reload. **Open note** opens the design note a turn wrote, and the stage strip marks Design ✓ once the conversation's note is `ready`.
+
+The reply is shown as Markdown without any HTML. Its links open only when they are `http(s)` links (in your browser) or files in the workspace folder (in the editor). Every text in the view is masked: the assistant's key, any other credential-looking value and your home folder.
+
 ## Requirements
 
 - VS Code 1.100 or newer.

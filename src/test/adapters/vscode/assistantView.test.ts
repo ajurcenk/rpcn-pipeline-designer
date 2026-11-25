@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { maskHome, SKILLS_CHECKOUT_FILES, skillsCopy } from '../../../adapters/vscode/assistantView';
+import { firstMissingFolder, linkTarget, maskHome, removeEmptyFolders, SKILLS_CHECKOUT_FILES, skillsCopy, turnFiles, type TurnSnapshot } from '../../../adapters/vscode/assistantView';
+import { parseCommand, undoLaterEditsText } from '../../../shared/assistantProtocol';
 import { normalBaseUrl, usableBaseUrl } from '../../../adapters/vscode/assistantAccess';
 import { proxyConfigFor } from '../../../adapters/vscode/assistantRuntime';
 
@@ -113,6 +114,94 @@ suite('assistant runtime proxy settings (story 8.2)', () => {
 			assert.strictEqual(proxyConfigFor(https, http({}), { NODE_EXTRA_CA_CERTS: path.join(dir, 'missing.pem') }).ca?.length, 0);
 			assert.strictEqual(proxyConfigFor(https, http({}), {}).proxy, undefined);
 			assert.strictEqual(proxyConfigFor(https, http({ proxy: 'http://setting:2', proxySupport: 'off' }), env).proxy, undefined, 'proxySupport off: none from settings or env');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// Story 8.12: the chat's pure parts: the slash commands, a reply link's target, a turn's file rows.
+suite('assistant chat turns (story 8.12)', () => {
+	const ws = path.resolve('/w/project');
+
+	test('a message\'s slash command, and the text after it; none: the text trimmed', () => {
+		assert.deepStrictEqual(parseCommand('/design orders to an API'), { command: 'design', rest: 'orders to an API' });
+		assert.deepStrictEqual(parseCommand('  /build\nnow'), { command: 'build', rest: 'now' });
+		assert.deepStrictEqual(parseCommand('/test'), { command: 'test', rest: '' });
+		assert.deepStrictEqual(parseCommand('/designer x'), { command: null, rest: '/designer x' });
+		assert.deepStrictEqual(parseCommand(' orders /design '), { command: null, rest: 'orders /design' });
+		assert.strictEqual(undoLaterEditsText(['a.yaml']), 'Undo will discard your edits to `a.yaml` since the turn.');
+	});
+
+	test('a link: http(s) opens outside; a path inside the workspace is a file; anything else nothing', () => {
+		assert.deepStrictEqual(linkTarget('https://docs.redpanda.com/x', ws), { kind: 'external', url: 'https://docs.redpanda.com/x' });
+		assert.deepStrictEqual(linkTarget('HTTP://localhost:4000/', ws), { kind: 'external', url: 'http://localhost:4000/' });
+		assert.deepStrictEqual(linkTarget('orders.design.md#decisions', ws), { kind: 'file', path: path.join(ws, 'orders.design.md') });
+		assert.deepStrictEqual(linkTarget('sub/a%20b.yaml', ws), { kind: 'file', path: path.join(ws, 'sub', 'a b.yaml') });
+		for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'command:workbench.action.reloadWindow', 'vscode://x', '../outside.yaml', '/etc/passwd', '//evil.example/x', '#top', '', '%E0%A4%A']) {
+			assert.strictEqual(linkTarget(bad, ws), undefined, bad);
+		}
+		assert.strictEqual(linkTarget('a.yaml', undefined), undefined, 'no workspace');
+	});
+
+	test('file rows: a changed or new file with its counts; an unchanged one none; one over 1 MB only when written', () => {
+		const snaps = new Map<string, TurnSnapshot>([
+			[path.join(ws, 'a.design.md'), { before: null, tooLarge: false }],
+			[path.join(ws, 'same.yaml'), { before: 'x\n', tooLarge: false }],
+			[path.join(ws, 'sub', 'edit.yaml'), { before: 'a\nb\n', tooLarge: false }],
+			[path.join(ws, 'big.json'), { before: null, tooLarge: true }],
+			[path.join(ws, 'big2.json'), { before: null, tooLarge: true }],
+			[path.join(ws, 'denied.yaml'), { before: null, tooLarge: false }],
+		]);
+		const now: Record<string, string> = { 'a.design.md': '1\n2\n3\n', 'same.yaml': 'x\n', 'sub/edit.yaml': 'a\nc\n' };
+		const read = (abs: string) => now[path.relative(ws, abs).split(path.sep).join('/')] ?? null;
+		const rows = turnFiles(snaps, new Set([path.join(ws, 'big.json')]), ws, read);
+		assert.deepStrictEqual(rows.map((r) => [r.path, r.added, r.removed, r.created, r.tooLarge]), [
+			['a.design.md', 3, 0, true, false],
+			['sub/edit.yaml', 1, 1, false, false],
+			['big.json', 0, 0, false, true],
+		]);
+		assert.strictEqual(rows[1].before, 'a\nb\n');
+		assert.strictEqual(rows[1].after, 'a\nc\n');
+	});
+
+	test('a file the turn created at 2 MB, or grew past 1 MB: too large (no content read, no diff, no undo)', () => {
+		const snaps = new Map<string, TurnSnapshot>([
+			[path.join(ws, 'created.json'), { before: null, tooLarge: false }],
+			[path.join(ws, 'grown.json'), { before: 'small\n', tooLarge: false }],
+		]);
+		const read = () => {
+			throw new Error('read');
+		};
+		const rows = turnFiles(snaps, new Set(), ws, read, () => 2 * 1024 * 1024);
+		assert.deepStrictEqual(rows.map((r) => [r.path, r.tooLarge, r.created, r.before, r.after]), [['created.json', true, true, null, null], ['grown.json', true, false, null, null]]);
+	});
+
+	test('a real 2 MB file the turn created: too large', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpcn-turn-files-'));
+		try {
+			const big = path.join(dir, 'big.json');
+			fs.writeFileSync(big, 'x'.repeat(2 * 1024 * 1024));
+			const rows = turnFiles(new Map([[big, { before: null, tooLarge: false }]]), new Set([big]), dir, () => assert.fail('no read'));
+			assert.deepStrictEqual(rows.map((r) => [r.path, r.tooLarge, r.after]), [['big.json', true, null]]);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('the folder a new file\'s write creates; empty folders removed bottom-up, never one holding a file', () => {
+		const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rpcn-turn-folders-')));
+		try {
+			fs.mkdirSync(path.join(dir, 'flows'));
+			assert.strictEqual(firstMissingFolder(dir, path.join(dir, 'flows', 'x', 'y', 'a.yaml')), path.join(dir, 'flows', 'x'));
+			assert.strictEqual(firstMissingFolder(dir, path.join(dir, 'flows', 'a.yaml')), undefined);
+			assert.strictEqual(firstMissingFolder(dir, path.join(dir, 'a.yaml')), undefined);
+			fs.mkdirSync(path.join(dir, 'flows', 'x', 'y', 'z'), { recursive: true });
+			fs.mkdirSync(path.join(dir, 'flows', 'x', 'kept'), { recursive: true });
+			fs.writeFileSync(path.join(dir, 'flows', 'x', 'kept', 'mine.txt'), 'mine');
+			assert.strictEqual(removeEmptyFolders(path.join(dir, 'flows', 'x')), false);
+			assert.ok(!fs.existsSync(path.join(dir, 'flows', 'x', 'y')), 'the empty ones went');
+			assert.ok(fs.existsSync(path.join(dir, 'flows', 'x', 'kept', 'mine.txt')), 'the file stays');
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}

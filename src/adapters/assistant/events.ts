@@ -1,9 +1,10 @@
-// The SDK's message stream as the port's events (AD-26, story 8.1): each assistant turn's tool calls
-// and text become short progress lines, the final `result` message the run's `result` or `error`.
+// The SDK's message stream as the port's events (AD-26, story 8.1; story 8.12: step rows, their results
+// and the full reply): each top-level tool call a step, its result that step's end, the model's text the
+// reply, the final `result` message the run's `result` or `error`.
 // Plain functions over the messages' shapes, so they are tested without the SDK. No `vscode` or SDK import.
 
 import * as path from 'path';
-import type { AssistantEvent } from './host';
+import { STEP_RESULT_CHARS, type AssistantEvent } from './host';
 import { isInside, QUESTION_TOOL } from './rules';
 
 export interface ProgressContext {
@@ -70,34 +71,102 @@ export function toolProgress(name: string, input: Record<string, unknown>, ctx: 
 
 type Block = Record<string, unknown> & { readonly type?: unknown };
 
-/** The progress lines of one stream message (none for most). */
-export function progressOf(message: unknown, ctx: ProgressContext): string[] {
-	const m = message as Record<string, unknown> | null;
-	if (!m || typeof m !== 'object') {
-		return [];
+/** Story 8.12: a short result of a tool call's output (its text), by tool name; none: no summariser. */
+export type StepSummariser = (output: string, input: Record<string, unknown>) => string;
+
+const countOf = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Story 8.12: the step rows' summarisers (8.4 adds the rpcn tools'); a tool without one shows no result. */
+export const STEP_SUMMARISERS: Readonly<Record<string, StepSummariser>> = {
+	Read: (output) => countOf(output.split(/\r?\n/).filter((l) => l.trim() !== '').length, 'line', 'lines'),
+	Glob: (output) => (/^no files found/i.test(output.trim()) ? '0 files' : countOf(output.split(/\r?\n/).filter((l) => l.trim() !== '').length, 'file', 'files')),
+	Write: () => 'written',
+	Edit: () => 'edited',
+	MultiEdit: () => 'edited',
+	NotebookEdit: () => 'edited',
+};
+
+/** Story 8.12: a text on one line, at most `max` characters. */
+export function oneLine(text: string, max: number): string {
+	const one = text.replace(/\s+/g, ' ').trim();
+	return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
+/** The text of a `tool_result` block's content (a string, or text blocks). */
+function resultText(content: unknown): string {
+	if (typeof content === 'string') {
+		return content;
 	}
-	if (m.type === 'system' && m.subtype === 'init') {
-		return [`Started (${typeof m.model === 'string' ? m.model : 'model'})`];
+	if (Array.isArray(content)) {
+		return (content as Block[]).filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text as string).join('\n');
 	}
-	if (m.type !== 'assistant' || m.parent_tool_use_id) {
-		return [];
+	return '';
+}
+
+/** Story 8.12: a step's short result: the summariser's (at most `STEP_RESULT_CHARS`); failed: the error's first line. */
+export function stepResult(tool: string, input: Record<string, unknown>, output: string, ok: boolean): string {
+	if (!ok) {
+		const first = output.split(/\r?\n/).map((l) => l.trim()).find((l) => l !== '') ?? '';
+		return oneLine(first.replace(/^<tool_use_error>|<\/tool_use_error>$/g, ''), STEP_RESULT_CHARS);
 	}
-	const content = (m.message as { content?: unknown } | undefined)?.content;
-	if (!Array.isArray(content)) {
-		return [];
+	const summarise = STEP_SUMMARISERS[tool];
+	if (!summarise) {
+		return '';
 	}
-	const lines: string[] = [];
-	for (const b of content as Block[]) {
-		if (b?.type === 'text' && typeof b.text === 'string') {
-			const first = b.text.split(/\r?\n/).map((l) => l.trim()).find((l) => l !== '');
-			if (first) {
-				lines.push(clip(first));
-			}
-		} else if (b?.type === 'tool_use' && typeof b.name === 'string') {
-			lines.push(toolProgress(b.name, (b.input ?? {}) as Record<string, unknown>, ctx));
+	try {
+		return oneLine(summarise(output, input), STEP_RESULT_CHARS);
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Story 8.12: the SDK's stream as the port's events, one message at a time. `init` is a progress line
+ * naming the model; each top-level `tool_use` a `step` (subagent turns, with `parent_tool_use_id`, give
+ * none), and the `tool_result` that answers it (matched by `tool_use_id`) its `stepDone`; each top-level
+ * text block a `reply`. It keeps the open steps' tools, so it is one per run.
+ */
+export class StreamMapper {
+	private readonly open = new Map<string, { readonly name: string; readonly input: Record<string, unknown> }>();
+
+	constructor(private readonly ctx: ProgressContext) {}
+
+	map(message: unknown): AssistantEvent[] {
+		const m = message as Record<string, unknown> | null;
+		if (!m || typeof m !== 'object') {
+			return [];
 		}
+		if (m.type === 'system' && m.subtype === 'init') {
+			return [{ type: 'progress', text: `Started (${typeof m.model === 'string' ? m.model : 'model'})` }];
+		}
+		if ((m.type !== 'assistant' && m.type !== 'user') || m.parent_tool_use_id) {
+			return [];
+		}
+		const content = (m.message as { content?: unknown } | undefined)?.content;
+		if (!Array.isArray(content)) {
+			return [];
+		}
+		const events: AssistantEvent[] = [];
+		for (const b of content as Block[]) {
+			if (m.type === 'assistant' && b?.type === 'text' && typeof b.text === 'string') {
+				if (b.text.trim() !== '') {
+					events.push({ type: 'reply', text: b.text });
+				}
+			} else if (m.type === 'assistant' && b?.type === 'tool_use' && typeof b.name === 'string' && typeof b.id === 'string') {
+				const input = (b.input ?? {}) as Record<string, unknown>;
+				this.open.set(b.id, { name: b.name, input });
+				events.push({ type: 'step', id: b.id, label: toolProgress(b.name, input, this.ctx) });
+			} else if (m.type === 'user' && b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+				const call = this.open.get(b.tool_use_id);
+				if (call) {
+					this.open.delete(b.tool_use_id);
+					const ok = b.is_error !== true;
+					events.push({ type: 'stepDone', id: b.tool_use_id, ok, result: stepResult(call.name, call.input, resultText(b.content), ok) });
+				}
+			}
+		}
+		return events;
 	}
-	return lines;
 }
 
 /** HTTP statuses a retry cannot change: the key or the model refused (ADP and Anthropic alike). */
