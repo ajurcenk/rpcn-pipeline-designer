@@ -223,3 +223,17 @@ context:
 
 - `npm run compile` passed; `npm run test:webview` 463/463; `npm run compile-tests` passed.
 - Full stable suite run twice: 1915 passing, 1 pending each time. `--label multiroot`: 15 passing. No floor run.
+
+### Orchestrator verification (after the manual-check fixes, 2026-11-25)
+
+- At `29b7249`: `npm run compile` passed; `npm run test:webview` 476/476; full stable suite twice, 1920 passing and 1 pending each time; `--label multiroot` 15 passing. No floor run.
+
+## Manual Check
+
+- 2026-11-25, the user, VS Code 1.143.1 dev host from `.vscode-test`, through the Redpanda ADP endpoint: four rounds against option A.
+  - Round 1 led to `4efc6bb`: the step card, repeats grouped, skill reads folded, warning marks, the You header, the rpcn badge, the + icon, the note's status badge, the questions summary, and a guard on Keep and Undo against a stray click.
+  - Round 2 led to `72a5601`: approvals folded into their step, shell commands grouped, and ended turns collapsed.
+  - Round 3 led to `90269a1`: copy through the host, plus Copy reply, Copy code and Copy command.
+  - Round 4 led to `29b7249`: per-turn and per-step timing, with the time spent waiting on the user.
+  - The final check passed with no issues.
+- Approvals still open VS Code's modal. That is by design here: 8.5 brings in-chat approvals and Allow for this session, and the user moved 8.5 ahead of 8.3.
