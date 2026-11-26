@@ -3,7 +3,7 @@ title: 'Boundaries and approvals'
 type: 'feature'
 ticket: '5'
 created: '2026-11-25'
-status: 'built'
+status: done
 baseline_revision: '099e538122cac1fdb8a47578536bfc894353fa03'
 route: 'full'
 route_source: 'auto'
