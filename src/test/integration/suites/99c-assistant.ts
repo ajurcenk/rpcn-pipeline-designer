@@ -1,6 +1,6 @@
 // The RPCN AI Assistant's tracer bullet (story 8.1, AD-26), end to end in the stable run, with no model
-// call: the assistant view through its test seams (`receive`, as the webview posts; its approval prompt
-// replaced), against the scripted in-memory host (`helpers/fakeAssistantHost.ts`) and against the
+// call: the assistant view through its test seams (`receive`, as the webview posts; story 8.5: an
+// approval card's decision posted as the webview's `approvalDecided`), against the scripted in-memory host (`helpers/fakeAssistantHost.ts`) and against the
 // embedded Agent SDK talking to a local fake Messages API (`helpers/fakeMessagesApi.ts`). The stable run
 // opens no folder: the seam holds a temporary folder as the workspace, and an `ok` binary state on a fake
 // binary. The key goes through Set up assistant access… into the secret storage. Every row of the plan's
@@ -15,7 +15,9 @@ import { ASSISTANT_KEY_SECRET, ASSISTANT_KEY_URL_SECRET, SET_UP_ASSISTANT_ACCESS
 import { ASSISTANT_VIEW_ID, BEFORE_SCHEME, bundledSkillsDir, RUN_ASSISTANT_COMMAND, type AssistantRunOutcome, type AssistantViewUi } from '../../../adapters/vscode/assistantView';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import type { BinaryState } from '../../../adapters/redpandaConnect/binary';
-import { RUNTIME_MISSING_TEXT, unavailableText, type AssistantStateMessage, type AssistantTurnView } from '../../../shared/assistantProtocol';
+import {
+	RUNTIME_MISSING_TEXT, SESSION_ALLOWED_RESULT, unavailableText, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantStateMessage, type AssistantTurnView,
+} from '../../../shared/assistantProtocol';
 import { agentSdkHost } from '../../../adapters/assistant/agentSdkHost';
 import { hostPlatform } from '../../../adapters/assistant/platform';
 import {
@@ -25,6 +27,7 @@ import {
 import { type ExtensionApi } from '../../../extension';
 import { FakeAssistantHosts, happyScript, readyNote, reply, RUN_2_QUESTIONS, step, stepDone, type FakeAssistantStep } from '../../helpers/fakeAssistantHost';
 import { makeTempDir, REPO_ROOT, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
+import { shellKey } from '../../../adapters/assistant/rules';
 import { ADP_401, FakeMessagesApi, toolUseId, type FakeTurn } from '../../helpers/fakeMessagesApi';
 import { FakeProxy, FakeRegistry, fakeRuntime, SDK, tarball, tarballPath } from '../../helpers/fakeRegistry';
 import { EXTENSION_ID, userFilesHolding, waitFor } from '../helpers';
@@ -62,8 +65,15 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	const externals: string[] = [];
 	/** Manual check 3: what went to the clipboard seam. */
 	const copied: string[] = [];
-	/** The approval prompt's answer (default: Deny). */
-	let approveWith: (summary: string) => Promise<boolean> = async () => false;
+	/**
+	 * Story 8.5: each approval card's decision (default: Deny), posted as the webview would
+	 * (`approvalDecided`) once the card is in the current turn. `approvals` gets each card's summary,
+	 * `cards` the whole card.
+	 */
+	let approveWith: (card: AssistantApprovalView) => AssistantApprovalDecision | Promise<AssistantApprovalDecision> = () => 'deny';
+	const cards: AssistantApprovalView[] = [];
+	const decided = new Set<string>();
+	let approvalWatch: vscode.Disposable | undefined;
 
 	/**
 	 * Starts a run and waits until it has started (or ended without starting); resolves with a promise of
@@ -125,11 +135,20 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		binary = { kind: 'ok', path: bin, version: '4.112.0', invocation: [bin] };
 		originalViewUi = view().ui;
 		originalAccessUi = assistant().access.ui;
+		approvalWatch = view().onDidChange(() => {
+			const t = view().state().turns.at(-1);
+			for (const card of t?.approvals ?? []) {
+				// Each run's host numbers its approvals from 1: a card is its turn's and its id.
+				const key = `${t!.id}/${card.id}`;
+				if (!decided.has(key)) {
+					decided.add(key);
+					approvals.push(card.summary);
+					cards.push(card);
+					void Promise.resolve(approveWith(card)).then((decision) => view().receive({ type: 'approvalDecided', id: card.id, decision }));
+				}
+			}
+		});
 		view().ui = {
-			approve: async (summary) => {
-				approvals.push(summary);
-				return approveWith(summary);
-			},
 			confirmUndo: async (message) => {
 				undoAsked.push(message);
 				return undoWith;
@@ -159,6 +178,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		}
 		view().stop();
 		await waitFor(() => !view().running, 10_000);
+		approvalWatch?.dispose();
+		view().forgetSessionForTest();
 		assistant().setHostFactory(undefined);
 		await setSkillsPath(undefined);
 		await assistant().setAccessForTest({ key: null, model: null, baseUrl: null, auth: null, binary: null, workspace: null, uv: null });
@@ -175,8 +196,11 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	});
 
 	setup(async () => {
-		approveWith = async () => false;
+		approveWith = () => 'deny';
 		approvals.length = 0;
+		cards.length = 0;
+		decided.clear();
+		view().forgetSessionForTest();
 		shown.length = 0;
 		undoAsked.length = 0;
 		undoWith = true;
@@ -414,12 +438,12 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		}
 	});
 
-	test('review 5: two approvals open at once: approval until both are decided, each by its id', async () => {
-		const pending: ((allow: boolean) => void)[] = [];
+	test('review 5, story 8.5 TWO_OPEN: two approvals open at once: two cards; approval until both are decided, each by its own card', async () => {
+		const pending: ((decision: AssistantApprovalDecision) => void)[] = [];
 		approveWith = () => new Promise((resolve) => pending.push(resolve));
 		const hosts = new FakeAssistantHosts([
-			{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `ls`' } },
-			{ emit: { type: 'approval', id: 'a2', tool: 'WebFetch', summary: 'use WebFetch' } },
+			{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `ls`', sessionKey: 'ls' } },
+			{ emit: { type: 'approval', id: 'a2', tool: 'WebFetch', summary: 'use WebFetch', sessionKey: null } },
 			{ waitApproval: 'a1' },
 			{ waitApproval: 'a2' },
 		]);
@@ -428,12 +452,129 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		const { done } = await startRun();
 		assert.ok(await waitFor(() => pending.length === 2, 10_000));
 		assert.strictEqual(state().status, 'approval');
-		pending[1](true);
+		assert.deepStrictEqual(turn().approvals, [
+			{ id: 'a1', summary: 'run `ls`', detail: null, sessionKey: 'ls', stepId: 'a1', write: false },
+			{ id: 'a2', summary: 'use WebFetch', detail: null, sessionKey: null, stepId: 'a2', write: false },
+		]);
+		pending[1]('once');
 		assert.ok(await waitFor(() => hosts.last!.approvals.has('a2'), 5_000));
 		assert.strictEqual(state().status, 'approval', 'a1 is still open');
-		pending[0](false);
+		assert.deepStrictEqual(turn().approvals.map((a) => a.id), ['a1'], 'a2\'s card went');
+		pending[0]('deny');
 		assert.strictEqual(await done, 'done');
-		assert.deepStrictEqual([...hosts.last!.approvals], [['a2', true], ['a1', false]]);
+		assert.deepStrictEqual([...hosts.last!.approvals], [['a2', 'once'], ['a1', 'deny']]);
+		assert.deepStrictEqual(turn().approvals, []);
+	});
+
+	test('story 8.5 SESSION (fake host): Allow for this session remembers the key: the next call with it has no card, its row says so; New conversation keeps it; nothing stores it', async () => {
+		const KEY_PIPE = 'rpk connect list | python3';
+		const script: FakeAssistantStep[] = [
+			step('s1', 'Ran a shell command'),
+			{ waitApproval: 'a1', sessionKey: KEY_PIPE, summary: 'run `rpk connect list | python3 -I -c …`', stepId: 's1', detail: 'rpk connect list --format jsonschema | python3 -I -c "…"' },
+			stepDone('s1', true, '42'),
+		];
+		const hosts = new FakeAssistantHosts(script);
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		approveWith = () => 'session';
+		assert.strictEqual(await view().run(REQUEST), 'done');
+		assert.deepStrictEqual(cards, [{
+			id: 'a1', summary: 'run `rpk connect list | python3 -I -c …`', detail: 'rpk connect list --format jsonschema | python3 -I -c "…"', sessionKey: KEY_PIPE, stepId: 's1', write: false,
+		}]);
+		assert.deepStrictEqual(hosts.last!.approvals.get('a1'), 'session');
+		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.result]), [['s1', 'ok', SESSION_ALLOWED_RESULT]]);
+		assert.deepStrictEqual(view().sessionKeys(), [KEY_PIPE]);
+		// SESSION_HIT, after New conversation: no card; the row says "allowed (this session)".
+		await view().newConversation();
+		assert.strictEqual(await view().run(REQUEST), 'done');
+		assert.strictEqual(cards.length, 1, 'no second card');
+		assert.ok(!hosts.last!.approvals.has('a1'), 'never asked');
+		assert.ok(hosts.last!.events.some((e) => e.type === 'remembered' && e.sessionKey === KEY_PIPE));
+		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.result]), [['s1', 'ok', SESSION_ALLOWED_RESULT]]);
+		// SESSION_MISS: another key asks. ONCE: Allow once remembers nothing.
+		hosts.script = [{ waitApproval: 'a2', sessionKey: 'rpk cluster info', summary: 'run `rpk cluster info`' }, { waitApproval: 'a3', sessionKey: 'rpk cluster info', summary: 'run `rpk cluster info`' }];
+		approveWith = () => 'once';
+		assert.strictEqual(await view().run(REQUEST), 'done');
+		assert.deepStrictEqual(cards.slice(1).map((c) => [c.id, c.sessionKey]), [['a2', 'rpk cluster info'], ['a3', 'rpk cluster info']], 'a card each time');
+		assert.deepStrictEqual(view().sessionKeys(), [KEY_PIPE]);
+		// RELOAD: the memory is in the view only: no setting or global storage file holds it.
+		assert.deepStrictEqual(userFilesHolding(KEY_PIPE), []);
+		view().forgetSessionForTest();
+		assert.deepStrictEqual(view().sessionKeys(), []);
+	});
+
+	test('story 8.5: Allow for this session on one card settles the other open cards with the same key', async () => {
+		approveWith = () => new Promise(() => undefined);
+		const hosts = new FakeAssistantHosts([
+			step('s1', 'Ran a shell command'),
+			step('s2', 'Ran a shell command'),
+			{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `grep a x`', sessionKey: 'grep', stepId: 's1' } },
+			{ emit: { type: 'approval', id: 'a2', tool: 'Bash', summary: 'run `grep b x`', sessionKey: 'grep', stepId: 's2' } },
+			{ emit: { type: 'approval', id: 'a3', tool: 'Bash', summary: 'run `cat x`', sessionKey: 'cat' } },
+			{ waitApproval: 'a1' },
+			{ waitApproval: 'a2' },
+			{ waitApproval: 'a3' },
+			stepDone('s1', true, 'a'),
+			stepDone('s2', true, 'b'),
+		]);
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const { done } = await startRun();
+		assert.ok(await waitFor(() => turn().approvals.length === 3, 10_000));
+		await view().receive({ type: 'approvalDecided', id: 'a2', decision: 'session' });
+		assert.deepStrictEqual(turn().approvals.map((a) => a.id), ['a3'], 'a1 went with a2; a3 (another key) stays');
+		assert.deepStrictEqual([hosts.last!.approvals.get('a1'), hosts.last!.approvals.get('a2')], ['session', 'session']);
+		await view().receive({ type: 'approvalDecided', id: 'a3', decision: 'deny' });
+		assert.strictEqual(await done, 'done');
+		assert.deepStrictEqual(turn().steps.filter((x) => x.id === 's1' || x.id === 's2').map((x) => x.result), [SESSION_ALLOWED_RESULT, SESSION_ALLOWED_RESULT]);
+		assert.deepStrictEqual(view().sessionKeys(), ['grep']);
+	});
+
+	test('story 8.5 NO_KEY_CARD and WITHDRAWN: a call with no key has no session choice (session on it is once); a withdrawn approval\'s card goes; Stop removes an open card', async () => {
+		approveWith = () => new Promise(() => undefined);
+		const hosts = new FakeAssistantHosts([
+			{ waitApproval: 'a0', sessionKey: null, summary: 'run `rm y`' },
+			{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `rm x`', sessionKey: null } },
+			{ delayMs: 300 },
+			{ emit: { type: 'withdrawn', id: 'a1' } },
+			{ waitApproval: 'a2', sessionKey: 'grep', summary: 'run `grep x`' },
+		]);
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const { done } = await startRun();
+		assert.ok(await waitFor(() => turn().approvals.length === 1, 10_000));
+		// A webview posting `session` for a card with no key: Allow once; nothing remembered.
+		await view().receive({ type: 'approvalDecided', id: 'a0', decision: 'session' });
+		assert.ok(await waitFor(() => hosts.last!.approvals.has('a0'), 5_000));
+		assert.strictEqual(hosts.last!.approvals.get('a0'), 'once');
+		assert.deepStrictEqual(view().sessionKeys(), []);
+		assert.deepStrictEqual(turn().steps.find((x) => x.id === 'a0')?.result, 'allowed');
+		assert.ok(await waitFor(() => turn().approvals[0]?.id === 'a1', 5_000));
+		assert.deepStrictEqual(turn().approvals[0], { id: 'a1', summary: 'run `rm x`', detail: null, sessionKey: null, stepId: 'a1', write: false });
+		assert.ok(await waitFor(() => turn().approvals.map((a) => a.id).join() === 'a2', 5_000), JSON.stringify(turn().approvals));
+		// A decision for the withdrawn one changes nothing.
+		await view().receive({ type: 'approvalDecided', id: 'a1', decision: 'once' });
+		assert.ok(!hosts.last!.approvals.has('a1'));
+		await view().receive({ type: 'stopRequested' });
+		assert.strictEqual(await done, 'stopped');
+		assert.deepStrictEqual(turn().approvals, [], 'the card went');
+		assert.strictEqual(state().status, 'stopped');
+	});
+
+	test('story 8.5 LEAK (host half): the key and the home folder in an approval\'s summary, detail and key are masked on the card', async () => {
+		const home = os.homedir();
+		approveWith = () => 'deny';
+		const hosts = new FakeAssistantHosts([
+			{ waitApproval: 'a1', sessionKey: 'cat', summary: `run \`cat ${home}/x\``, detail: `cat ${home}/x # Bearer ${KEY}` },
+		]);
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		assert.strictEqual(await view().run(REQUEST), 'done');
+		assert.strictEqual(cards.length, 1);
+		assert.strictEqual(cards[0].summary, 'run `cat ~/x`');
+		assert.ok(cards[0].detail?.startsWith('cat ~/x # ') && !cards[0].detail.includes(KEY), String(cards[0].detail));
+		assert.ok(!JSON.stringify(view().posted).includes(KEY));
+		assert.ok(!JSON.stringify(view().posted).includes(home + path.sep));
 	});
 
 	test('review 5: two questions open: the oldest cards first, then the next; a withdrawn question\'s cards go', async () => {
@@ -789,9 +930,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		});
 
 		test('STATES in the chat: the approval row (status approval) in the running turn; stopped; an error', async () => {
-			let resolve: ((allow: boolean) => void) | undefined;
+			let resolve: ((decision: AssistantApprovalDecision) => void) | undefined;
 			approveWith = () => new Promise((r) => (resolve = r));
-			const hosts = new FakeAssistantHosts([{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `ls`' } }, { waitApproval: 'a1' }]);
+			const hosts = new FakeAssistantHosts([{ emit: { type: 'approval', id: 'a1', tool: 'Bash', summary: 'run `ls`', sessionKey: 'ls' } }, { waitApproval: 'a1' }]);
 			assistant().setHostFactory(hosts.factory);
 			await assistant().setAccessForTest({ key: KEY });
 			const { done } = await startRun();
@@ -800,7 +941,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(turn().outcome, 'running');
 			// Manual check 2: an approval with no step of its own (the fake host sends none) is one row; its outcome its result.
 			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'running', '']]);
-			resolve!(false);
+			resolve!('deny');
 			assert.strictEqual(await done, 'done');
 			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'failed', 'denied']]);
 			await run([{ emit: { type: 'error', message: 'boom' } }]);
@@ -1339,6 +1480,110 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(writes[1].result.startsWith('PreToolUse:Write hook error'), writes[1].result);
 		});
 
+		test('story 8.5 WS_CHECK, CHAINED, RUN_ASKS, REDIRECT, PIPE_KEY (fake model): each asks; only the read-only pipe offers its session key; denied, none runs', async () => {
+			const rpk = writeFakeBinary(root, 'rpk', 'echo \'{"inputs":[]}\'');
+			const commands = [
+				'uv run evil/rpcn_check.py list',
+				`uv run ${script} list; rm x`,
+				'printf \'input: {}\' | timeout 60 rpk connect run /tmp/x.yaml',
+				'rpk connect list > out.txt',
+				`${rpk} connect list --format jsonschema 2>/dev/null | python3 -I -c "import sys; print(len(sys.stdin.read()))"`,
+			];
+			fakeApi.turns = commands.map((command) => ({ tool: 'Bash', input: { command } }));
+			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+			assert.deepStrictEqual(cards.map((c) => c.sessionKey), [null, null, null, null, 'rpk connect list | python3'], JSON.stringify(cards));
+			assert.deepStrictEqual(commands.map((c) => shellKey(c, ws)), [null, null, null, null, 'rpk connect list | python3'], 'the rules\' key, as the cards got it');
+			commands.forEach((_, i) => assert.ok(fakeApi.results.get(toolUseId(i))?.isError, `denied: ${commands[i]}`));
+			assert.ok(!fs.existsSync(path.join(ws, 'out.txt')));
+			assert.ok(turn().steps.filter((x) => x.mark !== 'info').every((x) => x.mark === 'failed' && x.result === 'denied'), JSON.stringify(turn().steps));
+			assert.deepStrictEqual(view().sessionKeys(), []);
+		});
+
+		test('story 8.5 PIPE_KEY, SESSION_HIT, SESSION_MISS, ONCE (fake model): Allow for this session, then the same key runs without a card; another key and Allow once ask again', async () => {
+			const rpk = writeFakeBinary(root, 'rpk', 'echo \'{"inputs":[]}\'');
+			const reads = 'import sys; print(len(sys.stdin.read()))';
+			const commands = [
+				`${rpk} connect list --format jsonschema 2>/dev/null | python3 -I -c "${reads}"`,
+				`${rpk} connect list --format json caches | python3 -I -c "import sys; sys.stdin.read(); print('other')"`,
+				`${rpk} cluster info`,
+				'echo once',
+				'echo once',
+			];
+			const decisions: AssistantApprovalDecision[] = ['session', 'deny', 'once', 'deny'];
+			approveWith = () => decisions.shift() ?? 'deny';
+			fakeApi.turns = commands.map((command) => ({ tool: 'Bash', input: { command } }));
+			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+			assert.deepStrictEqual(cards.map((c) => c.sessionKey), ['rpk connect list | python3', 'rpk cluster info', 'echo', 'echo'], JSON.stringify([cards, turn().steps, [...fakeApi.results]]));
+			// The card holds the whole command (masked), for Copy command.
+			assert.ok(cards[0].detail?.endsWith(`| python3 -I -c "${reads}"`), String(cards[0].detail));
+			assert.deepStrictEqual(view().sessionKeys(), ['rpk connect list | python3']);
+			assert.deepStrictEqual([0, 1, 2, 3, 4].map((i) => fakeApi.results.get(toolUseId(i))?.isError), [false, false, true, false, true], JSON.stringify([...fakeApi.results]));
+			assert.ok(fakeApi.results.get(toolUseId(1))?.text.includes('other'), 'the remembered call ran');
+			const row = (i: number) => turn().steps.find((x) => x.id === toolUseId(i));
+			assert.strictEqual(row(0)?.result, SESSION_ALLOWED_RESULT);
+			assert.strictEqual(row(1)?.result, SESSION_ALLOWED_RESULT, JSON.stringify(turn().steps));
+			assert.strictEqual(row(2)?.result, 'denied');
+			assert.strictEqual(row(4)?.result, 'denied');
+		});
+
+		test('story 8.5 OWN_NOTE, OTHER_WRITE, OUTSIDE (fake model): the note written and edited with no card; Write for this session; a write outside still denied with no card', async () => {
+			const note = path.join(ws, 'x.design.md');
+			const outside = path.join(root, 'outside-session.txt');
+			approveWith = () => 'session';
+			fakeApi.turns = [
+				{ tool: 'Write', input: { file_path: note, content: readyNote('x') } },
+				{ tool: 'Edit', input: { file_path: note, old_string: 'A fake note.', new_string: 'An edited note.' } },
+				{ tool: 'Write', input: { file_path: path.join(ws, 'a.yaml'), content: 'a: 1\n' } },
+				{ tool: 'Write', input: { file_path: path.join(ws, 'b.yaml'), content: 'b: 1\n' } },
+				{ tool: 'Write', input: { file_path: outside, content: 'x' } },
+			];
+			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+			assert.deepStrictEqual(cards.map((c) => c.sessionKey), ['Write'], JSON.stringify(cards));
+			assert.ok(cards[0].summary.endsWith('a.yaml'), cards[0].summary);
+			assert.ok(fs.readFileSync(note, 'utf8').includes('An edited note.'), 'the note edited without asking');
+			assert.strictEqual(fs.readFileSync(path.join(ws, 'b.yaml'), 'utf8'), 'b: 1\n');
+			assert.ok(!fs.existsSync(outside), 'outside: denied');
+			assert.deepStrictEqual([0, 1, 2, 3, 4].map((i) => fakeApi.results.get(toolUseId(i))?.isError), [false, false, false, false, true], JSON.stringify([...fakeApi.results]));
+			assert.strictEqual(turn().steps.find((x) => x.id === toolUseId(3))?.result, SESSION_ALLOWED_RESULT, JSON.stringify(turn().steps));
+		});
+
+		test('story 8.5 manual check 1 (fake model): a Read of a tool result spilled under the agent\'s own config folder runs with no card; a sibling outside it asks', async () => {
+			const config = path.join(REPO_ROOT, '.vscode-test', 'user-data', 'User', 'globalStorage', EXTENSION_ID, 'assistant', 'claude-config');
+			const spilled = path.join(config, 'projects', 'rpcn-test', 'session', 'tool-results', 'spilled.txt');
+			const sibling = path.join(config, '..', 'spilled-sibling.txt');
+			fs.mkdirSync(path.dirname(spilled), { recursive: true });
+			fs.writeFileSync(spilled, 'spilled tool result\n');
+			fs.writeFileSync(sibling, 'not a tool result\n');
+			try {
+				fakeApi.turns = [{ tool: 'Read', input: { file_path: spilled } }, { tool: 'Read', input: { file_path: sibling } }];
+				assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+				assert.strictEqual(cards.length, 1, JSON.stringify(cards));
+				assert.ok(cards[0].summary.endsWith('spilled-sibling.txt'), cards[0].summary);
+				const read = fakeApi.results.get(toolUseId(0));
+				assert.ok(read && !read.isError && read.text.includes('spilled tool result'), JSON.stringify(read));
+				assert.ok(fakeApi.results.get(toolUseId(1))?.isError, 'the sibling was denied');
+			} finally {
+				fs.rmSync(path.join(config, 'projects', 'rpcn-test'), { recursive: true, force: true });
+				fs.rmSync(sibling, { force: true });
+			}
+		});
+
+		test('story 8.5 HOME (fake model): a whole design run with HOME a temporary folder leaves nothing new in it', async () => {
+			const home = fs.realpathSync(makeTempDir('rpcn-assistant-home-'));
+			try {
+				assistant().setHostFactory((config) => agentSdkHost({ ...config, baseEnv: { ...config.baseEnv, HOME: home } }));
+				fakeApi.turns = turns();
+				const { done } = await startRun();
+				assert.ok(await waitFor(() => state().status === 'question' || !view().running, 90_000), JSON.stringify(state()));
+				await answerPicks();
+				assert.strictEqual(await done, 'done', JSON.stringify(state()));
+				assert.ok(fs.existsSync(path.join(ws, 'orders_to_api.design.md')));
+				assert.deepStrictEqual(fs.readdirSync(home, { recursive: true }), [], 'nothing under the home folder');
+			} finally {
+				fs.rmSync(home, { recursive: true, force: true });
+			}
+		});
+
 		test('AGENT_ERROR (fake model): a 401 shows a masked error line; the run ends; a new request works', async () => {
 			fakeApi.failure = { status: ADP_401.status, body: { ...ADP_401.body, message: `invalid api key ${KEY}` } };
 			assert.strictEqual(await view().run(REQUEST), 'error', JSON.stringify(state()));
@@ -1355,7 +1600,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		});
 
 		test('review 9: an approval allowed: the write happens, its result is no error, its step row ends ok', async () => {
-			approveWith = async () => true;
+			approveWith = () => 'once';
 			fakeApi.turns = [{ tool: 'Write', input: { file_path: path.join(ws, 'orders.yaml'), content: 'input: {}\n' } }];
 			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
 			assert.strictEqual(approvals.length, 1);

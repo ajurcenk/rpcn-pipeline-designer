@@ -106,6 +106,25 @@ export interface AssistantChipView {
 	readonly hint: string | null;
 }
 
+/** Story 8.5: what the user decides on an approval card: this call, its key for the session, or deny. */
+export type AssistantApprovalDecision = 'once' | 'session' | 'deny';
+export const APPROVAL_DECISIONS: readonly AssistantApprovalDecision[] = ['once', 'session', 'deny'];
+
+/** Story 8.5: an open approval, as a card in the current turn (every text masked). */
+export interface AssistantApprovalView {
+	readonly id: string;
+	/** What the call does ("run `…`", "write …"), clipped. */
+	readonly summary: string;
+	/** The full command or file (`null`: none beyond the summary). */
+	readonly detail: string | null;
+	/** What Allow for this session remembers (`null`: the call always asks, no session choice). */
+	readonly sessionKey: string | null;
+	/** The step row the card goes under (`null`: none; after the steps). */
+	readonly stepId: string | null;
+	/** Whether it writes a file (its detail is a path: Copy path). */
+	readonly write: boolean;
+}
+
 /** Story 8.12: one turn of the conversation: the user's message and rpcn's answer to it. */
 export interface AssistantTurnView {
 	readonly id: string;
@@ -132,6 +151,8 @@ export interface AssistantTurnView {
 	 */
 	readonly elapsedMs: number;
 	readonly waitingMs: number;
+	/** Story 8.5: the run's open approvals, oldest first, as cards (only on the current turn). */
+	readonly approvals: readonly AssistantApprovalView[];
 }
 
 export interface AssistantStateMessage {
@@ -184,9 +205,27 @@ export type AssistantWebviewMessage =
 	| { readonly type: 'openLink'; readonly href: string }
 	| { readonly type: 'newConversation' }
 	/** Manual check 3: text to put on the clipboard (the host writes it; at most `MAX_COPY_CHARS`). */
-	| { readonly type: 'copyText'; readonly text: string };
+	| { readonly type: 'copyText'; readonly text: string }
+	/** Story 8.5: an approval card's button (or Escape: `deny`). */
+	| { readonly type: 'approvalDecided'; readonly id: string; readonly decision: AssistantApprovalDecision };
 
 export const ASSISTANT_TITLE = 'RPCN AI Assistant';
+/** Story 8.5: the approval card. */
+export const ALLOW_ONCE_LABEL = 'Allow once';
+export const DENY_LABEL = 'Deny';
+export const COPY_COMMAND_LABEL = 'Copy command';
+export const COPY_PATH_LABEL = 'Copy path';
+/** Story 8.5: the card of a call with no session key. */
+export const ALWAYS_ASKS_TEXT = 'This command always asks.';
+/** Story 8.5: the session button's text, around its key (the key in code). */
+export const ALLOW_SESSION_PREFIX = 'Allow ';
+export const ALLOW_SESSION_SUFFIX = ' for this session';
+/** Story 8.5: the session button's whole text. */
+export function allowSessionLabel(key: string): string {
+	return `${ALLOW_SESSION_PREFIX}\`${key}\`${ALLOW_SESSION_SUFFIX}`;
+}
+/** Story 8.5: a step's result when its call was allowed through the session memory. */
+export const SESSION_ALLOWED_RESULT = 'allowed (this session)';
 /** How a skill marks its pick in an option's label. */
 export const PICK_MARK = '(My pick)';
 export const OTHER_LABEL = 'Other';
@@ -422,6 +461,12 @@ function parseChip(v: unknown): AssistantChipView | undefined {
 		? { label: v.label, command: v.command, enabled: v.enabled, hint: v.hint } : undefined;
 }
 
+function parseApproval(v: unknown): AssistantApprovalView | undefined {
+	return isObject(v) && isString(v.id) && isString(v.summary) && isNullableString(v.detail) && isNullableString(v.sessionKey) && isNullableString(v.stepId)
+		&& typeof v.write === 'boolean'
+		? { id: v.id, summary: v.summary, detail: v.detail, sessionKey: v.sessionKey, stepId: v.stepId, write: v.write } : undefined;
+}
+
 function parseTurn(v: unknown): AssistantTurnView | undefined {
 	if (!isObject(v) || !isString(v.id) || !isCommand(v.command) || !isString(v.text) || !isString(v.skill) || !isString(v.reply)
 		|| !isString(v.review) || !REVIEWS.includes(v.review) || !isString(v.outcome) || !OUTCOMES.includes(v.outcome) || !isNullableString(v.notice)
@@ -433,12 +478,13 @@ function parseTurn(v: unknown): AssistantTurnView | undefined {
 	const actions = parseList(v.actions, parseAction);
 	const chips = parseList(v.chips, parseChip);
 	const note = parseNote(v.note);
-	if (!steps || !files || !actions || !chips || note === undefined) {
+	const approvals = parseList(v.approvals, parseApproval);
+	if (!steps || !files || !actions || !chips || note === undefined || !approvals) {
 		return undefined;
 	}
 	return {
 		id: v.id, command: v.command, text: v.text, skill: v.skill, steps, reply: v.reply, files, review: v.review as AssistantReview, note,
-		actions, chips, outcome: v.outcome as AssistantOutcome, notice: v.notice, elapsedMs: v.elapsedMs, waitingMs: v.waitingMs,
+		actions, chips, outcome: v.outcome as AssistantOutcome, notice: v.notice, elapsedMs: v.elapsedMs, waitingMs: v.waitingMs, approvals,
 	};
 }
 
@@ -492,6 +538,9 @@ export function parseAssistantWebviewMessage(v: unknown): AssistantWebviewMessag
 			return isString(v.text) && v.text !== '' && v.text.length <= MAX_COPY_CHARS ? { type: 'copyText', text: v.text } : undefined;
 		case 'openLink':
 			return isString(v.href) && v.href.length <= 4096 ? { type: 'openLink', href: v.href } : undefined;
+		case 'approvalDecided':
+			return isString(v.id) && isString(v.decision) && (APPROVAL_DECISIONS as readonly string[]).includes(v.decision)
+				? { type: 'approvalDecided', id: v.id, decision: v.decision as AssistantApprovalDecision } : undefined;
 		case 'answered': {
 			if (!isString(v.id) || !Array.isArray(v.answers) || !v.answers.every(isString)) {
 				return undefined;

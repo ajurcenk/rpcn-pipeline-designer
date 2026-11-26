@@ -6,9 +6,9 @@
 // when it can start: assistant access is set up (a key in the secret storage, a usable base URL), the
 // binary AD-9 resolved is `ok`, and a folder is open; otherwise the view says why and nothing starts.
 // While it runs: each `progress` event is a line; a `question` shows as cards (the skill's pick first)
-// and the answers go back with `answer`; an `approval` asks in a modal and the choice goes back with
-// `approve`; a `fileWritten` design note is read from disk, and the view shows it with its frontmatter
-// `status` (stage from files: never from the conversation). Stop cancels the run. The run's `result`
+// and the answers go back with `answer`; an `approval` is a card in the current turn (story 8.5) and
+// the card's choice goes back with `approve`; a `fileWritten` design note is read from disk, and the view
+// shows it with its frontmatter `status` (stage from files: never from the conversation). Stop cancels the run. The run's `result`
 // ends it (done or stopped), an `error` ends it with a masked error line; a new request works after both.
 //
 // Story 8.2: nothing starts, either, without the assistant runtime (the Agent SDK and this platform's
@@ -31,6 +31,12 @@
 // changed after the turn. A new Send keeps the previous turn's changes. New conversation stops a run
 // first, then clears the turns and their snapshots. At most 50 turns, 200 steps each.
 //
+// Story 8.5: approvals are cards in the current turn (no modal): Allow once, Allow for this session (only
+// for a call with a session key, the rules': a shell key, or a write tool's name) and Deny. The session
+// memory is a set of keys on the view, in memory only, for the window's life: New conversation keeps it,
+// a reload empties it, nothing stores it. A call whose key it holds is allowed without a card, and its
+// step row's result says "allowed (this session)".
+//
 // Every text posted or logged is masked: the key (and any credential-looking value) and the home folder.
 // As the metrics tab: the webview posts `ready` each time it loads and gets the whole state; `receive`
 // is the integration tests' seam; `posted` keeps the last messages (capped).
@@ -40,9 +46,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	askedText, COMMAND_HINTS, formatDuration, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
+	askedText, COMMAND_HINTS, SESSION_ALLOWED_RESULT, formatDuration, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
 	undoLaterEditsText,
-	type AssistantAccess as AccessState, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
+	type AssistantAccess as AccessState, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
 	type AssistantTurnView, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
 } from '../../shared/assistantProtocol';
 import { lineDiff } from '../../shared/lineDiff';
@@ -71,10 +77,8 @@ export type AssistantUndoOutcome = 'undone' | 'cancelled' | 'none';
 /** Story 8.12: the scheme of a file's copy from before a turn (the left side of its diff, read-only). */
 export const BEFORE_SCHEME = 'rpcn-assistant-before';
 
-/** What a test may replace: the approval modal; story 8.12: Undo's question, an info message, opening a link. */
+/** What a test may replace (story 8.12): Undo's question, an info message, opening a link, the clipboard. */
 export interface AssistantViewUi {
-	/** Asks to allow a call; `true`: allowed. */
-	approve(summary: string, detail: string | undefined): Thenable<boolean>;
 	/** Undo over later edits: `true` to go on. */
 	confirmUndo(message: string): Thenable<boolean>;
 	info(message: string): Thenable<unknown>;
@@ -217,6 +221,22 @@ function readText(file: string): string | null {
 	}
 }
 
+/** Story 8.5: the tools whose approval card's detail is a path. */
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+/** What an approval's step row says of it. */
+type StepDecision = 'allowed' | 'denied' | typeof SESSION_ALLOWED_RESULT;
+
+/** Story 8.5: an open approval, as the view keeps it until it is decided or withdrawn (its texts unmasked). */
+interface OpenApproval {
+	readonly turn: Turn;
+	readonly summary: string;
+	readonly detail: string | undefined;
+	readonly sessionKey: string | null;
+	readonly stepId: string | undefined;
+	readonly tool: string;
+}
+
 /** Story 8.12: one turn, as the view keeps it. */
 interface Turn {
 	readonly id: string;
@@ -230,8 +250,8 @@ interface Turn {
 	readonly written: Set<string>;
 	/** The folders the turn's writes created (the topmost new one of each), for Undo to remove when empty. */
 	readonly createdFolders: Set<string>;
-	/** Manual check 2: the approvals decided, by the step (tool call) they were for. */
-	readonly decisions: Map<string, 'allowed' | 'denied'>;
+	/** Manual check 2: the approvals decided, by the step (tool call) they were for (story 8.5: or allowed by the session memory). */
+	readonly decisions: Map<string, StepDecision>;
 	/** Manual check 4: when the run began and ended (`now()`), the time waited on the user, and since when it waits. */
 	startedAt: number;
 	endedAt: number | undefined;
@@ -246,7 +266,7 @@ interface Turn {
 	outcome: AssistantOutcome;
 	notice: string | null;
 	/** The masked view (without its times), until the turn changes. */
-	view: Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs'> | undefined;
+	view: Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs' | 'approvals'> | undefined;
 }
 
 export interface AssistantViewOptions {
@@ -354,10 +374,6 @@ export function bundledSkillsDir(extensionUri: vscode.Uri): string {
 
 export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposable {
 	ui: AssistantViewUi = {
-		approve: async (summary, detail) => {
-			const pick = await vscode.window.showWarningMessage(`The assistant asks to ${summary}.`, { modal: true, ...(detail ? { detail } : {}) }, 'Allow', 'Deny');
-			return pick === 'Allow';
-		},
 		confirmUndo: async (message) => (await vscode.window.showWarningMessage(message, { modal: true }, 'Undo')) === 'Undo',
 		info: (message) => vscode.window.showInformationMessage(message),
 		openExternal: (uri) => vscode.env.openExternal(uri),
@@ -398,7 +414,12 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	private current: Turn | undefined;
 	/** Review 5: the open questions and approvals by id, oldest first (the oldest question's cards are shown). */
 	private readonly openQuestions = new Map<string, readonly AssistantQuestion[]>();
-	private readonly openApprovals = new Set<string>();
+	private readonly openApprovals = new Map<string, OpenApproval>();
+	/**
+	 * Story 8.5: the session memory: the keys (shell keys, write tool names) the user allowed for this
+	 * session. In memory only, for the window's life: New conversation keeps it; a reload empties it.
+	 */
+	private readonly sessionApprovals = new Set<string>();
 	private error: string | null = null;
 
 	constructor(private readonly options: AssistantViewOptions) {
@@ -559,6 +580,16 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return maskHome(this.options.access.mask(text), [os.homedir(), process.env.HOME ?? '']);
 	}
 
+	/** Story 8.5, test seam: the keys allowed for this session, in the order allowed. */
+	sessionKeys(): readonly string[] {
+		return [...this.sessionApprovals];
+	}
+
+	/** Story 8.5, test seam: the session memory emptied (as a reload empties it). */
+	forgetSessionForTest(): void {
+		this.sessionApprovals.clear();
+	}
+
 	/** Manual check 4: the turn's wall time and its time waiting on the user, as of now. */
 	private times(t: Turn): { readonly elapsedMs: number; readonly waitingMs: number } {
 		const now = t.endedAt ?? this.now();
@@ -581,13 +612,29 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		}
 	}
 
-	/** Story 8.12: a turn as posted (masked; kept until the turn changes; its times always as of now). */
+	/** Story 8.12: a turn as posted (masked; kept until the turn changes; its times and story 8.5's open approvals always as of now). */
 	private turnView(t: Turn): AssistantTurnView {
 		const view = this.maskedTurn(t);
-		return { ...view, ...this.times(t) };
+		return { ...view, ...this.times(t), approvals: this.approvalsOf(t) };
 	}
 
-	private maskedTurn(t: Turn): Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs'> {
+	/** Story 8.5: the turn's open approvals, oldest first, masked. */
+	private approvalsOf(t: Turn): AssistantApprovalView[] {
+		const out: AssistantApprovalView[] = [];
+		for (const [id, a] of this.openApprovals) {
+			if (a.turn === t) {
+				// Under its tool's step row, else under its own row ("Asks to …"), else after the steps.
+				const stepId = a.stepId && t.steps.some((s) => s.id === a.stepId) ? a.stepId : t.steps.some((s) => s.id === id) ? id : null;
+				out.push({
+					id, summary: this.mask(a.summary), detail: a.detail === undefined ? null : this.mask(a.detail), sessionKey: a.sessionKey === null ? null : this.mask(a.sessionKey),
+					stepId, write: WRITE_TOOL_NAMES.has(a.tool),
+				});
+			}
+		}
+		return out;
+	}
+
+	private maskedTurn(t: Turn): Omit<AssistantTurnView, 'elapsedMs' | 'waitingMs' | 'approvals'> {
 		if (t.view) {
 			return t.view;
 		}
@@ -711,6 +758,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'answered':
 				this.answered(m.id, m.answers);
 				break;
+			case 'approvalDecided':
+				this.decideApproval(m.id, m.decision);
+				break;
 			case 'stopRequested':
 				this.stop();
 				break;
@@ -820,6 +870,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				storageDir: this.options.storageDir,
 				baseEnv: process.env,
 				log: (line) => this.options.log(this.mask(line)),
+				isRemembered: (key) => this.sessionApprovals.has(key),
 				...(this.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.idleTimeoutMs } : {}),
 			});
 		} catch (err) {
@@ -927,8 +978,9 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				const i = turn.steps.findIndex((s) => s.id === event.id && s.mark === 'running');
 				if (i >= 0) {
 					// Manual check 2: an approval's outcome is the step's result when it has no other (denied: always).
+					// Story 8.5: allowed through the session memory: always said.
 					const decision = turn.decisions.get(event.id);
-					const result = decision === 'denied' ? 'denied' : event.result.slice(0, 60) || decision || '';
+					const result = decision === 'denied' || decision === SESSION_ALLOWED_RESULT ? decision : event.result.slice(0, 60) || decision || '';
 					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result, ...this.stepDuration(turn, event.id, this.now()) };
 				}
 				break;
@@ -952,13 +1004,20 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.status = this.openStatus();
 				break;
 			case 'approval':
-				this.openApprovals.add(event.id);
+				// Story 8.5: a card in the turn, until decided (`approvalDecided`) or withdrawn.
+				this.openApprovals.set(event.id, { turn, summary: event.summary, detail: event.detail, sessionKey: event.sessionKey ?? null, stepId: event.stepId, tool: event.tool });
 				this.status = this.openStatus();
 				// Manual check 2: the approval folds into its tool's step row; with no such row, one row of its own.
 				if (!(event.stepId && turn.steps.some((s) => s.id === event.stepId && s.mark === 'running'))) {
 					this.addStep(turn, { id: event.id, label: `Asks to ${event.summary}`, mark: 'running', result: '' });
 				}
-				void this.askApproval(host, turn, event.id, event.summary, event.detail, event.stepId);
+				break;
+			case 'remembered':
+				// Story 8.5: allowed without a card; its step row says so.
+				if (event.stepId) {
+					this.recordDecision(turn, event.stepId, SESSION_ALLOWED_RESULT);
+				}
+				this.options.log(`Assistant: allowed for this session: ${this.mask(event.sessionKey)}.`);
 				break;
 			case 'withdrawn':
 				// Review 5: the agent no longer waits for it (its request was aborted).
@@ -1024,32 +1083,59 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		turn.view = undefined;
 	}
 
-	private async askApproval(host: AssistantHost, turn: Turn, id: string, summary: string, detail: string | undefined, stepId: string | undefined): Promise<void> {
-		let allowed = false;
-		try {
-			allowed = await this.ui.approve(this.mask(summary), detail === undefined ? undefined : this.mask(detail));
-		} catch (err) {
-			this.options.log(`Assistant: the approval prompt failed: ${this.mask(errorText(err))}`);
+	/**
+	 * Story 8.5: an approval card's decision: `once` and `session` allow the call (`session` remembers its
+	 * key first, when it has one), `deny` denies it. Its step row records the outcome. Ignored for an
+	 * approval no longer open (decided, withdrawn, or its run ended).
+	 */
+	decideApproval(id: string, decision: AssistantApprovalDecision): boolean {
+		const open = this.openApprovals.get(id);
+		const host = this.host;
+		if (!open || !host || open.turn !== this.current) {
+			return false;
 		}
-		if (this.host !== host || !this.openApprovals.has(id)) {
-			return;
+		const remember = decision === 'session' && open.sessionKey !== null;
+		if (remember) {
+			this.sessionApprovals.add(open.sessionKey!);
+			this.options.log(`Assistant: ${this.mask(open.sessionKey!)} allowed for this session.`);
 		}
-		this.openApprovals.delete(id);
-		const decision = allowed ? 'allowed' : 'denied';
-		const own = turn.steps.findIndex((s) => s.id === id);
-		if (own >= 0) {
-			turn.steps[own] = { ...turn.steps[own], mark: allowed ? 'ok' : 'failed', result: decision };
-		} else if (stepId) {
-			turn.decisions.set(stepId, decision);
-			const at = turn.steps.findIndex((s) => s.id === stepId);
-			if (at >= 0 && turn.steps[at].result === '') {
-				turn.steps[at] = { ...turn.steps[at], result: decision };
+		// `session` without a key cannot be remembered: it is Allow once.
+		this.settleApproval(host, id, open, decision === 'session' && !remember ? 'once' : decision);
+		if (remember) {
+			// The other open cards with the same key are allowed by it now.
+			for (const [other, a] of [...this.openApprovals]) {
+				if (a.sessionKey === open.sessionKey) {
+					this.settleApproval(host, other, a, 'session');
+				}
 			}
 		}
-		turn.view = undefined;
 		this.status = this.openStatus();
-		host.approve(id, allowed);
 		this.post();
+		return true;
+	}
+
+	/** Story 8.5: one open approval decided: closed, its step row's outcome recorded, the host told. */
+	private settleApproval(host: AssistantHost, id: string, open: OpenApproval, decision: AssistantApprovalDecision): void {
+		this.openApprovals.delete(id);
+		const outcome: StepDecision = decision === 'deny' ? 'denied' : decision === 'session' ? SESSION_ALLOWED_RESULT : 'allowed';
+		const own = open.turn.steps.findIndex((s) => s.id === id);
+		if (own >= 0) {
+			open.turn.steps[own] = { ...open.turn.steps[own], mark: decision === 'deny' ? 'failed' : 'ok', result: outcome };
+			open.turn.view = undefined;
+		} else if (open.stepId) {
+			this.recordDecision(open.turn, open.stepId, outcome);
+		}
+		host.approve(id, decision);
+	}
+
+	/** Manual check 2: an approval's outcome on its tool's step row (its result, while it has none). */
+	private recordDecision(turn: Turn, stepId: string, outcome: StepDecision): void {
+		turn.decisions.set(stepId, outcome);
+		const at = turn.steps.findIndex((s) => s.id === stepId);
+		if (at >= 0 && (turn.steps[at].result === '' || outcome === SESSION_ALLOWED_RESULT)) {
+			turn.steps[at] = { ...turn.steps[at], result: outcome };
+		}
+		turn.view = undefined;
 	}
 
 	/** Review 5: while a run goes, `approval` while any approval is open, else `question` while any question is, else `running`. */

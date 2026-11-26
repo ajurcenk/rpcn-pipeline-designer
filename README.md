@@ -157,6 +157,27 @@ The assistant's view (its own icon in the activity bar) is a chat. Type a reques
 
 Each turn shows your message, the skill rpcn used, a row per step (✓ done, ✗ failed, with a short result), the reply, and the files the turn changed with their added and removed line counts. Click a file to open VS Code's diff of the file before the turn and now. **Keep** accepts the turn's changes; **Undo** puts every file back as it was before the turn (a file the turn created is deleted), and asks first if you edited one of them since. Sending the next message keeps the previous turn's changes. A file over 1 MB is not copied before the turn, so its row says "too large to undo" and Undo leaves it alone. The copies from before the turn are kept in memory only, until Keep, Undo, the next message, **New conversation** or a reload; the conversation itself starts fresh after a reload. **Open note** opens the design note a turn wrote, and the stage strip marks Design ✓ once the conversation's note is `ready`.
 
+**Approvals.** The assistant runs the skills' own `rpcn_check.py` checks, reads files in the workspace folder and the skills, and writes the design note (`*.design.md` in the workspace folder) without asking; it never writes outside the workspace folder. Anything else it wants to do (another shell command, another file in the workspace, a read outside the workspace, a web request or search, a subagent) asks first, as a card in the current turn under its step: what it wants to do, the whole command, URL, query or file (with **Copy command**, or **Copy path** for a file), and **Allow once**, **Allow for this session** and **Deny**. Focus moves to the card unless you are typing elsewhere, and Escape denies. Several open at once each get their own card; Stop removes them.
+
+**Allow for this session** names what it remembers, for example "Allow `rpk connect list | python3` for this session": for a shell command, the programs of its pipeline (and `rpk`'s or `redpanda-connect`'s subcommand), never the exact text, so a later `rpk connect list --format json caches | python3 -I -c …` runs without asking and its step says "allowed (this session)"; other cards open with the same key are allowed with it. For a file write it remembers the tool (Write, Edit), for files in the workspace folder only. Only read-only programs can be remembered:
+
+- `rpk connect list`, `lint`, `blobl`, `version` and `fields`, `rpk cluster info` and `health`, `rpk topic list` and `describe`, and `rpk version`;
+- `redpanda-connect list`, `lint`, `blobl`, `version` and `fields`;
+- `grep`, `egrep`, `head`, `tail`, `cut`, `sort`, `uniq`, `wc`, `jq`, `cat`, `ls`, `echo`, `printf` and `strings`;
+- `python3 -I -c <code>` reading the output of an earlier program in the pipeline (its code is not checked).
+
+These always ask ("This command always asks.", no session choice):
+
+- a command that chains (`;`, `&&`, `||`, `&`, a new line) or substitutes (`` ` ``, `$(…)`, `<(…)`, `>(…)`);
+- one that redirects to or from a file (`>`, `>>` except to `/dev/null`, `<`);
+- one that starts with a variable assignment (`PATH=… grep`, `env VAR=… cat`);
+- one with an argument that is a path outside the workspace folder and the skills (`~`, `/etc/…`, `../…`) or that expands a variable (`$HOME`);
+- a program given by a path that is in the workspace folder or does not exist, or any program not listed above;
+- `rpk connect run`, `--watch`, `blobl server`, `tail -f`, `sort -o`/`-T`/`--compress-program`, `uniq <in> <out>`, `wc --files0-from`, and `jq --rawfile`, `--slurpfile` or `--args`;
+- a write under `.git/` or `.vscode/`, or to `.envrc` or a `.env*` file, even after Allow for this session for that tool.
+
+What you allow for the session is kept in memory only: it stays through **New conversation** and is gone after a reload. Nothing is saved.
+
 The reply is shown as Markdown without any HTML. Its links open only when they are `http(s)` links (in your browser) or files in the workspace folder (in the editor). Every text in the view is masked: the assistant's key, any other credential-looking value and your home folder.
 
 ## Requirements

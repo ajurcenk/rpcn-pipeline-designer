@@ -104,9 +104,66 @@ body {
 	grid-column: 2;
 	margin-top: 2px;
 }
-.rpcn-assistant-state-body,
-.rpcn-assistant-waiting {
+.rpcn-assistant-state-body {
 	margin: 0;
+}
+/* Story 8.5: an approval card in the turn. */
+.rpcn-assistant-approvals {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.rpcn-assistant-step-cards {
+	padding: 4px 6px 6px;
+}
+.rpcn-assistant-approval {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 8px 8px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border, transparent));
+	border-radius: 3px;
+	background: var(--vscode-editorWidget-background, transparent);
+}
+.rpcn-assistant-approval:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.rpcn-assistant-approval-summary,
+.rpcn-assistant-approval-always {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.rpcn-assistant-approval-always {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-assistant-approval-detail {
+	display: flex;
+	align-items: flex-start;
+	gap: 4px;
+}
+.rpcn-assistant-approval-detail pre {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	padding: 4px 6px;
+	max-height: 12em;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	user-select: text;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: var(--vscode-editor-font-size, inherit);
+	background: var(--vscode-textCodeBlock-background, transparent);
+	border-radius: 3px;
+}
+.rpcn-assistant-approval-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.rpcn-assistant-approval-buttons code {
+	font-family: var(--vscode-editor-font-family, monospace);
 }
 .rpcn-assistant-error {
 	margin: 0;

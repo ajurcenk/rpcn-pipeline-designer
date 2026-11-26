@@ -1,6 +1,6 @@
 // One turn of the chat (story 8.12, option A): "You" with its avatar and the message in a box (its slash
-// command highlighted), the rpcn header (its sparkle badge) with `· <skill>`, the step rows (folded on an earlier turn), what the run needs now (the
-// question cards, the approval row; the parent's), the reply as Markdown, the stopped or error line, the
+// command highlighted), the rpcn header (its sparkle badge) with `· <skill>`, the step rows (folded on an earlier turn) with story 8.5's
+// approval cards under their rows (one per open approval), what the run needs now (the question cards; the parent's), the reply as Markdown, the stopped or error line, the
 // file rows, Keep and Undo (once the turn has ended, on the latest turn that wrote files), the next-step
 // buttons and the chips.
 
@@ -73,7 +73,7 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 	readonly turn: AssistantTurnView;
 	/** The last turn of the conversation (the run's error line). */
 	readonly latest: boolean;
-	/** What the current run needs now (question cards, the approval row), shown in this turn. */
+	/** What the current run needs now (question cards), shown in this turn. */
 	readonly live?: ReactNode;
 	/** The run's error line, on the latest turn. */
 	readonly error: string | null;
@@ -102,7 +102,7 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 					<span className="rpcn-assistant-rpcn-skill">· {turn.skill}</span>
 					{turn.outcome === 'running' ? <LiveClock elapsedMs={turn.elapsedMs} /> : null}
 				</p>
-				<StepRows steps={turn.steps} outcome={turn.outcome} elapsedMs={turn.elapsedMs} waitingMs={turn.waitingMs} />
+				<StepRows steps={turn.steps} outcome={turn.outcome} elapsedMs={turn.elapsedMs} waitingMs={turn.waitingMs} approvals={turn.approvals} post={post} />
 				{live}
 				{turn.reply ? (
 					<div className="rpcn-assistant-reply-wrap">

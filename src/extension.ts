@@ -146,7 +146,7 @@ export interface ExtensionApi {
 	 */
 	readonly assistant?: {
 		readonly view: Pick<AssistantView, 'state' | 'posted' | 'receive' | 'run' | 'stop' | 'running' | 'runsStarted' | 'visible' | 'onDidChange' | 'ui' | 'accessState' | 'idleTimeoutMs'
-			| 'keep' | 'undo' | 'openFileDiff' | 'openLink' | 'newConversation'>;
+			| 'keep' | 'undo' | 'openFileDiff' | 'openLink' | 'newConversation' | 'sessionKeys' | 'forgetSessionForTest'>;
 		readonly access: Pick<AssistantAccess, 'ui' | 'setUpAccess' | 'mask' | 'hasKey' | 'storedSecret'>;
 		setHostFactory: AssistantView['setHostFactory'];
 		setAccessForTest: AssistantView['setAccessForTest'];

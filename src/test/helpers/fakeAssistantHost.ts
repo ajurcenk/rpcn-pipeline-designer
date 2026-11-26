@@ -5,7 +5,9 @@
 //                    only), then writes it in the run's workspace folder and sends its `fileWritten`
 //                    (`content` `null`: deletes it instead);
 //   { waitAnswer }   waits for `answer(id, …)` of the question it names (send the `question` first);
-//   { waitApproval } waits for `approve(id, …)`;
+//   { waitApproval } waits for `approve(id, …)`; story 8.5: with a `sessionKey`, it first sends the
+//                    approval itself (`summary`, `stepId`), unless the view's session memory holds the
+//                    key (`isRemembered`): then a `remembered` event, and no wait;
 //   { delayMs }      waits that long.
 // A script that ends without a `result` or `error` gets `{ result, stopped: false }`. `cancel` stops the
 // script where it is: the open wait is refused and the run's last event is `{ result, stopped: true }`.
@@ -15,14 +17,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { snapshotOf } from '../../adapters/assistant/snapshot';
 import type {
-	AssistantAnswers, AssistantEvent, AssistantHost, AssistantHostConfig, AssistantHostFactory, AssistantListener, AssistantQuestion, AssistantRequest,
+	ApprovalDecision, AssistantAnswers, AssistantEvent, AssistantHost, AssistantHostConfig, AssistantHostFactory, AssistantListener, AssistantQuestion, AssistantRequest,
 } from '../../adapters/assistant/host';
 
 export type FakeAssistantStep =
 	| { readonly emit: AssistantEvent }
 	| { readonly write: { readonly file: string; readonly content: string | Buffer | null } }
 	| { readonly waitAnswer: string }
-	| { readonly waitApproval: string }
+	| { readonly waitApproval: string; readonly sessionKey?: string | null; readonly summary?: string; readonly stepId?: string; readonly detail?: string }
 	| { readonly delayMs: number };
 
 /** Spike 65 run 2's two questions, as `rpcn-design` asked them (the pick marked "(My pick)", not first). */
@@ -80,7 +82,7 @@ export class FakeAssistantHost implements AssistantHost {
 	readonly requests: AssistantRequest[] = [];
 	readonly events: AssistantEvent[] = [];
 	readonly answers = new Map<string, AssistantAnswers | undefined>();
-	readonly approvals = new Map<string, boolean>();
+	readonly approvals = new Map<string, ApprovalDecision>();
 	cancelled = false;
 	private readonly snapshotted = new Set<string>();
 	private waiting: { readonly id: string; readonly resolve: () => void } | undefined;
@@ -124,6 +126,17 @@ export class FakeAssistantHost implements AssistantHost {
 			} else if ('waitAnswer' in step) {
 				await this.wait(step.waitAnswer, () => this.answers.has(step.waitAnswer));
 			} else if ('waitApproval' in step) {
+				if (step.sessionKey !== undefined) {
+					const stepId = step.stepId ? { stepId: step.stepId } : {};
+					if (step.sessionKey !== null && this.config.isRemembered?.(step.sessionKey) === true) {
+						emit({ type: 'remembered', sessionKey: step.sessionKey, ...stepId });
+						continue;
+					}
+					emit({
+						type: 'approval', id: step.waitApproval, tool: 'Bash', summary: step.summary ?? `use ${step.waitApproval}`, sessionKey: step.sessionKey,
+						...(step.detail ? { detail: step.detail } : {}), ...stepId,
+					});
+				}
 				await this.wait(step.waitApproval, () => this.approvals.has(step.waitApproval));
 			} else {
 				await new Promise((r) => setTimeout(r, step.delayMs));
@@ -139,8 +152,8 @@ export class FakeAssistantHost implements AssistantHost {
 		}
 	}
 
-	approve(id: string, allow: boolean): void {
-		this.approvals.set(id, allow);
+	approve(id: string, decision: ApprovalDecision): void {
+		this.approvals.set(id, decision);
 		if (this.waiting?.id === id) {
 			this.waiting.resolve();
 		}

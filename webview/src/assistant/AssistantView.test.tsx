@@ -4,8 +4,9 @@
 // transcript (no access with its set-up button, no binary, no folder, the runtime's, the skills path's);
 // the composer posts the message and stays while a run goes, with Stop; the question cards in the current
 // turn (the pick first and chosen, an Other text answer, Send answers posting each card's answer by
-// question); the approval row, the stopped and error lines in the turn; malformed messages ignored. The
-// protocol's parsers too.
+// question); story 8.5: the approval cards in the turn (Allow once, Allow for this session with its key,
+// Deny; "This command always asks."; focus; Escape is Deny; one card per approval; a withdrawn one goes);
+// the stopped and error lines in the turn; malformed messages ignored. The protocol's parsers too.
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -14,9 +15,10 @@ import {
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL,
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
 	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, stoppedText, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
-	NEW_CONVERSATION_LABEL, type AssistantStateMessage, type AssistantTurnView, type AssistantWebviewMessage,
+	NEW_CONVERSATION_LABEL, ALLOW_ONCE_LABEL, allowSessionLabel, ALWAYS_ASKS_TEXT, COPY_COMMAND_LABEL, COPY_PATH_LABEL, DENY_LABEL, type AssistantApprovalView, type AssistantStateMessage, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
-import { AssistantView, HEADER_TITLE, SEND_ANSWERS_LABEL, WAITING_APPROVAL_TEXT } from './AssistantView';
+import { AssistantView, HEADER_TITLE, SEND_ANSWERS_LABEL } from './AssistantView';
+import { approvalLead } from './ApprovalCard';
 import { SEND_LABEL as RUN_LABEL, STOP_LABEL } from './Composer';
 
 let host: HTMLDivElement;
@@ -30,7 +32,7 @@ const IDLE: AssistantStateMessage = {
 const TURN: AssistantTurnView = {
 	id: 't1', command: 'design', text: 'orders to an API', skill: 'rpcn-design',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Checking with rpcn_check binary', mark: 'running', result: '' }],
-	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null, elapsedMs: 0, waitingMs: 0,
+	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null, elapsedMs: 0, waitingMs: 0, approvals: [],
 };
 const QUESTIONS: AssistantStateMessage = {
 	...IDLE, status: 'question', turns: [TURN],
@@ -157,9 +159,121 @@ describe('AssistantView', () => {
 		expect(posted.at(-1)).toEqual({ type: 'answered', id: 'q1', answers: ['Per customer_id', 'Dedupe on order id and day'] });
 	});
 
-	it('in the turn: the approval row; the stopped line; the error line (alone without a turn)', async () => {
-		await send({ ...IDLE, status: 'approval', turns: [TURN] });
-		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-waiting')?.textContent).toBe(WAITING_APPROVAL_TEXT);
+	describe('story 8.5: the approval cards', () => {
+		const PIPE: AssistantApprovalView = {
+			id: 'approval-1', summary: 'run `rpk connect list | python3 -I -c …`', detail: 'rpk connect list --format jsonschema 2>/dev/null | python3 -I -c "…"', sessionKey: 'rpk connect list | python3',
+			stepId: null, write: false,
+		};
+		const CHAINED: AssistantApprovalView = { id: 'approval-2', summary: 'run `uv run x; rm y`', detail: 'uv run x; rm y', sessionKey: null, stepId: null, write: false };
+		const cardEls = () => [...host.querySelectorAll('.rpcn-assistant-turn .rpcn-assistant-approval')] as HTMLElement[];
+		const within = (el: Element, text: string) => [...el.querySelectorAll('button')].find((b) => b.textContent === text || b.getAttribute('aria-label') === text) as HTMLButtonElement | undefined;
+
+		it('a card in the turn (after the steps when it has no row): the summary, the full command with Copy command, Allow once, Allow `<key>` for this session, Deny; focus moves to it', async () => {
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE] }] });
+			const [card] = cardEls();
+			expect(card).toBeDefined();
+			expect(host.querySelector('.rpcn-assistant-waiting')).toBeNull();
+			expect(card.querySelector('.rpcn-assistant-approval-summary')?.textContent).toBe(approvalLead(PIPE.summary));
+			expect(card.querySelector('pre')?.textContent).toBe(PIPE.detail);
+			expect(within(card, COPY_COMMAND_LABEL)).toBeDefined();
+			expect(card.querySelector('.rpcn-assistant-approval-always')).toBeNull();
+			const session = within(card, allowSessionLabel('rpk connect list | python3'))!;
+			expect(session.textContent).toBe('Allow rpk connect list | python3 for this session');
+			expect(session.querySelector('code')?.textContent).toBe('rpk connect list | python3');
+			expect(document.activeElement).toBe(card);
+			// The steps come first, then the card.
+			const turnEl = host.querySelector('.rpcn-assistant-turn')!;
+			const steps = turnEl.querySelector('.rpcn-assistant-steps')!;
+			expect(steps.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+			await click(within(card, ALLOW_ONCE_LABEL)!);
+			expect(posted.at(-1)).toEqual({ type: 'approvalDecided', id: PIPE.id, decision: 'once' });
+			await click(session);
+			expect(posted.at(-1)).toEqual({ type: 'approvalDecided', id: PIPE.id, decision: 'session' });
+			await click(within(card, DENY_LABEL)!);
+			expect(posted.at(-1)).toEqual({ type: 'approvalDecided', id: PIPE.id, decision: 'deny' });
+			await click(within(card, COPY_COMMAND_LABEL)!);
+			expect(posted.at(-1)).toEqual({ type: 'copyText', text: PIPE.detail });
+		});
+
+		it('under its own step row (s1, not the last row), inside a group under the group row; a card whose row is not shown comes after the rows', async () => {
+			const steps = [
+				{ id: 's1', label: 'Ran a shell command', mark: 'running' as const, result: '' },
+				{ id: 's2', label: 'Writing a.yaml', mark: 'ok' as const, result: 'written' },
+			];
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, steps, approvals: [{ ...PIPE, stepId: 's1' }] }] });
+			const list = host.querySelector('.rpcn-assistant-steps')!;
+			const items = [...list.children];
+			expect(items.map((li) => li.className.split(' ')[0])).toEqual(['rpcn-assistant-step', 'rpcn-assistant-step-cards', 'rpcn-assistant-step']);
+			expect(items[1].querySelector('.rpcn-assistant-approval')?.getAttribute('data-approval')).toBe(PIPE.id);
+			// A group: two shell steps are one row; the card goes under the group's row.
+			const grouped = [steps[0], { ...steps[0], id: 's3', mark: 'running' as const }];
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, steps: grouped, approvals: [{ ...PIPE, stepId: 's3' }] }] });
+			const group = host.querySelector('.rpcn-assistant-step-group')!;
+			expect(group.querySelector(':scope > .rpcn-assistant-step-cards .rpcn-assistant-approval')).not.toBeNull();
+			// No such row: after the rows.
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, steps, approvals: [{ ...PIPE, stepId: 'gone' }] }] });
+			const after = host.querySelector('.rpcn-assistant-steps + .rpcn-assistant-approvals');
+			expect(after?.querySelector('.rpcn-assistant-approval')).not.toBeNull();
+		});
+
+		it('focus: taken only when nothing has it; never from the composer or an earlier card', async () => {
+			await send(IDLE);
+			const composer = host.querySelector('textarea')!;
+			composer.focus();
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE] }] });
+			expect(document.activeElement).toBe(composer);
+			composer.blur();
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [] }] });
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE] }] });
+			const [first] = cardEls();
+			expect(document.activeElement).toBe(first);
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE, CHAINED] }] });
+			expect(document.activeElement).toBe(first);
+		});
+
+		it('a write card copies its path (Copy path)', async () => {
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [{ id: 'approval-3', summary: 'write /w/a.yaml', detail: '/w/a.yaml', sessionKey: 'Write', stepId: null, write: true }] }] });
+			const [card] = cardEls();
+			expect(within(card, COPY_COMMAND_LABEL)).toBeUndefined();
+			await click(within(card, COPY_PATH_LABEL)!);
+			expect(posted.at(-1)).toEqual({ type: 'copyText', text: '/w/a.yaml' });
+		});
+
+		it('no key: no session choice, "This command always asks."', async () => {
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [CHAINED] }] });
+			const [card] = cardEls();
+			expect(card.querySelector('.rpcn-assistant-approval-always')?.textContent).toBe(ALWAYS_ASKS_TEXT);
+			expect([...card.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['', ALLOW_ONCE_LABEL, DENY_LABEL]);
+			expect(card.querySelector('.rpcn-assistant-allow-session')).toBeNull();
+		});
+
+		it('Escape on a card is Deny (from the card or one of its buttons)', async () => {
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE] }] });
+			const [card] = cardEls();
+			await act(async () => {
+				card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			});
+			expect(posted.at(-1)).toEqual({ type: 'approvalDecided', id: PIPE.id, decision: 'deny' });
+			posted.length = 0;
+			await act(async () => {
+				within(card, ALLOW_ONCE_LABEL)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			});
+			expect(posted).toEqual([{ type: 'approvalDecided', id: PIPE.id, decision: 'deny' }]);
+		});
+
+		it('two open: two cards, each deciding its own; a withdrawn one\'s card goes', async () => {
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE, CHAINED] }] });
+			expect(cardEls().map((c) => c.dataset.approval)).toEqual([PIPE.id, CHAINED.id]);
+			await click(within(cardEls()[1], DENY_LABEL)!);
+			expect(posted.at(-1)).toEqual({ type: 'approvalDecided', id: CHAINED.id, decision: 'deny' });
+			await send({ ...IDLE, status: 'approval', turns: [{ ...TURN, approvals: [PIPE] }] });
+			expect(cardEls().map((c) => c.dataset.approval)).toEqual([PIPE.id]);
+			await send({ ...IDLE, status: 'running', turns: [TURN] });
+			expect(cardEls()).toEqual([]);
+		});
+	});
+
+	it('in the turn: the stopped line; the error line (alone without a turn)', async () => {
 		await send({ ...IDLE, status: 'stopped', turns: [{ ...TURN, outcome: 'stopped' }] });
 		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-stopped')?.textContent).toBe(stoppedText(0));
 		expect(STOPPED_TEXT).toBe('Stopped. Nothing more was written.');
@@ -344,6 +458,9 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: ['b', 1] })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: { a: 'b' } })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'openSettingsRequested' })).toEqual({ type: 'openSettingsRequested' });
+		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', id: 'a', decision: 'session', extra: 1 })).toEqual({ type: 'approvalDecided', id: 'a', decision: 'session' });
+		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', id: 'a', decision: 'always' })).toBeUndefined();
+		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', decision: 'deny' })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'nope' })).toBeUndefined();
 		expect(parseAssistantWebviewMessage(null)).toBeUndefined();
 	});
@@ -355,6 +472,11 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, files: [{ path: 'a', added: -1, removed: 0, created: true, tooLarge: false }] }] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, chips: [{ label: '/x', command: 'x', enabled: false, hint: null }] }] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, designReady: 'yes' })).toBeUndefined();
+		const card = { id: 'a', summary: 'run `ls`', detail: null, sessionKey: 'ls', stepId: 's1', write: false };
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, approvals: [{ ...card, extra: 1 }] }] })).toEqual({ ...IDLE, turns: [{ ...TURN, approvals: [card] }] });
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, approvals: [{ ...card, sessionKey: 1 }] }] })).toBeUndefined();
+		const { approvals: _a, ...noApprovals } = TURN;
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [noApprovals] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [TURN] })).toEqual({ ...IDLE, turns: [TURN] });
 		const timed = { ...TURN, elapsedMs: 5, waitingMs: 2, steps: [{ ...TURN.steps[0], durationMs: 1200 }] };
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [timed] })).toEqual({ ...IDLE, turns: [timed] });

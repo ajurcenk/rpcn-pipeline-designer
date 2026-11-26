@@ -28,7 +28,7 @@ const DONE_TURN: AssistantTurnView = {
 		{ label: '/build', command: 'build', enabled: false, hint: 'Arrives with the Author stage' },
 		{ label: '/test', command: 'test', enabled: false, hint: 'Arrives with the Test hand-off' },
 	],
-	outcome: 'done', notice: null, elapsedMs: 65_000, waitingMs: 500,
+	outcome: 'done', notice: null, elapsedMs: 65_000, waitingMs: 500, approvals: [],
 };
 const render = async (turn: AssistantTurnView, latest = true) => {
 	await act(async () => {

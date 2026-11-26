@@ -3,8 +3,8 @@
 // conversation's note is `ready`; the target folder), the transcript (`Transcript.tsx`: the turns, and
 // before them the reason a request cannot start, with its button, and "Skills: local copy"), and the
 // composer (`Composer.tsx`). The current turn holds the skill's questions as cards (the skill's pick
-// first and chosen until another is, an Other text answer) and the row saying the run waits for the
-// approval dialog. Every state comes from the host; the view keeps only what is being typed and chosen,
+// first and chosen until another is, an Other text answer); story 8.5: its approvals are cards too
+// (`ApprovalCard.tsx`, rendered by the turn). Every state comes from the host; the view keeps only what is being typed and chosen,
 // and which folded steps are open. Theme colours only.
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
@@ -42,7 +42,6 @@ export function copiedText(doc: Document, root: HTMLElement | null): string {
 /** Story 8.12: the header (option A's "RPCN ASSISTANT"). */
 export const HEADER_TITLE = 'RPCN ASSISTANT';
 export const SEND_ANSWERS_LABEL = 'Send answers';
-export const WAITING_APPROVAL_TEXT = 'Waiting for your decision in the dialog.';
 
 /** One card's choice: the chosen option labels, and the Other text when Other is chosen. */
 interface Choice {
@@ -217,12 +216,7 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 			{state.skills === 'local' && state.access !== 'unavailable' ? <p className="rpcn-assistant-skills">{LOCAL_SKILLS_TEXT}</p> : null}
 		</>
 	) : null;
-	const live = state ? (
-		<>
-			{state.questions ? <QuestionCards key={state.questions.id} questions={state.questions} post={post} /> : null}
-			{state.status === 'approval' ? <p className="rpcn-assistant-waiting" role="status">{WAITING_APPROVAL_TEXT}</p> : null}
-		</>
-	) : null;
+	const live = state?.questions ? <QuestionCards key={state.questions.id} questions={state.questions} post={post} /> : null;
 
 	return (
 		<CopyContext.Provider value={copy}>

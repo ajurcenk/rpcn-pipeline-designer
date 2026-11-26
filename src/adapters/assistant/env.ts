@@ -1,6 +1,8 @@
 // The agent's whole environment (AD-26, story 8.1): the SDK's `env` replaces the process environment,
 // so the adapter builds it, and nothing else of the extension host's environment reaches the agent.
-//   - `HOME`, `PATH`, `LANG` (from the extension host);
+//   - `HOME`, `PATH`, `LANG` (from the extension host). Story 8.5: `HOME` stays the user's real home on
+//     purpose: `rpk` needs its profile and its connect plugin there. Everything the agent itself writes
+//     goes under the folders below, and a test with a temporary `HOME` checks that nothing lands in it;
 //   - `ANTHROPIC_BASE_URL` and the key, as `ANTHROPIC_AUTH_TOKEN` (bearer, the default) or
 //     `ANTHROPIC_API_KEY` (x-api-key), never both;
 //   - the four model variables, all the chosen model (no background call names another);

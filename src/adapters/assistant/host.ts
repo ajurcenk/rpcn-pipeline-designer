@@ -7,7 +7,8 @@
 // `result` or `error` as its last event, and the promise settles. While a `question` or an `approval`
 // is open the run waits for `answer` or `approve` with its id (several may be open at once, each by its
 // id; `withdrawn` closes one the agent gave up on); `cancel` ends it (the open ones are refused, and the
-// run's last event is a `result` with `stopped`).
+// run's last event is a `result` with `stopped`). Story 8.5: a call whose session key the view's session
+// memory holds (`isRemembered`) does not ask: a `remembered` event instead.
 
 import type { RuntimeFiles } from './runtime';
 
@@ -50,8 +51,16 @@ export type AssistantEvent =
 	| { readonly type: 'fileChanging'; readonly path: string; readonly before: string | null; readonly tooLarge?: boolean }
 	/** The skill asks; answer with `answer(id, …)`. */
 	| { readonly type: 'question'; readonly id: string; readonly questions: readonly AssistantQuestion[] }
-	/** A tool call outside the boundaries asks; decide with `approve(id, …)`. */
-	| { readonly type: 'approval'; readonly id: string; readonly tool: string; readonly summary: string; readonly detail?: string; readonly stepId?: string }
+	/**
+	 * A tool call outside the boundaries asks; decide with `approve(id, …)`. Story 8.5: `sessionKey`, from
+	 * the rules, is what Allow for this session remembers (`null`: the call always asks).
+	 */
+	| {
+		readonly type: 'approval'; readonly id: string; readonly tool: string; readonly summary: string; readonly detail?: string; readonly stepId?: string;
+		readonly sessionKey: string | null;
+	}
+	/** Story 8.5: a call that would ask, allowed without a card because the session memory holds its key. */
+	| { readonly type: 'remembered'; readonly sessionKey: string; readonly stepId?: string }
 	/** An open `question` or `approval` the agent no longer waits for (its request was aborted): its card goes. */
 	| { readonly type: 'withdrawn'; readonly id: string }
 	/** A file the agent wrote (absolute path). */
@@ -69,6 +78,9 @@ export type AssistantEvent =
 export const STEP_RESULT_CHARS = 60;
 /** Story 8.12: files larger than this are not snapshotted before a write (their row says "too large to undo"). */
 export const SNAPSHOT_MAX_BYTES = 1024 * 1024;
+
+/** Story 8.5: the user's decision on an approval: allow this call, allow its key for the session, or deny. */
+export type ApprovalDecision = 'once' | 'session' | 'deny';
 
 export type AssistantListener = (event: AssistantEvent) => void;
 
@@ -106,6 +118,11 @@ export interface AssistantHostConfig {
 	 * found them when the run started; loaded only from there (gone by then: a `runtimeMissing` error).
 	 */
 	readonly runtime: RuntimeFiles;
+	/**
+	 * Story 8.5: whether the session memory (the view's, in memory, for the window's life) holds a call's
+	 * session key; such a call is allowed without asking (`remembered`). Absent: nothing is remembered.
+	 */
+	readonly isRemembered?: (sessionKey: string) => boolean;
 }
 
 export interface AssistantHost {
@@ -113,8 +130,8 @@ export interface AssistantHost {
 	start(request: AssistantRequest, listener: AssistantListener): Promise<void>;
 	/** Answers an open `question` (`undefined`: dismissed, the skill gets a refusal). */
 	answer(id: string, answers: AssistantAnswers | undefined): void;
-	/** Decides an open `approval`. */
-	approve(id: string, allow: boolean): void;
+	/** Decides an open `approval` (`once` and `session` allow it, `deny` denies it). */
+	approve(id: string, decision: ApprovalDecision): void;
 	/** Stops the run (no effect when none runs). */
 	cancel(): void;
 }

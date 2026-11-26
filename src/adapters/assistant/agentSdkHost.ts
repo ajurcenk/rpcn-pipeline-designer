@@ -5,9 +5,12 @@
 //   - `settingSources: []` (the user's own Claude configuration is not loaded), no session kept;
 //   - `cwd` the workspace folder;
 //   - an in-process tool server, `rpcn`, with `alwaysLoad` (no tools yet: story 8.4 adds them);
-//   - a PreToolUse hook and `canUseTool` over the same rules (`rules.ts`); each `AskUserQuestion`
-//     becomes a `question` event and waits for `answer`, any other call that asks an `approval` event
-//     that waits for `approve`;
+//   - a PreToolUse hook and `canUseTool` over the same rules (`rules.ts`, `decide`); each
+//     `AskUserQuestion` becomes a `question` event and waits for `answer`, any other call that asks an
+//     `approval` event (with its session key) that waits for `approve`; story 8.5: a call whose session
+//     key the view remembers (`isRemembered`) is allowed at once, with a `remembered` event. The hook says
+//     `ask` for a shell command that asks, so it reaches `canUseTool` even when Claude Code deems it
+//     read-only (it would run it unasked otherwise);
 //   - a PostToolUse hook on the write tools, which becomes `fileWritten`;
 //   - story 8.12: each top-level tool call a `step` and its result a `stepDone`, the model's text `reply`;
 //     before a run's first write to a path in the workspace (the PreToolUse hook, unless denied), that
@@ -29,11 +32,11 @@ import type { CanUseTool, HookCallback, Options, PermissionResult } from '@anthr
 import { agentFolders, buildAgentEnv } from './env';
 import { resultEventOf, retryOf, StreamMapper } from './events';
 import {
-	RPCN_SKILLS, questionsOf, type AssistantAnswers, type AssistantEvent, type AssistantHost, type AssistantHostConfig, type AssistantListener, type AssistantRequest,
+	RPCN_SKILLS, questionsOf, type ApprovalDecision, type AssistantAnswers, type AssistantEvent, type AssistantHost, type AssistantHostConfig, type AssistantListener, type AssistantRequest,
 } from './host';
 import { isExecutable } from './runtime';
 import { snapshotOf, SNAPSHOT_TOOLS } from './snapshot';
-import { approvalSummary, canUseToolDecision, isInside, preToolUseDecision, type BoundaryContext } from './rules';
+import { approvalDetail, approvalSummary, canUseToolDecision, isInside, preToolUseDecision, type BoundaryContext } from './rules';
 
 type Sdk = typeof import('@anthropic-ai/claude-agent-sdk', { with: { 'resolution-mode': 'import' } });
 
@@ -132,7 +135,9 @@ export class AgentSdkHost implements AssistantHost {
 			}
 			listener(event);
 		};
-		const ctx: BoundaryContext = { workspace: this.config.workspace, skillsDir: this.config.skillsDir };
+		const ctx: BoundaryContext = {
+			workspace: this.config.workspace, skillsDir: this.config.skillsDir, skill: request.skill, agentConfigDir: agentFolders(this.config.storageDir).CLAUDE_CONFIG_DIR,
+		};
 		const idleMs = this.config.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
 		this.onIdle = () => {
 			emit({ type: 'error', message: idleTimeoutText(idleMs) });
@@ -203,8 +208,8 @@ export class AgentSdkHost implements AssistantHost {
 		this.settle(id, answers);
 	}
 
-	approve(id: string, allow: boolean): void {
-		this.settle(id, allow);
+	approve(id: string, decision: ApprovalDecision): void {
+		this.settle(id, decision);
 	}
 
 	cancel(): void {
@@ -272,6 +277,28 @@ export class AgentSdkHost implements AssistantHost {
 		});
 	}
 
+	/**
+	 * Story 8.5: asks the user about a call (whether it may go ahead): allowed at once, with a `remembered`
+	 * event, when the session memory holds its key; else an `approval` event (with its key), waiting for
+	 * `approve` (`once` and `session` allow). `stepId`: the tool call's id, so the view folds the approval
+	 * into its step row (manual check 2).
+	 */
+	private async ask(
+		tool: string, input: Record<string, unknown>, sessionKey: string | null, stepId: string | undefined, title: string | undefined, signal: AbortSignal,
+		emit: (event: AssistantEvent) => void,
+	): Promise<boolean> {
+		const step = stepId ? { stepId } : {};
+		if (sessionKey !== null && this.config.isRemembered?.(sessionKey) === true) {
+			emit({ type: 'remembered', sessionKey, ...step });
+			return true;
+		}
+		const id = `approval-${++this.seq}`;
+		const detail = approvalDetail(tool, input) ?? title;
+		emit({ type: 'approval', id, tool, summary: approvalSummary(tool, input), sessionKey, ...(detail ? { detail } : {}), ...step });
+		const decided = await this.wait(id, signal, emit);
+		return decided === 'once' || decided === 'session';
+	}
+
 	private options(sdk: Sdk, ctx: BoundaryContext, abort: AbortController, emit: (event: AssistantEvent) => void): Options {
 		// Story 8.12: the paths this run has snapshotted (the first write to each only).
 		const snapshotted = new Set<string>();
@@ -325,13 +352,9 @@ export class AgentSdkHost implements AssistantHost {
 						? { behavior: 'allow', updatedInput: { ...input, answers } }
 						: { behavior: 'deny', message: 'The user dismissed the question.' };
 				}
-				case 'ask': {
-					const id = `approval-${++this.seq}`;
-					// Manual check 2: the tool call's id, so the view folds the approval into its step row.
-					emit({ type: 'approval', id, tool: toolName, summary: approvalSummary(toolName, input), ...(opts.title ? { detail: opts.title } : {}), ...(opts.toolUseID ? { stepId: opts.toolUseID } : {}) });
-					const allowed = await this.wait(id, opts.signal, emit);
-					return allowed === true ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'The user denied this.' };
-				}
+				case 'ask':
+					return await this.ask(toolName, input, decision.sessionKey, opts.toolUseID, opts.title, opts.signal, emit)
+						? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'The user denied this.' };
 			}
 		};
 		return {

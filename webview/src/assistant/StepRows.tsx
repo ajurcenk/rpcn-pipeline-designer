@@ -9,8 +9,12 @@
 //     opens the rest.
 //   - Once it has ended, the card folds to one summary line ("▸ 27 steps · 1 warning"), which opens on
 //     click; a turn that ended in error keeps its rows open.
+// Story 8.5: an open approval's card sits under its step row (under the group's row for a grouped step);
+// a card whose row is not shown, or that has none, comes after the rows.
 
 import { useState } from 'react';
+import type { AssistantApprovalView, AssistantWebviewMessage } from '../../../src/shared/assistantProtocol';
+import { ApprovalCards } from './ApprovalCard';
 import { CopyButton } from './CopyButton';
 
 export const COPY_COMMAND_LABEL = 'Copy command';
@@ -152,7 +156,16 @@ function StepEnd({ result, durationMs }: { readonly result: string; readonly dur
 	);
 }
 
-function Row({ row }: { readonly row: StepRow }) {
+/** Story 8.5: the cards to show, and how they post. */
+interface Cards {
+	readonly approvals: readonly AssistantApprovalView[];
+	readonly post: (m: AssistantWebviewMessage) => void;
+}
+
+/** The ids a row stands for (its own, and its members'). */
+const rowIds = (row: StepRow): string[] => [row.id, ...row.members.map((m) => m.id)];
+
+function Row({ row, cards }: { readonly row: StepRow; readonly cards: Cards }) {
 	const [open, setOpen] = useState(false);
 	const body = (detail: boolean) => (
 		<>
@@ -164,12 +177,21 @@ function Row({ row }: { readonly row: StepRow }) {
 			<StepEnd result={row.result} durationMs={row.durationMs} />
 		</>
 	);
+	const ids = rowIds(row);
+	const mine = cards.approvals.filter((a) => a.stepId !== null && ids.includes(a.stepId));
+	const under = mine.length > 0 ? <ApprovalCards approvals={mine} post={cards.post} /> : null;
 	if (row.members.length === 0) {
-		return <li className={`rpcn-assistant-step rpcn-assistant-step-${row.mark}`}>{body(true)}</li>;
+		return (
+			<>
+				<li className={`rpcn-assistant-step rpcn-assistant-step-${row.mark}`}>{body(true)}</li>
+				{under ? <li className="rpcn-assistant-step-cards">{under}</li> : null}
+			</>
+		);
 	}
 	return (
 		<li className={`rpcn-assistant-step-group rpcn-assistant-step-${row.mark}`}>
 			<button type="button" className="rpcn-assistant-step rpcn-assistant-step-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{body(false)}</button>
+			{under ? <div className="rpcn-assistant-step-cards">{under}</div> : null}
 			{open ? (
 				<ol className="rpcn-assistant-step-members" aria-label={row.label}>
 					{row.members.map((m) => (
@@ -187,22 +209,32 @@ function Row({ row }: { readonly row: StepRow }) {
 	);
 }
 
-function Rows({ rows }: { readonly rows: readonly StepRow[] }) {
+function Rows({ rows, cards }: { readonly rows: readonly StepRow[]; readonly cards: Cards }) {
+	const shown = new Set(rows.flatMap(rowIds));
+	const rest = cards.approvals.filter((a) => a.stepId === null || !shown.has(a.stepId));
 	return (
-		<ol className="rpcn-assistant-steps" aria-label="Steps">
-			{rows.map((r) => <Row key={r.id} row={r} />)}
-		</ol>
+		<>
+			<ol className="rpcn-assistant-steps" aria-label="Steps">
+				{rows.map((r) => <Row key={r.id} row={r} cards={cards} />)}
+			</ol>
+			<ApprovalCards approvals={rest} post={cards.post} />
+		</>
 	);
 }
 
-export function StepRows({ steps, outcome, elapsedMs = 0, waitingMs = 0 }: {
+const NO_CARDS: Cards = { approvals: [], post: () => undefined };
+
+export function StepRows({ steps, outcome, elapsedMs = 0, waitingMs = 0, approvals = [], post }: {
 	readonly steps: readonly AssistantStepView[]; readonly outcome: AssistantOutcome;
 	/** Manual check 4: the turn's time, for the folded line. */
 	readonly elapsedMs?: number; readonly waitingMs?: number;
+	/** Story 8.5: the turn's open approvals, and how their cards post. */
+	readonly approvals?: readonly AssistantApprovalView[]; readonly post?: (m: AssistantWebviewMessage) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const cards: Cards = post ? { approvals, post } : NO_CARDS;
 	if (steps.length === 0) {
-		return null;
+		return <ApprovalCards approvals={cards.approvals} post={cards.post} />;
 	}
 	const rows = stepRows(steps, outcome);
 	if (outcome === 'running') {
@@ -214,19 +246,19 @@ export function StepRows({ steps, outcome, elapsedMs = 0, waitingMs = 0 }: {
 						… {hidden} earlier step{hidden === 1 ? '' : 's'}
 					</button>
 				) : null}
-				<Rows rows={rows.slice(hidden)} />
+				<Rows rows={rows.slice(hidden)} cards={cards} />
 			</div>
 		);
 	}
 	if (outcome === 'error') {
-		return <Rows rows={rows} />;
+		return <Rows rows={rows} cards={cards} />;
 	}
 	return (
 		<div className="rpcn-assistant-fold">
 			<button type="button" className="rpcn-assistant-fold-line" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
 				<span aria-hidden="true">{open ? '▾' : '▸'}</span> {foldedText(rows, { elapsedMs, waitingMs })}
 			</button>
-			{open ? <Rows rows={rows} /> : null}
+			{open ? <Rows rows={rows} cards={cards} /> : <ApprovalCards approvals={cards.approvals} post={cards.post} />}
 		</div>
 	);
 }
