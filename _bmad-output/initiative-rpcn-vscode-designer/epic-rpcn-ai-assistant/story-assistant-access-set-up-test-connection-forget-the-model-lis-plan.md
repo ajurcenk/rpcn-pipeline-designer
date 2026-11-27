@@ -3,7 +3,7 @@ title: 'Assistant access: set up, test connection, forget, the model list and th
 type: 'feature'
 ticket: '3'
 created: '2026-11-25'
-status: 'built'
+status: done
 baseline_revision: 'eb25eafa53004c1066df90ca01f26da6eab27054'
 route: 'full'
 route_source: 'auto'
