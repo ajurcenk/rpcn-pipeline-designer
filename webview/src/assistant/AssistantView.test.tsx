@@ -15,11 +15,12 @@ import {
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL,
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText, NO_UV_TEXT, OPEN_SETTINGS_LABEL,
 	NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_WORKSPACE_TEXT, orderOptions, stoppedText, parseAssistantHostMessage, parseAssistantWebviewMessage, SET_UP_ACCESS_LABEL, STOPPED_TEXT,
+	CHOOSE_MODEL_LABEL, KEY_REFUSED_TEXT, modelNotAllowedText, TEST_CONNECTION_LABEL, unreachableText,
 	NEW_CONVERSATION_LABEL, ALLOW_ONCE_LABEL, allowSessionLabel, ALWAYS_ASKS_TEXT, COPY_COMMAND_LABEL, COPY_PATH_LABEL, DENY_LABEL, type AssistantApprovalView, type AssistantStateMessage, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 import { AssistantView, HEADER_TITLE, SEND_ANSWERS_LABEL } from './AssistantView';
 import { approvalLead } from './ApprovalCard';
-import { SEND_LABEL as RUN_LABEL, STOP_LABEL } from './Composer';
+import { MODEL_CHIP_LABEL, SEND_LABEL as RUN_LABEL, STOP_LABEL } from './Composer';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -28,9 +29,10 @@ let posted: AssistantWebviewMessage[];
 const IDLE: AssistantStateMessage = {
 	type: 'state', access: 'ready', platform: null, runtime: { pinned: '0.3.329', installed: null, error: null }, skills: 'bundled', skillsProblem: null, status: 'idle',
 	turns: [], folder: 'ws', designReady: false, questions: null, error: null,
+	model: 'claude-opus-5-5', modelNotAllowed: null, host: 'api.anthropic.com', accessMessage: null, accessOrigin: null,
 };
 const TURN: AssistantTurnView = {
-	id: 't1', command: 'design', text: 'orders to an API', skill: 'rpcn-design',
+	id: 't1', command: 'design', text: 'orders to an API', skill: 'rpcn-design', model: 'claude-sonnet-4-6',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Checking with rpcn_check binary', mark: 'running', result: '' }],
 	reply: '', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'running', notice: null, elapsedMs: 0, waitingMs: 0, approvals: [],
 };
@@ -107,6 +109,57 @@ describe('AssistantView', () => {
 		expect(host.querySelector('textarea')).toBeNull();
 		await click(button(SET_UP_ACCESS_LABEL)!);
 		expect(posted.at(-1)).toEqual({ type: 'setUpAccessRequested' });
+	});
+
+	it('story 8.3: key refused (with a 403\'s message), model not allowed: their panels and buttons replace the composer', async () => {
+		await send({ ...IDLE, access: 'keyRefused' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(KEY_REFUSED_TEXT);
+		expect(host.querySelector('textarea')).toBeNull();
+		await click(button(SET_UP_ACCESS_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'setUpAccessRequested' });
+		await send({ ...IDLE, access: 'keyRefused', accessMessage: 'Your key cannot use this workspace.' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(`${KEY_REFUSED_TEXT} Your key cannot use this workspace.`);
+		await send({ ...IDLE, access: 'modelNotAllowed', modelNotAllowed: 'claude-opus-5-5' });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(modelNotAllowedText('claude-opus-5-5'));
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe('The endpoint does not allow `claude-opus-5-5`.');
+		expect(host.querySelector('textarea')).toBeNull();
+		await click(button(CHOOSE_MODEL_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'chooseModelRequested' });
+	});
+
+	it('story 8.3: unreachable: in the failed turn, after its error line, with Test connection; the composer stays', async () => {
+		await send({ ...IDLE, access: 'unreachable', accessOrigin: 'run', status: 'error', error: 'API Error: Connection error.', host: 'adp.example:8443', turns: [{ ...TURN, outcome: 'error' }] });
+		const turn = host.querySelector('.rpcn-assistant-turn')!;
+		expect(turn.querySelector('.rpcn-assistant-error')?.textContent).toBe('API Error: Connection error.');
+		expect(turn.querySelector('.rpcn-assistant-state-body')?.textContent).toBe(unreachableText('adp.example:8443'));
+		expect(host.querySelectorAll('.rpcn-assistant-state')).toHaveLength(1);
+		expect(host.querySelector('textarea')).not.toBeNull();
+		await click(button(TEST_CONNECTION_LABEL)!);
+		expect(posted.at(-1)).toEqual({ type: 'testConnectionRequested' });
+		// No failed turn: the panel above the transcript.
+		await send({ ...IDLE, access: 'unreachable', accessOrigin: 'test', host: 'adp.example' });
+		expect(host.querySelector('.rpcn-assistant-transcript > .rpcn-assistant-state .rpcn-assistant-state-body')?.textContent).toBe('Could not reach `adp.example`.');
+		expect(host.querySelector('textarea')).not.toBeNull();
+		// A failed Test connection after an earlier failed turn: above the transcript, not in that turn.
+		await send({ ...IDLE, access: 'unreachable', accessOrigin: 'test', status: 'error', error: 'boom', host: 'adp.example', turns: [{ ...TURN, outcome: 'error' }] });
+		expect(host.querySelector('.rpcn-assistant-turn .rpcn-assistant-state')).toBeNull();
+		expect(host.querySelector('.rpcn-assistant-transcript > .rpcn-assistant-state .rpcn-assistant-state-body')?.textContent).toBe('Could not reach `adp.example`.');
+		// No host: plain words.
+		await send({ ...IDLE, access: 'unreachable', accessOrigin: 'test', host: null });
+		expect(host.querySelector('.rpcn-assistant-state-body')?.textContent).toBe('Could not reach the endpoint.');
+	});
+
+	it('story 8.3: the model chip on the composer\'s bottom row, left: `<model> ▾`; a click posts chooseModelRequested', async () => {
+		await send({ ...IDLE, model: 'claude-sonnet-4-6' });
+		const chip = host.querySelector('.rpcn-assistant-composer-bar .rpcn-assistant-composer-left .rpcn-assistant-model-chip') as HTMLButtonElement;
+		expect(chip.textContent).toBe('claude-sonnet-4-6 ▾');
+		expect(chip.getAttribute('aria-label')).toBe(`${MODEL_CHIP_LABEL}: claude-sonnet-4-6`);
+		expect(host.querySelector('.rpcn-assistant-composer-bar')?.firstElementChild?.contains(chip)).toBe(true);
+		await click(chip);
+		expect(posted.at(-1)).toEqual({ type: 'chooseModelRequested' });
+		// No access: no composer, so no chip.
+		await send({ ...IDLE, access: 'noAccess' });
+		expect(host.querySelector('.rpcn-assistant-model-chip')).toBeNull();
 	});
 
 	it('no binary and no folder: their texts, no button', async () => {
@@ -458,6 +511,8 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: ['b', 1] })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'answered', id: 'q', answers: { a: 'b' } })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'openSettingsRequested' })).toEqual({ type: 'openSettingsRequested' });
+		expect(parseAssistantWebviewMessage({ type: 'chooseModelRequested', model: 'x' })).toEqual({ type: 'chooseModelRequested' });
+		expect(parseAssistantWebviewMessage({ type: 'testConnectionRequested' })).toEqual({ type: 'testConnectionRequested' });
 		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', id: 'a', decision: 'session', extra: 1 })).toEqual({ type: 'approvalDecided', id: 'a', decision: 'session' });
 		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', id: 'a', decision: 'always' })).toBeUndefined();
 		expect(parseAssistantWebviewMessage({ type: 'approvalDecided', decision: 'deny' })).toBeUndefined();
@@ -481,6 +536,17 @@ describe('assistantProtocol', () => {
 		const timed = { ...TURN, elapsedMs: 5, waitingMs: 2, steps: [{ ...TURN.steps[0], durationMs: 1200 }] };
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [timed] })).toEqual({ ...IDLE, turns: [timed] });
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, elapsedMs: -1 }] })).toBeUndefined();
+		const full = { ...TURN, steps: [{ ...TURN.steps[0], detail: 'a b', fullDetail: 'a\nb' }] };
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [full] })).toEqual({ ...IDLE, turns: [full] });
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ ...TURN.steps[0], fullDetail: 1 }] }] })).toBeUndefined();
+		const qa = { ...TURN, steps: [{ ...TURN.steps[0], qa: [{ header: 'H', question: 'Q?', pick: null, answer: 'a', kept: false }] }] };
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [qa] })).toEqual({ ...IDLE, turns: [qa] });
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ ...TURN.steps[0], qa: [{ header: 'H', question: 'Q?', pick: null, answer: 'a' }] }] }] })).toBeUndefined();
+		const approved = { ...TURN, steps: [{ ...TURN.steps[0], approval: 'session', approvalDetail: 'ls' }] };
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [approved] })).toEqual({ ...IDLE, turns: [approved] });
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ ...TURN.steps[0], approval: 'allowed' }] }] })).toBeUndefined();
+		const { model: _tm, ...noTurnModel } = TURN;
+		expect(parseAssistantHostMessage({ ...IDLE, turns: [noTurnModel] })).toBeUndefined();
 		const { waitingMs: _w, ...noWaiting } = TURN;
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [noWaiting] })).toBeUndefined();
 		expect(parseAssistantHostMessage({ ...IDLE, turns: [{ ...TURN, steps: [{ ...TURN.steps[0], durationMs: 'x' }] }] })).toBeUndefined();
@@ -501,5 +567,21 @@ describe('assistantProtocol', () => {
 		expect(parseAssistantHostMessage({ ...IDLE, skillsProblem: 'toString' })).toBeUndefined();
 		const { skills: _skills, ...noSkills } = IDLE;
 		expect(parseAssistantHostMessage(noSkills)).toBeUndefined();
+		// Story 8.3: the access states, the model, the refused model, the host and the endpoint's message.
+		for (const access of ['keyRefused', 'modelNotAllowed', 'unreachable'] as const) {
+			expect(parseAssistantHostMessage({ ...IDLE, access })).toEqual({ ...IDLE, access });
+		}
+		expect(parseAssistantHostMessage({ ...IDLE, access: 'modelNotAllowed', modelNotAllowed: 'x', accessMessage: 'm', extra: 1 }))
+			.toEqual({ ...IDLE, access: 'modelNotAllowed', modelNotAllowed: 'x', accessMessage: 'm' });
+		const { model: _model, ...noModel } = IDLE;
+		expect(parseAssistantHostMessage(noModel)).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, modelNotAllowed: 1 })).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, host: 1 })).toBeUndefined();
+		const { accessMessage: _m, ...noMessage } = IDLE;
+		expect(parseAssistantHostMessage(noMessage)).toBeUndefined();
+		expect(parseAssistantHostMessage({ ...IDLE, access: 'unreachable', accessOrigin: 'test' })).toEqual({ ...IDLE, access: 'unreachable', accessOrigin: 'test' });
+		expect(parseAssistantHostMessage({ ...IDLE, accessOrigin: 'other' })).toBeUndefined();
+		const { accessOrigin: _o, ...noOrigin } = IDLE;
+		expect(parseAssistantHostMessage(noOrigin)).toBeUndefined();
 	});
 });

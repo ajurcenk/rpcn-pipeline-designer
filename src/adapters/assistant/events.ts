@@ -164,8 +164,11 @@ export class StreamMapper {
 				const input = (b.input ?? {}) as Record<string, unknown>;
 				this.open.set(b.id, { name: b.name, input });
 				const label = toolProgress(b.name, input, this.ctx);
-				const detail = label === SHELL_LABEL ? clip(String(input.command ?? '')) : '';
-				events.push({ type: 'step', id: b.id, label, ...(detail ? { detail } : {}) });
+				const command = label === SHELL_LABEL ? String(input.command ?? '') : '';
+				const detail = clip(command);
+				// Manual check (8.3): the whole command too, when the one-line detail is not all of it.
+				const full = command.trim();
+				events.push({ type: 'step', id: b.id, label, ...(detail ? { detail } : {}), ...(detail && full !== detail ? { fullDetail: full } : {}) });
 			} else if (m.type === 'user' && b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
 				const call = this.open.get(b.tool_use_id);
 				if (call) {

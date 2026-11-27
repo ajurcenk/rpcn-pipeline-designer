@@ -5,18 +5,24 @@
 // opens no folder: the seam holds a temporary folder as the workspace, and an `ok` binary state on a fake
 // binary. The key goes through Set up assistant access… into the secret storage. Every row of the plan's
 // matrix has a test (HAPPY_HOST, HAPPY_MODEL, NO_KEY, NO_BINARY, AGENT_ERROR, STOP, NO_LEAK). Story 8.12:
-// every state test reads the chat's turns; the chat's own rows are in "the chat (story 8.12)".
+// every state test reads the chat's turns; the chat's own rows are in "the chat (story 8.12)". Story 8.3:
+// outside "assistant access (story 8.3)" the set-up's test call is stubbed (it passes, no network); inside
+// it, it goes to a local fake `/v1/models` (every row of 8.3's matrix).
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ASSISTANT_KEY_SECRET, ASSISTANT_KEY_URL_SECRET, SET_UP_ASSISTANT_ACCESS_COMMAND, type AssistantAccessUi } from '../../../adapters/vscode/assistantAccess';
+import {
+	ASSISTANT_ACCESS_STORED_MESSAGE, ASSISTANT_KEY_SECRET, ASSISTANT_KEY_URL_SECRET, FORGET_ACCESS_COMMAND, NO_MODEL_LIST_TEXT, normalBaseUrl, OTHER_MODEL_LABEL, SET_UP_ASSISTANT_ACCESS_COMMAND,
+	AssistantAccess as AssistantAccessClass, TEST_CONNECTION_COMMAND, TRY_AGAIN_LABEL, type AssistantAccess, type AssistantAccessUi,
+} from '../../../adapters/vscode/assistantAccess';
 import { ASSISTANT_VIEW_ID, BEFORE_SCHEME, bundledSkillsDir, RUN_ASSISTANT_COMMAND, type AssistantRunOutcome, type AssistantViewUi } from '../../../adapters/vscode/assistantView';
 import { CREDENTIAL_MASK } from '../../../adapters/cloud/errors';
 import type { BinaryState } from '../../../adapters/redpandaConnect/binary';
 import {
-	RUNTIME_MISSING_TEXT, SESSION_ALLOWED_RESULT, unavailableText, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantStateMessage, type AssistantTurnView,
+	KEY_REFUSED_TEXT, RUNTIME_MISSING_TEXT, unavailableText, unreachableText, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantStateMessage, type AssistantTurnView,
 } from '../../../shared/assistantProtocol';
 import { agentSdkHost } from '../../../adapters/assistant/agentSdkHost';
 import { hostPlatform } from '../../../adapters/assistant/platform';
@@ -28,9 +34,9 @@ import { type ExtensionApi } from '../../../extension';
 import { FakeAssistantHosts, happyScript, readyNote, reply, RUN_2_QUESTIONS, step, stepDone, type FakeAssistantStep } from '../../helpers/fakeAssistantHost';
 import { makeTempDir, REPO_ROOT, VERSION_4_112_SCRIPT, writeFakeBinary } from '../../helpers/fakeBinary';
 import { shellKey } from '../../../adapters/assistant/rules';
-import { ADP_401, FakeMessagesApi, toolUseId, type FakeTurn } from '../../helpers/fakeMessagesApi';
+import { ADP_401, adp403Model, ANTHROPIC_401, FakeMessagesApi, toolUseId, type FakeModel, type FakeTurn } from '../../helpers/fakeMessagesApi';
 import { FakeProxy, FakeRegistry, fakeRuntime, SDK, tarball, tarballPath } from '../../helpers/fakeRegistry';
-import { EXTENSION_ID, userFilesHolding, waitFor } from '../helpers';
+import { EXTENSION_ID, userFilesHolding, waitFor, waitForAsync } from '../helpers';
 
 // Not sk-, so only the key mask itself can catch it. Random-looking throughout: the leak scan looks for any
 // 12 of its characters, and none of them may be ordinary words of the suite's paths (`rpcn-assistant-…`).
@@ -56,6 +62,33 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 	let binary: BinaryState;
 	let originalViewUi: AssistantViewUi;
 	let originalAccessUi: AssistantAccessUi;
+	let originalEndpoint: AssistantAccess['endpoint'];
+	/**
+	 * Story 8.3: the suite's access UI: the base URL box keeps its prefilled value, the auth pick takes the
+	 * current value (first), the key box gives KEY; confirms say yes; the progress runs the task.
+	 */
+	const accessUi: AssistantAccessUi = {
+		input: async (o) => (o.password ? KEY : o.value),
+		pick: async (items) => items[0],
+		confirm: async () => true,
+		progress: (_title, task) => task(),
+		showInfo: async (m) => shown.push(m),
+		showError: async (m) => {
+			shown.push(m);
+			return undefined;
+		},
+	};
+	/** Story 8.3: the endpoint stub of the tests outside the access suite: every test call passes (no list), no network. */
+	const passingEndpoint: AssistantAccess['endpoint'] = async () => ({ ok: true, models: null });
+	/** Story 8.3: the assistant's user settings a set-up or the model pick writes, removed. */
+	const resetSettings = async () => {
+		const config = vscode.workspace.getConfiguration('redpandaConnect.assistant');
+		for (const name of ['model', 'baseUrl', 'auth']) {
+			if (config.inspect(name)?.globalValue !== undefined) {
+				await config.update(name, undefined, vscode.ConfigurationTarget.Global);
+			}
+		}
+	};
 	const approvals: string[] = [];
 	const shown: string[] = [];
 	/** Story 8.12: Undo's questions, its answer, the info messages, the links opened outside. */
@@ -135,6 +168,9 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		binary = { kind: 'ok', path: bin, version: '4.112.0', invocation: [bin] };
 		originalViewUi = view().ui;
 		originalAccessUi = assistant().access.ui;
+		originalEndpoint = assistant().access.endpoint;
+		assistant().access.endpoint = passingEndpoint;
+		await resetSettings();
 		approvalWatch = view().onDidChange(() => {
 			const t = view().state().turns.at(-1);
 			for (const card of t?.approvals ?? []) {
@@ -162,11 +198,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 				return true;
 			},
 		};
-		assistant().access.ui = {
-			input: async () => KEY,
-			showInfo: async (m) => shown.push(m),
-			showError: async (m) => shown.push(m),
-		};
+		assistant().access.ui = accessUi;
 		await assistant().setAccessForTest({ key: null, binary, workspace: ws, uv: true });
 		await vscode.commands.executeCommand(`${ASSISTANT_VIEW_ID}.focus`);
 		await waitFor(() => view().visible, 10_000);
@@ -186,6 +218,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		view().idleTimeoutMs = undefined;
 		view().ui = originalViewUi;
 		assistant().access.ui = originalAccessUi;
+		assistant().access.endpoint = originalEndpoint;
+		await resetSettings();
 		fs.rmSync(root, { recursive: true, force: true });
 	});
 
@@ -253,10 +287,10 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.strictEqual(state().access, 'noAccess');
 		assert.strictEqual(view().posted.at(-1)?.access, 'noAccess');
 
-		assistant().access.ui = { ...assistant().access.ui, input: async () => undefined };
+		assistant().access.ui = { ...accessUi, input: async () => undefined };
 		assert.strictEqual(await vscode.commands.executeCommand(SET_UP_ASSISTANT_ACCESS_COMMAND), 'cancelled');
 		assert.ok(!assistant().access.hasKey, 'Escape stores nothing');
-		assistant().access.ui = { ...assistant().access.ui, input: async () => KEY };
+		assistant().access.ui = accessUi;
 		// The view's button posts setUpAccessRequested, which runs the command.
 		await view().receive({ type: 'setUpAccessRequested' });
 		assert.ok(await waitFor(() => assistant().access.hasKey, 5_000), 'the set-up stored the key');
@@ -342,6 +376,11 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(!s.error?.includes(KEY) && s.error?.includes(CREDENTIAL_MASK), s.error ?? '');
 		assert.ok(!api().outputLines().some((l) => l.includes(KEY)), 'logged masked');
 		assert.ok(api().outputLines().some((l) => l.startsWith('Assistant: the run failed: API Error: 401')));
+		// Story 8.3: a 401 is key refused (sticky: nothing starts until access is set up again).
+		assert.strictEqual(s.access, 'keyRefused');
+		assert.strictEqual(await view().run(REQUEST), 'keyRefused');
+		await assistant().setAccessForTest({ key: KEY });
+		assert.strictEqual(state().access, 'ready');
 		hosts.script = happyScript();
 		const { done } = await startRun();
 		assert.ok(await waitFor(() => state().status === 'question', 10_000));
@@ -407,6 +446,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(await vscode.commands.executeCommand(SET_UP_ASSISTANT_ACCESS_COMMAND), 'stored');
 			assert.strictEqual(state().access, 'ready');
 		} finally {
+			// Story 8.3: the set-up wrote the base URL setting.
+			await resetSettings();
 			await assistant().setAccessForTest({ baseUrl: null, key: KEY });
 		}
 	});
@@ -482,15 +523,16 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			id: 'a1', summary: 'run `rpk connect list | python3 -I -c …`', detail: 'rpk connect list --format jsonschema | python3 -I -c "…"', sessionKey: KEY_PIPE, stepId: 's1', write: false,
 		}]);
 		assert.deepStrictEqual(hosts.last!.approvals.get('a1'), 'session');
-		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.result]), [['s1', 'ok', SESSION_ALLOWED_RESULT]]);
+		// Manual check (8.3): the step records the outcome (the webview's words: "you allowed for this session").
+		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.approval]), [['s1', 'ok', 'session']]);
 		assert.deepStrictEqual(view().sessionKeys(), [KEY_PIPE]);
-		// SESSION_HIT, after New conversation: no card; the row says "allowed (this session)".
+		// SESSION_HIT, after New conversation: no card; the row says "allowed by this session's approval".
 		await view().newConversation();
 		assert.strictEqual(await view().run(REQUEST), 'done');
 		assert.strictEqual(cards.length, 1, 'no second card');
 		assert.ok(!hosts.last!.approvals.has('a1'), 'never asked');
 		assert.ok(hosts.last!.events.some((e) => e.type === 'remembered' && e.sessionKey === KEY_PIPE));
-		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.result]), [['s1', 'ok', SESSION_ALLOWED_RESULT]]);
+		assert.deepStrictEqual(turn().steps.map((x) => [x.id, x.mark, x.approval]), [['s1', 'ok', 'remembered']]);
 		// SESSION_MISS: another key asks. ONCE: Allow once remembers nothing.
 		hosts.script = [{ waitApproval: 'a2', sessionKey: 'rpk cluster info', summary: 'run `rpk cluster info`' }, { waitApproval: 'a3', sessionKey: 'rpk cluster info', summary: 'run `rpk cluster info`' }];
 		approveWith = () => 'once';
@@ -526,7 +568,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.deepStrictEqual([hosts.last!.approvals.get('a1'), hosts.last!.approvals.get('a2')], ['session', 'session']);
 		await view().receive({ type: 'approvalDecided', id: 'a3', decision: 'deny' });
 		assert.strictEqual(await done, 'done');
-		assert.deepStrictEqual(turn().steps.filter((x) => x.id === 's1' || x.id === 's2').map((x) => x.result), [SESSION_ALLOWED_RESULT, SESSION_ALLOWED_RESULT]);
+		assert.deepStrictEqual(turn().steps.filter((x) => x.id === 's1' || x.id === 's2').map((x) => x.approval), ['session', 'session']);
 		assert.deepStrictEqual(view().sessionKeys(), ['grep']);
 	});
 
@@ -548,7 +590,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(await waitFor(() => hosts.last!.approvals.has('a0'), 5_000));
 		assert.strictEqual(hosts.last!.approvals.get('a0'), 'once');
 		assert.deepStrictEqual(view().sessionKeys(), []);
-		assert.deepStrictEqual(turn().steps.find((x) => x.id === 'a0')?.result, 'allowed');
+		assert.deepStrictEqual(turn().steps.find((x) => x.id === 'a0')?.approval, 'once');
 		assert.ok(await waitFor(() => turn().approvals[0]?.id === 'a1', 5_000));
 		assert.deepStrictEqual(turn().approvals[0], { id: 'a1', summary: 'run `rm x`', detail: null, sessionKey: null, stepId: 'a1', write: false });
 		assert.ok(await waitFor(() => turn().approvals.map((a) => a.id).join() === 'a2', 5_000), JSON.stringify(turn().approvals));
@@ -575,6 +617,26 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.ok(cards[0].detail?.startsWith('cat ~/x # ') && !cards[0].detail.includes(KEY), String(cards[0].detail));
 		assert.ok(!JSON.stringify(view().posted).includes(KEY));
 		assert.ok(!JSON.stringify(view().posted).includes(home + path.sep));
+	});
+
+	test('manual check (8.3): a long command\'s full text (step and approval card): the key masked, new lines kept, capped with "… (cut)"', async () => {
+		await assistant().setAccessForTest({ key: KEY });
+		const full = `curl -H "x: ${KEY}" \\\n  https://example.invalid/${'p'.repeat(300)}`;
+		const huge = `echo ${'z'.repeat(30_000)}`;
+		assistant().setHostFactory(new FakeAssistantHosts([
+			{ emit: { type: 'step', id: 'b1', label: 'Ran a shell command', detail: 'curl …', fullDetail: full } },
+			{ emit: { type: 'step', id: 'b2', label: 'Ran a shell command', detail: 'echo …', fullDetail: huge } },
+			{ waitApproval: 'a1', sessionKey: null, summary: 'run `curl`', detail: full, stepId: 'b1' },
+		]).factory);
+		const { done } = await startRun();
+		assert.ok(await waitFor(() => cards.length === 1, 10_000), JSON.stringify(state()));
+		const steps = turn().steps;
+		const posted = steps.find((x) => x.id === 'b1')?.fullDetail ?? '';
+		assert.ok(!posted.includes(KEY) && posted.includes(CREDENTIAL_MASK) && posted.includes('\n'), posted);
+		assert.ok(!(cards[0].detail ?? '').includes(KEY) && (cards[0].detail ?? '').includes('\n'), cards[0].detail ?? '');
+		const cut = steps.find((x) => x.id === 'b2')?.fullDetail ?? '';
+		assert.ok(cut.length === 20_000 && cut.endsWith('… (cut)'), String(cut.length));
+		assert.strictEqual(await done, 'done');
 	});
 
 	test('review 5: two questions open: the oldest cards first, then the next; a withdrawn question\'s cards go', async () => {
@@ -629,6 +691,28 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 		assert.deepStrictEqual(labels(), ['Reading ~/x.yaml', 'Asked 2 questions · you kept 1 pick, answered 1']);
 		// Both questions have the same text: the record keeps the last, under the original (unmasked) text.
 		assert.deepStrictEqual(hosts.last!.answers.get('q1'), { [asked[0].question]: 'No' });
+	});
+
+	test('manual check (8.3): a question round stays on its step: each question, the pick and the answer given (kept or not); a key typed into Other is masked', async () => {
+		const hosts = new FakeAssistantHosts(happyScript());
+		assistant().setHostFactory(hosts.factory);
+		await assistant().setAccessForTest({ key: KEY });
+		const { done } = await startRun();
+		assert.ok(await waitFor(() => state().status === 'question', 10_000));
+		const q = state().questions!;
+		// The first card keeps the pick; the second is an Other text with the key in it.
+		await view().receive({ type: 'answered', id: q.id, answers: [q.questions[0].options[0].label, `dedupe with ${KEY}`] });
+		assert.strictEqual(await done, 'done');
+		const row = turn().steps.find((x) => x.qa !== undefined);
+		assert.ok(row, JSON.stringify(turn().steps));
+		assert.deepStrictEqual(row.qa!.map((x) => [x.header, x.question, x.pick, x.kept]), [
+			['Ordering', RUN_2_QUESTIONS[0].question, 'No ordering (My pick)', true],
+			['Duplicates', RUN_2_QUESTIONS[1].question, 'No dedupe (My pick)', false],
+		]);
+		assert.strictEqual(row.qa![0].answer, 'No ordering (My pick)');
+		assert.strictEqual(row.qa![1].answer, `dedupe with ${CREDENTIAL_MASK}`);
+		assert.ok(!JSON.stringify(view().posted).includes(KEY), 'masked in every posted message');
+		assert.strictEqual(hosts.last?.answers.get('q1')?.[RUN_2_QUESTIONS[1].question], `dedupe with ${KEY}`, 'the agent gets the answer as typed');
 	});
 
 	test('review 21: only a design note inside the workspace is the note: not another file, not one outside', async () => {
@@ -943,7 +1027,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'running', '']]);
 			resolve!('deny');
 			assert.strictEqual(await done, 'done');
-			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result]), [['Asks to run `ls`', 'failed', 'denied']]);
+			assert.deepStrictEqual(turn().steps.map((x) => [x.label, x.mark, x.result, x.approval]), [['Asks to run `ls`', 'failed', '', 'deny']]);
 			await run([{ emit: { type: 'error', message: 'boom' } }]);
 			assert.strictEqual(turn().outcome, 'error');
 			assert.strictEqual(state().error, 'boom');
@@ -1037,11 +1121,25 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assertNoLeak();
 		});
 
+		test('manual check (8.3): a turn of 250 steps with 30 shell commands keeps all 30 shell rows, in order; the rest counted', async () => {
+			const steps: FakeAssistantStep[] = Array.from({ length: 250 }, (_, i): FakeAssistantStep => (i % 8 === 0 && i < 240
+				? { emit: { type: 'step', id: `s${i}`, label: 'Ran a shell command', detail: `cmd ${i}` } }
+				: step(`s${i}`, `Reading f${i}.yaml`)));
+			await run(steps);
+			const all = turn().steps;
+			assert.ok(all.length <= 200, String(all.length));
+			assert.deepStrictEqual(all.filter((x) => x.label === 'Ran a shell command').map((x) => x.detail), Array.from({ length: 30 }, (_, k) => `cmd ${k * 8}`));
+			assert.match(all[0].label, /^\d+ earlier steps not shown$/);
+			assert.strictEqual(Number(all[0].label.split(' ')[0]) + all.length - 1, 250 + all.filter((x) => !x.id.startsWith('s') && x.id !== 'dropped').length);
+		});
+
 		test('limits: at most 50 turns, the oldest dropped first; at most 200 steps a turn', async () => {
 			const steps: FakeAssistantStep[] = Array.from({ length: 210 }, (_, i) => step(`s${i}`, `step ${i}`));
 			await run(steps);
 			assert.strictEqual(turn().steps.length, 200);
-			assert.strictEqual(turn().steps[0].label, 'step 10');
+			// Manual check (8.3): the dropped rows are counted in a line of their own at the top.
+			assert.strictEqual(turn().steps[0].label, '11 earlier steps not shown');
+			assert.strictEqual(turn().steps[1].label, 'step 11');
 			const hosts = new FakeAssistantHosts([reply('x')]);
 			assistant().setHostFactory(hosts.factory);
 			for (let i = 0; i < 50; i++) {
@@ -1473,10 +1571,11 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(turn().review, 'none');
 			const writes = turn().steps.filter((x) => x.mark !== 'info');
 			assert.strictEqual(writes.length, 3, JSON.stringify(turn().steps));
-			assert.ok(writes.every((x) => x.mark === 'failed' && x.result !== ''), JSON.stringify(writes));
+			assert.ok(writes.every((x) => x.mark === 'failed' && (x.result !== '' || x.approval === 'deny')), JSON.stringify(writes));
 			// Manual check 2: the approvals folded into their steps (no "Asks to" or "Denied" rows); the denied ones say so.
 			assert.ok(!turn().steps.some((x) => x.label.startsWith('Asks to') || x.label === 'Denied' || x.label === 'Allowed'), JSON.stringify(turn().steps));
-			assert.deepStrictEqual(writes.map((x) => x.result), ['denied', writes[1].result, 'denied'], JSON.stringify(writes));
+			assert.deepStrictEqual(writes.map((x) => x.approval), ['deny', undefined, 'deny'], JSON.stringify(writes));
+			assert.ok(writes[0].approvalDetail?.endsWith('orders.yaml'), writes[0].approvalDetail);
 			assert.ok(writes[1].result.startsWith('PreToolUse:Write hook error'), writes[1].result);
 		});
 
@@ -1495,8 +1594,25 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.deepStrictEqual(commands.map((c) => shellKey(c, ws)), [null, null, null, null, 'rpk connect list | python3'], 'the rules\' key, as the cards got it');
 			commands.forEach((_, i) => assert.ok(fakeApi.results.get(toolUseId(i))?.isError, `denied: ${commands[i]}`));
 			assert.ok(!fs.existsSync(path.join(ws, 'out.txt')));
-			assert.ok(turn().steps.filter((x) => x.mark !== 'info').every((x) => x.mark === 'failed' && x.result === 'denied'), JSON.stringify(turn().steps));
+			assert.ok(turn().steps.filter((x) => x.mark !== 'info').every((x) => x.mark === 'failed' && x.approval === 'deny'), JSON.stringify(turn().steps));
 			assert.deepStrictEqual(view().sessionKeys(), []);
+		});
+
+		test('manual check (8.3) (fake model): an rpcn_check call not in its plain form asks with the key "rpcn_check <subcommand>"; after Allow for this session the next one runs with no card', async () => {
+			approveWith = () => 'session';
+			fakeApi.turns = [
+				{ tool: 'Bash', input: { command: `uv run ${script} binary 2>&1 | head -200`, description: 'Check the binary' } },
+				{ tool: 'Bash', input: { command: `uv run ${script} binary 2>/dev/null | head -100`, description: 'Check the binary again' } },
+			];
+			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
+			assert.deepStrictEqual(cards.map((c) => c.sessionKey), ['rpcn_check binary'], JSON.stringify(cards));
+			assert.deepStrictEqual(view().sessionKeys(), ['rpcn_check binary']);
+			for (const i of [0, 1]) {
+				const r = fakeApi.results.get(toolUseId(i));
+				assert.ok(r && !r.isError && /\\?"ok\\?":\s*true/.test(r.text), `ran: ${JSON.stringify(r)}`);
+			}
+			const row = (i: number) => turn().steps.find((x) => x.id === toolUseId(i));
+			assert.deepStrictEqual([row(0)?.approval, row(1)?.approval], ['session', 'remembered'], JSON.stringify(turn().steps));
 		});
 
 		test('story 8.5 PIPE_KEY, SESSION_HIT, SESSION_MISS, ONCE (fake model): Allow for this session, then the same key runs without a card; another key and Allow once ask again', async () => {
@@ -1520,10 +1636,8 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.deepStrictEqual([0, 1, 2, 3, 4].map((i) => fakeApi.results.get(toolUseId(i))?.isError), [false, false, true, false, true], JSON.stringify([...fakeApi.results]));
 			assert.ok(fakeApi.results.get(toolUseId(1))?.text.includes('other'), 'the remembered call ran');
 			const row = (i: number) => turn().steps.find((x) => x.id === toolUseId(i));
-			assert.strictEqual(row(0)?.result, SESSION_ALLOWED_RESULT);
-			assert.strictEqual(row(1)?.result, SESSION_ALLOWED_RESULT, JSON.stringify(turn().steps));
-			assert.strictEqual(row(2)?.result, 'denied');
-			assert.strictEqual(row(4)?.result, 'denied');
+			assert.deepStrictEqual([0, 1, 2, 3, 4].map((i) => row(i)?.approval), ['session', 'remembered', 'deny', 'once', 'deny'], JSON.stringify(turn().steps));
+			assert.ok(row(2)?.approvalDetail?.endsWith(' cluster info'), row(2)?.approvalDetail);
 		});
 
 		test('story 8.5 OWN_NOTE, OTHER_WRITE, OUTSIDE (fake model): the note written and edited with no card; Write for this session; a write outside still denied with no card', async () => {
@@ -1544,7 +1658,7 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(fs.readFileSync(path.join(ws, 'b.yaml'), 'utf8'), 'b: 1\n');
 			assert.ok(!fs.existsSync(outside), 'outside: denied');
 			assert.deepStrictEqual([0, 1, 2, 3, 4].map((i) => fakeApi.results.get(toolUseId(i))?.isError), [false, false, false, false, true], JSON.stringify([...fakeApi.results]));
-			assert.strictEqual(turn().steps.find((x) => x.id === toolUseId(3))?.result, SESSION_ALLOWED_RESULT, JSON.stringify(turn().steps));
+			assert.strictEqual(turn().steps.find((x) => x.id === toolUseId(3))?.approval, 'remembered', JSON.stringify(turn().steps));
 		});
 
 		test('story 8.5 manual check 1 (fake model): a Read of a tool result spilled under the agent\'s own config folder runs with no card; a sibling outside it asks', async () => {
@@ -1593,6 +1707,10 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.ok(!s.error.includes(KEY), s.error);
 			assert.ok(!api().outputLines().some((l) => l.includes(KEY)));
 			assert.ok(!view().running);
+			// Story 8.3: RUN_401: the turn shows the masked error; access goes to keyRefused; set up again, it runs.
+			assert.strictEqual(turn().outcome, 'error');
+			assert.strictEqual(s.access, 'keyRefused', s.error);
+			await assistant().setAccessForTest({ key: KEY });
 			fakeApi.failure = undefined;
 			fakeApi.turns = [];
 			assert.strictEqual(await view().run(REQUEST), 'done', JSON.stringify(state()));
@@ -1606,9 +1724,10 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(approvals.length, 1);
 			assert.ok(fs.existsSync(path.join(ws, 'orders.yaml')));
 			assert.strictEqual(fakeApi.results.get(toolUseId(0))?.isError, false);
-			// Manual check 2: folded into the Write's own row (its summary "written" wins over "allowed").
+			// Manual check 2, (8.3): folded into the Write's own row: its own result, and the outcome ("you allowed once · written").
 			assert.ok(!labels().some((l) => l.startsWith('Asks to') || l === 'Allowed'), JSON.stringify(labels()));
 			assert.deepStrictEqual(turn().steps.filter((x) => x.mark !== 'info').map((x) => [x.label, x.mark, x.result]), [['Writing orders.yaml', 'ok', 'written']]);
+			assert.strictEqual(turn().steps.find((x) => x.label === 'Writing orders.yaml')?.approval, 'once');
 			assert.deepStrictEqual(turn().files.map((f) => [f.path, f.added, f.removed, f.created]), [['orders.yaml', 1, 0, true]]);
 		});
 
@@ -1699,6 +1818,427 @@ suite('RPCN AI assistant (integration, story 8.1)', function () {
 			assert.strictEqual(await done, 'stopped', JSON.stringify(state()));
 			assert.strictEqual(state().questions, null);
 			assert.ok(!fs.existsSync(path.join(ws, 'orders_to_api.design.md')), 'nothing written');
+		});
+	});
+
+	suite('assistant access (story 8.3)', () => {
+		let fake: FakeMessagesApi;
+		const THREE: FakeModel[] = [
+			{ id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5' }, { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' }, { id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5' },
+		];
+		/** What the UI answers: the base URL, the auth pick's label, the key, the model picked (`null`: Other…), Other…'s name, the confirm, an error's button (once). */
+		let answers: { url?: string; auth?: string; key?: string; model?: string | null; other?: string; confirm?: boolean; errorAction?: string } = {};
+		const inputs: vscode.InputBoxOptions[] = [];
+		const picks: { readonly title: string | undefined; readonly items: (vscode.QuickPickItem & { readonly model?: string | null })[] }[] = [];
+		const errors: { readonly message: string; readonly actions: readonly string[] }[] = [];
+		const notes: string[] = [];
+		const config = () => vscode.workspace.getConfiguration('redpandaConnect.assistant');
+		const secrets = async () => [await assistant().access.storedSecret(ASSISTANT_KEY_SECRET), await assistant().access.storedSecret(ASSISTANT_KEY_URL_SECRET)];
+		const setUp = () => vscode.commands.executeCommand<string>(SET_UP_ASSISTANT_ACCESS_COMMAND);
+		const lastPick = () => {
+			const p = picks.at(-1);
+			assert.ok(p, 'a pick opened');
+			return p;
+		};
+		const closedPort = () => new Promise<number>((resolve) => {
+			const server = net.createServer().listen(0, '127.0.0.1', () => {
+				const port = (server.address() as net.AddressInfo).port;
+				server.close(() => resolve(port));
+			});
+		});
+
+		suiteSetup(async () => {
+			fake = new FakeMessagesApi();
+			await fake.start();
+		});
+		suiteTeardown(async () => {
+			await fake?.stop();
+			assistant().access.endpoint = passingEndpoint;
+			assistant().access.endpointTimeoutMs = undefined;
+			assistant().access.now = () => Date.now();
+			assistant().access.ui = accessUi;
+			await resetSettings();
+			await assistant().setAccessForTest({ key: null, model: null, baseUrl: null, auth: null });
+		});
+		setup(async () => {
+			fake.reset();
+			fake.models = THREE;
+			fake.modelsFailure = undefined;
+			fake.failure = undefined;
+			fake.hang = false;
+			answers = { url: fake.url, auth: 'bearer', key: KEY };
+			inputs.length = 0;
+			picks.length = 0;
+			errors.length = 0;
+			notes.length = 0;
+			assistant().access.endpoint = originalEndpoint;
+			assistant().access.endpointTimeoutMs = undefined;
+			assistant().access.now = () => Date.now();
+			await resetSettings();
+			await assistant().setAccessForTest({ key: null, model: null, baseUrl: null, auth: null });
+			assistant().access.ui = {
+				input: async (o) => {
+					inputs.push(o);
+					return o.password ? answers.key : o.title?.includes('base URL') ? answers.url : answers.other;
+				},
+				pick: async (items, o) => {
+					picks.push({ title: o.title, items: items.map((i) => ({ ...i })) });
+					return items.find((i) => ('model' in i ? (i as { model: string | null }).model === answers.model : i.label === answers.auth));
+				},
+				confirm: async () => answers.confirm === true,
+				progress: (_title, task) => task(),
+				showInfo: async (m) => notes.push(m),
+				showError: async (m, ...actions) => {
+					errors.push({ message: m, actions });
+					const action = answers.errorAction;
+					answers.errorAction = undefined;
+					return action;
+				},
+			};
+		});
+
+		test('package.json: Test assistant connection and Forget assistant access; the model setting names the chip', () => {
+			const pkg = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON as {
+				contributes: { commands: { command: string; title: string }[]; configuration: { properties: Record<string, { markdownDescription?: string }> } };
+			};
+			assert.deepStrictEqual([TEST_CONNECTION_COMMAND, FORGET_ACCESS_COMMAND].map((id) => pkg.contributes.commands.find((c) => c.command === id)?.title),
+				['Test assistant connection', 'Forget assistant access']);
+			assert.ok(pkg.contributes.configuration.properties['redpandaConnect.assistant.model'].markdownDescription?.includes('model chip'));
+		});
+
+		test('SETUP_OK, PICK: URL, x-api-key and key; the fake lists 3 models: settings written, key stored, info; the chip\'s pick lists them with cost marks; a pick is written', async () => {
+			answers.auth = 'x-api-key';
+			assert.strictEqual(await setUp(), 'stored');
+			// The steps: the base URL prefilled, the auth with the current value first, the key in a password box.
+			assert.deepStrictEqual(inputs.map((o) => [o.value, o.password === true]), [['https://api.anthropic.com', false], [undefined, true]]);
+			assert.deepStrictEqual(picks[0].items.map((i) => i.label), ['bearer', 'x-api-key']);
+			assert.strictEqual(config().inspect('baseUrl')?.globalValue, fake.url);
+			assert.strictEqual(config().inspect('auth')?.globalValue, 'x-api-key');
+			assert.deepStrictEqual(await secrets(), [KEY, normalBaseUrl(fake.url)]);
+			assert.deepStrictEqual(notes, [ASSISTANT_ACCESS_STORED_MESSAGE]);
+			// The test call: one GET /v1/models with the key as x-api-key and anthropic-version; nothing that costs tokens.
+			assert.deepStrictEqual(fake.requests.map((r) => [r.method, r.path]), [['GET', '/v1/models']]);
+			assert.strictEqual(fake.requests[0].headers['x-api-key'], KEY);
+			assert.ok(fake.requests[0].headers['anthropic-version']);
+			assert.ok(await waitFor(() => state().access === 'ready', 5_000), state().access);
+			assert.strictEqual(state().model, 'claude-opus-5-5');
+			// The chip: the cached list (no new call), the current model checked, Other… last.
+			fake.reset();
+			answers.model = 'claude-sonnet-4-6';
+			await view().receive({ type: 'chooseModelRequested' });
+			assert.deepStrictEqual(lastPick().items.map((i) => [i.label, i.description]), [
+				['$(check) claude-opus-5-5', '$$$  Claude Opus 5.5'], ['claude-sonnet-4-6', '$$  Claude Sonnet 4.6'], ['claude-haiku-5-5', '$  Claude Haiku 5.5'],
+				[OTHER_MODEL_LABEL, 'any model name'],
+			]);
+			assert.strictEqual(fake.requests.length, 0, 'the list was cached');
+			assert.strictEqual(config().inspect('model')?.globalValue, 'claude-sonnet-4-6');
+			assert.ok(await waitFor(() => state().model === 'claude-sonnet-4-6' && view().posted.at(-1)?.model === 'claude-sonnet-4-6', 5_000), state().model);
+			// Over 10 minutes old: fetched again when the pick opens.
+			assistant().access.now = () => Date.now() + 11 * 60_000;
+			answers.model = undefined;
+			await view().receive({ type: 'chooseModelRequested' });
+			assert.deepStrictEqual(fake.requests.map((r) => [r.method, r.path]), [['GET', '/v1/models']]);
+			assert.strictEqual(lastPick().items[1].label, '$(check) claude-sonnet-4-6');
+			assert.strictEqual(config().inspect('model')?.globalValue, 'claude-sonnet-4-6', 'Escape changes nothing');
+		});
+
+		test('COST_MARKS: opus, sonnet, fable, haiku and my-alias: $$$, $$, $$, $ and none', async () => {
+			fake.models = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-2', 'claude-haiku-5-5', 'my-alias'].map((id) => ({ id }));
+			assert.strictEqual(await setUp(), 'stored');
+			assert.strictEqual(await assistant().access.chooseModel(), undefined);
+			assert.deepStrictEqual(lastPick().items.map((i) => i.description), ['$$$', '$$', '$$', '$', '', 'any model name']);
+		});
+
+		test('SETUP_401, SETUP_ADP_401: nothing stored; "The endpoint refused the key." with Try again, which asks again', async () => {
+			for (const failure of [ANTHROPIC_401, ADP_401]) {
+				errors.length = 0;
+				fake.modelsFailure = failure;
+				assert.strictEqual(await setUp(), 'failed');
+				assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+				assert.strictEqual(config().inspect('baseUrl')?.globalValue, undefined, 'no setting written');
+				assert.ok(errors[0].message.startsWith(KEY_REFUSED_TEXT), errors[0].message);
+				assert.deepStrictEqual(errors[0].actions, [TRY_AGAIN_LABEL]);
+				assert.strictEqual(state().access, 'noAccess');
+			}
+			// Try again: the set-up runs again (the key is right now: stored).
+			inputs.length = 0;
+			answers.errorAction = TRY_AGAIN_LABEL;
+			assert.strictEqual(await setUp(), 'failed');
+			fake.modelsFailure = undefined;
+			// The fresh set-up ends with its info message (then its guard is released).
+			assert.ok(await waitFor(() => assistant().access.hasKey && notes.includes(ASSISTANT_ACCESS_STORED_MESSAGE), 5_000), 'Try again set access up');
+			await new Promise((r) => setTimeout(r, 50));
+			assert.strictEqual(inputs.length, 4, 'every step asked twice');
+		});
+
+		test('the guard: a failed set-up\'s notification left unanswered does not block another set-up', async () => {
+			fake.modelsFailure = ANTHROPIC_401;
+			const unanswered: string[] = [];
+			assistant().access.ui = { ...assistant().access.ui, showError: (m) => {
+				unanswered.push(m);
+				return new Promise<undefined>(() => undefined);
+			} };
+			assert.strictEqual(await setUp(), 'failed');
+			assert.strictEqual(unanswered.length, 1);
+			fake.modelsFailure = undefined;
+			assert.strictEqual(await setUp(), 'stored', 'not busy');
+		});
+
+		test('SETUP_ESC: Escape at the auth step (or the URL or the key): no setting changed, nothing stored, nothing sent', async () => {
+			// A new base URL typed, then Escape at the auth step: not written, nothing stored, nothing sent.
+			answers.url = `${fake.url}/other`;
+			answers.auth = undefined;
+			assert.strictEqual(await setUp(), 'cancelled');
+			assert.strictEqual(inputs.length, 1, 'no key asked');
+			assert.strictEqual(config().inspect('baseUrl')?.globalValue, undefined, 'the typed base URL was not written');
+			assert.strictEqual(assistant().access.settings().baseUrl, 'https://api.anthropic.com');
+			assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+			answers = { url: undefined };
+			assert.strictEqual(await setUp(), 'cancelled');
+			answers = { url: fake.url, auth: 'x-api-key', key: undefined };
+			assert.strictEqual(await setUp(), 'cancelled');
+			assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+			assert.deepStrictEqual(['baseUrl', 'auth', 'model'].map((n) => config().inspect(n)?.globalValue), [undefined, undefined, undefined]);
+			assert.strictEqual(fake.requests.length, 0);
+		});
+
+		test('SETUP_NO_LIST: /v1/models gives 404: stored, "reachable, no model list"; the pick has the current model and Other… only', async () => {
+			fake.modelsFailure = { status: 404, body: { type: 'error', error: { type: 'not_found_error', message: 'Not found' } } };
+			assert.strictEqual(await setUp(), 'stored');
+			assert.deepStrictEqual(await secrets(), [KEY, normalBaseUrl(fake.url)]);
+			assert.ok(notes[0].includes(NO_MODEL_LIST_TEXT), notes[0]);
+			await view().receive({ type: 'chooseModelRequested' });
+			assert.deepStrictEqual(lastPick().items.map((i) => i.label), ['$(check) claude-opus-5-5', OTHER_MODEL_LABEL]);
+		});
+
+		test('UNREACHABLE: a closed port: nothing stored; "Could not reach `<host>`."', async () => {
+			const port = await closedPort();
+			answers.url = `http://127.0.0.1:${port}`;
+			assert.strictEqual(await setUp(), 'failed');
+			assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+			assert.ok(errors[0].message.startsWith(unreachableText(`127.0.0.1:${port}`)), errors[0].message);
+			assert.strictEqual(config().inspect('baseUrl')?.globalValue, undefined);
+		});
+
+		test('TIMEOUT: the fake hangs past the (shortened) limit: unreachable', async () => {
+			fake.hang = true;
+			assistant().access.endpointTimeoutMs = 500;
+			assert.strictEqual(await setUp(), 'failed');
+			assert.ok(errors[0].message.startsWith(unreachableText(new URL(fake.url).host)) && /timed out/i.test(errors[0].message), errors[0].message);
+			assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+		});
+
+		test('TEST_CONN: with the stored key: a 401 sets keyRefused (sticky); a 403 is key refused with its message; a 200 clears it with an info message', async () => {
+			assert.strictEqual(await setUp(), 'stored');
+			fake.reset();
+			fake.modelsFailure = ANTHROPIC_401;
+			assert.strictEqual(await vscode.commands.executeCommand(TEST_CONNECTION_COMMAND), 'keyRefused');
+			assert.strictEqual(fake.requests[0].headers.authorization, `Bearer ${KEY}`);
+			assert.strictEqual(state().access, 'keyRefused');
+			assert.strictEqual(await view().run(REQUEST), 'keyRefused', 'nothing starts');
+			fake.modelsFailure = { status: 403, body: { type: 'error', error: { type: 'permission_error', message: 'This key cannot use the workspace' } } };
+			assert.strictEqual(await assistant().access.testConnection(), 'forbidden');
+			assert.deepStrictEqual([state().access, state().accessMessage], ['keyRefused', 'This key cannot use the workspace']);
+			fake.modelsFailure = undefined;
+			notes.length = 0;
+			// The panel's Test connection posts testConnectionRequested, which runs the command.
+			await view().receive({ type: 'testConnectionRequested' });
+			assert.ok(await waitFor(() => state().access === 'ready', 5_000), state().access);
+			assert.ok(notes.some((n) => n.includes('answered with 3 models')), JSON.stringify(notes));
+			assert.strictEqual(state().accessMessage, null);
+		});
+
+		test('FORGET: Cancel keeps both secrets; confirmed: both gone, the list too; the view shows No access', async () => {
+			assert.strictEqual(await setUp(), 'stored');
+			answers.confirm = false;
+			assert.strictEqual(await vscode.commands.executeCommand(FORGET_ACCESS_COMMAND), 'cancelled');
+			assert.deepStrictEqual(await secrets(), [KEY, normalBaseUrl(fake.url)]);
+			answers.confirm = true;
+			assert.strictEqual(await vscode.commands.executeCommand(FORGET_ACCESS_COMMAND), 'forgotten');
+			assert.deepStrictEqual(await secrets(), [undefined, undefined]);
+			assert.strictEqual(assistant().access.cachedModels(), undefined);
+			assert.ok(await waitFor(() => state().access === 'noAccess', 5_000), state().access);
+			assert.strictEqual(view().posted.at(-1)?.access, 'noAccess');
+		});
+
+		test('RUN_401 (fake host): a run failing "Not logged in · Please run /login": the turn shows the masked error; access goes to keyRefused', async () => {
+			await assistant().setAccessForTest({ key: KEY });
+			assistant().setHostFactory(new FakeAssistantHosts([{ emit: { type: 'error', message: `Not logged in · Please run /login ${KEY}` } }]).factory);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			assert.strictEqual(turn().outcome, 'error');
+			assert.ok(state().error?.startsWith('Not logged in') && !state().error?.includes(KEY), state().error ?? '');
+			assert.strictEqual(state().access, 'keyRefused');
+		});
+
+		test('RUN_403_MODEL, MODEL_CHANGE (fake host): modelNotAllowed with x; Choose a model opens the pick; another model clears it; the next run uses it', async () => {
+			await assistant().setAccessForTest({ key: KEY, baseUrl: fake.url });
+			const hosts = new FakeAssistantHosts([{ emit: { type: 'error', message: '403 model "x" is not allowed for provider "p"' } }]);
+			assistant().setHostFactory(hosts.factory);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			assert.deepStrictEqual([state().access, state().modelNotAllowed], ['modelNotAllowed', 'x']);
+			assert.strictEqual(state().error, '403 model "x" is not allowed for provider "p"');
+			assert.strictEqual(await view().run(REQUEST), 'modelNotAllowed', 'sticky: nothing starts');
+			answers.model = 'claude-sonnet-4-6';
+			await view().receive({ type: 'chooseModelRequested' });
+			assert.deepStrictEqual(lastPick().items.map((i) => i.model), ['claude-opus-5-5', 'claude-sonnet-4-6', 'claude-haiku-5-5', null], 'the endpoint\'s list, fetched');
+			assert.ok(await waitFor(() => state().access === 'ready', 5_000), state().access);
+			assert.strictEqual(state().modelNotAllowed, null);
+			hosts.script = happyScript();
+			const { done } = await startRun();
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+			assert.strictEqual(hosts.last?.config.model, 'claude-sonnet-4-6');
+		});
+
+		test('manual check (8.3): a turn keeps the model it started on; a new turn gets the new setting', async () => {
+			await assistant().setAccessForTest({ key: KEY });
+			assistant().setHostFactory(new FakeAssistantHosts(happyScript()).factory);
+			try {
+				await config().update('model', 'claude-sonnet-4-6', vscode.ConfigurationTarget.Global);
+				const first = await startRun();
+				assert.ok(await waitFor(() => state().status === 'question', 10_000));
+				assert.strictEqual(turn().model, 'claude-sonnet-4-6');
+				await answerPicks();
+				assert.strictEqual(await first.done, 'done');
+				await config().update('model', 'claude-haiku-5-5', vscode.ConfigurationTarget.Global);
+				assert.ok(await waitFor(() => state().model === 'claude-haiku-5-5', 5_000));
+				assert.strictEqual(view().posted.at(-1)?.turns.at(-1)?.model, 'claude-sonnet-4-6', 'the earlier turn keeps its model');
+				// The second run starts only from ready (the key held): a run that does not start says why, now.
+				assert.strictEqual(state().access, 'ready');
+				let outcome: string | undefined;
+				const second = await startRun();
+				void second.done.then((o) => (outcome = o));
+				const ok = await waitFor(() => state().status === 'question' || outcome !== undefined, 10_000);
+				assert.ok(ok && state().status === 'question', JSON.stringify({ outcome, status: state().status, access: state().access, error: state().error }));
+				await answerPicks();
+				assert.strictEqual(await second.done, 'done');
+				assert.deepStrictEqual(state().turns.map((t) => t.model), ['claude-sonnet-4-6', 'claude-haiku-5-5']);
+			} finally {
+				await resetSettings();
+			}
+		});
+
+		test('manual check (8.3): the secret storage: a read started before a write never wins over it; an echo of an earlier own state is ignored; another window\'s change applies', async () => {
+			// A store whose reads can be made to hand back an older state once (as VS Code's application storage did).
+			const values = new Map<string, string>();
+			const changed = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+			let echo: Map<string, string> | undefined;
+			let release: (() => void) | undefined;
+			let slowReads = false;
+			const store: vscode.SecretStorage = {
+				get: (key) => {
+					const value = echo ? echo.get(key) : values.get(key);
+					// A slow read answers what it saw when it started, after the write it overlapped.
+					return slowReads ? new Promise((resolve) => setTimeout(() => resolve(value), 60)) : Promise.resolve(value);
+				},
+				store: (key, value) => new Promise<void>((resolve) => {
+					// The first write waits for the test: a read meanwhile must not overtake it.
+					const done = () => {
+						values.set(key, value);
+						resolve();
+					};
+					if (!release) {
+						release = done;
+					} else {
+						done();
+					}
+				}),
+				delete: async (key) => {
+					values.delete(key);
+				},
+				onDidChange: changed.event,
+			};
+			const access = new AssistantAccessClass({ store, log: () => undefined });
+			try {
+				await access.ready;
+				// 1. A write in flight; a change's read starts (it sees no key) and answers only after the write ended.
+				const writing = access.setAccessForTest({ key: KEY, keyBaseUrl: 'https://api.anthropic.com' });
+				await waitFor(() => release !== undefined, 2_000);
+				slowReads = true;
+				changed.fire({ key: ASSISTANT_KEY_SECRET });
+				await new Promise((r) => setTimeout(r, 10));
+				release!();
+				await writing;
+				assert.ok(access.hasKey, 'held once written');
+				await new Promise((r) => setTimeout(r, 120));
+				slowReads = false;
+				assert.ok(access.hasKey && access.keyMatchesBaseUrl, 'the read started before the write did not overwrite it');
+				// 2. Our next write, then the storage hands back the earlier state (no key) once: ignored.
+				await access.setAccessForTest({ key: null });
+				await access.setAccessForTest({ key: KEY, keyBaseUrl: 'https://api.anthropic.com' });
+				echo = new Map();
+				changed.fire({ key: ASSISTANT_KEY_SECRET });
+				await new Promise((r) => setTimeout(r, 30));
+				assert.ok(access.hasKey, 'an echo of an earlier own state is ignored');
+				// 3. Another window's change (a state never written here) applies at once.
+				echo = new Map([[ASSISTANT_KEY_SECRET, 'Other7windowKey9xYz'], [ASSISTANT_KEY_URL_SECRET, 'https://adp.example']]);
+				changed.fire({ key: ASSISTANT_KEY_SECRET });
+				assert.ok(await waitForAsync(async () => (await access.apiKey()) === 'Other7windowKey9xYz', 2_000), 'another window\'s key');
+			} finally {
+				access.dispose();
+				changed.dispose();
+			}
+		});
+
+		test('MODEL_CHANGE (the setting): a change to the model setting clears modelNotAllowed', async () => {
+			await assistant().setAccessForTest({ key: KEY });
+			assistant().setHostFactory(new FakeAssistantHosts([{ emit: { type: 'error', message: 'API Error: 403 {"error":{"type":"model_not_allowed","message":"model \\"claude-opus-5-5\\" is not allowed for provider \\"p\\""}}' } }]).factory);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			assert.deepStrictEqual([state().access, state().modelNotAllowed], ['modelNotAllowed', 'claude-opus-5-5']);
+			await config().update('model', 'claude-haiku-5-5', vscode.ConfigurationTarget.Global);
+			assert.ok(await waitFor(() => state().access === 'ready', 5_000), state().access);
+		});
+
+		test('unreachable (fake host): not sticky: the failed turn shows it; the composer stays; the next run starts and clears it', async () => {
+			await assistant().setAccessForTest({ key: KEY, baseUrl: fake.url });
+			const hosts = new FakeAssistantHosts([{ emit: { type: 'error', message: 'API Error: Connection error.' } }]);
+			assistant().setHostFactory(hosts.factory);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			assert.deepStrictEqual([state().access, state().host], ['unreachable', new URL(fake.url).host]);
+			hosts.script = happyScript();
+			const { done } = await startRun();
+			assert.strictEqual(state().access, 'ready', 'cleared as the run starts');
+			assert.ok(await waitFor(() => state().status === 'question', 10_000));
+			await answerPicks();
+			assert.strictEqual(await done, 'done');
+		});
+
+		test('RUN_403_MODEL (fake model): the endpoint refuses the model with ADP\'s 403: modelNotAllowed with its name', async () => {
+			await assistant().setAccessForTest({ key: KEY, baseUrl: fake.url, auth: 'bearer', model: 'claude-opus-5-5' });
+			assistant().setHostFactory(undefined);
+			fake.failure = adp403Model('claude-opus-5-5');
+			assert.strictEqual(await view().run(REQUEST), 'error', JSON.stringify(state()));
+			assert.deepStrictEqual([state().access, state().modelNotAllowed], ['modelNotAllowed', 'claude-opus-5-5'], state().error ?? '');
+		});
+
+		test('PICK_OTHER: Other…, then a typed name: written; Escape at Other… changes nothing', async () => {
+			assert.strictEqual(await setUp(), 'stored');
+			answers.model = null;
+			answers.other = 'my-alias';
+			assert.strictEqual(await assistant().access.chooseModel(), 'my-alias');
+			assert.strictEqual(config().inspect('model')?.globalValue, 'my-alias');
+			assert.strictEqual(inputs.at(-1)?.value, 'claude-opus-5-5', 'Other… is prefilled with the current model');
+			answers.other = undefined;
+			assert.strictEqual(await assistant().access.chooseModel(), undefined);
+			assert.strictEqual(config().inspect('model')?.globalValue, 'my-alias');
+			assert.ok(await waitFor(() => state().model === 'my-alias', 5_000));
+		});
+
+		test('NO_LEAK: after set-up, a test, a run and forget: the key is in no setting, file, log, message or quick-pick item', async () => {
+			assert.strictEqual(await setUp(), 'stored');
+			assert.strictEqual(await assistant().access.testConnection(), 'ok');
+			assistant().setHostFactory(new FakeAssistantHosts([{ emit: { type: 'error', message: `API Error: 401 Bearer ${KEY}` } }]).factory);
+			assert.strictEqual(await view().run(REQUEST), 'error');
+			await assistant().setAccessForTest({ key: KEY, keyBaseUrl: fake.url });
+			await view().receive({ type: 'chooseModelRequested' });
+			answers.confirm = true;
+			assert.strictEqual(await assistant().access.forget(), 'forgotten');
+			assertNoLeak();
+			const ui = JSON.stringify({ picks, errors, notes, inputs: inputs.map((o) => ({ ...o, validateInput: undefined })) });
+			for (let i = 0; i + 12 <= KEY.length; i++) {
+				assert.ok(!ui.includes(KEY.slice(i, i + 12)), 'quick picks, inputs and messages');
+			}
 		});
 	});
 

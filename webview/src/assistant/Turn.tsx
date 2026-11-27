@@ -8,12 +8,15 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
 	failedAfterText, formatClock, KEEP_LABEL, stoppedText, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
+import { ActivityLine } from './Activity';
 import { CopyButton } from './CopyButton';
 import { FileRows } from './FileRows';
 import { Markdown } from './Markdown';
 import { StepRows } from './StepRows';
 
 export const FAILED_TURN_TEXT = 'This run failed.';
+/** Manual check (8.3): the header's model, after the skill. */
+export const TURN_MODEL_TITLE = 'Model used for this request';
 export const COPY_REPLY_LABEL = 'Copy reply';
 /**
  * Manual check 1: Keep and Undo take no click for this long after they appear: they show as the run ends,
@@ -69,7 +72,7 @@ export function splitCommand(text: string): { readonly command: string | null; r
 	return m ? { command: m[2], rest: text.slice(m[0].length) } : { command: null, rest: text };
 }
 
-export function Turn({ turn, latest, live, error, post, insert }: {
+export function Turn({ turn, latest, live, error, after, post, insert }: {
 	readonly turn: AssistantTurnView;
 	/** The last turn of the conversation (the run's error line). */
 	readonly latest: boolean;
@@ -77,6 +80,8 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 	readonly live?: ReactNode;
 	/** The run's error line, on the latest turn. */
 	readonly error: string | null;
+	/** Story 8.3: shown after the error line (the unreachable state's panel). */
+	readonly after?: ReactNode;
 	readonly post: (m: AssistantWebviewMessage) => void;
 	readonly insert: (command: AssistantCommand) => void;
 }) {
@@ -100,9 +105,11 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 					<RpcnBadge />
 					<span className="rpcn-assistant-rpcn-name">rpcn</span>
 					<span className="rpcn-assistant-rpcn-skill">· {turn.skill}</span>
+					{turn.model ? <span className="rpcn-assistant-rpcn-model" title={TURN_MODEL_TITLE}>· {turn.model}</span> : null}
 					{turn.outcome === 'running' ? <LiveClock elapsedMs={turn.elapsedMs} /> : null}
 				</p>
 				<StepRows steps={turn.steps} outcome={turn.outcome} elapsedMs={turn.elapsedMs} waitingMs={turn.waitingMs} approvals={turn.approvals} post={post} />
+				<ActivityLine turn={turn} cardsOpen={live !== undefined && live !== null} />
 				{live}
 				{turn.reply ? (
 					<div className="rpcn-assistant-reply-wrap">
@@ -117,6 +124,7 @@ export function Turn({ turn, latest, live, error, post, insert }: {
 					latest && error ? <p className="rpcn-assistant-error" role="alert">{error}</p> : <p className="rpcn-assistant-stopped">{FAILED_TURN_TEXT}</p>
 				) : null}
 				{turn.outcome === 'error' ? <p className="rpcn-assistant-time">{failedAfterText(turn.elapsedMs)}</p> : null}
+				{after}
 				<FileRows files={turn.files} note={turn.note} clickable={turn.review === 'pending'} open={(path) => post({ type: 'openFileDiff', turn: turn.id, path })} />
 				{turn.notice ? <p className="rpcn-assistant-error" role="alert">{turn.notice}</p> : null}
 				{ended && (turn.review === 'pending' || turn.review === 'undone' || turn.actions.length > 0) ? (

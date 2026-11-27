@@ -182,6 +182,9 @@ async function main() {
 		target: 'es2022',
 		jsx: 'automatic',
 		outfile: 'dist/assistant.js',
+		// Manual check (8.3): the codicon font (the spinner) lands next to it as dist/codicon.ttf, as the graph's.
+		loader: { '.ttf': 'file' },
+		assetNames: '[name]',
 		define: {
 			'process.env.NODE_ENV': production ? '"production"' : '"development"',
 		},

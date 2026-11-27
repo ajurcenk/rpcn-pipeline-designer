@@ -4,13 +4,16 @@
 // before them the reason a request cannot start, with its button, and "Skills: local copy"), and the
 // composer (`Composer.tsx`). The current turn holds the skill's questions as cards (the skill's pick
 // first and chosen until another is, an Other text answer); story 8.5: its approvals are cards too
-// (`ApprovalCard.tsx`, rendered by the turn). Every state comes from the host; the view keeps only what is being typed and chosen,
+// (`ApprovalCard.tsx`, rendered by the turn). Story 8.3: the access states key refused (Set up assistant
+// access…), model not allowed (Choose a model) and unreachable (Test connection; in the failed turn, with
+// the composer still there); the composer's model chip. Every state comes from the host; the view keeps only what is being typed and chosen,
 // and which folded steps are open. Theme colours only.
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
 	BAD_BASE_URL_TEXT, BAD_SKILLS_PATH_TEXT, BAD_SKILLS_PATH_TEXTS, BASE_URL_CHANGED_TEXT, LOCAL_SKILLS_TEXT, unavailableText,
 	INSTALL_RUNTIME_LABEL, RETRY_LABEL, RUNTIME_INSTALLING_TEXT, RUNTIME_MISSING_TEXT, runtimeFailedText, runtimeOutdatedText, UPDATE_RUNTIME_LABEL, NO_ACCESS_TEXT, NO_BINARY_TEXT, NO_UV_TEXT, NO_WORKSPACE_TEXT, OPEN_SETTINGS_LABEL,
+	CHOOSE_MODEL_LABEL, KEY_REFUSED_TEXT, modelNotAllowedText, TEST_CONNECTION_LABEL, unreachableText,
 	MAX_COPY_CHARS, NEW_CONVERSATION_LABEL, OTHER_LABEL, OTHER_PLACEHOLDER, parseAssistantHostMessage, SET_UP_ACCESS_LABEL, STAGES,
 	type AssistantAccess, type AssistantRuntimeView, type SkillsPathProblem, type AssistantQuestionsView, type AssistantQuestionView, type AssistantStateMessage, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
@@ -58,9 +61,17 @@ export function initialChoices(questions: AssistantQuestionsView): Choice[] {
 	});
 }
 
-/** Each state a request cannot start in: its text, and its button (`undefined`: none). */
+/** Story 8.3: what the endpoint's access states name: the refused model, the host, the endpoint's message. */
+export interface AccessDetails {
+	readonly modelNotAllowed?: string | null;
+	readonly host?: string | null;
+	readonly message?: string | null;
+}
+
+/** Each state a request cannot start in (story 8.3: and `unreachable`, which does not block): its text, and its button (`undefined`: none). */
 export function accessPanel(
 	access: Exclude<AssistantAccess, 'ready'>, platform: string | null = null, skillsProblem: SkillsPathProblem | null = null, runtime: AssistantRuntimeView | null = null,
+	details: AccessDetails = {},
 ): { readonly text: string; readonly button?: { readonly label: string; readonly message: AssistantWebviewMessage } } {
 	const install = { label: INSTALL_RUNTIME_LABEL, message: { type: 'installRuntimeRequested' } as const };
 	const setUp = { label: SET_UP_ACCESS_LABEL, message: { type: 'setUpAccessRequested' } as const };
@@ -78,6 +89,17 @@ export function accessPanel(
 		case 'noAccess': return { text: NO_ACCESS_TEXT, button: setUp };
 		case 'badBaseUrl': return { text: BAD_BASE_URL_TEXT, button: openSettings };
 		case 'baseUrlChanged': return { text: BASE_URL_CHANGED_TEXT, button: setUp };
+		case 'keyRefused': {
+			const why = details.message?.trim().replace(/[.\s]+$/, '');
+			return { text: why ? `${KEY_REFUSED_TEXT} ${why}.` : KEY_REFUSED_TEXT, button: setUp };
+		}
+		case 'modelNotAllowed': return {
+			text: details.modelNotAllowed ? modelNotAllowedText(details.modelNotAllowed) : 'The endpoint does not allow the model.',
+			button: { label: CHOOSE_MODEL_LABEL, message: { type: 'chooseModelRequested' } },
+		};
+		case 'unreachable': return {
+			text: details.host ? unreachableText(details.host) : 'Could not reach the endpoint.', button: { label: TEST_CONNECTION_LABEL, message: { type: 'testConnectionRequested' } },
+		};
 		case 'noBinary': return { text: NO_BINARY_TEXT };
 		case 'noUv': return { text: NO_UV_TEXT };
 		case 'noWorkspace': return { text: NO_WORKSPACE_TEXT };
@@ -163,11 +185,11 @@ function QuestionCards({ questions, post }: { readonly questions: AssistantQuest
 	);
 }
 
-function AccessPanel({ access, platform, skillsProblem, runtime, post }: {
+function AccessPanel({ access, platform, skillsProblem, runtime, details, post }: {
 	readonly access: Exclude<AssistantAccess, 'ready'>; readonly platform: string | null; readonly skillsProblem: SkillsPathProblem | null;
-	readonly runtime: AssistantRuntimeView; readonly post: (m: AssistantWebviewMessage) => void;
+	readonly runtime: AssistantRuntimeView; readonly details: AccessDetails; readonly post: (m: AssistantWebviewMessage) => void;
 }) {
-	const panel = accessPanel(access, platform, skillsProblem, runtime);
+	const panel = accessPanel(access, platform, skillsProblem, runtime, details);
 	return (
 		<section className="rpcn-assistant-state" role="status">
 			<p className="rpcn-assistant-state-body">{panel.text}</p>
@@ -210,9 +232,18 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 	}, [post]);
 
 	const busy = state?.status === 'running' || state?.status === 'question' || state?.status === 'approval';
+	// Story 8.3: a run's unreachable shows in its failed turn (the last); a Test connection's above the transcript.
+	const last = state?.turns.at(-1);
+	const inTurn = state?.access === 'unreachable' && state.accessOrigin === 'run' && last?.outcome === 'error';
+	const accessPanelOf = (s: AssistantStateMessage) => (s.access !== 'ready' ? (
+		<AccessPanel
+			access={s.access} platform={s.platform} skillsProblem={s.skillsProblem} runtime={s.runtime}
+			details={{ modelNotAllowed: s.modelNotAllowed, host: s.host, message: s.accessMessage }} post={post}
+		/>
+	) : null);
 	const panel = state ? (
 		<>
-			{state.access !== 'ready' ? <AccessPanel access={state.access} platform={state.platform} skillsProblem={state.skillsProblem} runtime={state.runtime} post={post} /> : null}
+			{!inTurn ? accessPanelOf(state) : null}
 			{state.skills === 'local' && state.access !== 'unavailable' ? <p className="rpcn-assistant-skills">{LOCAL_SKILLS_TEXT}</p> : null}
 		</>
 	) : null;
@@ -247,12 +278,14 @@ export function AssistantView({ post }: { readonly post: (m: AssistantWebviewMes
 					state={state}
 					panel={panel}
 					live={live}
+					turnPanel={state && inTurn ? accessPanelOf(state) : null}
 					post={post}
 					insert={(command) => setText(`/${command} `)}
 				/>
 			) : null}
 			{/* Review 4: the composer (and Stop) whenever a run is going, whatever the access says now. */}
-			{state && (state.access === 'ready' || busy) ? <Composer text={text} setText={setText} busy={busy} post={post} /> : null}
+			{state && (state.access === 'ready' || state.access === 'unreachable' || busy)
+				? <Composer text={text} setText={setText} busy={busy} model={state.model} post={post} /> : null}
 		</div>
 		</CopyContext.Provider>
 	);

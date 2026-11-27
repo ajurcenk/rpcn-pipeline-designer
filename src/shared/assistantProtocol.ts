@@ -3,8 +3,13 @@
 // and on every change; it keeps no state of its own but the text being typed. Webview → host: past-tense
 // intents. Both directions are parsed from unknown input, field by field.
 
-/** Whether a request can start, and if not, why. */
-export type AssistantAccess = 'ready' | 'unavailable' | 'runtimeMissing' | 'runtimeInstalling' | 'runtimeOutdated' | 'runtimeFailed' | 'badSkillsPath' | 'noAccess' | 'badBaseUrl' | 'baseUrlChanged' | 'noBinary' | 'noUv' | 'noWorkspace';
+/**
+ * Whether a request can start, and if not, why. Story 8.3: `keyRefused` and `modelNotAllowed` are sticky
+ * (a failed Test connection or a run's error sets them; a set-up, a passing Test connection, or for
+ * `modelNotAllowed` a change of the model, clears them); `unreachable` is not, and a request can start in it.
+ */
+export type AssistantAccess = 'ready' | 'unavailable' | 'runtimeMissing' | 'runtimeInstalling' | 'runtimeOutdated' | 'runtimeFailed' | 'badSkillsPath' | 'noAccess' | 'badBaseUrl' | 'baseUrlChanged'
+	| 'keyRefused' | 'modelNotAllowed' | 'unreachable' | 'noBinary' | 'noUv' | 'noWorkspace';
 
 /** Story 8.2: the `rpcn-skills` copy in use: the bundled one, or the local checkout `skillsPath` names. */
 export type AssistantSkills = 'bundled' | 'local';
@@ -67,8 +72,64 @@ export interface AssistantStepView {
 	readonly result: string;
 	/** Manual check 2: a secondary line (a shell step's command, one line, clipped); absent: none. */
 	readonly detail?: string;
+	/**
+	 * Manual check (8.3): the whole command, as Copy command copies it and the tooltip shows it (masked,
+	 * new lines kept, at most `MAX_FULL_DETAIL_CHARS` with `CUT_MARK`); absent: `detail` is all of it.
+	 */
+	readonly fullDetail?: string;
+	/**
+	 * Manual check (8.3): how the step's approval went: the user decided its card (`once`, `session`,
+	 * `deny`), or the session memory allowed it with no card (`remembered`); absent: it was never asked.
+	 * `result` is then the step's own short result only (empty for a denial).
+	 */
+	readonly approval?: AssistantStepApproval;
+	/** Manual check (8.3): what the card asked about (the whole command or path, masked), with `once`, `session` or `deny`. */
+	readonly approvalDetail?: string;
+	/** Manual check (8.3): a question step's round: each question and the answer given (masked; at most `MAX_QA`). */
+	readonly qa?: readonly AssistantQaView[];
 	/** Manual check 4: how long the step took (ended steps only); absent: not timed. */
 	readonly durationMs?: number;
+}
+
+/** Manual check (8.3): one answered question, as the question step keeps it (every text masked, at most `MAX_QA_CHARS`). */
+export interface AssistantQaView {
+	readonly header: string;
+	readonly question: string;
+	/** The skill's pick (its label, with its "(My pick)" mark), or `null`: none. */
+	readonly pick: string | null;
+	/** The answer given: the chosen label(s), joined by ", ", or the Other text. */
+	readonly answer: string;
+	/** The answer is the pick. */
+	readonly kept: boolean;
+}
+/** Manual check (8.3): the most questions a step keeps, and the longest text of each. */
+export const MAX_QA = 20;
+export const MAX_QA_CHARS = 2_000;
+/** Manual check (8.3): `text` at most `MAX_QA_CHARS`. */
+export function capQa(text: string): string {
+	return text.length > MAX_QA_CHARS ? `${text.slice(0, MAX_QA_CHARS - 1)}…` : text;
+}
+/** Manual check (8.3): a label or answer without the skill's "(My pick)" mark. */
+export function withoutPickMark(text: string): string {
+	return text.split(PICK_MARK).join('').replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ').trim();
+}
+
+/** Manual check (8.3): a step's approval outcome. */
+export type AssistantStepApproval = 'once' | 'session' | 'deny' | 'remembered';
+const STEP_APPROVALS: readonly string[] = ['once', 'session', 'deny', 'remembered'];
+/** Manual check (8.3): the row's words for each approval outcome. */
+export const STEP_APPROVAL_TEXTS: Readonly<Record<AssistantStepApproval, string>> = {
+	once: 'you allowed once',
+	session: 'you allowed for this session',
+	deny: 'you denied',
+	remembered: 'allowed by this session\'s approval',
+};
+/** Manual check (8.3): the badge of a row the user was asked about, and its tooltip's lead. */
+export const ASKED_YOU_TEXT = 'asked you';
+/** Manual check (8.3): a row's result: the approval's words, then its own result (`you allowed once · written`). */
+export function stepResultText(result: string, approval: AssistantStepApproval | undefined): string {
+	const words = approval ? STEP_APPROVAL_TEXTS[approval] : '';
+	return [words, result].filter((x) => x !== '').join(' · ');
 }
 
 /** Story 8.12: a file the turn changed. */
@@ -133,6 +194,8 @@ export interface AssistantTurnView {
 	readonly text: string;
 	/** The skill it ran. */
 	readonly skill: string;
+	/** Manual check (8.3): the model the run started on (the setting then; it never changes for the turn). */
+	readonly model: string;
 	readonly steps: readonly AssistantStepView[];
 	/** The reply, as Markdown (at most `MAX_REPLY_CHARS`). */
 	readonly reply: string;
@@ -177,6 +240,16 @@ export interface AssistantStateMessage {
 	readonly questions: AssistantQuestionsView | null;
 	/** The error line (masked) of the last run. */
 	readonly error: string | null;
+	/** Story 8.3: the model setting (the composer's chip). */
+	readonly model: string;
+	/** Story 8.3: the model the endpoint refused, with `modelNotAllowed`; else `null`. */
+	readonly modelNotAllowed: string | null;
+	/** Story 8.3: the endpoint's host (the base URL setting's), for `unreachable`; `null`: not a URL. */
+	readonly host: string | null;
+	/** Story 8.3: the endpoint's own message (masked) with `keyRefused` when it was a 403 (forbidden); else `null`. */
+	readonly accessMessage: string | null;
+	/** Story 8.3: what found the endpoint failure (`keyRefused`, `modelNotAllowed`, `unreachable`): a run, or Test connection; else `null`. */
+	readonly accessOrigin: 'run' | 'test' | null;
 }
 
 export type AssistantHostMessage = AssistantStateMessage;
@@ -189,6 +262,10 @@ export type AssistantWebviewMessage =
 	| { readonly type: 'answered'; readonly id: string; readonly answers: readonly string[] }
 	| { readonly type: 'stopRequested' }
 	| { readonly type: 'setUpAccessRequested' }
+	/** Story 8.3: the composer's model chip, or Choose a model. */
+	| { readonly type: 'chooseModelRequested' }
+	/** Story 8.3: Test connection. */
+	| { readonly type: 'testConnectionRequested' }
 	/** Review 15: the bad base URL's Open settings. */
 	| { readonly type: 'openSettingsRequested' }
 	/** Story 8.2: Install assistant runtime… (and Retry). */
@@ -224,8 +301,6 @@ export const ALLOW_SESSION_SUFFIX = ' for this session';
 export function allowSessionLabel(key: string): string {
 	return `${ALLOW_SESSION_PREFIX}\`${key}\`${ALLOW_SESSION_SUFFIX}`;
 }
-/** Story 8.5: a step's result when its call was allowed through the session memory. */
-export const SESSION_ALLOWED_RESULT = 'allowed (this session)';
 /** How a skill marks its pick in an option's label. */
 export const PICK_MARK = '(My pick)';
 export const OTHER_LABEL = 'Other';
@@ -236,6 +311,18 @@ export const BAD_BASE_URL_TEXT = 'The assistant\'s base URL (redpandaConnect.ass
 export const BASE_URL_CHANGED_TEXT = 'The base URL changed since the key was set up; set up access again to send the key there. Nothing was sent.';
 export const NO_UV_TEXT = 'The assistant needs uv on the PATH to run the skills\' checks. Install uv (https://docs.astral.sh/uv/) and reload the window.';
 export const OPEN_SETTINGS_LABEL = 'Open settings';
+/** Story 8.3: the access states' texts and buttons. */
+export const KEY_REFUSED_TEXT = 'The endpoint refused the key.';
+export function modelNotAllowedText(model: string): string {
+	return `The endpoint does not allow \`${model}\`.`;
+}
+export function unreachableText(host: string): string {
+	return `Could not reach \`${host}\`.`;
+}
+export const CHOOSE_MODEL_LABEL = 'Choose a model';
+export const TEST_CONNECTION_LABEL = 'Test connection';
+/** Story 8.3: the chip's caret after the model's name. */
+export const MODEL_CHIP_CARET = '▾';
 /** Story 8.2: no Claude Code binary package exists for the platform, so no runtime can be installed. */
 export function unavailableText(platform: string): string {
 	return `The RPCN AI Assistant isn't available for ${platform} yet: Anthropic publishes no Claude Code binary package for it.`;
@@ -279,6 +366,10 @@ export function failedAfterText(elapsedMs: number): string {
 export const REQUEST_PLACEHOLDER = 'Describe the pipeline you want, in plain words; / for commands';
 /** Story 8.12: the most step rows a turn carries (the oldest dropped first). */
 export const MAX_STEPS = 200;
+/** Manual check (8.3): the line of a turn whose step cap dropped rows (never a shell command, approval or question round first). */
+export function droppedStepsText(n: number): string {
+	return `${n} earlier step${n === 1 ? '' : 's'} not shown`;
+}
 /** Story 8.12: the most turns a conversation keeps (the oldest dropped first). */
 export const MAX_TURNS = 50;
 /** Story 8.12: the longest reply of a turn. */
@@ -349,6 +440,14 @@ export function turnTimeText(elapsedMs: number, waitingMs: number): string {
 	return `${formatDuration(elapsedMs)}${waitingMs >= 1000 ? ` (${formatDuration(waitingMs)} waiting on you)` : ''}`;
 }
 
+/** Manual check (8.3): the longest full command a step or an approval card carries, and what marks one cut. */
+export const MAX_FULL_DETAIL_CHARS = 20_000;
+export const CUT_MARK = '… (cut)';
+/** Manual check (8.3): `text` at most `MAX_FULL_DETAIL_CHARS`, with `CUT_MARK` when longer (cut after masking). */
+export function capDetail(text: string): string {
+	return text.length > MAX_FULL_DETAIL_CHARS ? `${text.slice(0, MAX_FULL_DETAIL_CHARS - CUT_MARK.length)}${CUT_MARK}` : text;
+}
+
 /** Manual check 3: the longest text one copy puts on the clipboard. */
 export const MAX_COPY_CHARS = 100_000;
 /** Manual check 1: the folded row of a turn's skill reads. */
@@ -383,7 +482,8 @@ export function orderOptions<T extends { readonly label: string }>(options: read
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isString = (v: unknown): v is string => typeof v === 'string';
 const isNullableString = (v: unknown): v is string | null => v === null || typeof v === 'string';
-const ACCESS: readonly string[] = ['ready', 'unavailable', 'runtimeMissing', 'runtimeInstalling', 'runtimeOutdated', 'runtimeFailed', 'badSkillsPath', 'noAccess', 'badBaseUrl', 'baseUrlChanged', 'noBinary', 'noUv', 'noWorkspace'];
+const ACCESS: readonly string[] = ['ready', 'unavailable', 'runtimeMissing', 'runtimeInstalling', 'runtimeOutdated', 'runtimeFailed', 'badSkillsPath', 'noAccess', 'badBaseUrl', 'baseUrlChanged',
+	'keyRefused', 'modelNotAllowed', 'unreachable', 'noBinary', 'noUv', 'noWorkspace'];
 const STATUS: readonly string[] = ['idle', 'running', 'question', 'approval', 'done', 'stopped', 'error'];
 
 function parseOption(v: unknown): AssistantOptionView | undefined {
@@ -437,11 +537,21 @@ function parseList<T>(v: unknown, item: (x: unknown) => T | undefined): T[] | un
 	return out.every((x) => x !== undefined) ? out as T[] : undefined;
 }
 
+function parseQa(v: unknown): AssistantQaView | undefined {
+	return isObject(v) && isString(v.header) && isString(v.question) && isNullableString(v.pick) && isString(v.answer) && typeof v.kept === 'boolean'
+		? { header: v.header, question: v.question, pick: v.pick, answer: v.answer, kept: v.kept } : undefined;
+}
+
 function parseStep(v: unknown): AssistantStepView | undefined {
 	return isObject(v) && isString(v.id) && isString(v.label) && isString(v.mark) && MARKS.includes(v.mark) && isString(v.result)
-		&& (v.detail === undefined || isString(v.detail)) && (v.durationMs === undefined || isCount(v.durationMs))
+		&& (v.detail === undefined || isString(v.detail)) && (v.fullDetail === undefined || isString(v.fullDetail))
+		&& (v.approval === undefined || (isString(v.approval) && STEP_APPROVALS.includes(v.approval))) && (v.approvalDetail === undefined || isString(v.approvalDetail))
+		&& (v.qa === undefined || parseList(v.qa, parseQa) !== undefined) && (v.durationMs === undefined || isCount(v.durationMs))
 		? {
 			id: v.id, label: v.label, mark: v.mark as AssistantStepMark, result: v.result, ...(isString(v.detail) ? { detail: v.detail } : {}),
+			...(isString(v.fullDetail) ? { fullDetail: v.fullDetail } : {}),
+			...(isString(v.approval) ? { approval: v.approval as AssistantStepApproval } : {}), ...(isString(v.approvalDetail) ? { approvalDetail: v.approvalDetail } : {}),
+			...(v.qa !== undefined ? { qa: parseList(v.qa, parseQa)! } : {}),
 			...(isCount(v.durationMs) ? { durationMs: v.durationMs } : {}),
 		} : undefined;
 }
@@ -468,7 +578,7 @@ function parseApproval(v: unknown): AssistantApprovalView | undefined {
 }
 
 function parseTurn(v: unknown): AssistantTurnView | undefined {
-	if (!isObject(v) || !isString(v.id) || !isCommand(v.command) || !isString(v.text) || !isString(v.skill) || !isString(v.reply)
+	if (!isObject(v) || !isString(v.id) || !isCommand(v.command) || !isString(v.text) || !isString(v.skill) || !isString(v.model) || !isString(v.reply)
 		|| !isString(v.review) || !REVIEWS.includes(v.review) || !isString(v.outcome) || !OUTCOMES.includes(v.outcome) || !isNullableString(v.notice)
 		|| !isCount(v.elapsedMs) || !isCount(v.waitingMs)) {
 		return undefined;
@@ -483,7 +593,7 @@ function parseTurn(v: unknown): AssistantTurnView | undefined {
 		return undefined;
 	}
 	return {
-		id: v.id, command: v.command, text: v.text, skill: v.skill, steps, reply: v.reply, files, review: v.review as AssistantReview, note,
+		id: v.id, command: v.command, text: v.text, skill: v.skill, model: v.model, steps, reply: v.reply, files, review: v.review as AssistantReview, note,
 		actions, chips, outcome: v.outcome as AssistantOutcome, notice: v.notice, elapsedMs: v.elapsedMs, waitingMs: v.waitingMs, approvals,
 	};
 }
@@ -493,7 +603,9 @@ export function parseAssistantHostMessage(v: unknown): AssistantHostMessage | un
 	if (!isObject(v) || v.type !== 'state' || !isString(v.access) || !ACCESS.includes(v.access) || !isString(v.status) || !STATUS.includes(v.status)
 		|| !isNullableString(v.error) || !isNullableString(v.folder) || typeof v.designReady !== 'boolean'
 		|| !isNullableString(v.platform) || (v.skills !== 'bundled' && v.skills !== 'local' && v.skills !== null)
-		|| !(v.skillsProblem === null || (isString(v.skillsProblem) && Object.hasOwn(BAD_SKILLS_PATH_TEXTS, v.skillsProblem)))) {
+		|| !(v.skillsProblem === null || (isString(v.skillsProblem) && Object.hasOwn(BAD_SKILLS_PATH_TEXTS, v.skillsProblem)))
+		|| !isString(v.model) || !isNullableString(v.modelNotAllowed) || !isNullableString(v.host) || !isNullableString(v.accessMessage)
+		|| !(v.accessOrigin === null || v.accessOrigin === 'run' || v.accessOrigin === 'test')) {
 		return undefined;
 	}
 	const questions = parseQuestions(v.questions);
@@ -505,6 +617,7 @@ export function parseAssistantHostMessage(v: unknown): AssistantHostMessage | un
 	return {
 		type: 'state', access: v.access as AssistantAccess, platform: v.platform, runtime, skills: v.skills, skillsProblem: v.skillsProblem as SkillsPathProblem | null,
 		status: v.status as AssistantStatus, turns, folder: v.folder, designReady: v.designReady, questions, error: v.error,
+		model: v.model, modelNotAllowed: v.modelNotAllowed, host: v.host, accessMessage: v.accessMessage, accessOrigin: v.accessOrigin,
 	};
 }
 
@@ -517,6 +630,8 @@ export function parseAssistantWebviewMessage(v: unknown): AssistantWebviewMessag
 		case 'ready':
 		case 'stopRequested':
 		case 'setUpAccessRequested':
+		case 'chooseModelRequested':
+		case 'testConnectionRequested':
 		case 'openSettingsRequested':
 		case 'installRuntimeRequested':
 		case 'updateRuntimeRequested':

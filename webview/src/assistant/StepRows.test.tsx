@@ -16,7 +16,7 @@ let copied: string[];
 const STEPS: AssistantStepView[] = [
 	{ id: 'p1', label: 'Started (claude-opus-5-5)', mark: 'info', result: '' },
 	{ id: 's1', label: 'Checking with rpcn_check lint', mark: 'ok', result: '0 errors · 1 fixed' },
-	{ id: 's2', label: 'Ran a shell command', detail: 'ls -la', mark: 'failed', result: 'denied' },
+	{ id: 's2', label: 'Ran a shell command', detail: 'ls -la', mark: 'failed', result: '', approval: 'deny', approvalDetail: 'ls -la' },
 	{ id: 's3', label: 'Reading a.yaml', mark: 'running', result: '' },
 ];
 const render = async (steps: readonly AssistantStepView[], outcome: AssistantOutcome) => {
@@ -45,12 +45,14 @@ describe('StepRows', () => {
 		const rows = [...host.querySelectorAll('.rpcn-assistant-step')];
 		// The failure the run went on past is a warning (!), not an error.
 		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-mark')?.getAttribute('aria-label') ?? null)).toEqual([null, 'ok', 'failed, the run went on', 'running']);
-		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-mark')?.textContent)).toEqual(['·', '✓', '!', '◌']);
+		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-mark')?.textContent)).toEqual(['·', '✓', '!', '']);
+		// Manual check (8.3): the running mark is the spinning codicon.
+		expect(rows[3].querySelector('.rpcn-assistant-step-mark .codicon-loading.codicon-modifier-spin')).not.toBeNull();
 		expect(host.querySelector('ol.rpcn-assistant-steps')).not.toBeNull();
 		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-label')?.textContent)).toEqual(STEPS.map((s) => s.label));
 		expect(rows[2].querySelector('.rpcn-assistant-step-detail')?.textContent).toBe('ls -la');
 		expect(rows[2].querySelector('.rpcn-assistant-step-detail')?.getAttribute('title')).toBe('ls -la');
-		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-result')?.textContent ?? '')).toEqual(STEPS.map((s) => s.result));
+		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-result')?.textContent ?? '')).toEqual(['', '0 errors · 1 fixed', 'you denied', '']);
 	});
 
 	it('running: at most the last 6 rows, under "… N earlier steps", which opens the rest', async () => {
@@ -82,7 +84,7 @@ describe('StepRows', () => {
 	});
 
 	it('consecutive shell steps are one row "Ran a shell command ×N", which opens to each command with its mark and result', async () => {
-		const shells = [1, 2, 3].map((i): AssistantStepView => ({ id: `b${i}`, label: 'Ran a shell command', detail: `cmd ${i}`, mark: i === 2 ? 'failed' : 'ok', result: i === 2 ? 'denied' : `r${i}` }));
+		const shells = [1, 2, 3].map((i): AssistantStepView => ({ id: `b${i}`, label: 'Ran a shell command', detail: `cmd ${i}`, mark: i === 2 ? 'failed' : 'ok', result: i === 2 ? '' : `r${i}`, ...(i === 2 ? { approval: 'deny' as const, approvalDetail: 'cmd 2 --all' } : {}) }));
 		await render([...shells, { id: 'w', label: 'Writing a.design.md', mark: 'ok', result: 'written' }], 'error');
 		const toggle = host.querySelector('.rpcn-assistant-step-toggle') as HTMLButtonElement;
 		expect(toggle.querySelector('.rpcn-assistant-step-label')?.textContent).toBe('Ran a shell command ×3');
@@ -92,8 +94,11 @@ describe('StepRows', () => {
 		expect(toggle.getAttribute('aria-expanded')).toBe('true');
 		const members = [...host.querySelectorAll('.rpcn-assistant-step-members > li')];
 		expect(members.map((m) => [m.querySelector('.rpcn-assistant-step-detail')?.textContent, m.querySelector('.rpcn-assistant-step-mark')?.textContent, m.querySelector('.rpcn-assistant-step-result')?.textContent])).toEqual([
-			['cmd 1', '✓', 'r1'], ['cmd 2', '✗', 'denied'], ['cmd 3', '✓', 'r3'],
+			['cmd 1', '✓', 'r1'], ['cmd 2', '✗', 'you denied'], ['cmd 3', '✓', 'r3'],
 		]);
+		// Manual check (8.3): the group shows "asked you" when a member was asked; the member its own, with what it asked about.
+		expect(toggle.querySelector('.rpcn-assistant-step-asked')?.textContent).toBe('asked you');
+		expect(members.map((m) => (m.querySelector('.rpcn-assistant-step-asked') as HTMLElement | null)?.title ?? null)).toEqual([null, 'cmd 2 --all', null]);
 		expect(stepRows(shells, 'done')[0].mark).toBe('warning');
 		expect(stepRows([...shells, shells[0]].map((s, i) => ({ ...s, id: `x${i}` })), 'done')[0].members.map((m) => m.mark)).toEqual(['ok', 'warning', 'ok', 'ok']);
 	});
@@ -145,6 +150,87 @@ describe('StepRows', () => {
 		await render([shells[0]], 'error');
 		await click(host.querySelector(`button[aria-label="${COPY_COMMAND_LABEL}"]`)!);
 		expect(copied.at(-1)).toBe('rpk connect list 1');
+	});
+
+	it('manual check (8.3): approval outcomes: the four texts (with the step\'s own result after); "asked you" only where a card was decided, its tooltip what was asked', async () => {
+		const asked: AssistantStepView[] = [
+			{ id: 'a', label: 'Writing a.yaml', mark: 'ok', result: 'written', approval: 'once', approvalDetail: '/w/a.yaml', durationMs: 2_000 },
+			{ id: 'b', label: 'Ran a shell command', detail: 'rpk connect list', mark: 'ok', result: '', approval: 'session' },
+			{ id: 'c', label: 'Writing b.yaml', mark: 'failed', result: '', approval: 'deny', approvalDetail: '/w/b.yaml' },
+			{ id: 'd', label: 'Reading c.yaml', mark: 'ok', result: '3 lines', approval: 'remembered' },
+			{ id: 'e', label: 'Reading d.yaml', mark: 'ok', result: '2 lines' },
+		];
+		await render(asked, 'error');
+		const rows = [...host.querySelectorAll('.rpcn-assistant-steps > li')];
+		expect(rows.map((r) => r.querySelector('.rpcn-assistant-step-result')?.textContent)).toEqual([
+			'you allowed once · written', 'you allowed for this session', 'you denied', 'allowed by this session\'s approval · 3 lines', '2 lines',
+		]);
+		expect(rows.map((r) => (r.querySelector('.rpcn-assistant-step-asked') as HTMLElement | null)?.title ?? null)).toEqual(['/w/a.yaml', 'rpk connect list', '/w/b.yaml', null, null]);
+		expect(rows[0].querySelector('.rpcn-assistant-step-time')?.textContent).toBe('2s');
+		// A denied step keeps its failed mark (a warning when the run went on and did not end in error).
+		expect(rows[2].querySelector('.rpcn-assistant-step-mark')?.getAttribute('aria-label')).toBe('failed');
+		expect(stepRows(asked, 'done')[2].mark).toBe('warning');
+	});
+
+	it('manual check (8.3): every row keeps the short command, selectable, with no toggle and no auto-expansion (asked rows too); Copy command has it all', async () => {
+		const full = 'python3 -I -c "\nimport json\nprint(1)\n"';
+		const clipped = 'python3 -I -c " import json…';
+		await render([
+			{ id: 'b1', label: 'Ran a shell command', detail: clipped, fullDetail: full, mark: 'ok', result: '' },
+			{ id: 'b2', label: 'Ran a shell command', detail: clipped, fullDetail: full, mark: 'ok', result: '', approval: 'once', approvalDetail: full },
+		], 'error');
+		await click(host.querySelector('.rpcn-assistant-step-toggle')!);
+		const lines = [...host.querySelectorAll('.rpcn-assistant-step-members .rpcn-assistant-step-detail')] as HTMLElement[];
+		expect(lines.map((l) => l.textContent)).toEqual([clipped, clipped]);
+		expect(lines.every((l) => l.getAttribute('role') === null && l.closest('button') === null && l.title === full)).toBe(true);
+		expect(host.querySelector('pre')).toBeNull();
+		await click(lines[0]);
+		expect(host.querySelector('pre')).toBeNull();
+		await click(host.querySelectorAll(`.rpcn-assistant-step-members button[aria-label="${COPY_COMMAND_LABEL}"]`)[1]);
+		expect(copied).toEqual([full]);
+	});
+
+	it('manual check (8.3): a question round: collapsed to its summary; it opens (click, Enter) to each question and the answer: kept, changed, Other, multi-select', async () => {
+		const qa = [
+			{ header: 'Ordering', question: 'How should records be ordered?', pick: 'No ordering (My pick)', answer: 'No ordering (My pick)', kept: true },
+			{ header: 'Duplicates', question: 'Dedupe?', pick: 'No dedupe (My pick)', answer: 'Dedupe on order id', kept: false },
+			{ header: 'Target', question: 'Which topic?', pick: 'orders (My pick)', answer: 'orders.v2 typed by me', kept: false },
+			{ header: 'Outputs', question: 'Which outputs?', pick: 'HTTP (My pick)', answer: 'HTTP (My pick), Kafka', kept: false },
+			{ header: '', question: 'Anything else?', pick: null, answer: 'no', kept: false },
+		];
+		await render([{ id: 'q1', label: 'Asked 5 questions · you kept 1 pick, answered 4', mark: 'ok', result: '', qa }], 'error');
+		const toggle = host.querySelector('.rpcn-assistant-qa-toggle') as HTMLElement;
+		expect(toggle.textContent).toBe('Asked 5 questions · you kept 1 pick, answered 4');
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(host.querySelector('.rpcn-assistant-qa')).toBeNull();
+		await click(toggle);
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		const items = [...host.querySelectorAll('.rpcn-assistant-qa-item')];
+		expect(items.map((i) => i.querySelector('.rpcn-assistant-qa-question')?.textContent)).toEqual([
+			'Ordering: How should records be ordered?', 'Duplicates: Dedupe?', 'Target: Which topic?', 'Outputs: Which outputs?', 'Anything else?',
+		]);
+		expect(items.map((i) => i.querySelector('.rpcn-assistant-qa-answer')?.textContent)).toEqual([
+			'You: No ordering (my pick)', 'You: Dedupe on order id (my pick was: No dedupe)', 'You: orders.v2 typed by me (my pick was: orders)',
+			'You: HTTP, Kafka (my pick was: HTTP)', 'You: no',
+		]);
+		await click(toggle);
+		expect(host.querySelector('.rpcn-assistant-qa')).toBeNull();
+		await act(async () => toggle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+		expect(host.querySelectorAll('.rpcn-assistant-qa-item')).toHaveLength(5);
+	});
+
+	it('manual check (8.3): a long multi-line command: the line stays clipped; the tooltip and Copy command have it all (no full field: the line)', async () => {
+		const full = `python3 -I -c "\nimport json\nwith open('~/x/${'a'.repeat(300)}.json') as f:\n    print(json.load(f))\n"`;
+		const clipped = `${full.replace(/\s+/g, ' ').slice(0, 199)}…`;
+		await render([{ id: 'b1', label: 'Ran a shell command', detail: clipped, fullDetail: full, mark: 'ok', result: '' }], 'error');
+		const code = host.querySelector('.rpcn-assistant-step-detail') as HTMLElement;
+		expect(code.textContent).toBe(clipped);
+		expect(code.title).toBe(full);
+		await click(host.querySelector(`button[aria-label="${COPY_COMMAND_LABEL}"]`)!);
+		expect(copied).toEqual([full]);
+		await render([{ id: 'b2', label: 'Ran a shell command', detail: 'ls -la', mark: 'ok', result: '' }], 'error');
+		await click(host.querySelector(`button[aria-label="${COPY_COMMAND_LABEL}"]`)!);
+		expect(copied.at(-1)).toBe('ls -la');
 	});
 
 	it('manual check 4: a step\'s duration when 1s or more, muted at its end; a group shows its total', async () => {

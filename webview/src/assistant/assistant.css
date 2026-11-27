@@ -331,7 +331,8 @@ body {
 .rpcn-assistant-rpcn-name {
 	font-weight: 600;
 }
-.rpcn-assistant-rpcn-skill {
+.rpcn-assistant-rpcn-skill,
+.rpcn-assistant-rpcn-model {
 	color: var(--vscode-descriptionForeground);
 	font-family: var(--vscode-editor-font-family);
 }
@@ -539,6 +540,32 @@ body {
 .rpcn-assistant-hint {
 	color: var(--vscode-descriptionForeground);
 }
+/* Story 8.3: the model chip, left of the composer's bottom row. */
+.rpcn-assistant-composer-left {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+.rpcn-assistant button.rpcn-assistant-model-chip {
+	max-width: 100%;
+	overflow: hidden;
+	padding: 1px 6px;
+	border: 1px solid transparent;
+	border-radius: 2px;
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	font-family: var(--vscode-editor-font-family);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.rpcn-assistant button.rpcn-assistant-model-chip:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryBackground));
+}
+.rpcn-assistant button.rpcn-assistant-model-chip:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+}
 .rpcn-assistant-commands {
 	margin: 0;
 	padding: 2px 0;
@@ -704,4 +731,72 @@ body {
 }
 .rpcn-assistant-step-time {
 	font-size: 0.9em;
+}
+/* Manual check (8.3): the muted "asked you" badge of a row whose approval the user decided. */
+.rpcn-assistant-step-asked {
+	margin-left: 6px;
+	padding: 0 4px;
+	border: 1px solid var(--vscode-panel-border, var(--vscode-descriptionForeground));
+	border-radius: 2px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	white-space: nowrap;
+}
+/* Manual check (8.3): a question round's questions and answers, under its step row. */
+.rpcn-assistant-qa-toggle {
+	cursor: pointer;
+}
+.rpcn-assistant-qa-toggle:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+}
+.rpcn-assistant-step-qa {
+	list-style: none;
+	padding-left: 20px;
+}
+.rpcn-assistant-qa {
+	margin: 2px 0 4px;
+	padding: 0;
+	list-style: none;
+	user-select: text;
+}
+.rpcn-assistant-qa-item p {
+	margin: 0;
+}
+.rpcn-assistant-qa-item + .rpcn-assistant-qa-item {
+	margin-top: 4px;
+}
+.rpcn-assistant-qa-header {
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-assistant-qa-note {
+	color: var(--vscode-descriptionForeground);
+}
+/* Manual check (8.3): the spinner (VS Code's codicon-loading, spinning) and the live activity line. */
+.rpcn-assistant-spinner {
+	color: var(--vscode-progressBar-background, var(--vscode-foreground));
+	font-size: 13px;
+	line-height: 1;
+	vertical-align: -2px;
+}
+.rpcn-assistant-activity {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 4px 0;
+	color: var(--vscode-descriptionForeground);
+}
+.rpcn-assistant-activity-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.rpcn-assistant-activity-time {
+	font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+	.rpcn-assistant .codicon-modifier-spin {
+		animation: none;
+	}
 }

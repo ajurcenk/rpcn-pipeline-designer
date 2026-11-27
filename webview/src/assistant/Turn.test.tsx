@@ -10,7 +10,7 @@ import {
 	KEEP_LABEL, OPEN_NOTE_LABEL, UNDO_LABEL, UNDONE_TEXT, type AssistantCommand, type AssistantTurnView, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 import { CopyContext } from './CopyButton';
-import { COPY_REPLY_LABEL, SETTLE_ARM_MS, splitCommand, Turn } from './Turn';
+import { COPY_REPLY_LABEL, SETTLE_ARM_MS, splitCommand, Turn, TURN_MODEL_TITLE } from './Turn';
 
 let host: HTMLDivElement;
 let root: Root;
@@ -18,7 +18,7 @@ let posted: AssistantWebviewMessage[];
 let inserted: AssistantCommand[];
 
 const DONE_TURN: AssistantTurnView = {
-	id: 't1', command: 'design', text: '/design orders to an API', skill: 'rpcn-design',
+	id: 't1', command: 'design', text: '/design orders to an API', skill: 'rpcn-design', model: 'claude-sonnet-4-6',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }],
 	reply: 'The note is **ready**.',
 	files: [{ path: 'orders.design.md', added: 12, removed: 0, created: true, tooLarge: false }],
@@ -64,7 +64,7 @@ describe('Turn', () => {
 		expect(host.querySelector('.rpcn-assistant-command')?.textContent).toBe('/design');
 		expect(host.querySelector('.rpcn-assistant-user')?.textContent).toBe('/design orders to an API');
 		expect(host.querySelector('.rpcn-assistant-rpcn-header .rpcn-assistant-badge svg')).not.toBeNull();
-		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn· rpcn-design');
+		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn· rpcn-design· claude-sonnet-4-6');
 		// The note's file row shows its status badge.
 		expect(host.querySelector('.rpcn-assistant-file .rpcn-assistant-status-ready')?.textContent).toBe('ready');
 		const order = ['.rpcn-assistant-fold', '.rpcn-assistant-reply', '.rpcn-assistant-files', '.rpcn-assistant-actions', '.rpcn-assistant-chips']
@@ -153,6 +153,19 @@ describe('Turn', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('manual check (8.3): the header names the model after the skill, muted, with its title; the clock after it while running', async () => {
+		await render({ ...DONE_TURN, outcome: 'running', review: 'none', elapsedMs: 66_000 });
+		const header = host.querySelector('.rpcn-assistant-rpcn-header')!;
+		expect(header.textContent).toBe('rpcn· rpcn-design· claude-sonnet-4-6· 1:06');
+		const model = header.querySelector('.rpcn-assistant-rpcn-model') as HTMLElement;
+		expect(model.textContent).toBe('· claude-sonnet-4-6');
+		expect(model.title).toBe(TURN_MODEL_TITLE);
+		expect(TURN_MODEL_TITLE).toBe('Model used for this request');
+		expect([...header.children].map((c) => c.className).slice(-3)).toEqual(['rpcn-assistant-rpcn-skill', 'rpcn-assistant-rpcn-model', 'rpcn-assistant-clock']);
+		await render(DONE_TURN);
+		expect(host.querySelector('.rpcn-assistant-rpcn-header')?.textContent).toBe('rpcn· rpcn-design· claude-sonnet-4-6');
 	});
 
 	it('manual check 4: a running turn\'s header clock ticks each second from the posted time; an ended one shows the total in its summary', async () => {

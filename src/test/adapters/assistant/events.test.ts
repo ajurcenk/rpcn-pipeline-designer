@@ -45,6 +45,16 @@ suite('assistant event mapping (story 8.1)', () => {
 		]);
 	});
 
+	test('manual check (8.3): a 500-character multi-line command: the detail one line, clipped; fullDetail all of it, new lines kept', () => {
+		const command = `python3 -I -c "\nimport json\nwith open('${ws}/${'a'.repeat(450)}.json') as f:\n    print(json.load(f))\n"`;
+		assert.ok(command.length > 500);
+		const [step] = new StreamMapper(ctx).map(assistant(use('Bash', { command }))) as { detail?: string; fullDetail?: string }[];
+		assert.strictEqual(step.fullDetail, command);
+		assert.ok(step.detail && step.detail.length === 200 && step.detail.endsWith('…') && !step.detail.includes('\n'), step.detail);
+		const [short] = new StreamMapper(ctx).map(assistant(use('Bash', { command: 'ls -la' }))) as { detail?: string; fullDetail?: string }[];
+		assert.deepStrictEqual([short.detail, short.fullDetail], ['ls -la', undefined]);
+	});
+
 	test('story 8.12: a tool_result ends its step (by tool_use_id): ok with the summary, failed with the error\'s first line', () => {
 		const mapper = new StreamMapper(ctx);
 		const [read] = mapper.map(assistant(use('Read', { file_path: path.join(ws, 'a.yaml') }))) as { id: string }[];

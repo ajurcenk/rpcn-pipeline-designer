@@ -90,13 +90,13 @@
           "type": "string",
           "default": "claude-opus-5-5",
           "scope": "application",
-          "markdownDescription": "The Claude model the RPCN AI Assistant runs on (every model the agent may call is set to it). The endpoint must allow it."
+          "markdownDescription": "The Claude model the RPCN AI Assistant runs on (every model the agent may call is set to it). The endpoint must allow it. The model chip in the assistant's composer picks it from the models the endpoint lists (`/v1/models`), or any name with **Other…**."
         },
         "redpandaConnect.assistant.baseUrl": {
           "type": "string",
           "default": "https://api.anthropic.com",
           "scope": "application",
-          "markdownDescription": "The Anthropic Messages API endpoint the RPCN AI Assistant calls: Anthropic itself, or a proxy that serves the same API (for example Redpanda ADP). The key is set with **Set up assistant access…** and kept in VS Code's secret storage, never in a setting."
+          "markdownDescription": "The Anthropic Messages API endpoint the RPCN AI Assistant calls: Anthropic itself, or a proxy that serves the same API (for example Redpanda ADP). **Set up assistant access…** asks for it, the auth and the key, tests them, and stores the key in VS Code's secret storage (never in a setting); **Test assistant connection** tests them again, and **Forget assistant access** deletes the key."
         },
         "redpandaConnect.assistant.auth": {
           "type": "string",
@@ -373,6 +373,16 @@
         "title": "Set up assistant access…",
         "category": "Redpanda Connect",
         "icon": "$(key)"
+      },
+      {
+        "command": "redpandaConnect.assistant.testConnection",
+        "title": "Test assistant connection",
+        "category": "Redpanda Connect"
+      },
+      {
+        "command": "redpandaConnect.assistant.forgetAccess",
+        "title": "Forget assistant access",
+        "category": "Redpanda Connect"
       },
       {
         "command": "redpandaConnect.assistant.run",

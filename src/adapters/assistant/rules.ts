@@ -550,13 +550,35 @@ function stageKey(words: readonly string[], index: number): string | null {
 }
 
 /**
+ * Manual check (8.3): the key of a first stage that is the skills' own check, `uv run <script> <subcommand>
+ * [args]` with `<script>` an absolute path that resolves to an `rpcn_check.py` inside the skills copy in
+ * use: `rpcn_check <subcommand>`. Anything else (a relative script, one in the workspace or outside the
+ * copy, no subcommand): `null`, and the stage is read as any other (`uv` is not on the read-only list).
+ */
+function rpcnCheckKey(words: readonly Word[], ctx: ShellKeyContext): string | null {
+	const [uv, run, script, sub] = words;
+	if (!ctx.skillsDir || uv?.text !== 'uv' || run?.text !== 'run' || !script || !sub || !/^[a-z][a-z-]*$/.test(sub.text) || !path.isAbsolute(script.text)) {
+		return null;
+	}
+	try {
+		const real = fs.realpathSync(script.text);
+		const root = fs.realpathSync(path.resolve(ctx.skillsDir));
+		return path.basename(real) === 'rpcn_check.py' && real.startsWith(root + path.sep) ? `rpcn_check ${sub.text}` : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Story 8.5: a shell command's session key: each `|` stage's key word (its program's name, after the
  * `timeout <n>` and bare `env` wrappers; `rpk` and `redpanda-connect` with their subcommand), joined with
  * ` | `. `null` (the command always asks): it chains, substitutes or runs in the background, redirects to
  * a file other than `/dev/null`, starts with an assignment, runs `rpk connect run`, `blobl server` or
  * watches, a stage's program is not on the read-only list (or is not a bare name or an existing program
  * outside the workspace), or an argument expands `$…` or is a path outside the workspace and the skills
- * copy. Never the exact command text.
+ * copy. Never the exact command text. Manual check (8.3): a first stage running the skills' own
+ * `rpcn_check.py` (see `rpcnCheckKey`) makes the whole key `rpcn_check <subcommand>` (its later stages
+ * must still be read-only filters).
  */
 export function shellKey(command: string, workspace: string, skillsDir?: string, home?: string): string | null {
 	const ctx: ShellKeyContext = { workspace, ...(skillsDir !== undefined ? { skillsDir } : {}), ...(home !== undefined ? { home } : {}) };
@@ -577,15 +599,19 @@ export function shellKey(command: string, workspace: string, skillsDir?: string,
 		}
 	}
 	const keys: string[] = [];
+	let check: string | null = null;
 	for (const [index, stage] of stages.entries()) {
 		const words = programWords(stage, ctx);
-		const key = words && words.slice(1).every((w) => argStaysInside(w, ctx)) ? stageKey(words.map((w) => w.text), index) : null;
+		const inside = words !== null && words.slice(1).every((w) => argStaysInside(w, ctx));
+		check = check ?? (inside && index === 0 ? rpcnCheckKey(words, ctx) : null);
+		const key = !inside ? null : index === 0 && check !== null ? check : stageKey(words.map((w) => w.text), index);
 		if (key === null) {
 			return null;
 		}
 		keys.push(key);
 	}
-	return keys.join(' | ');
+	// Manual check (8.3): the skills' check is remembered by its subcommand alone; its filters must still be read-only.
+	return check ?? keys.join(' | ');
 }
 
 /** The full text of a call that asks, for its card (`undefined`: none beyond the summary): a shell command, a URL, a search query, or the file. */

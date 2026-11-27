@@ -7,19 +7,19 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COMMAND_HINTS, type AssistantWebviewMessage } from '../../../src/shared/assistantProtocol';
-import { commandsFor, Composer, SEND_LABEL, sendable, STOP_LABEL } from './Composer';
+import { commandsFor, Composer, MODEL_CHIP_LABEL, SEND_LABEL, sendable, STOP_LABEL } from './Composer';
 
 let host: HTMLDivElement;
 let root: Root;
 let posted: AssistantWebviewMessage[];
 
-function Harness({ busy }: { readonly busy: boolean }) {
+function Harness({ busy, model }: { readonly busy: boolean; readonly model?: string }) {
 	const [text, setText] = useState('');
-	return <Composer text={text} setText={setText} busy={busy} post={(m) => posted.push(m)} />;
+	return <Composer text={text} setText={setText} busy={busy} model={model} post={(m) => posted.push(m)} />;
 }
-const render = async (busy = false) => {
+const render = async (busy = false, model?: string) => {
 	await act(async () => {
-		root.render(<Harness busy={busy} />);
+		root.render(<Harness busy={busy} model={model} />);
 	});
 };
 const area = () => host.querySelector('textarea') as HTMLTextAreaElement;
@@ -110,5 +110,22 @@ describe('Composer', () => {
 		expect(posted).toEqual([]);
 		await act(async () => button(STOP_LABEL)!.click());
 		expect(posted).toEqual([{ type: 'stopRequested' }]);
+	});
+
+	it('story 8.3: the model chip: left of the hint, `<model> ▾`; it posts chooseModelRequested, even while busy; none without a model', async () => {
+		await render(false, 'claude-opus-5-5');
+		await type('/build x');
+		const left = host.querySelector('.rpcn-assistant-composer-left')!;
+		expect([...left.children].map((c) => c.className)).toEqual(['rpcn-assistant-model-chip', 'rpcn-assistant-hint']);
+		const chip = left.querySelector('button')!;
+		expect(chip.textContent).toBe('claude-opus-5-5 ▾');
+		expect(chip.title).toBe(MODEL_CHIP_LABEL);
+		await act(async () => chip.click());
+		expect(posted).toEqual([{ type: 'chooseModelRequested' }]);
+		await render(true, 'claude-opus-5-5');
+		await act(async () => (host.querySelector('.rpcn-assistant-model-chip') as HTMLButtonElement).click());
+		expect(posted).toHaveLength(2);
+		await render(false);
+		expect(host.querySelector('.rpcn-assistant-model-chip')).toBeNull();
 	});
 });

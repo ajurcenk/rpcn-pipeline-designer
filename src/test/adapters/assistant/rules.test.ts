@@ -197,7 +197,8 @@ suite('assistant rules (story 8.1)', () => {
 	test('story 8.5: shellKey: the stages\' programs (rpk with its subcommand), or none', () => {
 		const table: [string, string | null][] = [
 			// The matrix's shell rows.
-			[`uv run ${script} list`, null],
+			// Manual check (8.3): the skills' check has its key (its plain form never asks: `decide` allows it first).
+			[`uv run ${script} list`, 'rpcn_check list'],
 			['uv run ws/evil/rpcn_check.py list', null],
 			[`uv run ${script} list; rm x`, null],
 			['~/.local/bin/rpk connect list --format jsonschema 2>/dev/null | python3 -I -c "import json,sys; print(len(json.load(sys.stdin)))"', 'rpk connect list | python3'],
@@ -316,6 +317,39 @@ suite('assistant rules (story 8.1)', () => {
 		}
 		// Never the exact text: two different commands, one key.
 		assert.strictEqual(shellKey('rpk connect list inputs', ws), shellKey('rpk connect list --format json', ws));
+	});
+
+	test('manual check (8.3): the skills\' own rpcn_check, not in its plain form: the key "rpcn_check <subcommand>"; the plain form still allowed with no card', () => {
+		const a = path.join(ws, 'a.yaml');
+		const table: [string, string | null][] = [
+			[`uv run ${script} lint ${a} 2>&1 | head -50`, 'rpcn_check lint'],
+			[`uv run ${script} lint ${a} | head`, 'rpcn_check lint'],
+			[`uv run ${script} fields inputs kafka 2>/dev/null`, 'rpcn_check fields'],
+			[`uv run ${script} lint a.yaml 2>&1 | grep -n error | head -5`, 'rpcn_check lint'],
+			[`uv run ${script} lint ${a} 2>&1 | python3 -I -c "import sys; print(sys.stdin.read()[:100])"`, 'rpcn_check lint'],
+			[`cd ${ws} && uv run ${script} lint a.yaml`, null],
+			['uv run ./rpcn_check.py lint a.yaml', null],
+			['uv run skills/rpcn-design/scripts/rpcn_check.py lint a.yaml', null],
+			[`uv run ${path.join(ws, 'evil', 'rpcn_check.py')} lint a.yaml`, null],
+			[`uv run ${script} lint /tmp/x.yaml`, null],
+			[`FOO=1 uv run ${script} lint a.yaml`, null],
+			[`uv run ${script} lint $HOME/a.yaml`, null],
+			[`uv run ${script} lint a.yaml > out.txt`, null],
+			[`uv run ${script} lint a.yaml; rm x`, null],
+			[`uv run ${script} lint a.yaml | tee out.txt`, null],
+			[`uv run ${script}`, null],
+			[`echo x | uv run ${script} lint`, null],
+			['uv run other.py lint', null],
+		];
+		for (const [command, key] of table) {
+			assert.strictEqual(shellKey(command, ws, skills, root), key, command);
+		}
+		// Without the skills copy in use, no rpcn_check key.
+		assert.strictEqual(shellKey(`uv run ${script} lint a.yaml | head`, ws), null);
+		// The plain form is still allowed with no card; the others ask with their key.
+		assert.strictEqual(decide('Bash', { command: `uv run ${script} lint ${a}` }, ctx()).kind, 'allow');
+		const asked = decide('Bash', { command: `uv run ${script} lint ${a} 2>&1 | head -50` }, ctx());
+		assert.deepStrictEqual(asked, { kind: 'ask', sessionKey: 'rpcn_check lint' });
 	});
 
 	test('approvalDetail: the whole command, the URL, the query, or the file', () => {

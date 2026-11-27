@@ -16,19 +16,25 @@ import { useState } from 'react';
 import type { AssistantApprovalView, AssistantWebviewMessage } from '../../../src/shared/assistantProtocol';
 import { ApprovalCards } from './ApprovalCard';
 import { CopyButton } from './CopyButton';
+import { Spinner } from './Activity';
 
 export const COPY_COMMAND_LABEL = 'Copy command';
 
-/** Manual check 3: a step's command as selectable text, with its copy button (never inside a button). */
-function Command({ text }: { readonly text: string }) {
+/**
+ * Manual check 3: a step's command as selectable text, with its copy button (never inside a button).
+ * Manual check (8.3): the line is the short (one-line, clipped) command, and a selection of it copies
+ * that; the tooltip and Copy command have the whole command (`full`).
+ */
+function Command({ text, full }: { readonly text: string; readonly full?: string }) {
+	const whole = full || text;
 	return (
 		<span className="rpcn-assistant-step-command">
-			<code className="rpcn-assistant-step-detail" title={text}>{text}</code>
-			<CopyButton label={COPY_COMMAND_LABEL} text={text} />
+			<code className="rpcn-assistant-step-detail" title={whole}>{text}</code>
+			<CopyButton label={COPY_COMMAND_LABEL} text={whole} />
 		</span>
 	);
 }
-import { formatDuration, SKILL_READ_LABEL, skillReadsText, turnTimeText, type AssistantOutcome, type AssistantStepMark, type AssistantStepView } from '../../../src/shared/assistantProtocol';
+import { ASKED_YOU_TEXT, withoutPickMark, type AssistantQaView, formatDuration, SKILL_READ_LABEL, skillReadsText, stepResultText, turnTimeText, type AssistantOutcome, type AssistantStepMark, type AssistantStepView } from '../../../src/shared/assistantProtocol';
 
 /** A row's mark as shown: a step's, or `warning` for a failure the run went on past. */
 export type RowMark = AssistantStepMark | 'warning';
@@ -51,6 +57,14 @@ export interface StepRow {
 	readonly mark: RowMark;
 	readonly result: string;
 	readonly detail: string;
+	/** Manual check (8.3): the whole command (`''`: `detail` is all of it). */
+	readonly fullDetail: string;
+	/** Manual check (8.3): a question round's questions and answers (none: no round). */
+	readonly qa: readonly AssistantQaView[];
+	/** Manual check (8.3): the user was asked (a card decided: once, for the session, or denied); for a group, any member. */
+	readonly asked: boolean;
+	/** Manual check (8.3): what the card asked about (the badge's tooltip; a group's, each member's on its own line). */
+	readonly askedDetail: string;
 	/** How many steps the row stands for. */
 	readonly count: number;
 	/** The steps a grouped row stands for (each with its own mark), in order; one step: none. */
@@ -106,7 +120,10 @@ export function stepRows(steps: readonly AssistantStepView[], outcome: Assistant
 		}
 		drafts.push({ id: s.id, label: s.label, mark: s.mark, result: s.result, detail: s.detail ?? '', steps: [s], reads: false });
 	}
-	const one = (s: AssistantStepView): StepRow => ({ id: s.id, label: s.label, mark: shown(s), result: s.result, detail: s.detail ?? '', count: 1, members: [], durationMs: s.durationMs ?? 0 });
+	const asked = (s: AssistantStepView): boolean => s.approval === 'once' || s.approval === 'session' || s.approval === 'deny';
+	const one = (s: AssistantStepView): StepRow => ({
+		id: s.id, label: s.label, mark: shown(s), result: stepResultText(s.result, s.approval), detail: s.detail ?? '', fullDetail: s.fullDetail ?? '',
+		asked: asked(s), askedDetail: asked(s) ? s.approvalDetail ?? s.fullDetail ?? s.detail ?? '' : '', qa: s.qa ?? [], count: 1, members: [], durationMs: s.durationMs ?? 0 });
 	return drafts.map((d) => {
 		if (d.steps.length === 1 && !d.reads) {
 			return one(d.steps[0]);
@@ -116,7 +133,10 @@ export function stepRows(steps: readonly AssistantStepView[], outcome: Assistant
 		const mark: RowMark = d.mark === 'failed' && !members.some((m) => m.mark === 'failed') ? 'warning' : d.mark;
 		const label = d.reads ? skillReadsText(d.steps.length) : `${d.label} ×${d.steps.length}`;
 		const durationMs = members.reduce((sum, m) => sum + m.durationMs, 0);
-		return { id: d.id, label, mark, result: d.reads ? '' : d.result, detail: '', count: d.steps.length, members: d.steps.length > 1 ? members : [], durationMs };
+		const last = d.steps[d.steps.length - 1];
+		const askedDetail = members.filter((m) => m.asked).map((m) => m.askedDetail).filter((x) => x !== '').join('\n');
+		return {
+			id: d.id, label, mark, result: d.reads ? '' : stepResultText(d.result, last.approval), detail: '', fullDetail: '', asked: members.some((m) => m.asked), askedDetail, qa: [], count: d.steps.length, members: d.steps.length > 1 ? members : [], durationMs };
 	});
 }
 
@@ -139,6 +159,10 @@ export function foldedText(rows: readonly StepRow[], time?: { readonly elapsedMs
 }
 
 function Mark({ mark }: { readonly mark: RowMark }) {
+	// Manual check (8.3): a running step spins (static under reduced motion).
+	if (mark === 'running') {
+		return <span className="rpcn-assistant-step-mark" aria-label={MARKS.running.name}><Spinner /></span>;
+	}
 	return <span className="rpcn-assistant-step-mark" aria-label={MARKS[mark].name || undefined} aria-hidden={MARKS[mark].name ? undefined : true}>{MARKS[mark].sign}</span>;
 }
 
@@ -156,6 +180,11 @@ function StepEnd({ result, durationMs }: { readonly result: string; readonly dur
 	);
 }
 
+/** Manual check (8.3): the muted "asked you" badge of a row the user decided a card for; its tooltip what was asked about. */
+function AskedBadge({ detail }: { readonly detail: string }) {
+	return <span className="rpcn-assistant-step-asked" title={detail || ASKED_YOU_TEXT}>{ASKED_YOU_TEXT}</span>;
+}
+
 /** Story 8.5: the cards to show, and how they post. */
 interface Cards {
 	readonly approvals: readonly AssistantApprovalView[];
@@ -165,14 +194,58 @@ interface Cards {
 /** The ids a row stands for (its own, and its members'). */
 const rowIds = (row: StepRow): string[] => [row.id, ...row.members.map((m) => m.id)];
 
+/** Manual check (8.3): the answer line of one question: "You: <answer>", then the pick kept, or which it was. */
+export const YOU_PREFIX = 'You: ';
+export const MY_PICK_NOTE = '(my pick)';
+export function myPickWasText(pick: string): string {
+	return `(my pick was: ${withoutPickMark(pick)})`;
+}
+
+/** Manual check (8.3): a question round's questions and the answers given, selectable. */
+function QaList({ qa }: { readonly qa: readonly AssistantQaView[] }) {
+	return (
+		<ol className="rpcn-assistant-qa">
+			{qa.map((q, i) => (
+				<li key={i} className="rpcn-assistant-qa-item">
+					<p className="rpcn-assistant-qa-question">{q.header ? <span className="rpcn-assistant-qa-header">{q.header}: </span> : null}{q.question}</p>
+					<p className="rpcn-assistant-qa-answer">
+						{YOU_PREFIX}{withoutPickMark(q.answer)}
+						{q.kept ? <>{' '}<span className="rpcn-assistant-qa-note">{MY_PICK_NOTE}</span></>
+							: q.pick ? <>{' '}<span className="rpcn-assistant-qa-note rpcn-assistant-qa-changed">{myPickWasText(q.pick)}</span></> : null}
+					</p>
+				</li>
+			))}
+		</ol>
+	);
+}
+
 function Row({ row, cards }: { readonly row: StepRow; readonly cards: Cards }) {
 	const [open, setOpen] = useState(false);
+	const [qaOpen, setQaOpen] = useState(false);
+	const hasQa = row.qa.length > 0;
 	const body = (detail: boolean) => (
 		<>
 			<Mark mark={row.mark} />
 			<span className="rpcn-assistant-step-text">
-				<span className="rpcn-assistant-step-label">{row.label}</span>
-				{detail && row.detail ? <Command text={row.detail} /> : null}
+				{detail && hasQa ? (
+					<span
+						className="rpcn-assistant-step-label rpcn-assistant-qa-toggle"
+						role="button"
+						tabIndex={0}
+						aria-expanded={qaOpen}
+						onClick={() => setQaOpen((o) => !o)}
+						onKeyDown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								setQaOpen((o) => !o);
+							}
+						}}
+					>
+						{row.label}
+					</span>
+				) : <span className="rpcn-assistant-step-label">{row.label}</span>}
+				{row.asked ? <AskedBadge detail={row.askedDetail} /> : null}
+				{detail && row.detail ? <Command text={row.detail} full={row.fullDetail} /> : null}
 			</span>
 			<StepEnd result={row.result} durationMs={row.durationMs} />
 		</>
@@ -184,6 +257,7 @@ function Row({ row, cards }: { readonly row: StepRow; readonly cards: Cards }) {
 		return (
 			<>
 				<li className={`rpcn-assistant-step rpcn-assistant-step-${row.mark}`}>{body(true)}</li>
+				{hasQa && qaOpen ? <li className="rpcn-assistant-step-qa"><QaList qa={row.qa} /></li> : null}
 				{under ? <li className="rpcn-assistant-step-cards">{under}</li> : null}
 			</>
 		);
@@ -198,7 +272,8 @@ function Row({ row, cards }: { readonly row: StepRow; readonly cards: Cards }) {
 						<li key={m.id} className={`rpcn-assistant-step rpcn-assistant-step-${m.mark}`}>
 							<Mark mark={m.mark} />
 							<span className="rpcn-assistant-step-text">
-								{m.detail ? <Command text={m.detail} /> : <span className="rpcn-assistant-step-label">{m.label}</span>}
+								{m.detail ? <Command text={m.detail} full={m.fullDetail} /> : <span className="rpcn-assistant-step-label">{m.label}</span>}
+								{m.asked ? <AskedBadge detail={m.askedDetail} /> : null}
 							</span>
 							<StepEnd result={m.result} durationMs={m.durationMs} />
 						</li>

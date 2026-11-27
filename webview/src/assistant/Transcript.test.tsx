@@ -11,13 +11,14 @@ import { EMPTY_TEXT, Transcript } from './Transcript';
 let host: HTMLDivElement;
 let root: Root;
 const TURN: AssistantTurnView = {
-	id: 't1', command: 'design', text: 'orders', skill: 'rpcn-design',
+	id: 't1', command: 'design', text: 'orders', skill: 'rpcn-design', model: 'claude-sonnet-4-6',
 	steps: [{ id: 's1', label: 'Running the rpcn-design skill', mark: 'ok', result: '' }, { id: 's2', label: 'Reading a.yaml', mark: 'ok', result: '3 lines' }],
 	reply: 'Done.', files: [], review: 'none', note: null, actions: [], chips: [], outcome: 'done', notice: null, elapsedMs: 72_000, waitingMs: 38_000, approvals: [],
 };
 const STATE: AssistantStateMessage = {
 	type: 'state', access: 'ready', platform: null, runtime: { pinned: '1', installed: null, error: null }, skills: 'bundled', skillsProblem: null,
 	status: 'idle', turns: [], folder: 'ws', designReady: false, questions: null, error: null,
+	model: 'claude-opus-5-5', modelNotAllowed: null, host: 'api.anthropic.com', accessMessage: null, accessOrigin: null,
 };
 const render = async (state: AssistantStateMessage) => {
 	await act(async () => {

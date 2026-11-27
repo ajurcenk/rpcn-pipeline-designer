@@ -3,15 +3,19 @@
 // Enter or Tab picks (the command and a space are inserted), Escape closes it. `/build` and `/test` can be
 // picked but not sent yet: Send is off, with the command's hint. A message with no command is `/design`.
 // While a run goes the composer stays, and Send becomes Stop. The text is the parent's (a chip sets it).
+// Story 8.3: the bottom row's left holds the model chip (`<model> ▾`), which posts `chooseModelRequested`
+// (the host's quick pick of the endpoint's models).
 
 import { useState, type KeyboardEvent } from 'react';
 import {
-	ASSISTANT_COMMANDS, COMMAND_DESCRIPTIONS, COMMAND_HINTS, MAX_REQUEST_CHARS, parseCommand, REQUEST_PLACEHOLDER,
+	ASSISTANT_COMMANDS, COMMAND_DESCRIPTIONS, COMMAND_HINTS, MAX_REQUEST_CHARS, MODEL_CHIP_CARET, parseCommand, REQUEST_PLACEHOLDER,
 	type AssistantCommand, type AssistantWebviewMessage,
 } from '../../../src/shared/assistantProtocol';
 
 export const SEND_LABEL = 'Send';
 export const STOP_LABEL = 'Stop';
+/** Story 8.3: the chip's accessible name (its text is the model). */
+export const MODEL_CHIP_LABEL = 'Choose the model';
 
 /** The commands the list offers for `text` (`undefined`: no list: the text is no bare `/…` start). */
 export function commandsFor(text: string): AssistantCommand[] | undefined {
@@ -27,8 +31,11 @@ export function sendable(text: string): { readonly command: AssistantCommand; re
 	return { command, ok: hint === null && parsed.rest !== '', hint };
 }
 
-export function Composer({ text, setText, busy, post }: {
-	readonly text: string; readonly setText: (text: string) => void; readonly busy: boolean; readonly post: (m: AssistantWebviewMessage) => void;
+export function Composer({ text, setText, busy, model, post }: {
+	readonly text: string; readonly setText: (text: string) => void; readonly busy: boolean;
+	/** Story 8.3: the model setting, on the chip (`undefined`: no chip). */
+	readonly model?: string;
+	readonly post: (m: AssistantWebviewMessage) => void;
 }) {
 	const [index, setIndex] = useState(0);
 	const [closed, setClosed] = useState(false);
@@ -112,7 +119,20 @@ export function Composer({ text, setText, busy, post }: {
 				onKeyDown={keyDown}
 			/>
 			<div className="rpcn-assistant-composer-bar">
-				{send.hint ? <span className="rpcn-assistant-hint" role="status">{send.hint}</span> : <span />}
+				<span className="rpcn-assistant-composer-left">
+					{model !== undefined ? (
+						<button
+							type="button"
+							className="rpcn-assistant-model-chip"
+							aria-label={`${MODEL_CHIP_LABEL}: ${model}`}
+							title={MODEL_CHIP_LABEL}
+							onClick={() => post({ type: 'chooseModelRequested' })}
+						>
+							<span className="rpcn-assistant-model-name">{model}</span> <span aria-hidden="true">{MODEL_CHIP_CARET}</span>
+						</button>
+					) : null}
+					{send.hint ? <span className="rpcn-assistant-hint" role="status">{send.hint}</span> : null}
+				</span>
 				{busy ? (
 					<button type="button" className="rpcn-assistant-stop" onClick={() => post({ type: 'stopRequested' })}>{STOP_LABEL}</button>
 				) : (

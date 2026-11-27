@@ -34,8 +34,15 @@
 // Story 8.5: approvals are cards in the current turn (no modal): Allow once, Allow for this session (only
 // for a call with a session key, the rules': a shell key, or a write tool's name) and Deny. The session
 // memory is a set of keys on the view, in memory only, for the window's life: New conversation keeps it,
-// a reload empties it, nothing stores it. A call whose key it holds is allowed without a card, and its
-// step row's result says "allowed (this session)".
+// a reload empties it, nothing stores it. A call whose key it holds is allowed without a card. Manual
+// check (8.3): each step posts its approval outcome (`once`, `session`, `deny`, or `remembered` with no
+// card) and what the card asked about; the row's words come from the webview.
+//
+// Story 8.3: the access states `keyRefused` and `modelNotAllowed` (sticky, held by the access: a run's
+// error is classified through `classifyEndpointError` and recorded there; the turn still shows its masked
+// error line) come after `baseUrlChanged`; `unreachable` too, but a request may start in it. The state
+// posts the model setting (the composer's chip) and the refused model; `chooseModelRequested` runs the
+// chip's pick, `testConnectionRequested` Test connection.
 //
 // Every text posted or logged is masked: the key (and any credential-looking value) and the home folder.
 // As the metrics tab: the webview posts `ready` each time it loads and gets the whole state; `receive`
@@ -46,9 +53,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	askedText, COMMAND_HINTS, SESSION_ALLOWED_RESULT, formatDuration, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
+	askedText, capDetail, capQa, droppedStepsText, SHELL_LABEL, COMMAND_HINTS, MAX_QA, formatDuration, COMMAND_SKILLS, isPick, MAX_REPLY_CHARS, MAX_REQUEST_CHARS, MAX_STEPS, MAX_TURNS, OPEN_NOTE_ACTION, OPEN_NOTE_LABEL, orderOptions, parseAssistantWebviewMessage, parseCommand,
 	undoLaterEditsText,
-	type AssistantAccess as AccessState, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView,
+	type AssistantAccess as AccessState, type AssistantApprovalDecision, type AssistantApprovalView, type AssistantChipView, type AssistantCommand, type AssistantFileView, type AssistantOutcome, type AssistantReview, type AssistantStepView, type AssistantStepApproval,
 	type AssistantTurnView, type SkillsPathProblem, type AssistantHostMessage, type AssistantNoteView, type AssistantQuestionsView, type AssistantStateMessage, type AssistantStatus,
 } from '../../shared/assistantProtocol';
 import { lineDiff } from '../../shared/lineDiff';
@@ -61,7 +68,7 @@ import { isInside } from '../assistant/rules';
 import type { BinaryState } from '../redpandaConnect/binary';
 import { findOnPath } from '../redpandaConnect/process';
 import { webviewHtml } from '../graphPanel/html';
-import { SET_UP_ASSISTANT_ACCESS_COMMAND, usableBaseUrl, type AssistantAccess, type AssistantAccessOverrides } from './assistantAccess';
+import { hostOf, SET_UP_ASSISTANT_ACCESS_COMMAND, TEST_CONNECTION_COMMAND, usableBaseUrl, type AssistantAccess, type AssistantAccessOverrides } from './assistantAccess';
 
 export const ASSISTANT_VIEW_ID = 'redpandaConnect.assistant';
 export const RUN_ASSISTANT_COMMAND = 'redpandaConnect.assistant.run';
@@ -221,11 +228,17 @@ function readText(file: string): string | null {
 	}
 }
 
+/** Manual check (8.3): the id of a turn's "N earlier steps not shown" line. */
+const DROPPED_STEP_ID = 'dropped';
+
 /** Story 8.5: the tools whose approval card's detail is a path. */
 const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
-/** What an approval's step row says of it. */
-type StepDecision = 'allowed' | 'denied' | typeof SESSION_ALLOWED_RESULT;
+/** Manual check (8.3): an approval's outcome on its step, and what the card asked about (unmasked; none: no card). */
+interface StepDecision {
+	readonly approval: AssistantStepApproval;
+	readonly detail: string | undefined;
+}
 
 /** Story 8.5: an open approval, as the view keeps it until it is decided or withdrawn (its texts unmasked). */
 interface OpenApproval {
@@ -243,6 +256,8 @@ interface Turn {
 	readonly command: AssistantCommand;
 	readonly text: string;
 	readonly skill: string;
+	/** Manual check (8.3): the model setting when the run started (what the host was given); never changed after. */
+	readonly model: string;
 	readonly workspace: string;
 	steps: AssistantStepView[];
 	reply: string;
@@ -252,6 +267,8 @@ interface Turn {
 	readonly createdFolders: Set<string>;
 	/** Manual check 2: the approvals decided, by the step (tool call) they were for (story 8.5: or allowed by the session memory). */
 	readonly decisions: Map<string, StepDecision>;
+	/** Manual check (8.3): how many step rows the cap dropped. */
+	droppedSteps: number;
 	/** Manual check 4: when the run began and ended (`now()`), the time waited on the user, and since when it waits. */
 	startedAt: number;
 	endedAt: number | undefined;
@@ -558,13 +575,26 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		if (!this.options.access.keyMatchesBaseUrl) {
 			return 'baseUrlChanged';
 		}
+		// Story 8.3: the failure held (key refused and model not allowed block; unreachable does not).
+		const failure = this.options.access.failure;
+		if (failure?.kind === 'keyRefused' || failure?.kind === 'modelNotAllowed') {
+			return failure.kind;
+		}
 		if (this.binary().kind !== 'ok') {
 			return 'noBinary';
 		}
 		if (!this.uvFound()) {
 			return 'noUv';
 		}
-		return this.workspaceFolder() ? 'ready' : 'noWorkspace';
+		if (!this.workspaceFolder()) {
+			return 'noWorkspace';
+		}
+		return failure?.kind === 'unreachable' ? 'unreachable' : 'ready';
+	}
+
+	/** Story 8.3: whether a request can start in `state` (`unreachable` does not block). */
+	private static canStart(state: AccessState): boolean {
+		return state === 'ready' || state === 'unreachable';
 	}
 
 	private pinned(): string {
@@ -626,7 +656,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				// Under its tool's step row, else under its own row ("Asks to …"), else after the steps.
 				const stepId = a.stepId && t.steps.some((s) => s.id === a.stepId) ? a.stepId : t.steps.some((s) => s.id === id) ? id : null;
 				out.push({
-					id, summary: this.mask(a.summary), detail: a.detail === undefined ? null : this.mask(a.detail), sessionKey: a.sessionKey === null ? null : this.mask(a.sessionKey),
+					id, summary: this.mask(a.summary), detail: a.detail === undefined ? null : capDetail(this.mask(a.detail)), sessionKey: a.sessionKey === null ? null : this.mask(a.sessionKey),
 					stepId, write: WRITE_TOOL_NAMES.has(a.tool),
 				});
 			}
@@ -648,8 +678,16 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			command: t.command,
 			text: this.mask(t.text),
 			skill: t.skill,
+			model: this.mask(t.model),
 			steps: t.steps.map((s) => ({
 				id: s.id, label: this.mask(s.label), mark: s.mark, result: this.mask(s.result), ...(s.detail ? { detail: this.mask(s.detail) } : {}),
+				...(s.fullDetail ? { fullDetail: capDetail(this.mask(s.fullDetail)) } : {}),
+				...(s.qa ? {
+					qa: s.qa.map((x) => ({
+						header: capQa(this.mask(x.header)), question: capQa(this.mask(x.question)), pick: x.pick === null ? null : capQa(this.mask(x.pick)), answer: capQa(this.mask(x.answer)), kept: x.kept,
+					})),
+				} : {}),
+				...(s.approval ? { approval: s.approval } : {}), ...(s.approvalDetail ? { approvalDetail: capDetail(this.mask(s.approvalDetail)) } : {}),
 				...(s.durationMs !== undefined ? { durationMs: s.durationMs } : {}),
 			})),
 			reply: this.mask(t.reply),
@@ -691,6 +729,14 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		} : null;
 		const access = this.access();
 		const folder = this.workspaceFolder();
+		const settings = this.options.access.settings();
+		const failure = this.options.access.failure;
+		let host: string | null = null;
+		try {
+			host = this.mask(new URL(settings.baseUrl).host);
+		} catch {
+			host = null;
+		}
 		return {
 			type: 'state',
 			access: access.state,
@@ -708,6 +754,11 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			designReady: this.designReady(),
 			questions,
 			error: this.error === null ? null : this.mask(this.error),
+			model: this.mask(settings.model),
+			modelNotAllowed: access.state === 'modelNotAllowed' && failure?.model ? this.mask(failure.model) : null,
+			host,
+			accessMessage: access.state === 'keyRefused' && failure?.message ? this.mask(failure.message) : null,
+			accessOrigin: failure && failure.kind === access.state ? failure.origin : null,
 		};
 	}
 
@@ -766,6 +817,12 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				break;
 			case 'setUpAccessRequested':
 				await vscode.commands.executeCommand(SET_UP_ASSISTANT_ACCESS_COMMAND);
+				break;
+			case 'chooseModelRequested':
+				await this.options.access.chooseModel();
+				break;
+			case 'testConnectionRequested':
+				await vscode.commands.executeCommand(TEST_CONNECTION_COMMAND);
 				break;
 			case 'openSettingsRequested':
 				await vscode.commands.executeCommand('workbench.action.openSettings', 'redpandaConnect.assistant');
@@ -850,14 +907,16 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		const { state: access, skills } = this.access();
 		const binary = this.binary();
 		const workspace = this.workspaceFolder();
-		if (access !== 'ready' || binary.kind !== 'ok' || !workspace || !apiKey || skills.kind === 'bad' || runtime.kind !== 'installed' || this.options.runtime.busy) {
+		if (!AssistantView.canStart(access) || binary.kind !== 'ok' || !workspace || !apiKey || skills.kind === 'bad' || runtime.kind !== 'installed' || this.options.runtime.busy) {
 			this.post();
-			return this.options.runtime.busy ? 'runtimeInstalling' : access === 'ready' ? 'noAccess' : access;
+			return this.options.runtime.busy ? 'runtimeInstalling' : access === 'ready' || access === 'unreachable' ? 'noAccess' : access;
 		}
-		const turn = this.addTurn(command, text, workspace);
+		const settings = this.options.access.settings();
+		const turn = this.addTurn(command, text, workspace, settings.model);
+		// Story 8.3: an unreachable endpoint is not sticky: a new run tries again.
+		this.options.access.runStarting();
 		this.closeOpen();
 		this.error = null;
-		const settings = this.options.access.settings();
 		let host: AssistantHost;
 		try {
 			host = this.factory({
@@ -929,10 +988,10 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		return status === 'done' ? 'done' : status === 'stopped' ? 'stopped' : 'error';
 	}
 
-	private addTurn(command: AssistantCommand, text: string, workspace: string): Turn {
+	private addTurn(command: AssistantCommand, text: string, workspace: string, model: string): Turn {
 		const turn: Turn = {
-			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(), decisions: new Map(),
-			startedAt: this.now(), endedAt: undefined, waitedMs: 0, waitingSince: undefined, stepStarts: new Map(),
+			id: `t${++this.turnSeq}`, command, text, skill: COMMAND_SKILLS[command], model, workspace, steps: [], reply: '', snapshots: new Map(), written: new Set(), createdFolders: new Set(), decisions: new Map(),
+			droppedSteps: 0, startedAt: this.now(), endedAt: undefined, waitedMs: 0, waitingSince: undefined, stepStarts: new Map(),
 			files: [], review: 'none', noteFile: undefined, note: null, outcome: 'running', notice: null, view: undefined,
 		};
 		this.turns.push(turn);
@@ -972,16 +1031,17 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				break;
 			case 'step':
 				turn.stepStarts.set(event.id, this.now());
-				this.addStep(turn, { id: event.id, label: event.label, mark: 'running', result: '', ...(event.detail ? { detail: event.detail } : {}) });
+				this.addStep(turn, {
+					id: event.id, label: event.label, mark: 'running', result: '', ...(event.detail ? { detail: event.detail } : {}), ...(event.fullDetail ? { fullDetail: event.fullDetail } : {}),
+				});
 				break;
 			case 'stepDone': {
 				const i = turn.steps.findIndex((s) => s.id === event.id && s.mark === 'running');
 				if (i >= 0) {
-					// Manual check 2: an approval's outcome is the step's result when it has no other (denied: always).
-					// Story 8.5: allowed through the session memory: always said.
+					// Manual check (8.3): the approval is its own field; a denied step's result is the denial itself, so none.
 					const decision = turn.decisions.get(event.id);
-					const result = decision === 'denied' || decision === SESSION_ALLOWED_RESULT ? decision : event.result.slice(0, 60) || decision || '';
-					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result, ...this.stepDuration(turn, event.id, this.now()) };
+					const result = decision?.approval === 'deny' ? '' : event.result.slice(0, 60);
+					turn.steps[i] = { ...turn.steps[i], mark: event.ok ? 'ok' : 'failed', result, ...this.stepApproval(decision), ...this.stepDuration(turn, event.id, this.now()) };
 				}
 				break;
 			}
@@ -1015,7 +1075,7 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			case 'remembered':
 				// Story 8.5: allowed without a card; its step row says so.
 				if (event.stepId) {
-					this.recordDecision(turn, event.stepId, SESSION_ALLOWED_RESULT);
+					this.recordDecision(turn, event.stepId, { approval: 'remembered', detail: undefined });
 				}
 				this.options.log(`Assistant: allowed for this session: ${this.mask(event.sessionKey)}.`);
 				break;
@@ -1060,16 +1120,42 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 				this.status = 'error';
 				this.error = event.message;
 				this.options.log(`Assistant: the run failed: ${this.mask(event.message)}`);
+				{
+					// Story 8.3: the error as an access state (key refused, model not allowed: sticky; unreachable).
+					const failure = this.options.access.recordRunError(event.message);
+					if (failure.kind !== 'other') {
+						this.options.log(`Assistant: the run's error is an access failure (${failure.kind === 'forbidden' ? 'keyRefused' : failure.kind}${failure.model ? `: ${this.mask(failure.model)}` : ''}) at ${this.mask(hostOf(this.options.access.settings().baseUrl))}.`);
+					}
+				}
 				break;
 		}
 		turn.view = undefined;
 		this.post();
 	}
 
+	/**
+	 * Story 8.12: a step row (at most `MAX_STEPS`). Manual check (8.3): over the cap, the oldest row that is
+	 * no shell command, approval or question round goes first (all of those kinds: the oldest), counted in an
+	 * "N earlier steps not shown" line at the top.
+	 */
 	private addStep(turn: Turn, step: AssistantStepView): void {
 		turn.steps.push(step);
-		if (turn.steps.length > MAX_STEPS) {
-			turn.steps.splice(0, turn.steps.length - MAX_STEPS);
+		while (turn.steps.length > MAX_STEPS) {
+			const hasLine = turn.steps[0]?.id === DROPPED_STEP_ID;
+			const from = hasLine ? 1 : 0;
+			const kept = (s: AssistantStepView) => s.label === SHELL_LABEL || s.approval !== undefined || s.qa !== undefined || s.label.startsWith('Asks to ');
+			let at = turn.steps.findIndex((s, i) => i >= from && !kept(s));
+			if (at < 0) {
+				at = from;
+			}
+			turn.steps.splice(at, 1);
+			turn.droppedSteps++;
+			const line: AssistantStepView = { id: DROPPED_STEP_ID, label: droppedStepsText(turn.droppedSteps), mark: 'info', result: '' };
+			if (hasLine) {
+				turn.steps[0] = line;
+			} else {
+				turn.steps.unshift(line);
+			}
 		}
 		turn.view = undefined;
 	}
@@ -1117,10 +1203,10 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 	/** Story 8.5: one open approval decided: closed, its step row's outcome recorded, the host told. */
 	private settleApproval(host: AssistantHost, id: string, open: OpenApproval, decision: AssistantApprovalDecision): void {
 		this.openApprovals.delete(id);
-		const outcome: StepDecision = decision === 'deny' ? 'denied' : decision === 'session' ? SESSION_ALLOWED_RESULT : 'allowed';
+		const outcome: StepDecision = { approval: decision, detail: open.detail ?? open.summary };
 		const own = open.turn.steps.findIndex((s) => s.id === id);
 		if (own >= 0) {
-			open.turn.steps[own] = { ...open.turn.steps[own], mark: decision === 'deny' ? 'failed' : 'ok', result: outcome };
+			open.turn.steps[own] = { ...open.turn.steps[own], mark: decision === 'deny' ? 'failed' : 'ok', result: '', ...this.stepApproval(outcome) };
 			open.turn.view = undefined;
 		} else if (open.stepId) {
 			this.recordDecision(open.turn, open.stepId, outcome);
@@ -1128,14 +1214,19 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		host.approve(id, decision);
 	}
 
-	/** Manual check 2: an approval's outcome on its tool's step row (its result, while it has none). */
+	/** Manual check 2, (8.3): an approval's outcome on its tool's step row. */
 	private recordDecision(turn: Turn, stepId: string, outcome: StepDecision): void {
 		turn.decisions.set(stepId, outcome);
 		const at = turn.steps.findIndex((s) => s.id === stepId);
-		if (at >= 0 && (turn.steps[at].result === '' || outcome === SESSION_ALLOWED_RESULT)) {
-			turn.steps[at] = { ...turn.steps[at], result: outcome };
+		if (at >= 0) {
+			turn.steps[at] = { ...turn.steps[at], ...this.stepApproval(outcome) };
 		}
 		turn.view = undefined;
+	}
+
+	/** Manual check (8.3): a step's approval fields (unmasked; masked when posted). */
+	private stepApproval(decision: StepDecision | undefined): Pick<AssistantStepView, 'approval' | 'approvalDetail'> {
+		return decision ? { approval: decision.approval, ...(decision.detail ? { approvalDetail: decision.detail } : {}) } : {};
 	}
 
 	/** Review 5: while a run goes, `approval` while any approval is open, else `question` while any question is, else `running`. */
@@ -1165,6 +1256,11 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 		// Manual check 1: the question's own step row says what came of it (no second "Answered" row).
 		const kept = asked.filter((q, i) => q.options.some((o) => isPick(o.label) && o.label === answers[i])).length;
 		const label = askedText(asked.length, kept);
+		// Manual check (8.3): the round kept on its step, so the history shows what was asked and answered.
+		const qa = asked.slice(0, MAX_QA).map((q, i) => {
+			const pick = q.options.find((o) => isPick(o.label))?.label ?? null;
+			return { header: q.header, question: q.question, pick, answer: answers[i], kept: pick !== null && pick === answers[i] };
+		});
 		let at = -1;
 		for (let i = turn.steps.length - 1; i >= 0 && at < 0; i--) {
 			if (turn.steps[i].mark === 'running' && turn.steps[i].label.startsWith('Asking ')) {
@@ -1172,10 +1268,10 @@ export class AssistantView implements vscode.WebviewViewProvider, vscode.Disposa
 			}
 		}
 		if (at >= 0) {
-			turn.steps[at] = { ...turn.steps[at], label };
+			turn.steps[at] = { ...turn.steps[at], label, qa };
 			turn.view = undefined;
 		} else {
-			this.addStep(turn, { id: `p${++this.stepSeq}`, label, mark: 'info', result: '' });
+			this.addStep(turn, { id: `p${++this.stepSeq}`, label, mark: 'info', result: '', qa });
 		}
 		host.answer(id, back);
 		this.post();

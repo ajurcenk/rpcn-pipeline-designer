@@ -39,7 +39,8 @@ export type AssistantEvent =
 	/** A line of the run that is no tool call, already short and plain (such as "Started (model)", a retry). */
 	| { readonly type: 'progress'; readonly text: string }
 	/** Story 8.12: a top-level tool call began: its step row (`label` from `toolProgress`). */
-	| { readonly type: 'step'; readonly id: string; readonly label: string; readonly detail?: string }
+	/** `detail`: a shell step's command on one line, clipped; `fullDetail`: all of it (new lines kept, unmasked), when longer or multi-line. */
+	| { readonly type: 'step'; readonly id: string; readonly label: string; readonly detail?: string; readonly fullDetail?: string }
 	/** Story 8.12: that tool call's result: ok or failed, and a short result (at most `STEP_RESULT_CHARS`; may be empty). */
 	| { readonly type: 'stepDone'; readonly id: string; readonly ok: boolean; readonly result: string }
 	/** Story 8.12: top-level text of the model's reply, in order (the view joins the pieces). */

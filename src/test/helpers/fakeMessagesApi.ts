@@ -6,6 +6,8 @@
 //     script, a final text turn. Any other call (a side request) gets a short text answer. Streaming
 //     (SSE, the standard event sequence) when the request asks for it, else JSON.
 //   - `POST /v1/messages/count_tokens`: `{ input_tokens }`.
+//   - Story 8.3: `GET /v1/models`: `models` as `data[]` (200), or `modelsFailure`'s status and body
+//     (401 in Anthropic's or ADP's format, 404 for an endpoint with no list); `hang`: never answers.
 //   - Anything else: 404 in Anthropic's error format.
 //   - `failure`: every Messages call answered with that status and body instead (ADP's 401 by default).
 // Every request is recorded (method, path, headers, body), and each tool result the conversation sends
@@ -39,6 +41,19 @@ export const ADP_401 = {
 	body: { code: 16, message: 'invalid api key', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'UNAUTHENTICATED', domain: 'adp' }] },
 };
 
+/** Anthropic's own 401 (story 8.3). */
+export const ANTHROPIC_401 = { status: 401, body: { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } } };
+
+/** ADP's 403 for a model it does not allow (spike 65, capture 08). */
+export const adp403Model = (model: string) => ({
+	status: 403, body: { error: { code: null, message: `model "${model}" is not allowed for provider "anthropic-api"`, type: 'model_not_allowed' } },
+});
+
+export interface FakeModel {
+	readonly id: string;
+	readonly display_name?: string;
+}
+
 export const FINAL_TEXT = 'Fake answer: done.';
 
 export const toolUseId = (turn: number) => `toolu_fake_${String(turn).padStart(2, '0')}`;
@@ -51,6 +66,12 @@ export class FakeMessagesApi {
 	failure: { readonly status: number; readonly body: unknown } | undefined;
 	/** Waits this long before answering each main-conversation call (a slow model turn). */
 	delayMs = 0;
+	/** Story 8.3: what `GET /v1/models` lists. */
+	models: readonly FakeModel[] = [];
+	/** Story 8.3: `GET /v1/models` answered with this status and body instead. */
+	modelsFailure: { readonly status: number; readonly body: unknown } | undefined;
+	/** Story 8.3: every request is left unanswered (a hung endpoint). */
+	hang = false;
 	private server: http.Server | undefined;
 	private port = 0;
 
@@ -123,6 +144,17 @@ export class FakeMessagesApi {
 			res.writeHead(status, { 'content-type': 'application/json' });
 			res.end(JSON.stringify(value));
 		};
+		if (this.hang) {
+			return;
+		}
+		if (urlPath === '/v1/models' && req.method === 'GET') {
+			if (this.modelsFailure) {
+				json(this.modelsFailure.status, this.modelsFailure.body);
+			} else {
+				json(200, { data: this.models.map((m) => ({ type: 'model', id: m.id, display_name: m.display_name ?? m.id, created_at: '2026-01-01T00:00:00Z' })), has_more: false });
+			}
+			return;
+		}
 		if (urlPath === '/v1/messages/count_tokens') {
 			json(200, { input_tokens: 10 });
 			return;
